@@ -71,14 +71,34 @@ Rules: additive changes bump the minor protocol version and are capability-gated
 
 ## Parallel agent work
 
-- Split by crate boundary (`terminal`, `storage`, `providers/*`, `desktop` views) — they share only `core`/`protocol` types.
-- Each parallel slice runs in its own git worktree/branch: `git worktree add ../heeler-<slice> -b <slice-id>`.
+- Split by crate boundary (`terminal`, `agents`, `gateway`, `storage`, `desktop` views) — they share only `core`/`protocol` types.
+- Each parallel slice runs in its own git worktree/branch: `../heeler-wt/<slice>` on `slice/<slice>`.
 - One integration owner merges, resolves conflicts, runs the full gate.
-- Subagents get self-contained briefs: slice ID, files/crates in scope, contract, acceptance checks. They must not edit `protocol` unless they own the contract change.
+- Implementers get self-contained briefs (`docs/briefs/<slice>.md`): slice ID, files/crates in scope, contract, acceptance checks. They must not edit `protocol` unless they own the contract change.
+
+## Implementer agents (Antigravity)
+
+Roles: the **orchestrator** (main session) owns contracts (`core`, `protocol`), writes briefs, reviews, integrates, and updates `status.md`/`roadmap.md`. **Antigravity CLI (`agy`)** implements slices headlessly. `agy` loads `AGENTS.md` automatically as workspace rules.
+
+Model by complexity:
+
+| Work | Model |
+|---|---|
+| Daemon, terminal/PTY, protocol-adjacent async code, agent adapters | `claude-opus-4-6-thinking` |
+| CLI, UI glue, tests, mechanical refactors, docs-from-code | `gemini-3.8-flash-high` |
+
+Loop per slice:
+1. Commit the brief (`docs/briefs/<slice>.md`, template in `docs/briefs/README.md`) on `master`.
+2. `just agy <slice> <model>` — creates the worktree and runs `agy -p` with the brief; result JSON (incl. `conversation_id`) in `../heeler-wt/<slice>.agy.json`. Follow-ups: `cd ../heeler-wt/<slice> && agy --conversation <id> -p "<follow-up>"`.
+3. Review the diff against the brief's contract and `AGENTS.md` invariants; run `just check` in the worktree; exercise acceptance steps yourself.
+4. Send fixes back to the same conversation or fix directly; then rebase onto `master`, merge fast-forward, `git worktree remove`.
+5. Record the slice in `status.md` (what landed, verification run, deviations).
+
+Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract change comes back as a report item, not an edit. Run independent slices concurrently, dependent ones after their dependency merges.
 
 ## Branching and commits
 
-- Trunk-based on `main`; short-lived branches per slice; rebase before merge; `main` always passes the gate.
+- Trunk-based on `master`; short-lived `slice/<id>` branches; rebase before merge; `master` always passes the gate.
 - Conventional commits; scope = crate name or `docs`, `adr`, `ci`.
 - No commits of spike code, secrets, recorded transcripts with tokens.
 

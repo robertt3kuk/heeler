@@ -27,11 +27,14 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - Hard-to-reverse decision → ADR first; missing evidence → spike outside the repo, report into `docs/spikes/`.
 
 ## Conventions
-- Rust stable (see `rust-toolchain.toml` once created), edition 2024, `thiserror` in libraries, `anyhow` only in binaries, `tracing` for logs.
-- No `unwrap()`/`expect()` outside tests and proven invariants (comment why).
+- Rust 1.98.0 (`rust-toolchain.toml`), edition 2024, packages named `heeler-<dir>` under `crates/`, `thiserror` in libraries, `anyhow` only in binaries, `tracing` for logs. New dependencies go into root `[workspace.dependencies]`.
+- No `unwrap()`/`expect()` outside tests and proven invariants (comment why); clippy enforces it.
 - Conventional commits, scope = crate or `docs`/`adr`.
-- Quality gate: `just check` (fmt, clippy `-D warnings`, tests, cargo-deny). Until M0.1 lands there is no code; docs-only changes need no gate.
+- Quality gate: `just check` (fmt, clippy `-D warnings`, nextest, cargo-deny). Tools: `brew install just cargo-deny cargo-nextest`.
+- Protocol wire changes: bump `PROTOCOL_VERSION`, then `just update-golden`; fixture diffs are reviewed like code.
 - Real model/API calls never run in the default gate; use recorded fixtures.
 
 ## Parallel work
-Split by crate; one worktree per slice (`git worktree add ../heeler-<slice> -b <slice-id>`); one integration owner merges; only the contract owner edits `protocol`.
+Split by crate; one worktree per slice (`../heeler-wt/<slice>` on `slice/<slice>`, via `just agy <slice> <model>` for Antigravity implementers); one integration owner merges into `master`; only the contract owner edits `core`/`protocol`.
+
+If you are an implementer working from a brief (`docs/briefs/<slice>.md`): stay inside the brief's scope, do not edit `docs/status.md` or `docs/roadmap.md`, report contract problems instead of changing `core`/`protocol`, and finish with `just check` green and a commit on your slice branch.

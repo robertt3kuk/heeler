@@ -3,10 +3,10 @@
 Newest entry first. Every session ends by updating **Current** and adding a log entry (see `process.md`).
 
 ## Current
-- **Milestone**: M0 — Foundations
-- **Active slice**: none (M0.3 done)
-- **Next action**: M0.1 — create the Cargo workspace: root `Cargo.toml` with `[workspace.dependencies]` pinning `gpui`/`gpui_platform` (ADR 0003 rev `ef376006f32728b15e6a67706a04849cb781c812`, features `font-kit`, `runtime_shaders`), `alacritty_terminal = "=0.26.0"`, `portable-pty = "=0.9.0"`; empty crates per `architecture.md` § Crates; `rust-toolchain.toml` (1.98.0), `deny.toml`, `justfile` with `check`; verify `just check` green.
-- **Blockers**: none.
+- **Milestone**: M1 — Daemon + CLI terminals (M0 done except M0.4, which ships with M1-B)
+- **Active slice**: M1-A and M1-B ready to launch on Antigravity (briefs committed)
+- **Next action**: once `agy` account is verified, run `just agy M1-A claude-opus-4-6-thinking` and `just agy M1-B claude-opus-4-6-thinking` concurrently from the repo root; first confirm on M1-A that `--mode accept-edits` lets `agy` run `cargo`/`just` headlessly (if not, relaunch inside the worktree with `--dangerously-skip-permissions`; worktree-only). Then review per `process.md` § Implementer agents.
+- **Blockers**: `agy` 1.3.4 returns "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue." — the user must verify the Google account in the browser (`agy` prints the link) or sign in with another account.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
@@ -18,8 +18,16 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Installed Zig 0.16.0 cannot build libghostty-vt 0.2.2 (needs 0.15.2) — not used (ADR 0004).
 - Codex CLI 0.144.2 rejects the configured default model `gpt-6-astra` ("requires a newer version of Codex"); `gpt-5.6-sol` from `model/list` works. Upgrade Codex before M4, and pick models from `model/list` in the adapter.
 - Installed agents: `codex` 0.144.2, `codex-acp` 1.12.0, `omp` 18.10.3 (`omp acp`), `opencode` 2.0.14; no Claude Code ACP adapter.
+- Antigravity CLI `agy` 1.3.4 at `/opt/homebrew/bin/agy`; models: `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gemini-3.8-flash-{low,medium,high}`, `gpt-oss-120b-medium`. Reads `AGENTS.md` as workspace rules. Flags must precede `-p "<prompt>"`.
+- Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-13 — M0 contracts, Antigravity workflow
+- M0.1: workspace, toolchain pin, `just check` (fmt, clippy `-D warnings`, nextest, cargo-deny with `[licenses.private] ignore` until a license is chosen). Crates are created when their milestone starts.
+- M0.2: `heeler-core` (ULID ids via `Ulid::generate`, `TerminalId`, `Seq`, `SessionState` machine) and `heeler-protocol` (frame codec with 4 MiB cap, control envelope that keeps request ids for unknown methods, typed requests/results/events, postcard render DTOs). 34 golden fixtures in `crates/protocol/tests/fixtures/v0/`. `just check`: 18 tests pass.
+- Antigravity implementer workflow in `process.md`; `just agy` recipe; briefs `docs/briefs/M1-A.md`, `M1-B.md`, `M1-C.md`.
+- Smoke test of `agy -p` in a worktree blocked by account eligibility (see Blockers).
 
 ### 2026-10-13 — Scope, architecture, process, spikes
 - Wrote `vision.md`, `architecture.md`, `protocol.md` (v0 draft), `roadmap.md` (M0–M9, risks), `process.md`, `AGENTS.md` (+ `CLAUDE.md` symlink).
