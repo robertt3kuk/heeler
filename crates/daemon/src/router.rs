@@ -8,7 +8,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use heeler_core::TerminalId;
 use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionCreated, Subscribed};
+use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
 use heeler_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use serde::Serialize;
 use serde_json::Value;
@@ -96,18 +96,18 @@ impl Router {
                 ok(&Empty {})
             }
             Request::SessionSnapshot(_) => ok(&self.registry.snapshot().await?),
-            Request::SessionCreate(req) => ok(&SessionCreated {
+            Request::SessionCreate(req) => ok(&SessionResult {
                 session: self.registry.create_session(req).await?,
             }),
             Request::SessionList(filter) => ok(&self.registry.list_sessions(filter).await?),
             // Stop, restart and rename answer with the session as it is afterwards.
-            Request::SessionStop(req) => ok(&SessionCreated {
+            Request::SessionStop(req) => ok(&SessionResult {
                 session: self.registry.stop_session(req.session_id).await?,
             }),
-            Request::SessionRestart(req) => ok(&SessionCreated {
+            Request::SessionRestart(req) => ok(&SessionResult {
                 session: self.registry.restart_session(req.session_id).await?,
             }),
-            Request::SessionRename(req) => ok(&SessionCreated {
+            Request::SessionRename(req) => ok(&SessionResult {
                 session: self.registry.rename_session(req).await?,
             }),
             Request::TerminalAttach(req) => ok(&self.hub.attach(conn, req)?),

@@ -15,10 +15,10 @@ use heeler_client::{Client, ConnectOptions};
 use heeler_core::{SessionId, SessionState, TerminalId};
 use heeler_protocol::ErrorCode;
 use heeler_protocol::messages::{
-    ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request,
-    SessionCreated, SessionList, SessionListFilter, SessionRef, SessionRename, SessionSnapshot,
-    TerminalAck, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalResize,
-    WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRef,
+    ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
+    SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSnapshot, TerminalAck,
+    TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalResize, WorkspaceCreate,
+    WorkspaceInfo, WorkspaceList, WorkspaceRef,
 };
 use heeler_protocol::render::TerminalRender;
 use tokio::time::{sleep, timeout};
@@ -279,7 +279,7 @@ async fn stop_then_restart_gives_a_new_terminal_and_a_new_process() {
     assert_eq!(
         remote_code(
             client
-                .call::<SessionCreated>(Request::SessionRestart(SessionRef {
+                .call::<SessionResult>(Request::SessionRestart(SessionRef {
                     session_id: session.id
                 }))
                 .await
@@ -307,7 +307,7 @@ async fn stop_then_restart_gives_a_new_terminal_and_a_new_process() {
     );
 
     let restarted = client
-        .call::<SessionCreated>(Request::SessionRestart(SessionRef {
+        .call::<SessionResult>(Request::SessionRestart(SessionRef {
             session_id: session.id,
         }))
         .await
@@ -552,7 +552,7 @@ async fn a_renamed_session_keeps_its_title_while_other_metadata_flows() {
     let tid = terminal_of(&session);
 
     let renamed = client
-        .call::<SessionCreated>(Request::SessionRename(SessionRename {
+        .call::<SessionResult>(Request::SessionRename(SessionRename {
             session_id: session.id,
             title: "  mine ".into(),
         }))
@@ -563,7 +563,7 @@ async fn a_renamed_session_keeps_its_title_while_other_metadata_flows() {
     assert_eq!(
         remote_code(
             client
-                .call::<SessionCreated>(Request::SessionRename(SessionRename {
+                .call::<SessionResult>(Request::SessionRename(SessionRename {
                     session_id: session.id,
                     title: "   ".into(),
                 }))
@@ -820,7 +820,7 @@ async fn spawn_failure_yields_a_failed_session_that_is_still_listed() {
         ErrorCode::InvalidState
     );
     let again = client
-        .call::<SessionCreated>(Request::SessionRestart(SessionRef {
+        .call::<SessionResult>(Request::SessionRestart(SessionRef {
             session_id: session.id,
         }))
         .await
@@ -926,7 +926,7 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
     assert_eq!(
         remote_code(
             client
-                .call::<SessionCreated>(Request::SessionCreate(
+                .call::<SessionResult>(Request::SessionCreate(
                     heeler_protocol::messages::SessionCreate {
                         workspace_id: Some(heeler_core::WorkspaceId::new()),
                         spec: heeler_protocol::messages::SessionSpec::Terminal(spec(&["cat"])),
@@ -941,7 +941,7 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
     assert_eq!(
         remote_code(
             client
-                .call::<SessionCreated>(Request::SessionCreate(
+                .call::<SessionResult>(Request::SessionCreate(
                     heeler_protocol::messages::SessionCreate {
                         workspace_id: None,
                         spec: heeler_protocol::messages::SessionSpec::Terminal(zero),

@@ -294,8 +294,9 @@ pub struct SessionInfo {
     pub created_at_ms: u64,
 }
 
+/// Result of `session.create`, `.stop`, `.restart`, and `.rename`: the session after the change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionCreated {
+pub struct SessionResult {
     pub session: SessionInfo,
 }
 

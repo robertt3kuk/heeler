@@ -12,7 +12,7 @@ use heeler_core::{Seq, SessionId, TerminalId, WorkspaceId};
 use heeler_daemon::{DaemonConfig, Paths, RunningDaemon};
 use heeler_protocol::ErrorCode;
 use heeler_protocol::messages::{
-    ClientInfo, ClientKind, Empty, Event, Request, SessionCreate, SessionCreated, SessionInfo,
+    ClientInfo, ClientKind, Empty, Event, Request, SessionCreate, SessionInfo, SessionResult,
     Subscribed, TerminalAck, TerminalAttach, TerminalAttached, TerminalSize, TerminalSpec,
 };
 use heeler_protocol::render::{Row, TerminalRender};
@@ -107,7 +107,7 @@ pub async fn create_in(
     spec: TerminalSpec,
 ) -> SessionInfo {
     client
-        .call::<SessionCreated>(Request::SessionCreate(SessionCreate {
+        .call::<SessionResult>(Request::SessionCreate(SessionCreate {
             workspace_id,
             spec: heeler_protocol::messages::SessionSpec::Terminal(spec),
         }))
@@ -126,7 +126,7 @@ pub fn terminal_of(session: &SessionInfo) -> TerminalId {
 
 pub async fn stop(client: &Client, id: SessionId) -> Result<SessionInfo, ClientError> {
     client
-        .call::<SessionCreated>(Request::SessionStop(
+        .call::<SessionResult>(Request::SessionStop(
             heeler_protocol::messages::SessionRef { session_id: id },
         ))
         .await
