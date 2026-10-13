@@ -28,11 +28,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
 ### 2026-10-13 — M1-D2 merged, M1 closed
 - `heeler` session commands + `attach` (raw mode guard incl. panic/SIGTERM/SIGHUP restore, write→flush→ack ordering, SIGWINCH resize, 300 ms restart follow), target resolution (id, prefix ≥ 4, `t:N`, title; ambiguous → exit 2), `history`; 22 new CLI tests incl. 11 PTY-driven attach tests; `crates/daemon/examples/flood.rs`; `docs/demos/M1.md`.
 - Orchestrator verification: `just check` 188 tests green; flood bench rerun: `wall=1.4s output~193MiB (136MiB/s) acking_renders=137 silent_renders_after_snapshot=0 status_p50=0.03ms p99=0.11ms peak_rss=25.2MiB final_screen=match`.
 - Live demo (orchestrator, release build, temp `HEELER_HOME`): `heeler new --title omp-demo -- omp` → OMP v18.10.3 TUI rendered in the daemon (seen via `heeler history`); two simultaneous `heeler attach` over real PTYs both rendered OMP and detached with ctrl+\ d (exit 0) while the session kept running; `heeler send` typed into OMP's composer (visible on screen); `stop` → `stopped`; `daemon stop --stop-sessions` → socket gone, no orphan processes.
-
 
 ### 2026-10-13 — M1-C, M1-D1 merged; protocol `SessionResult`
 - M1-C `heeler-cli`: `daemon start|status|stop`, `ws …`, `api`, `events`; exit codes 0/1/2/3; `HostRenderer` (SGR incl. undercurl/underline color, wide runs, OSC 8, modes mirroring, `?2026` wrapping, row diffing, scroll via `CSI S/T`), `DetachDetector`. Orchestrator smoke: start (idempotent), ws new/ls, api, stop, status exit 3.
