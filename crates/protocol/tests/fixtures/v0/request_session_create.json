@@ -1,0 +1,1 @@
+{"id":9,"method":"session.create","params":{"command":["omp"],"cwd":"/repo","env":{"RUST_LOG":"debug"},"kind":"terminal","size":{"cols":120,"pixel_height":960,"pixel_width":1440,"rows":40},"workspace_id":"01K7F3B5N2Q9W8E4R6T1Y0V3JA"}}

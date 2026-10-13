@@ -1,0 +1,18 @@
+[package]
+name = "heeler-core"
+description = "Heeler domain types and state machines (no I/O)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

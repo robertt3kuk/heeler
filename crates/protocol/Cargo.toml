@@ -1,0 +1,20 @@
+[package]
+name = "heeler-protocol"
+description = "Heeler IPC protocol: frames, control envelope, messages, terminal render DTOs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+bytes.workspace = true
+heeler-core.workspace = true
+postcard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

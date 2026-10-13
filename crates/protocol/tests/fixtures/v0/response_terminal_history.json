@@ -1,0 +1,1 @@
+{"id":3,"result":{"from_line":0,"rows":[{"runs":[{"bg":"default","fg":"default","flags":"BOLD","link":null,"text":"$ ls","underline_color":null},{"bg":{"rgb":[4,5,6]},"fg":{"indexed":196},"flags":"UNDERCURL | WIDE","link":1,"text":"界","underline_color":{"rgb":[255,0,0]}}],"wrapped":false}]}}

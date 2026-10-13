@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+heeler-core = { path = "crates/core" }
+heeler-protocol = { path = "crates/protocol" }
+
+anyhow = "1.0.104"
+bitflags = { version = "2.13.2", features = ["serde"] }
+bytes = "1.12.1"
+futures = "0.3.34"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = "1.53.2"
+tokio-util = { version = "0.7.20", features = ["codec"] }
+tracing = "0.1.44"
+ulid = { version = "3.0.0", features = ["serde"] }
+
+# Pinned by ADR 0004 (terminal engine) and ADR 0003 (GPUI); used from M1/M2.
+alacritty_terminal = "=0.26.0"
+portable-pty = "=0.9.0"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false, features = ["font-kit", "runtime_shaders"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
