@@ -50,8 +50,64 @@ impl Ctx {
             .call(&client, Request::EventsSubscribe(Empty {}))
             .await?;
         let session = self.resolve(&client, target).await?;
-        live_terminal(&session)?;
-        self.attach_session(client, events, session).await
+        if session.state.is_live() {
+            self.attach_session(client, events, session).await
+        } else {
+            self.show_final_screen(&client, &session).await
+        }
+    }
+
+    /// Attaching to an ended session: its terminal stays attachable, so draw the final screen
+    /// inside the usual enter/leave, then leave at once and print how the session ended.
+    async fn show_final_screen(
+        &self,
+        client: &Client,
+        session: &SessionInfo,
+    ) -> Result<(), CliError> {
+        let terminal = session
+            .terminal_id
+            .ok_or_else(|| CliError::Failed(format!("session {} has no terminal", session.id)))?;
+        let mut signals = Signals::new()?;
+        let mut screen = HostScreen::enter()?;
+        let drawn = tokio::select! {
+            drawn = self.draw_final_screen(client, terminal, &mut screen) => drawn,
+            _ = signals.term.recv() => Err(signalled("SIGTERM", 15)),
+            _ = signals.hup.recv() => Err(signalled("SIGHUP", 1)),
+            _ = signals.int.recv() => Err(signalled("SIGINT", 2)),
+        };
+        screen.leave();
+        drop(screen);
+        drawn?;
+        print_line(&end_message(&session.state))?;
+        print_line(&format!(
+            "`heeler restart {id}` starts it again, `heeler history {id}` shows its output",
+            id = session.id
+        ))
+    }
+
+    /// Draws the snapshot the daemon queues before it answers the attach.
+    async fn draw_final_screen(
+        &self,
+        client: &Client,
+        terminal: TerminalId,
+        screen: &mut HostScreen,
+    ) -> Result<(), CliError> {
+        let mut frames = self.open_terminal(client, terminal).await?;
+        let render = frames
+            .recv()
+            .await
+            .ok_or_else(|| self.fail(ClientError::Disconnected))?;
+        let frame = screen.draw(&render)?;
+        let _: Value = self
+            .call(
+                client,
+                Request::TerminalAck(TerminalAck {
+                    terminal_id: terminal,
+                    frame,
+                }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Runs the attach loop for a live `session`; `events` must have been subscribed before the
@@ -103,7 +159,6 @@ impl Ctx {
     ) -> Result<Outcome, CliError> {
         let mut frames = self.open_terminal(client, terminal).await?;
         let mut detector = DetachDetector::new();
-        let mut drawn = Vec::new();
         let mut forward = Vec::new();
         // Set while the session is over and a restart could still follow.
         let mut ended: Option<(Instant, String)> = None;
@@ -115,18 +170,7 @@ impl Ctx {
             tokio::select! {
                 render = frames.recv() => {
                     let render = render.ok_or_else(|| self.fail(ClientError::Disconnected))?;
-                    let frame = match &render {
-                        TerminalRender::Snapshot(snapshot) => {
-                            screen.renderer.apply_snapshot(snapshot, &mut drawn);
-                            snapshot.frame
-                        }
-                        TerminalRender::Frame(frame) => {
-                            screen.renderer.apply_frame(frame, &mut drawn);
-                            frame.frame
-                        }
-                    };
-                    screen.write(&drawn)?;
-                    drawn.clear();
+                    let frame = screen.draw(&render)?;
                     // Only now may the daemon send the next render.
                     let _: Value = self
                         .call(client, Request::TerminalAck(TerminalAck { terminal_id: terminal, frame }))
@@ -246,7 +290,7 @@ pub(super) fn end_message(state: &SessionState) -> String {
         SessionState::Exited {
             code: None,
             signal: Some(signal),
-        } => format!("[session exited with signal {signal}]"),
+        } => format!("[session killed by signal {signal}]"),
         SessionState::Exited { .. } => "[session exited]".to_owned(),
         SessionState::Stopped => "[session stopped]".to_owned(),
         SessionState::Failed { reason } => format!("[session failed: {reason}]"),
@@ -287,6 +331,8 @@ impl Signals {
 struct HostScreen {
     renderer: HostRenderer,
     entered: bool,
+    /// Reused buffer for the bytes of one render.
+    scratch: Vec<u8>,
     /// Declared last: restored after the leave sequence was written by `Drop`.
     _raw: RawMode,
 }
@@ -298,12 +344,33 @@ impl HostScreen {
         let screen = Self {
             renderer: HostRenderer::new(cols, rows),
             entered: true,
+            scratch: Vec::new(),
             _raw: raw,
         };
         let mut out = Vec::new();
         screen.renderer.enter(&mut out);
         screen.write(&out)?;
         Ok(screen)
+    }
+
+    /// Writes one render to the host screen; returns its frame number for the ack.
+    fn draw(&mut self, render: &TerminalRender) -> io::Result<u64> {
+        let mut out = std::mem::take(&mut self.scratch);
+        out.clear();
+        let frame = match render {
+            TerminalRender::Snapshot(snapshot) => {
+                self.renderer.apply_snapshot(snapshot, &mut out);
+                snapshot.frame
+            }
+            TerminalRender::Frame(frame) => {
+                self.renderer.apply_frame(frame, &mut out);
+                frame.frame
+            }
+        };
+        let written = self.write(&out);
+        self.scratch = out;
+        written?;
+        Ok(frame)
     }
 
     fn write(&self, bytes: &[u8]) -> io::Result<()> {

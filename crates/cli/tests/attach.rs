@@ -28,6 +28,8 @@ struct Host {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn std::io::Write + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
+    /// Every byte the child wrote, for what the alternate screen no longer shows.
+    raw: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Host {
@@ -53,6 +55,8 @@ impl Host {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0)));
         let mut reader = pty.master.try_clone_reader().unwrap();
         let sink = Arc::clone(&parser);
+        let raw = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&raw);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             // Ends with EIO/EOF once the child closed its side.
@@ -60,6 +64,7 @@ impl Host {
                 if n == 0 {
                     break;
                 }
+                record.lock().extend_from_slice(&buf[..n]);
                 sink.lock().process(&buf[..n]);
             }
         });
@@ -69,6 +74,7 @@ impl Host {
             master: pty.master,
             writer,
             parser,
+            raw,
         }
     }
 
@@ -79,6 +85,12 @@ impl Host {
 
     fn screen(&self) -> String {
         self.parser.lock().screen().contents()
+    }
+
+    /// Whether `text` appeared anywhere in the bytes written so far.
+    fn output_contains(&self, text: &str) -> bool {
+        let raw = self.raw.lock();
+        raw.windows(text.len()).any(|w| w == text.as_bytes())
     }
 
     fn in_alternate_screen(&self) -> bool {
@@ -298,14 +310,24 @@ async fn attach_leaves_when_the_session_is_stopped_from_elsewhere() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn attaching_to_an_ended_session_is_an_error() {
+async fn attaching_to_an_ended_session_shows_the_final_screen() {
     let t = TestDaemon::start().await;
-    let id = t.new_session(&[], &["sh", "-c", "exit 0"]).await;
+    let id = t
+        .new_session(&[], &["sh", "-c", "echo final-output; exit 3"])
+        .await;
     t.wait_state(&id, "exited").await;
     let mut host = Host::spawn(&t.paths.socket, &["attach", &id]);
-    assert_eq!(host.wait_exit().await, 1);
-    host.wait_for_text("heeler restart").await;
+    assert_eq!(host.wait_exit().await, 0);
     assert!(!host.in_alternate_screen());
+    host.wait_for_text("[session exited with code 3]").await;
+    host.wait_for_text("heeler restart").await;
+    host.wait_for_text("heeler history").await;
+    // The alternate screen was entered and left: the final output must have been drawn on it,
+    // so it is in the byte stream even though the main screen no longer shows it.
+    assert!(
+        host.output_contains("final-output"),
+        "final screen never drawn"
+    );
     t.stop().await;
 }
 

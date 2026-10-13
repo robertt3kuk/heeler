@@ -15,6 +15,7 @@ clippy:
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
 test:
+    cargo build --workspace --bins --locked
     cargo nextest run --workspace --locked --no-tests=pass
 
 deny:

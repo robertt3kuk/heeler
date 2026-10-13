@@ -3,91 +3,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Once;
-use std::time::Duration;
 
-use heeler_daemon::{DaemonConfig, Paths, RunningDaemon};
+use common::{HEELER, TestDaemon, WAIT, command, finish, heeler, heelerd_dir};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::time::timeout;
-
-const HEELER: &str = env!("CARGO_BIN_EXE_heeler");
-const WAIT: Duration = Duration::from_secs(20);
-
-#[derive(Debug)]
-struct Out {
-    code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-impl Out {
-    fn json(&self) -> Value {
-        serde_json::from_str(&self.stdout)
-            .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {:?}", self.stdout))
-    }
-}
-
-/// Environment-free invocation: `HEELER_*` from the parent never leak in.
-fn command(binary: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(binary);
-    command
-        .args(args)
-        .env_remove("HEELER_HOME")
-        .env_remove("HEELER_SOCKET")
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    command
-}
-
-async fn finish(mut command: Command) -> Out {
-    let output = timeout(WAIT, command.output()).await.unwrap().unwrap();
-    Out {
-        code: output.status.code().expect("killed by a signal"),
-        stdout: String::from_utf8(output.stdout).unwrap(),
-        stderr: String::from_utf8(output.stderr).unwrap(),
-    }
-}
-
-async fn heeler(socket: &Path, args: &[&str]) -> Out {
-    let mut cmd = command(Path::new(HEELER), args);
-    cmd.arg("--socket").arg(socket);
-    finish(cmd).await
-}
-
-struct TestDaemon {
-    _dir: TempDir,
-    paths: Paths,
-    daemon: RunningDaemon,
-}
-
-impl TestDaemon {
-    async fn start() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::in_home(dir.path());
-        let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
-            .await
-            .unwrap();
-        Self {
-            _dir: dir,
-            paths,
-            daemon,
-        }
-    }
-
-    async fn heeler(&self, args: &[&str]) -> Out {
-        heeler(&self.paths.socket, args).await
-    }
-
-    async fn stop(self) {
-        self.daemon.shutdown();
-        self.daemon.wait().await.unwrap();
-    }
-}
 
 fn missing_socket() -> (TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -129,14 +54,14 @@ async fn daemon_status_human_output() {
 async fn socket_is_found_through_heeler_home_and_heeler_socket() {
     let t = TestDaemon::start().await;
 
-    let mut by_home = command(Path::new(HEELER), &["daemon", "status", "--json"]);
+    let mut by_home = command(Path::new(HEELER), None, &["daemon", "status", "--json"]);
     by_home.env("HEELER_HOME", &t.paths.base);
     let out = finish(by_home).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["pid"], std::process::id());
 
     let (_dir, nowhere) = missing_socket();
-    let mut by_socket = command(Path::new(HEELER), &["daemon", "status", "--json"]);
+    let mut by_socket = command(Path::new(HEELER), None, &["daemon", "status", "--json"]);
     by_socket
         .env("HEELER_HOME", nowhere.parent().unwrap())
         .env("HEELER_SOCKET", &t.paths.socket);
@@ -144,7 +69,7 @@ async fn socket_is_found_through_heeler_home_and_heeler_socket() {
     assert_eq!(out.code, 0, "{out:?}");
 
     // --socket beats the environment.
-    let mut flag = command(Path::new(HEELER), &["daemon", "status"]);
+    let mut flag = command(Path::new(HEELER), None, &["daemon", "status"]);
     flag.env("HEELER_SOCKET", &nowhere)
         .arg("--socket")
         .arg(&t.paths.socket);
@@ -340,7 +265,7 @@ async fn events_follow_streams_new_events_as_json_lines() {
     let t = TestDaemon::start().await;
     t.heeler(&["ws", "new", "before"]).await;
 
-    let mut child = command(Path::new(HEELER), &["events", "--follow"])
+    let mut child = command(Path::new(HEELER), None, &["events", "--follow"])
         .arg("--socket")
         .arg(&t.paths.socket)
         .stdout(Stdio::piped())
@@ -434,29 +359,6 @@ async fn usage_errors_exit_2() {
 
 // daemon start (real heelerd process) -------------------------------------------------------
 
-/// Makes sure `heelerd` sits next to the `heeler` test binary; plain `cargo test` only builds
-/// the binaries of the package under test.
-fn heelerd_dir() -> PathBuf {
-    static BUILD: Once = Once::new();
-    let dir = Path::new(HEELER).parent().unwrap().to_owned();
-    BUILD.call_once(|| {
-        let status = std::process::Command::new(env!("CARGO"))
-            .args([
-                "build",
-                "--locked",
-                "-p",
-                "heeler-daemon",
-                "--bin",
-                "heelerd",
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success(), "building heelerd failed");
-    });
-    assert!(dir.join("heelerd").is_file(), "no heelerd in {dir:?}");
-    dir
-}
-
 /// Stops a spawned daemon even when the test fails.
 struct DaemonGuard {
     home: PathBuf,
@@ -480,7 +382,7 @@ async fn daemon_start_status_stop_with_heelerd_beside_heeler() {
         home: home.path().to_owned(),
     };
     let run = |args: &'static [&'static str]| {
-        let mut cmd = command(Path::new(HEELER), args);
+        let mut cmd = command(Path::new(HEELER), None, args);
         cmd.env("HEELER_HOME", home.path());
         finish(cmd)
     };
@@ -527,7 +429,7 @@ async fn daemon_start_finds_heelerd_on_path() {
     let copy = lonely.path().join("heeler");
     std::fs::copy(HEELER, &copy).unwrap();
 
-    let mut missing = command(&copy, &["daemon", "start"]);
+    let mut missing = command(&copy, None, &["daemon", "start"]);
     missing
         .env("HEELER_HOME", home.path())
         .env("PATH", lonely.path());
@@ -538,7 +440,7 @@ async fn daemon_start_finds_heelerd_on_path() {
         "{out:?}"
     );
 
-    let mut found = command(&copy, &["daemon", "start", "--json"]);
+    let mut found = command(&copy, None, &["daemon", "start", "--json"]);
     found.env("HEELER_HOME", home.path()).env("PATH", &bin_dir);
     let out = finish(found).await;
     assert_eq!(out.code, 0, "{out:?}");

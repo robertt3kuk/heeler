@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Once;
 use std::time::Duration;
 
 use heeler_daemon::{DaemonConfig, Paths, RunningDaemon};
@@ -136,25 +135,13 @@ pub async fn heeler(socket: &Path, args: &[&str]) -> Out {
     finish(command(Path::new(HEELER), Some(socket), args)).await
 }
 
-/// Directory holding `heelerd` next to the `heeler` test binary; plain `cargo test` only builds
-/// the binaries of the package under test.
+/// Directory holding `heelerd`, next to the `heeler` test binary (same profile). Tests never
+/// build it: `just test` builds the workspace binaries first.
 pub fn heelerd_dir() -> PathBuf {
-    static BUILD: Once = Once::new();
     let dir = Path::new(HEELER).parent().unwrap().to_owned();
-    BUILD.call_once(|| {
-        let status = std::process::Command::new(env!("CARGO"))
-            .args([
-                "build",
-                "--locked",
-                "-p",
-                "heeler-daemon",
-                "--bin",
-                "heelerd",
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success(), "building heelerd failed");
-    });
-    assert!(dir.join("heelerd").is_file(), "no heelerd in {dir:?}");
+    assert!(
+        dir.join("heelerd").is_file(),
+        "heelerd not built: run `cargo build -p heeler-daemon --bin heelerd` (or `just test`)"
+    );
     dir
 }
