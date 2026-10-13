@@ -468,10 +468,12 @@ name = "heeler-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures",
  "heeler-client",
  "heeler-core",
  "heeler-protocol",
+ "heeler-terminal",
  "serde",
  "serde_json",
  "tempfile",

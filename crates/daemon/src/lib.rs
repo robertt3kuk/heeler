@@ -5,7 +5,8 @@
 //! - [`conn`]: per-client handshake, request loop, bounded outbound queue.
 //! - [`bus`]: epoch + seq event ring and fan-out.
 //! - [`router`]: typed request dispatch.
-//! - [`registry`]: the `SessionRegistry` actor (workspaces now, sessions from M1.5).
+//! - [`registry`]: the `SessionRegistry` actor (workspaces and terminal sessions).
+//! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 
 pub mod bus;
 pub mod conn;
@@ -14,6 +15,7 @@ pub mod error;
 pub mod paths;
 pub mod registry;
 pub mod router;
+pub mod terminals;
 
 pub use bus::RingLimits;
 pub use daemon::{DaemonConfig, RunningDaemon, start};

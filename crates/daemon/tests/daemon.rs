@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use heeler_client::{Client, ClientError, ConnectOptions};
-use heeler_core::{Epoch, Seq, WorkspaceId};
+use heeler_core::{Epoch, Seq, SessionId, WorkspaceId};
 use heeler_daemon::{DaemonConfig, DaemonError, Paths, RunningDaemon};
 use heeler_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Hello, Request,
-    ResumeOutcome, ResumePoint, SessionListFilter, SessionSnapshot, Subscribed, WorkspaceCreate,
+    ResumeOutcome, ResumePoint, SessionRef, SessionSnapshot, Subscribed, WorkspaceCreate,
     WorkspaceInfo, WorkspaceList, WorkspaceRef, WorkspaceRename,
 };
 use heeler_protocol::{
@@ -222,7 +222,7 @@ async fn first_frame_must_be_hello() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn unknown_and_unimplemented_methods_are_rejected_without_closing() {
+async fn unknown_methods_and_failed_requests_do_not_close_the_connection() {
     let t = TestDaemon::start().await;
     let mut raw = Raw::connect(&t).await;
     raw.handshake().await;
@@ -235,11 +235,15 @@ async fn unknown_and_unimplemented_methods_are_rejected_without_closing() {
     .await;
     assert_eq!(raw.recv_error().await.code, ErrorCode::BadRequest);
 
-    raw.send_request(2, &Request::SessionList(SessionListFilter::default()))
-        .await;
-    let error = raw.recv_error().await;
-    assert_eq!(error.code, ErrorCode::InvalidState);
-    assert_eq!(error.message, "not available in this build");
+    // Methods fail with their own error, not with a closed connection.
+    raw.send_request(
+        2,
+        &Request::SessionStop(SessionRef {
+            session_id: SessionId::new(),
+        }),
+    )
+    .await;
+    assert_eq!(raw.recv_error().await.code, ErrorCode::NotFound);
 
     raw.send_request(3, &Raw::hello(PROTOCOL_VERSION.major))
         .await;

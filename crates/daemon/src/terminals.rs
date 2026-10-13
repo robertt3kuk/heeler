@@ -1,0 +1,421 @@
+//! Terminal hub: the daemon's table of live [`Terminal`]s and everything clients do to them
+//! outside the session lifecycle — attach/detach with ack-paced rendering (ADR 0004), resize,
+//! history, and the bounded input path.
+//!
+//! The registry actor owns session state and registers/removes terminals here. Request handlers
+//! reach terminals directly (a `Terminal` is a cheap, thread-safe handle), so keystrokes and
+//! acks never queue behind session commands in the registry mailbox.
+//!
+//! Memory bounds: an attachment holds one [`RenderTracker`] (O(screen)) and renders only while
+//! it has credit, so a client that never acks costs one screen and never fills its outbound
+//! queue; the input queue holds at most [`INPUT_QUEUE`] slices of [`INPUT_SLICE`] bytes.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use bytes::Bytes;
+use heeler_core::TerminalId;
+use heeler_protocol::control::{ErrorBody, ErrorCode};
+use heeler_protocol::messages::{
+    TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize,
+};
+use heeler_protocol::render::TerminalRender;
+use heeler_protocol::{Frame, MAX_PAYLOAD};
+use heeler_terminal::{RenderTracker, Terminal, TerminalError};
+use tokio::sync::{mpsc, watch};
+use tokio::time::{Instant, sleep_until};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
+
+use crate::conn::{ConnHandle, ConnId, Outbound};
+
+/// An attachment renders at most once per this interval (ADR 0004).
+const COALESCE: Duration = Duration::from_millis(8);
+/// Input slices waiting per terminal before the sending connection's reader waits.
+const INPUT_QUEUE: usize = 32;
+/// Input frames are split to this size when queued, bounding the queue to
+/// `INPUT_QUEUE * INPUT_SLICE` bytes per terminal.
+const INPUT_SLICE: usize = 64 * 1024;
+
+/// A registered terminal. Obtained from [`TerminalHub::register`].
+#[derive(Debug)]
+pub struct TerminalEntry {
+    id: TerminalId,
+    terminal: Terminal,
+    input: mpsc::Sender<Bytes>,
+    ended: Arc<AtomicBool>,
+}
+
+impl TerminalEntry {
+    pub fn id(&self) -> TerminalId {
+        self.id
+    }
+
+    pub fn terminal(&self) -> &Terminal {
+        &self.terminal
+    }
+}
+
+/// Credit/ack state shared between the request handlers and one attachment's render task.
+#[derive(Debug)]
+struct Attachment {
+    /// Latest frame number the client acked; the render task needs it to equal the last frame
+    /// it sent before it renders again.
+    acks: watch::Sender<u64>,
+    /// Closed under the lock before a replacement snapshot is queued, so a stale task can never
+    /// enqueue behind it.
+    gate: Arc<Mutex<bool>>,
+    cancel: CancellationToken,
+}
+
+impl Attachment {
+    fn stop(&self) {
+        *lock(&self.gate) = false;
+        self.cancel.cancel();
+    }
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    terminals: HashMap<TerminalId, Arc<TerminalEntry>>,
+    attachments: HashMap<(ConnId, TerminalId), Attachment>,
+}
+
+#[derive(Debug)]
+pub struct TerminalHub {
+    next_id: AtomicU64,
+    inner: Mutex<Inner>,
+}
+
+impl Default for TerminalHub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // No critical section leaves its data half-updated across a panic point.
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn not_found(id: TerminalId) -> ErrorBody {
+    ErrorBody::new(ErrorCode::NotFound, format!("terminal {id} not found"))
+}
+
+fn terminal_error(error: &TerminalError) -> ErrorBody {
+    let code = match error {
+        TerminalError::InvalidSize { .. } => ErrorCode::BadRequest,
+        TerminalError::Closed => ErrorCode::InvalidState,
+        _ => ErrorCode::Internal,
+    };
+    ErrorBody::new(code, error.to_string())
+}
+
+impl TerminalHub {
+    pub fn new() -> Self {
+        Self {
+            // Ids start at 1 and only grow within one daemon epoch.
+            next_id: AtomicU64::new(1),
+            inner: Mutex::new(Inner::default()),
+        }
+    }
+
+    /// Adds `terminal` under a fresh id and starts its input drain. Needs a Tokio runtime.
+    pub fn register(&self, terminal: Terminal) -> Arc<TerminalEntry> {
+        let id = TerminalId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let (input, input_rx) = mpsc::channel(INPUT_QUEUE);
+        let ended = Arc::new(AtomicBool::new(false));
+        tokio::spawn(drain_input(
+            id,
+            terminal.clone(),
+            input_rx,
+            Arc::clone(&ended),
+        ));
+        let entry = Arc::new(TerminalEntry {
+            id,
+            terminal,
+            input,
+            ended,
+        });
+        lock(&self.inner).terminals.insert(id, Arc::clone(&entry));
+        entry
+    }
+
+    /// Forgets a terminal: its attachments stop and later requests for it get `not_found`.
+    pub fn remove(&self, id: TerminalId) {
+        let mut inner = lock(&self.inner);
+        inner.terminals.remove(&id);
+        inner.attachments.retain(|(_, terminal), attachment| {
+            let keep = *terminal != id;
+            if !keep {
+                attachment.stop();
+            }
+            keep
+        });
+    }
+
+    /// The child exited: later input is dropped instead of queued.
+    pub fn mark_ended(&self, id: TerminalId) {
+        if let Some(entry) = lock(&self.inner).terminals.get(&id) {
+            entry.ended.store(true, Ordering::Release);
+        }
+    }
+
+    fn get(&self, id: TerminalId) -> Result<Arc<TerminalEntry>, ErrorBody> {
+        lock(&self.inner)
+            .terminals
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| not_found(id))
+    }
+
+    /// Stops every attachment of a closed connection.
+    pub fn connection_closed(&self, conn: ConnId) {
+        lock(&self.inner).attachments.retain(|(c, _), attachment| {
+            let keep = *c != conn;
+            if !keep {
+                attachment.stop();
+            }
+            keep
+        });
+    }
+
+    /// Queues the snapshot frame on `conn` (the caller queues the response after it), then
+    /// keeps the client current by rendering whenever it has acked the previous frame.
+    pub fn attach(
+        &self,
+        conn: &ConnHandle,
+        req: TerminalAttach,
+    ) -> Result<TerminalAttached, ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        let id = entry.id;
+        if let Some(size) = req.size {
+            match entry.terminal.resize(size) {
+                Ok(()) => {}
+                // An ended terminal keeps its final screen; its size can no longer change.
+                Err(TerminalError::Closed) => {
+                    debug!(terminal = %id, "resize on attach ignored: terminal ended")
+                }
+                Err(error) => return Err(terminal_error(&error)),
+            }
+        }
+
+        // Subscribe before the snapshot so damage racing with it is not lost.
+        let damage = entry.terminal.damage();
+        let mut tracker = RenderTracker::new();
+        let render = TerminalRender::Snapshot(entry.terminal.snapshot(&mut tracker));
+        let frame = encode_render(id, &render).ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Internal,
+                "terminal snapshot exceeds the frame limit",
+            )
+        })?;
+        let first = tracker.frame_number();
+
+        let (acks, ack_rx) = watch::channel(0u64);
+        let attachment = Attachment {
+            acks,
+            gate: Arc::new(Mutex::new(true)),
+            cancel: CancellationToken::new(),
+        };
+        let gate = Arc::clone(&attachment.gate);
+        let cancel = attachment.cancel.clone();
+        {
+            let mut inner = lock(&self.inner);
+            // The session may have been restarted between `get` and here.
+            if !inner.terminals.contains_key(&id) {
+                return Err(not_found(id));
+            }
+            if let Some(previous) = inner.attachments.insert((conn.id(), id), attachment) {
+                previous.stop();
+            }
+            if !conn.enqueue(Outbound::Frame(frame)) {
+                if let Some(failed) = inner.attachments.remove(&(conn.id(), id)) {
+                    failed.stop();
+                }
+                return Err(ErrorBody::new(ErrorCode::Internal, "connection is closing"));
+            }
+        }
+        tokio::spawn(render_loop(RenderTask {
+            id,
+            terminal: entry.terminal.clone(),
+            conn: conn.clone(),
+            tracker,
+            damage,
+            acks: ack_rx,
+            gate,
+            cancel,
+        }));
+        Ok(TerminalAttached { frame: first })
+    }
+
+    pub fn detach(&self, conn: ConnId, id: TerminalId) -> Result<(), ErrorBody> {
+        self.get(id)?;
+        if let Some(attachment) = lock(&self.inner).attachments.remove(&(conn, id)) {
+            attachment.stop();
+        }
+        Ok(())
+    }
+
+    /// Records the client's ack. Acks for frames of an attachment that no longer exists (after
+    /// detach, restart, replacement) are normal races and ignored.
+    pub fn ack(&self, conn: ConnId, id: TerminalId, frame: u64) -> Result<(), ErrorBody> {
+        self.get(id)?;
+        match lock(&self.inner).attachments.get(&(conn, id)) {
+            Some(attachment) => {
+                attachment.acks.send_replace(frame);
+            }
+            None => debug!(%conn, terminal = %id, frame, "ack without attachment ignored"),
+        }
+        Ok(())
+    }
+
+    /// One PTY size for everyone: the last writer wins. Attachments get a snapshot through
+    /// the terminal's damage notification.
+    pub fn resize(&self, req: TerminalResize) -> Result<(), ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        entry
+            .terminal
+            .resize(req.size)
+            .map_err(|e| terminal_error(&e))
+    }
+
+    pub fn history(&self, req: TerminalHistory) -> Result<TerminalHistoryRows, ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        Ok(TerminalHistoryRows {
+            from_line: req.from_line,
+            rows: entry.terminal.history(req.from_line, req.count),
+        })
+    }
+
+    /// Queues a kind=2 frame body for the terminal. Waits while the terminal's input queue is
+    /// full (the child is not reading): that stalls the sending connection's reader only.
+    /// Input for unknown or ended terminals is dropped.
+    pub async fn input(&self, id: TerminalId, bytes: Bytes) {
+        let entry = match self.get(id) {
+            Ok(entry) => entry,
+            Err(_) => {
+                debug!(terminal = %id, len = bytes.len(), "input for an unknown terminal dropped");
+                return;
+            }
+        };
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            if entry.ended.load(Ordering::Acquire) {
+                debug!(terminal = %id, len = rest.len(), "input for an ended terminal dropped");
+                return;
+            }
+            let slice = rest.split_to(rest.len().min(INPUT_SLICE));
+            if entry.input.send(slice).await.is_err() {
+                debug!(terminal = %id, "input drain gone; input dropped");
+                return;
+            }
+        }
+    }
+}
+
+/// Feeds queued input to the PTY. `write_input` blocks while the child is not reading, so it
+/// runs on the blocking pool; one chunk at a time keeps the bytes in order.
+async fn drain_input(
+    id: TerminalId,
+    terminal: Terminal,
+    mut rx: mpsc::Receiver<Bytes>,
+    ended: Arc<AtomicBool>,
+) {
+    while let Some(chunk) = rx.recv().await {
+        let target = terminal.clone();
+        match tokio::task::spawn_blocking(move || target.write_input(&chunk)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                debug!(terminal = %id, %error, "PTY input closed");
+                break;
+            }
+            Err(error) => {
+                warn!(terminal = %id, %error, "input write task failed");
+                break;
+            }
+        }
+    }
+    ended.store(true, Ordering::Release);
+}
+
+fn encode_render(id: TerminalId, render: &TerminalRender) -> Option<Frame> {
+    match Frame::terminal_render(id, render) {
+        Ok(frame) if frame.payload.len() <= MAX_PAYLOAD => Some(frame),
+        Ok(frame) => {
+            warn!(terminal = %id, len = frame.payload.len(), "render exceeds the frame limit");
+            None
+        }
+        Err(error) => {
+            warn!(terminal = %id, %error, "failed to encode a render");
+            None
+        }
+    }
+}
+
+struct RenderTask {
+    id: TerminalId,
+    terminal: Terminal,
+    conn: ConnHandle,
+    tracker: RenderTracker,
+    damage: watch::Receiver<u64>,
+    acks: watch::Receiver<u64>,
+    gate: Arc<Mutex<bool>>,
+    cancel: CancellationToken,
+}
+
+/// One attachment: credit 1. After a render is sent the loop waits for its ack, then for
+/// damage (immediately if some happened meanwhile), then for the coalescing interval, and
+/// renders the latest state. No render is produced while credit is 0.
+async fn render_loop(task: RenderTask) {
+    let RenderTask {
+        id,
+        terminal,
+        conn,
+        mut tracker,
+        mut damage,
+        mut acks,
+        gate,
+        cancel,
+    } = task;
+    let mut last_sent = tracker.frame_number();
+    let mut last_sent_at = Instant::now();
+    loop {
+        let acked = async { acks.wait_for(|ack| *ack == last_sent).await.is_ok() };
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            acked = acked => if !acked { return },
+        }
+
+        let damaged = async { damage.changed().await.is_ok() };
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            damaged = damaged => if !damaged { return },
+        }
+
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            () = sleep_until(last_sent_at + COALESCE) => {}
+        }
+
+        // Everything up to here is covered by the render below; later damage wakes the loop.
+        damage.borrow_and_update();
+        let Some(render) = terminal.render(&mut tracker) else {
+            continue;
+        };
+        let Some(frame) = encode_render(id, &render) else {
+            return;
+        };
+        let queued = {
+            let live = lock(&gate);
+            *live && conn.enqueue(Outbound::Frame(frame))
+        };
+        if !queued {
+            return;
+        }
+        last_sent = tracker.frame_number();
+        last_sent_at = Instant::now();
+    }
+}

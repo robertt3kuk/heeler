@@ -22,11 +22,16 @@ use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::paths::Paths;
 use crate::registry;
 use crate::router::Router;
+use crate::terminals::TerminalHub;
 
 pub const DEFAULT_OUTBOUND_QUEUE: usize = 1024;
 
 /// How long shutdown waits for connections to flush before abandoning them.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// How long shutdown waits for session processes to end: the SIGHUP grace plus margin for the
+/// SIGKILL and reaping that follow it.
+const SESSION_STOP_WAIT: Duration = registry::STOP_GRACE.saturating_add(Duration::from_secs(5));
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -117,8 +122,15 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     let shutdown = CancellationToken::new();
     let clients = Arc::new(AtomicU32::new(0));
     let bus = Arc::new(EventBus::new(epoch, config.ring));
-    let registry = registry::spawn(bus.clone());
-    let router = Router::new(registry, bus.clone(), shutdown.clone(), clients.clone());
+    let hub = Arc::new(TerminalHub::new());
+    let registry = registry::spawn(bus.clone(), hub.clone(), paths.socket.clone());
+    let router = Router::new(
+        registry,
+        hub,
+        bus.clone(),
+        shutdown.clone(),
+        clients.clone(),
+    );
     let ctx = Arc::new(ConnContext::new(
         router,
         bus,
@@ -197,20 +209,31 @@ async fn accept_loop(
     info!("shutting down");
     drop(listener);
 
-    // Connections watch the same token and flush their queues before closing.
-    let drained = timeout(SHUTDOWN_GRACE, async {
-        while let Some(finished) = conns.join_next().await {
-            log_connection_exit(finished);
+    // Session processes die with the daemon (ADR 0009): hang them up and reap them while the
+    // connections (which watch the same token) flush their queues and close.
+    let stop_sessions = async {
+        match timeout(SESSION_STOP_WAIT, ctx.router.stop_sessions()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => error!(message = %error.message, "stopping sessions failed"),
+            Err(_) => warn!("sessions did not end in time; leaving them to the kernel"),
         }
-    })
-    .await;
-    if drained.is_err() {
-        warn!(
-            remaining = conns.len(),
-            "connections did not close in time; abandoning them"
-        );
-        conns.abort_all();
-    }
+    };
+    let drain_connections = async {
+        let drained = timeout(SHUTDOWN_GRACE, async {
+            while let Some(finished) = conns.join_next().await {
+                log_connection_exit(finished);
+            }
+        })
+        .await;
+        if drained.is_err() {
+            warn!(
+                remaining = conns.len(),
+                "connections did not close in time; abandoning them"
+            );
+            conns.abort_all();
+        }
+    };
+    tokio::join!(stop_sessions, drain_connections);
     drop(held);
     info!("heelerd stopped");
 }

@@ -1,6 +1,6 @@
 [package]
 name = "heeler-daemon"
-description = "heelerd: Heeler daemon lifecycle, connection layer, event bus, and request router"
+description = "heelerd: Heeler daemon lifecycle, connection layer, event bus, request router, and terminal sessions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,9 +15,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+bytes.workspace = true
 futures.workspace = true
 heeler-core.workspace = true
 heeler-protocol.workspace = true
+heeler-terminal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

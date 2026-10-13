@@ -5,21 +5,25 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-use heeler_protocol::PROTOCOL_VERSION;
+use bytes::Bytes;
+use heeler_core::TerminalId;
 use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, Subscribed};
+use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionCreated, Subscribed};
+use heeler_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::bus::EventBus;
-use crate::conn::ConnHandle;
+use crate::conn::{ConnHandle, ConnId};
 use crate::registry::RegistryHandle;
+use crate::terminals::TerminalHub;
 
 #[derive(Debug)]
 pub struct Router {
     registry: RegistryHandle,
+    hub: Arc<TerminalHub>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -29,12 +33,14 @@ pub struct Router {
 impl Router {
     pub fn new(
         registry: RegistryHandle,
+        hub: Arc<TerminalHub>,
         bus: Arc<EventBus>,
         shutdown: CancellationToken,
         clients: Arc<AtomicU32>,
     ) -> Self {
         Self {
             registry,
+            hub,
             bus,
             started: Instant::now(),
             shutdown,
@@ -90,20 +96,55 @@ impl Router {
                 ok(&Empty {})
             }
             Request::SessionSnapshot(_) => ok(&self.registry.snapshot().await?),
-            Request::SessionCreate(_)
-            | Request::SessionList(_)
-            | Request::SessionStop(_)
-            | Request::SessionRestart(_)
-            | Request::SessionRename(_)
-            | Request::TerminalAttach(_)
-            | Request::TerminalDetach(_)
-            | Request::TerminalResize(_)
-            | Request::TerminalAck(_)
-            | Request::TerminalHistory(_) => Err(ErrorBody::new(
-                ErrorCode::InvalidState,
-                "not available in this build",
-            )),
+            Request::SessionCreate(req) => ok(&SessionCreated {
+                session: self.registry.create_session(req).await?,
+            }),
+            Request::SessionList(filter) => ok(&self.registry.list_sessions(filter).await?),
+            // Stop, restart and rename answer with the session as it is afterwards.
+            Request::SessionStop(req) => ok(&SessionCreated {
+                session: self.registry.stop_session(req.session_id).await?,
+            }),
+            Request::SessionRestart(req) => ok(&SessionCreated {
+                session: self.registry.restart_session(req.session_id).await?,
+            }),
+            Request::SessionRename(req) => ok(&SessionCreated {
+                session: self.registry.rename_session(req).await?,
+            }),
+            Request::TerminalAttach(req) => ok(&self.hub.attach(conn, req)?),
+            Request::TerminalDetach(req) => {
+                self.hub.detach(conn.id(), req.terminal_id)?;
+                ok(&Empty {})
+            }
+            Request::TerminalResize(req) => {
+                self.hub.resize(req)?;
+                ok(&Empty {})
+            }
+            Request::TerminalAck(req) => {
+                self.hub.ack(conn.id(), req.terminal_id, req.frame)?;
+                ok(&Empty {})
+            }
+            Request::TerminalHistory(req) => ok(&self.hub.history(req)?),
         }
+    }
+
+    /// Routes a kind=2 frame to its terminal. Only a malformed frame is an error (the caller
+    /// closes the connection); unknown or ended terminals just drop the bytes. Waits while the
+    /// terminal's input queue is full.
+    pub async fn input(&self, frame: &Frame) -> Result<(), ProtocolError> {
+        let (terminal, bytes): (TerminalId, Bytes) = frame.split_terminal()?;
+        self.hub.input(terminal, bytes).await;
+        Ok(())
+    }
+
+    /// Drops everything the closed connection had attached.
+    pub fn connection_closed(&self, conn: ConnId) {
+        self.hub.connection_closed(conn);
+    }
+
+    /// Terminates every live session (SIGHUP, then SIGKILL after the grace) and waits for
+    /// their processes to be gone.
+    pub async fn stop_sessions(&self) -> Result<(), ErrorBody> {
+        self.registry.stop_all().await
     }
 }
 

@@ -13,7 +13,7 @@ use futures::{SinkExt, StreamExt};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{ClientInfo, Hello, Request, Welcome};
 use heeler_protocol::{
-    ControlMessage, Frame, FrameCodec, FrameKind, PROTOCOL_VERSION, ProtocolError,
+    ControlMessage, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION, ProtocolError,
 };
 use tokio::io::AsyncRead;
 use tokio::net::UnixStream;
@@ -95,6 +95,27 @@ impl ConnHandle {
 
     fn reply_error(&self, id: u64, error: ErrorBody) {
         self.send_control(&ControlMessage::err(id, error));
+    }
+
+    /// Queues a response; one that cannot fit in a frame becomes an `internal` error instead of
+    /// a write failure that would take the connection down.
+    fn send_response(&self, id: u64, outcome: Result<serde_json::Value, ErrorBody>) {
+        let frame = ControlMessage::Response { id, outcome }
+            .to_frame()
+            .ok()
+            .filter(|frame| frame.payload.len() <= MAX_PAYLOAD);
+        match frame {
+            Some(frame) => {
+                self.enqueue(Outbound::Frame(frame));
+            }
+            None => self.reply_error(
+                id,
+                ErrorBody::new(
+                    ErrorCode::Internal,
+                    "response does not fit in a protocol frame; ask for less data",
+                ),
+            ),
+        }
     }
 }
 
@@ -184,6 +205,8 @@ pub async fn serve(stream: UnixStream, ctx: Arc<ConnContext>) {
     run(&mut reader, &handle, &ctx).await;
 
     ctx.bus.unsubscribe(id);
+    // Render tasks hold connection handles; the writer below can only finish once they end.
+    ctx.router.connection_closed(id);
     // Dropping the last sender lets the writer flush what is queued and finish.
     drop(handle);
     if timeout(DRAIN_TIMEOUT, &mut writer).await.is_err() {
@@ -265,14 +288,13 @@ async fn run(reader: &mut Reader, handle: &ConnHandle, ctx: &ConnContext) {
 
 /// Returns `false` if the connection must be closed.
 async fn handle_frame(frame: Frame, handle: &ConnHandle, ctx: &ConnContext) -> bool {
-    if frame.kind != FrameKind::Control {
-        debug!(
-            conn = %handle.id,
-            kind = ?frame.kind,
-            len = frame.payload.len(),
-            "binary frame ignored in this build"
-        );
-        return true;
+    match frame.kind {
+        FrameKind::Control => {}
+        FrameKind::TerminalInput => return handle_input(&frame, handle, ctx).await,
+        FrameKind::TerminalRender => {
+            debug!(conn = %handle.id, "terminal render frame from a client ignored");
+            return true;
+        }
     }
     let msg = match ControlMessage::from_frame(&frame) {
         Ok(msg) => msg,
@@ -287,13 +309,31 @@ async fn handle_frame(frame: Frame, handle: &ConnHandle, ctx: &ConnContext) -> b
                 Ok(request) => ctx.router.dispatch(handle, request).await,
                 Err(error) => Err(error),
             };
-            handle.send_control(&ControlMessage::Response { id, outcome });
+            handle.send_response(id, outcome);
         }
         ControlMessage::Response { .. } | ControlMessage::Event { .. } => {
             debug!(conn = %handle.id, "client sent a response/event envelope; ignored");
         }
     }
     true
+}
+
+/// Passes terminal input on. The reader waits here while the terminal's input queue is full,
+/// which stalls only this connection; shutdown and a dying connection still interrupt it.
+async fn handle_input(frame: &Frame, handle: &ConnHandle, ctx: &ConnContext) -> bool {
+    let routed = tokio::select! {
+        biased;
+        _ = handle.cancel.cancelled() => return false,
+        _ = ctx.shutdown.cancelled() => return false,
+        routed = ctx.router.input(frame) => routed,
+    };
+    match routed {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(conn = %handle.id, error = %e, "malformed terminal input frame, closing connection");
+            false
+        }
+    }
 }
 
 /// First frame must be `hello`. On success the welcome (and any replay) is queued and the

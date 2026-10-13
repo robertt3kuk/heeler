@@ -97,6 +97,13 @@ Semantics produced by the `terminal` crate (what clients can rely on):
 - Frames carry neither dimensions nor palette. After a resize or a palette change (OSC 4/10/11/12) the daemon sends a fresh `TerminalSnapshot` instead of a frame (`Terminal::render`).
 - `terminal.history`: `from_line` 0 is the line directly above the viewport, rows are newest first; the alternate screen has no history (`history_len` = 0 while it is active).
 
+Semantics implemented by the daemon (M1-D1; `crates/daemon/src/{registry,terminals}.rs`):
+- `session.create` answers `{session}` (`SessionCreated`) even when the spawn failed (`state: failed`, reason inside); `session.stop`, `.restart` and `.rename` answer `{session}` too. `stop` answers once the session is `stopped` (SIGHUP, SIGKILL after 3 s); `restart` is only valid from `exited`/`failed`/`stopped` and yields a new `terminal_id`. Process exit publishes `session.updated` and then `session.exited`.
+- `terminal.attach` queues the snapshot frame before its response. Credit is one frame: after any render (the snapshot included) the daemon renders again only after `terminal.ack { frame }` for exactly that frame, at most once per ~8 ms, and never queues a render while credit is 0. Attaching twice from one connection replaces the first attachment; `terminal.detach`, closing the connection, and `session.restart` drop attachments.
+- Terminals of ended sessions stay attachable (final screen) until restart or workspace close. Unknown `terminal_id` → `not_found` (acks for a missing attachment are ignored). Input (kind=2) for unknown or ended terminals is dropped; a full per-terminal input queue stalls only the sending connection's reader.
+- A response that would not fit in one frame (e.g. a very large `terminal.history`) becomes an `internal` error instead of closing the connection.
+- `workspace.close`: `default` and workspaces with live sessions → `invalid_state`; ended sessions leave with their workspace. `daemon.shutdown { stop_sessions: false }` with live sessions → `invalid_state`; every shutdown (request, SIGTERM, SIGINT) hangs up all sessions concurrently and reaps them before the socket is removed.
+
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.
 
