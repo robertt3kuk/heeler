@@ -4,8 +4,8 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M1 — Daemon + CLI terminals (M0 done except M0.4, which ships with M1-B)
-- **Active slice**: M1-A (`../heeler-wt/M1-A`) and M1-B (`../heeler-wt/M1-B`) running on the `implementer` agent (Claude Sonnet 5.5).
-- **Next action**: review M1-A and M1-B reports against their briefs, run `just check` + acceptance steps in each worktree, merge into `master`; then launch M1-C and start M1-D integration.
+- **Active slice**: M1-B (`../heeler-wt/M1-B`, terminal) and M1-C (`../heeler-wt/M1-C`, CLI) running on the `implementer` agent. M1-A merged (`4addc5d`).
+- **Next action**: review/merge M1-B and M1-C per `process.md`; then M1-D integration (orchestrator): session registry with terminals, attach/frames/ack, CLI `new/ls/attach/send`, bench, demo. Decision for M1-D: the `default` workspace cannot be closed, and closing a workspace with live sessions returns `invalid_state`.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
@@ -22,6 +22,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-13 — M1-A merged
+- `heeler-daemon` (`heelerd` + lib: paths, flock single instance, stale-socket cleanup, peer-UID check via tokio `peer_cred`, event bus ring 10k events / 8 MiB with atomic handshake+replay, bounded per-connection queues closing slow consumers, in-memory workspace registry actor, router) and `heeler-client` (`connect`, `connect_resuming`, `call`, `events`, `terminal_frames`, `send_input`, autostart).
+- Verified by orchestrator: `just check` 48 tests green after rebase; reviewed bus/conn backpressure and replay atomicity. Implementer ran the manual `heelerd` start / second-instance exit 2 / SIGTERM socket cleanup.
+- No `unsafe`/`libc`: lock via `File::try_lock`, UID via `peer_cred`.
 
 ### 2026-10-13 — M0 contracts, implementer workflow
 - M0.1: workspace, toolchain pin, `just check` (fmt, clippy `-D warnings`, nextest, cargo-deny with `[licenses.private] ignore` until a license is chosen). Crates are created when their milestone starts.

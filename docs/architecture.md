@@ -29,7 +29,7 @@ flowchart LR
 
 ## Crates
 
-Crates are created when their first milestone starts (no empty placeholders); package names are `heeler-<dir>`. Present now: `core`, `protocol`.
+Crates are created when their first milestone starts (no empty placeholders); package names are `heeler-<dir>`. Present now: `core`, `protocol`, `daemon` (`heelerd` + lib), `client`.
 
 ```text
 crates/

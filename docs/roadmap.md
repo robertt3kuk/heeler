@@ -30,8 +30,8 @@ Exit demo: `heeler new -- omp` in one terminal, `heeler attach <id>` from anothe
 
 Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A** (M1.1 + M1.2, `daemon` + `client`) and **M1-B** (M1.3 + M0.4, `terminal`) run in parallel; **M1-C** (M1.6 part 1, `cli` + host renderer) starts after M1-A merges; **M1-D** integration by the orchestrator: M1.4 attach, M1.5 registry, CLI `new/ls/attach/send`, M1.7 bench, demo.
 
-- [ ] M1.1 `heelerd` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Heeler/`
-- [ ] M1.2 Connection layer: framing codec, handshake, per-client bounded queues, event ring with epoch/seq, replay
+- [x] M1.1 `heelerd` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Heeler/`
+- [x] M1.2 Connection layer: framing codec, handshake, per-client bounded queues, event ring with epoch/seq, replay
 - [ ] M1.3 `terminal`: PTY spawn (env injection `HEELER_SOCKET`, `HEELER_SESSION_ID`), reader task → engine, resize, input, exit/reap
 - [ ] M1.4 Terminal attach: render snapshot + ack-paced `TerminalFrame`s + `terminal.history` (ADR 0004); DEC 2026 sync timeout serviced; OSC sniffer (133/7/0/2/9/777)
 - [ ] M1.5 Session registry in memory: create/list/stop/rename; `session.updated` events
