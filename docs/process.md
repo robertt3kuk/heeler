@@ -76,25 +76,18 @@ Rules: additive changes bump the minor protocol version and are capability-gated
 - One integration owner merges, resolves conflicts, runs the full gate.
 - Implementers get self-contained briefs (`docs/briefs/<slice>.md`): slice ID, files/crates in scope, contract, acceptance checks. They must not edit `protocol` unless they own the contract change.
 
-## Implementer agents (Antigravity)
+## Implementer agents
 
-Roles: the **orchestrator** (main session) owns contracts (`core`, `protocol`), writes briefs, reviews, integrates, and updates `status.md`/`roadmap.md`. **Antigravity CLI (`agy`)** implements slices headlessly. `agy` loads `AGENTS.md` automatically as workspace rules.
-
-Model by complexity:
-
-| Work | Model |
-|---|---|
-| Daemon, terminal/PTY, protocol-adjacent async code, agent adapters | `claude-opus-4-6-thinking` |
-| CLI, UI glue, tests, mechanical refactors, docs-from-code | `gemini-3.8-flash-high` |
+Roles: the **orchestrator** (main omp session) owns contracts (`core`, `protocol`), writes briefs, reviews, integrates, and updates `status.md`/`roadmap.md`. **Implementers** are omp subagents of the project agent `implementer` (`.omp/agents/implementer.md`, model `anthropic/claude-sonnet-5-5:high`), one per slice, each confined to its worktree.
 
 Loop per slice:
 1. Commit the brief (`docs/briefs/<slice>.md`, template in `docs/briefs/README.md`) on `master`.
-2. `just agy <slice> <model>` — creates the worktree and runs `agy -p` with the brief; result JSON (incl. `conversation_id`) in `../heeler-wt/<slice>.agy.json`. Follow-ups: `cd ../heeler-wt/<slice> && agy --conversation <id> -p "<follow-up>"`.
+2. `git worktree add ../heeler-wt/<slice> -b slice/<slice>`; dispatch a `task` with `agent: "implementer"` naming the worktree path and brief. Independent slices go in one batch so they run concurrently.
 3. Review the diff against the brief's contract and `AGENTS.md` invariants; run `just check` in the worktree; exercise acceptance steps yourself.
-4. Send fixes back to the same conversation or fix directly; then rebase onto `master`, merge fast-forward, `git worktree remove`.
+4. Send fixes to the same agent (`write agent://<id>`) or fix directly; then rebase onto `master`, merge fast-forward, `git worktree remove`, delete the branch.
 5. Record the slice in `status.md` (what landed, verification run, deviations).
 
-Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract change comes back as a report item, not an edit. Run independent slices concurrently, dependent ones after their dependency merges.
+Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract change comes back as a report item, not an edit. Dependent slices start after their dependency merges. Changing the implementer model = edit `.omp/agents/implementer.md` (one place).
 
 ## Branching and commits
 

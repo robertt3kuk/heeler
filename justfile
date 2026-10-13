@@ -23,9 +23,3 @@ deny:
 # Rewrite protocol golden fixtures after an intentional wire change (bump protocol version first).
 update-golden:
     UPDATE_GOLDEN=1 cargo nextest run -p heeler-protocol --locked
-
-# Launch Antigravity on a committed slice brief in its own worktree (process.md § Implementer agents).
-# Output (JSON result with conversation_id) goes to ../heeler-wt/<slice>.agy.json.
-agy slice model mode="accept-edits":
-    git worktree add ../heeler-wt/{{slice}} -b slice/{{slice}}
-    cd ../heeler-wt/{{slice}} && agy --model {{model}} --mode {{mode}} --output-format json --print-timeout 0s -p "$(cat docs/briefs/{{slice}}.md)" > ../{{slice}}.agy.json

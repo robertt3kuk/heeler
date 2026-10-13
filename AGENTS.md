@@ -35,6 +35,6 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - Real model/API calls never run in the default gate; use recorded fixtures.
 
 ## Parallel work
-Split by crate; one worktree per slice (`../heeler-wt/<slice>` on `slice/<slice>`, via `just agy <slice> <model>` for Antigravity implementers); one integration owner merges into `master`; only the contract owner edits `core`/`protocol`.
+Split by crate; one worktree per slice (`../heeler-wt/<slice>` on `slice/<slice>`), implemented by the omp `implementer` agent (`.omp/agents/implementer.md`, Claude Sonnet 5.5); one integration owner merges into `master`; only the contract owner edits `core`/`protocol`.
 
 If you are an implementer working from a brief (`docs/briefs/<slice>.md`): stay inside the brief's scope, do not edit `docs/status.md` or `docs/roadmap.md`, report contract problems instead of changing `core`/`protocol`, and finish with `just check` green and a commit on your slice branch.

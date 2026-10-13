@@ -1,6 +1,6 @@
 # M1-C: `heeler` CLI and host-terminal renderer (roadmap M1.6, part 1)
 
-Model: gemini-3.8-flash-high   Depends on: M1-A merged (`heeler-client`)   Branch: slice/M1-C
+Agent: implementer   Depends on: M1-A merged (`heeler-client`)   Branch: slice/M1-C
 
 ## Context
 Read `AGENTS.md`, then `docs/protocol.md`, ADR 0002, ADR 0004 (§ Stream model: the CLI renders frames into the host terminal, tmux-style, no VT engine of its own), `crates/protocol/src/render.rs`, `crates/client/src/lib.rs`.

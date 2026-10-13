@@ -1,6 +1,6 @@
 # M1-A: `heelerd` lifecycle, connection layer, `client` crate (roadmap M1.1 + M1.2)
 
-Model: claude-opus-4-6-thinking   Depends on: M0 (commit 6c99867)   Branch: slice/M1-A
+Agent: implementer   Depends on: M0 (commit 6c99867)   Branch: slice/M1-A
 
 ## Context
 Read `AGENTS.md`, then `docs/architecture.md` (§ Daemon internals, § Paths, § Security), `docs/protocol.md`, ADR 0001, ADR 0002, ADR 0009. Reuse `crates/core` and `crates/protocol` as they are: `FrameCodec`, `Frame`, `ControlMessage`, `Request::decode`, `Event`, `messages::*`, `PROTOCOL_VERSION`.

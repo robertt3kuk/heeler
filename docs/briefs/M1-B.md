@@ -1,6 +1,6 @@
 # M1-B: `terminal` crate — PTY, engine, render tracking, conformance corpus (roadmap M1.3 + M0.4)
 
-Model: claude-opus-4-6-thinking   Depends on: M0 (commit 6c99867)   Branch: slice/M1-B
+Agent: implementer   Depends on: M0 (commit 6c99867)   Branch: slice/M1-B
 
 ## Context
 Read `AGENTS.md`, then ADR 0004 (decision is binding), `docs/spikes/2026-10-13-terminal-engine.md` (measured behavior and pitfalls of `alacritty_terminal` 0.26 and `portable-pty` 0.9), `docs/protocol.md` § Terminal render types, `crates/protocol/src/render.rs` (the DTOs you must produce). Pinned deps already in root `[workspace.dependencies]`: `alacritty_terminal = "=0.26.0"`, `portable-pty = "=0.9.0"`.

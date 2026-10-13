@@ -1,13 +1,13 @@
 # Slice briefs
 
-A brief is the complete, self-contained prompt for an implementer agent (Antigravity `agy`, see `process.md` § Implementer agents). It is committed **before** launch so any session can relaunch or review against it.
+A brief is the complete, self-contained prompt for an implementer agent (`.omp/agents/implementer.md`, see `process.md` § Implementer agents). It is committed **before** launch so any session can relaunch or review against it.
 
 File name = slice ID: `docs/briefs/<slice>.md`. Template:
 
 ```markdown
 # <slice>: <title>
 
-Model: <agy model id>   Depends on: <slices/commits>   Branch: slice/<slice>
+Agent: implementer   Depends on: <slices/commits>   Branch: slice/<slice>
 
 ## Context
 Read AGENTS.md, then: <exact docs/ADRs/sections>. Existing code to reuse: <paths>.
