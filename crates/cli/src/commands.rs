@@ -20,6 +20,9 @@ use tokio::time::sleep;
 use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs, WsCommand};
 use crate::error::{CliError, is_unreachable};
 
+mod attach;
+mod sessions;
+
 const STOP_WAIT: Duration = Duration::from_secs(10);
 const STOP_POLL: Duration = Duration::from_millis(25);
 
@@ -37,6 +40,14 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Ws(WsCommand::Close { id }) => ctx.ws_close(id).await,
         Command::Api(args) => ctx.api(args).await,
         Command::Events(args) => ctx.events(args).await,
+        Command::New(args) => ctx.new_session(args).await,
+        Command::Ls(args) => ctx.ls(args).await,
+        Command::Attach(args) => ctx.attach(&args.target).await,
+        Command::Send(args) => ctx.send(args).await,
+        Command::Stop(args) => ctx.stop(&args.target).await,
+        Command::Restart(args) => ctx.restart(&args.target).await,
+        Command::Rename(args) => ctx.rename(args).await,
+        Command::History(args) => ctx.history(args).await,
     }
 }
 

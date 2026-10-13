@@ -23,11 +23,13 @@ heeler-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "signal", "sync", "time"] }
 unicode-width.workspace = true
 
 [dev-dependencies]
 heeler-daemon.workspace = true
+parking_lot.workspace = true
+portable-pty.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "rt-multi-thread"] }
 vt100.workspace = true

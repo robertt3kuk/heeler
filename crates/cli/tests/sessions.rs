@@ -1,0 +1,318 @@
+//! `heeler new/ls/send/stop/restart/rename/history` against a real daemon.
+
+mod common;
+
+use std::time::Duration;
+
+use common::{TestDaemon, WAIT};
+use tokio::time::{sleep, timeout};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_then_ls_json_shows_a_running_session() {
+    let t = TestDaemon::start().await;
+    let out = t
+        .heeler(&[
+            "new", "--title", "worker", "--env", "A=1", "--env", "B=x=y", "--", "cat",
+        ])
+        .await
+        .ok();
+    let words: Vec<_> = out.stdout.split_whitespace().collect();
+    assert_eq!(words.len(), 4, "{out:?}");
+    assert_eq!((words[0], words[2]), ("session", "terminal"), "{out:?}");
+    assert_eq!(
+        words[3].parse::<u64>().unwrap(),
+        1,
+        "first terminal of the epoch"
+    );
+
+    let session = t.wait_state(words[1], "running").await;
+    assert_eq!(session["title"], "worker");
+    assert_eq!(session["terminal_id"], 1);
+    assert_eq!(session["command"], serde_json::json!(["cat"]));
+    assert_eq!(
+        session["cwd"],
+        std::env::current_dir().unwrap().to_str().unwrap(),
+        "--cwd defaults to the current directory"
+    );
+
+    let table = t.heeler(&["ls"]).await.ok().stdout;
+    let mut lines = table.lines();
+    let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
+    assert_eq!(header, ["ID", "TERMINAL", "STATE", "TITLE", "CWD", "AGE"]);
+    let row = lines.next().unwrap();
+    assert!(
+        row.starts_with(words[1])
+            && row.contains("t:1")
+            && row.contains("running")
+            && row.contains("worker"),
+        "{table}"
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_honours_cwd_and_environment() {
+    let t = TestDaemon::start().await;
+    let id = t
+        .new_session(
+            &["--cwd", "/tmp", "--env", "GREETING=hi there"],
+            &["sh", "-c", "echo \"$GREETING in $(pwd -P)\"; exec cat"],
+        )
+        .await;
+    assert_eq!(t.session(&id).await["cwd"], "/tmp");
+    wait_history(&t, &id, "hi there in ").await;
+    let history = t.heeler(&["history", &id]).await.ok().stdout;
+    assert!(history.contains("/tmp"), "{history}");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_that_cannot_start_fails_the_command() {
+    let t = TestDaemon::start().await;
+    let out = t
+        .heeler(&["new", "--", "/nonexistent/heeler-test-binary"])
+        .await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("failed to start"), "{out:?}");
+    let sessions = t.sessions().await;
+    assert_eq!(sessions[0]["state"]["state"], "failed");
+    t.stop().await;
+}
+
+/// Polls `heeler history` until it contains `needle`.
+async fn wait_history(t: &TestDaemon, target: &str, needle: &str) {
+    let result = timeout(WAIT, async {
+        loop {
+            let out = t.heeler(&["history", target]).await.ok();
+            if out.stdout.contains(needle) {
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(result.is_ok(), "history never contained {needle:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_enter_reaches_the_session_and_shows_in_history() {
+    let t = TestDaemon::start().await;
+    let id = t.new_session(&[], &["cat"]).await;
+    t.heeler(&["send", &id, "hello heeler", "--enter"])
+        .await
+        .ok();
+    wait_history(&t, &id, "hello heeler").await;
+
+    // Without --enter nothing is submitted: cat has not echoed it yet, but the line discipline
+    // did (the typed text is visible), and the next --enter completes the line.
+    t.heeler(&["send", &id, "second"]).await.ok();
+    wait_history(&t, &id, "second").await;
+    let json = t
+        .heeler(&["--json", "history", &id, "--lines", "2"])
+        .await
+        .ok()
+        .json();
+    assert!(json["lines"].as_array().unwrap().len() <= 2, "{json}");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_is_oldest_first_across_scrollback_and_screen() {
+    let t = TestDaemon::start().await;
+    let id = t
+        .new_session(&[], &["sh", "-c", "seq 1 100; exec cat"])
+        .await;
+    wait_history(&t, &id, "100").await;
+    let all = t
+        .heeler(&["history", &id, "--lines", "5000"])
+        .await
+        .ok()
+        .stdout;
+    let numbers: Vec<u32> = all.lines().filter_map(|l| l.parse().ok()).collect();
+    assert_eq!(numbers, (1..=100).collect::<Vec<_>>(), "{all}");
+
+    let last = t
+        .heeler(&["history", &id, "--lines", "3"])
+        .await
+        .ok()
+        .stdout;
+    assert_eq!(last.lines().collect::<Vec<_>>(), ["98", "99", "100"]);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_moves_the_session_to_stopped_and_restart_revives_it() {
+    let t = TestDaemon::start().await;
+    let id = t.new_session(&[], &["cat"]).await;
+    let first_terminal = t.session(&id).await["terminal_id"].as_u64().unwrap();
+
+    let out = t.heeler(&["stop", &id]).await.ok();
+    assert!(out.stdout.contains(&id), "{out:?}");
+    assert_eq!(t.session(&id).await["state"]["state"], "stopped");
+    let table = t.heeler(&["ls"]).await.ok().stdout;
+    assert!(table.contains("stopped"), "{table}");
+
+    // Input to an ended session is an error, not a silent drop.
+    let out = t.heeler(&["send", &id, "x"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("stopped"), "{out:?}");
+
+    let out = t.heeler(&["restart", &id]).await.ok();
+    let second_terminal = t.session(&id).await["terminal_id"].as_u64().unwrap();
+    assert!(second_terminal > first_terminal);
+    assert_eq!(
+        out.stdout.trim(),
+        format!("session {id} terminal {second_terminal}")
+    );
+    t.wait_state(&id, "running").await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exit_codes_show_in_ls() {
+    let t = TestDaemon::start().await;
+    let id = t.new_session(&[], &["sh", "-c", "exit 7"]).await;
+    let session = t.wait_state(&id, "exited").await;
+    assert_eq!(session["state"]["code"], 7);
+    let table = t.heeler(&["ls"]).await.ok().stdout;
+    assert!(table.contains("exited (7)"), "{table}");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_changes_the_title() {
+    let t = TestDaemon::start().await;
+    let id = t.new_session(&["--title", "before"], &["cat"]).await;
+    let out = t.heeler(&["rename", "before", "after"]).await.ok();
+    assert!(out.stdout.contains("after"), "{out:?}");
+    assert_eq!(t.session(&id).await["title"], "after");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn targets_resolve_by_id_prefix_terminal_and_title() {
+    let t = TestDaemon::start().await;
+    let a = t.new_session(&["--title", "alpha"], &["cat"]).await;
+    let b = t.new_session(&["--title", "beta"], &["cat"]).await;
+    let c = t.new_session(&["--title", "beta"], &["cat"]).await;
+
+    // `history --json` names the session it resolved and changes nothing.
+    async fn probe(t: &TestDaemon, target: &str) -> common::Out {
+        t.heeler(&["--json", "history", target]).await
+    }
+
+    // Full id, long unique prefix, lowercase prefix, terminal id, unique title.
+    let lower = a[..20].to_ascii_lowercase();
+    for (target, want) in [
+        (a.as_str(), &a),
+        (&a[..20], &a),
+        (lower.as_str(), &a),
+        ("t:2", &b),
+        ("alpha", &a),
+    ] {
+        let out = probe(&t, target).await.ok();
+        assert_eq!(out.json()["session_id"], want.as_str(), "{target}");
+    }
+
+    // The shared timestamp prefix is ambiguous: exit 2 listing every candidate.
+    let out = probe(&t, &a[..4]).await;
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    for id in [&a, &b, &c] {
+        assert!(out.stderr.contains(id.as_str()), "{out:?}");
+    }
+    assert!(
+        out.stderr.contains("t:1") && out.stderr.contains("t:3"),
+        "{out:?}"
+    );
+
+    // Two sessions titled `beta`: ambiguous too.
+    let out = probe(&t, "beta").await;
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(
+        out.stderr.contains(&b) && out.stderr.contains(&c),
+        "{out:?}"
+    );
+    assert!(!out.stderr.contains(&a), "{out:?}");
+
+    // No match: a plain failure, with a hint for short prefixes.
+    let out = probe(&t, "nothing").await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("no session matches"), "{out:?}");
+    assert_eq!(probe(&t, "t:99").await.code, 1);
+    let out = probe(&t, "01J").await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("at least 4"), "{out:?}");
+    assert_eq!(probe(&t, "t:x").await.code, 2);
+    t.stop().await;
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn ls_filters_by_workspace() {
+    let t = TestDaemon::start().await;
+    let ws = t
+        .heeler(&["ws", "new", "other", "--json"])
+        .await
+        .ok()
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let in_default = t.new_session(&[], &["cat"]).await;
+    let in_other = t.new_session(&["--ws", &ws], &["cat"]).await;
+
+    let out = t.heeler(&["ls", "--ws", &ws, "--json"]).await.ok().json();
+    let ids: Vec<_> = out["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].clone())
+        .collect();
+    assert_eq!(ids, [serde_json::json!(in_other)]);
+    assert_ne!(in_default, in_other);
+
+    let empty = t
+        .heeler(&["ws", "new", "empty", "--json"])
+        .await
+        .ok()
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = t.heeler(&["ls", "--ws", &empty]).await.ok();
+    assert_eq!(out.stdout.trim(), "no sessions");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn usage_errors_and_missing_daemon() {
+    let t = TestDaemon::start().await;
+    for args in [
+        &["new", "--env", "no-equals"][..],
+        &["new", "--ws", "not-an-id"],
+        &["history", "x", "--lines", "0"],
+        &["send", "x"],
+        &["rename", "x"],
+        &["attach"],
+    ] {
+        let out = t.heeler(args).await;
+        assert_eq!(out.code, 2, "{args:?}: {out:?}");
+    }
+    // attach needs a terminal; stdin is /dev/null here.
+    let out = t.heeler(&["attach", "anything"]).await;
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(out.stderr.contains("needs a terminal"), "{out:?}");
+    let out = t.heeler(&["new", "--attach", "--", "cat"]).await;
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(
+        t.sessions().await.is_empty(),
+        "no session is created without a terminal"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let nowhere = dir.path().join("no.sock");
+    for args in [&["ls"][..], &["stop", "x"], &["new", "--", "cat"]] {
+        let out = common::heeler(&nowhere, args).await;
+        assert_eq!(out.code, 3, "{args:?}: {out:?}");
+    }
+    t.stop().await;
+}

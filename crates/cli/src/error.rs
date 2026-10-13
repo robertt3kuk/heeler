@@ -24,6 +24,9 @@ pub enum CliError {
     Failed(String),
     #[error("i/o: {0}")]
     Io(#[from] io::Error),
+    /// `attach` was ended by a termination signal; exits with the shell's 128 + signal.
+    #[error("terminated by {name}")]
+    Signalled { name: &'static str, code: u8 },
 }
 
 impl CliError {
@@ -31,6 +34,7 @@ impl CliError {
         match self {
             Self::Usage(_) => EXIT_USAGE,
             Self::Unreachable(_) => EXIT_UNREACHABLE,
+            Self::Signalled { code, .. } => *code,
             Self::Remote(_) | Self::Reported | Self::Failed(_) | Self::Io(_) => EXIT_REMOTE,
         }
     }

@@ -4,6 +4,7 @@ mod args;
 mod commands;
 mod error;
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -27,7 +28,8 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             if !error.is_broken_pipe() && !matches!(error, error::CliError::Reported) {
-                eprintln!("heeler: {error}");
+                // Not `eprintln!`: that panics when stderr is gone (attach after a hangup).
+                let _ = writeln!(std::io::stderr(), "heeler: {error}");
             }
             ExitCode::from(error.exit_code())
         }
