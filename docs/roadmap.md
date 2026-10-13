@@ -35,8 +35,10 @@ Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A
 - [x] M1.3 `terminal`: PTY spawn, reader thread → OSC sniffer → engine, writer thread, resize, input, exit/reap, render tracker (merged `dd63216`; 180.7 MB/s, 26.2 MiB @10k lines)
 - [x] M1.4 Terminal attach: snapshot queued before the response, credit-1 ack pacing (≤ 1 render / 8 ms), `terminal.history`, resize → snapshot, bounded input path (merged `6039594`)
 - [x] M1.5 Session registry in memory: create/list/stop/restart/rename, metadata events (title/bell/notification/cwd), workspace close and shutdown rules (merged `6039594`)
-- [ ] M1.6 `heeler` CLI: `daemon start|stop|status`, `new`, `ls`, `attach` (raw mode, detach key), `send`, `api <method> <json>`
-- [ ] M1.7 Bench: 200 MB output flood, RSS check, recorded in status
+- [x] M1.6 `heeler` CLI: `daemon start|stop|status`, `ws …`, `new`, `ls`, `attach` (raw mode, ctrl+\ d detach, SIGWINCH resize, restart follow), `send`, `stop/restart/rename`, `history`, `api`, `events` (merged `8a4a583`, `98a6c35`)
+- [x] M1.7 Bench `cargo run --release -p heeler-daemon --example flood`: ≈193 MiB in 1.4 s (136 MiB/s end-to-end through daemon + acking client), non-acking client 0 renders after snapshot, `daemon.status` p99 0.11 ms, peak RSS 25.2 MiB
+
+**M1 done (2026-10-13).** Demo checklist: `docs/demos/M1.md`.
 
 ## M2 — GPUI terminal client
 Exit demo: run OMP and Codex TUI in the GPUI app with correct input/rendering; tabs + splits; close app → sessions keep running → reopen restores views; daemon restart → app reconnects; budgets in `vision.md` measured.

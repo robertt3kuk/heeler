@@ -3,22 +3,22 @@
 Newest entry first. Every session ends by updating **Current** and adding a log entry (see `process.md`).
 
 ## Current
-- **Milestone**: M1 — Daemon + CLI terminals (M0 complete)
-- **Active slice**: M1-D2 (`../heeler-wt/M1-D2`: CLI `new/ls/attach/send/stop/restart/rename/history`, flood bench, `docs/demos/M1.md`) on the `implementer` agent. Merged: M1-A `4addc5d`, M1-B `dd63216`, M1-C `8a4a583`, M1-D1 `6039594`.
-- **Next action**: review/merge M1-D2; run `docs/demos/M1.md` by hand (real TTY) incl. `omp` attach; record bench numbers; close M1.
+- **Milestone**: M2 — GPUI terminal client (M0, M1 complete)
+- **Active slice**: none.
+- **Next action**: M2 kickoff per `process.md` § Milestone cadence: refresh risks R1/R2/R5, write briefs for M2.1 (app shell: window, sidebar, tabs, splits) + M2.2 (client reconnect/reconciliation, GPUI entity store) + M2.3/M2.4 (terminal view: GPUI element painting `Row` runs, cursor, selection, key/mouse encoding, IME, resize/font metrics), pinned GPUI rev from ADR 0003. Optional: run `docs/demos/M1.md` yourself in two real terminal windows (resize step was only exercised in tests).
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
   3. ~~Default detach key~~ → decided: `ctrl+\` then `d` (M1-C).
   4. Product name: "Heeler" is already used by an iOS console for herdr (heeler.bybee.dev) and by heeler.com (AppSec). Keep as codename or rename before any public release.
-
 - **Tech debt** (schedule into later slices):
   1. `heeler-cli` spawn tests run a nested `cargo build -p heeler-daemon` (profile coupling, slower tests) — replace with a prebuilt-binary fixture or an `xtask` that builds both bins first.
   2. `heeler-terminal` reports exit signals as `strsignal` text; daemon parses it back via a name table — expose the signal number from the terminal crate.
   3. `terminal.history` builds the full JSON before the frame-size check — cap `count` per call (e.g. 5 000) and document.
   4. ADR 0002 says separate control/render queues; implementation uses one bounded queue per connection (safe with credit 1) — reconcile ADR text or split when a second render-heavy client type appears.
   5. `session.restart` uses the spec `cwd`, not the OSC 7 cwd — revisit with M3 restore.
+
 ## Environment notes
 - macOS 26.6.2 arm64, Rust 1.98.0, Xcode installed **without** separate Metal compiler → GPUI needs `runtime_shaders` (ADR 0003).
 - Installed Zig 0.16.0 cannot build libghostty-vt 0.2.2 (needs 0.15.2) — not used (ADR 0004).
@@ -28,6 +28,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+### 2026-10-13 — M1-D2 merged, M1 closed
+- `heeler` session commands + `attach` (raw mode guard incl. panic/SIGTERM/SIGHUP restore, write→flush→ack ordering, SIGWINCH resize, 300 ms restart follow), target resolution (id, prefix ≥ 4, `t:N`, title; ambiguous → exit 2), `history`; 22 new CLI tests incl. 11 PTY-driven attach tests; `crates/daemon/examples/flood.rs`; `docs/demos/M1.md`.
+- Orchestrator verification: `just check` 188 tests green; flood bench rerun: `wall=1.4s output~193MiB (136MiB/s) acking_renders=137 silent_renders_after_snapshot=0 status_p50=0.03ms p99=0.11ms peak_rss=25.2MiB final_screen=match`.
+- Live demo (orchestrator, release build, temp `HEELER_HOME`): `heeler new --title omp-demo -- omp` → OMP v18.10.3 TUI rendered in the daemon (seen via `heeler history`); two simultaneous `heeler attach` over real PTYs both rendered OMP and detached with ctrl+\ d (exit 0) while the session kept running; `heeler send` typed into OMP's composer (visible on screen); `stop` → `stopped`; `daemon stop --stop-sessions` → socket gone, no orphan processes.
+
 
 ### 2026-10-13 — M1-C, M1-D1 merged; protocol `SessionResult`
 - M1-C `heeler-cli`: `daemon start|status|stop`, `ws …`, `api`, `events`; exit codes 0/1/2/3; `HostRenderer` (SGR incl. undercurl/underline color, wide runs, OSC 8, modes mirroring, `?2026` wrapping, row diffing, scroll via `CSI S/T`), `DetachDetector`. Orchestrator smoke: start (idempotent), ws new/ls, api, stop, status exit 3.
