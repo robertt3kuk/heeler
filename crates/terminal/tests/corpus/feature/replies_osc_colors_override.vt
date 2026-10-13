@@ -1,0 +1,5 @@
+// The app sets colours, then queries: overrides win; OSC 110/111 reset them back to the defaults
+\e]10;rgb:11/22/33\a\e]11;#445566\e\\\e]12;rgb:77/88/99\a
+\e]10;?\a\e]11;?\e\\\e]12;?\a
+\e]110\a\e]111\e\\\e]112\a
+\e]10;?\a\e]11;?\a\e]12;?\a

@@ -26,6 +26,9 @@ use crate::terminals::TerminalHub;
 
 pub const DEFAULT_OUTBOUND_QUEUE: usize = 1024;
 
+/// A connection that has not sent `hello` after this long is closed.
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long shutdown waits for connections to flush before abandoning them.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -39,6 +42,8 @@ pub struct DaemonConfig {
     pub ring: RingLimits,
     /// Per-connection outbound queue length in control messages.
     pub outbound_queue: usize,
+    /// How long a new connection may stay silent before `hello` arrives.
+    pub handshake_timeout: Duration,
 }
 
 impl DaemonConfig {
@@ -47,6 +52,7 @@ impl DaemonConfig {
             paths,
             ring: RingLimits::default(),
             outbound_queue: DEFAULT_OUTBOUND_QUEUE,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         }
     }
 }
@@ -138,6 +144,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         clients,
         config.outbound_queue.max(2),
         daemon_uid,
+        config.handshake_timeout,
     ));
 
     info!(

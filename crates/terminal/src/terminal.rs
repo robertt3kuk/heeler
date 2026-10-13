@@ -4,7 +4,8 @@
 //! * `reader` — blocking read of the PTY master → [`Emulator::feed`] → publish damage, forward
 //!   engine replies and metadata.
 //! * `writer` — the single PTY writer. [`Terminal::write_input`] and engine replies (DA, DSR,
-//!   DECRQM, kitty query) all go through its bounded queue, so bytes never interleave.
+//!   DECRQM, kitty, colour and window-size queries) all go through its bounded queue, so bytes
+//!   never interleave.
 //! * `sync` — services the DEC 2026 deadline: a never-closed synchronized batch is force-closed
 //!   after the engine's 150 ms timeout and rendered.
 //! * `waiter` — reaps the child exactly once, lets the other threads release their PTY
@@ -25,11 +26,11 @@ use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
-use crate::emulator::Emulator;
+use crate::emulator::{DefaultColors, Emulator};
 use crate::error::TerminalError;
 use crate::render::RenderTracker;
 use crate::sniffer::TerminalMeta;
-use crate::sys::{self, Signal};
+use crate::sys::{self, Reaped, Signal};
 
 const READ_BUFFER: usize = 64 * 1024;
 /// Queued writer messages (input chunks + replies); input blocks when full, replies are dropped.
@@ -56,6 +57,8 @@ pub struct TerminalConfig {
     pub size: TerminalSize,
     /// History lines retained; default 10 000.
     pub scrollback_lines: usize,
+    /// Colours reported for OSC 10/11/12 queries while the application has not set its own.
+    pub default_colors: DefaultColors,
 }
 
 impl Default for TerminalConfig {
@@ -71,6 +74,7 @@ impl Default for TerminalConfig {
                 pixel_height: 0,
             },
             scrollback_lines: 10_000,
+            default_colors: DefaultColors::default(),
         }
     }
 }
@@ -78,10 +82,11 @@ impl Default for TerminalConfig {
 /// How the child ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitStatus {
-    /// Exit code; `None` when the child was killed by a signal.
+    /// Exit code; `None` when the child was killed by a signal (or the status is unavailable).
     pub code: Option<i32>,
-    /// Description of the terminating signal, if any.
-    pub signal: Option<String>,
+    /// Raw number of the terminating signal; `None` when the child exited normally (or the
+    /// status is unavailable, in which case `code` is `None` too).
+    pub signal: Option<i32>,
 }
 
 impl ExitStatus {
@@ -90,16 +95,16 @@ impl ExitStatus {
     }
 }
 
-impl From<portable_pty::ExitStatus> for ExitStatus {
-    fn from(status: portable_pty::ExitStatus) -> Self {
-        match status.signal() {
-            Some(signal) => Self {
-                code: None,
-                signal: Some(signal.to_owned()),
-            },
-            None => Self {
-                code: i32::try_from(status.exit_code()).ok(),
+impl From<Reaped> for ExitStatus {
+    fn from(reaped: Reaped) -> Self {
+        match reaped {
+            Reaped::Exited(code) => Self {
+                code: Some(code),
                 signal: None,
+            },
+            Reaped::Signaled(signal) => Self {
+                code: None,
+                signal: Some(signal),
             },
         }
     }
@@ -265,7 +270,8 @@ fn open_error(error: impl std::fmt::Display) -> TerminalError {
 
 impl Terminal {
     pub fn spawn(cfg: TerminalConfig) -> Result<Self, TerminalError> {
-        let engine = Emulator::new(cfg.size, cfg.scrollback_lines)?;
+        let engine =
+            Emulator::new(cfg.size, cfg.scrollback_lines)?.with_default_colors(cfg.default_colors);
         let program = cfg
             .argv
             .first()
@@ -400,6 +406,20 @@ impl Terminal {
         self.core.engine.lock().history(from_line, count)
     }
 
+    /// [`Self::history`] that stops before the first row `keep` rejects (see
+    /// [`Emulator::history_while`]). `keep` runs with the engine locked: keep it cheap.
+    pub fn history_while(
+        &self,
+        from_line: u32,
+        count: u32,
+        keep: impl FnMut(&Row) -> bool,
+    ) -> Vec<Row> {
+        self.core
+            .engine
+            .lock()
+            .history_while(from_line, count, keep)
+    }
+
     /// Generation counter bumped whenever visible state changed; coalescing (watch semantics).
     pub fn damage(&self) -> watch::Receiver<u64> {
         self.core.damage.subscribe()
@@ -436,10 +456,11 @@ impl Terminal {
     }
 }
 
+/// Neither a code nor a signal: the status could not be collected.
 fn lost_status() -> ExitStatus {
     ExitStatus {
         code: None,
-        signal: Some("exit status unavailable".to_owned()),
+        signal: None,
     }
 }
 
@@ -557,17 +578,23 @@ fn sync_loop(core: Arc<Core>) {
     }
 }
 
-fn waiter_loop(core: Arc<Core>, mut child: Box<dyn Child + Send + Sync>) {
-    let status = match child.wait() {
-        Ok(status) => ExitStatus::from(status),
-        Err(error) => {
-            tracing::warn!(%error, "waiting for the child failed");
-            ExitStatus {
-                code: None,
-                signal: Some(format!("wait failed: {error}")),
+fn waiter_loop(core: Arc<Core>, child: Box<dyn Child + Send + Sync>) {
+    // The raw wait status carries the signal number, which `portable-pty`'s own `wait` turns
+    // into `strsignal` text; reap the pid directly. `child` stays alive until after the wait.
+    let status = match child.process_id() {
+        Some(pid) => match sys::wait_child(pid) {
+            Ok(reaped) => ExitStatus::from(reaped),
+            Err(error) => {
+                tracing::warn!(%error, "waiting for the child failed");
+                lost_status()
             }
+        },
+        None => {
+            tracing::warn!("child has no pid; exit status unavailable");
+            lost_status()
         }
     };
+    drop(child);
     // Reaped: the pid may be recycled from here on, never signal it again.
     core.pid.store(0, Ordering::Release);
     release_pty(&core);

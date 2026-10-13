@@ -80,13 +80,36 @@ fn replay(stream: &[u8], size: TerminalSize, chunk: usize) -> Outcome {
     }
 }
 
+/// `[cols, rows]` or `[cols, rows, pixel_width, pixel_height]`; default 80×24, no pixel size.
 fn size_from(spec: Option<&Value>) -> TerminalSize {
-    let (cols, rows) = match spec {
-        Some(Value::Array(dims)) => (
-            dims[0].as_u64().expect("cols") as u16,
-            dims[1].as_u64().expect("rows") as u16,
-        ),
-        _ => (80, 24),
+    let Some(Value::Array(dims)) = spec else {
+        return TerminalSize {
+            cols: 80,
+            rows: 24,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+    };
+    let dim = |index: usize| {
+        dims.get(index)
+            .map_or(0, |value| value.as_u64().expect("size entry") as u16)
+    };
+    TerminalSize {
+        cols: dim(0),
+        rows: dim(1),
+        pixel_width: dim(2),
+        pixel_height: dim(3),
+    }
+}
+
+/// Size a recording was made at: `NAME.size` (`COLSxROWS`) next to the `.raw`, else 80×24.
+fn recorded_size(raw: &Path) -> TerminalSize {
+    let (cols, rows) = match fs::read_to_string(raw.with_extension("size")) {
+        Ok(text) => {
+            let (cols, rows) = text.trim().split_once('x').expect("COLSxROWS");
+            (cols.parse().expect("cols"), rows.parse().expect("rows"))
+        }
+        Err(_) => (80, 24),
     };
     TerminalSize {
         cols,
@@ -307,12 +330,7 @@ fn recorded_streams_replay_to_their_recorded_grid() {
     for path in recordings {
         let raw = fs::read(&path).expect("read .raw");
         let want = fs::read_to_string(path.with_extension("grid")).expect("read .grid");
-        let size = TerminalSize {
-            cols: 80,
-            rows: 24,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
+        let size = recorded_size(&path);
         for chunk in [usize::MAX, 4096, 1] {
             let mut outcome = replay(&raw, size, chunk);
             let have = outcome.emulator.grid_text();
@@ -322,6 +340,36 @@ fn recorded_streams_replay_to_their_recorded_grid() {
                 "{} (chunk {chunk})",
                 path.display()
             );
+        }
+    }
+}
+
+#[test]
+fn recorded_agent_startups_get_their_color_queries_answered() {
+    // Codex and omp ask for the foreground/background colours at startup; unanswered, such
+    // TUIs stall or pick the wrong theme.
+    let recorded = corpus_dir().join("recorded");
+    for (name, queries) in [
+        (
+            "codex_startup",
+            &["]10;rgb:d4d4/d4d4/d4d4", "]11;rgb:1e1e/1e1e/1e1e"][..],
+        ),
+        ("omp_startup", &["]11;rgb:1e1e/1e1e/1e1e"][..]),
+    ] {
+        let raw = fs::read(recorded.join(format!("{name}.raw"))).expect("read .raw");
+        for chunk in [usize::MAX, 4096, 1] {
+            let outcome = replay(
+                &raw,
+                recorded_size(&recorded.join(format!("{name}.raw"))),
+                chunk,
+            );
+            let replies = String::from_utf8_lossy(&outcome.replies).into_owned();
+            for query in queries {
+                assert!(
+                    replies.contains(query),
+                    "{name} (chunk {chunk}): no {query:?} in {replies:?}"
+                );
+            }
         }
     }
 }

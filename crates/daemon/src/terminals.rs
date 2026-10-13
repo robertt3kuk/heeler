@@ -33,6 +33,11 @@ use crate::conn::{ConnHandle, ConnId, Outbound};
 
 /// An attachment renders at most once per this interval (ADR 0004).
 const COALESCE: Duration = Duration::from_millis(8);
+/// Most rows one `terminal.history` call returns, whatever `count` asks for.
+const HISTORY_MAX_ROWS: u32 = 5_000;
+/// `terminal.history` stops adding rows once their JSON encoding would exceed this: half the
+/// frame limit, leaving room for the envelope.
+const HISTORY_MAX_BYTES: usize = MAX_PAYLOAD / 2;
 /// Input slices waiting per terminal before the sending connection's reader waits.
 const INPUT_QUEUE: usize = 32;
 /// Input frames are split to this size when queued, bounding the queue to
@@ -282,11 +287,27 @@ impl TerminalHub {
             .map_err(|e| terminal_error(&e))
     }
 
+    /// Scrollback rows for a client. One call answers at most [`HISTORY_MAX_ROWS`] rows and stops
+    /// before the row that would take the encoded rows past [`HISTORY_MAX_BYTES`] (the first
+    /// row is always included so paging makes progress). The answer may therefore be shorter
+    /// than requested although more history exists; clients page with `from_line`.
     pub fn history(&self, req: TerminalHistory) -> Result<TerminalHistoryRows, ErrorBody> {
         let entry = self.get(req.terminal_id)?;
+        let mut encoded = 0usize;
+        let mut first = true;
+        let rows =
+            entry
+                .terminal
+                .history_while(req.from_line, req.count.min(HISTORY_MAX_ROWS), |row| {
+                    // +1 for the separating comma.
+                    encoded = encoded.saturating_add(encoded_len(row).saturating_add(1));
+                    let fits = first || encoded <= HISTORY_MAX_BYTES;
+                    first = false;
+                    fits
+                });
         Ok(TerminalHistoryRows {
             from_line: req.from_line,
-            rows: entry.terminal.history(req.from_line, req.count),
+            rows,
         })
     }
 
@@ -339,6 +360,27 @@ async fn drain_input(
         }
     }
     ended.store(true, Ordering::Release);
+}
+
+/// Length of `value` as JSON, without building it.
+fn encoded_len(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    // A row that cannot be serialized would fail the response anyway; count it as oversized.
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => usize::MAX,
+    }
 }
 
 fn encode_render(id: TerminalId, render: &TerminalRender) -> Option<Frame> {

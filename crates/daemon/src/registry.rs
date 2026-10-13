@@ -426,7 +426,7 @@ impl SessionRegistry {
         );
         let mut config = TerminalConfig {
             argv: session.spec.command.clone(),
-            cwd: session.spec.cwd.clone(),
+            cwd: session.info.cwd.clone(),
             env,
             ..TerminalConfig::default()
         };
@@ -497,7 +497,13 @@ impl SessionRegistry {
         session.stopping = false;
         session.osc_title = None;
         session.info.terminal_id = None;
-        session.info.cwd.clone_from(&session.spec.cwd);
+        // Restart where the program last said it was (OSC 7) when that directory still exists.
+        session.info.cwd = session
+            .info
+            .cwd
+            .take()
+            .filter(|cwd| cwd.is_dir())
+            .or_else(|| session.spec.cwd.clone());
         if !session.title_locked {
             session.info.title.clone_from(&session.default_title);
         }
@@ -597,7 +603,7 @@ impl SessionRegistry {
         };
         self.hub.mark_ended(terminal);
         let code = status.code;
-        let signal = status.signal.as_deref().and_then(signal_number);
+        let signal = status.signal;
         let session = &mut self.sessions[index];
         session.advance(if session.stopping {
             SessionEvent::StopCompleted
@@ -749,48 +755,9 @@ fn default_title(spec: &TerminalSpec) -> String {
         .unwrap_or_else(|| "terminal".to_owned())
 }
 
-/// Signal number out of the terminal crate's description of how the child died
-/// (`strsignal` text: `"Hangup: 1"` on macOS, `"Hangup"` on glibc).
-fn signal_number(description: &str) -> Option<i32> {
-    if let Some(number) = description
-        .rsplit_once(": ")
-        .map(|(_, tail)| tail)
-        .or_else(|| description.strip_prefix("Signal "))
-        .and_then(|tail| tail.trim().parse().ok())
-    {
-        return Some(number);
-    }
-    // Numbers shared by macOS and Linux for the signals that commonly end a terminal child.
-    let name = description.split(':').next().unwrap_or(description).trim();
-    Some(match name {
-        "Hangup" => 1,
-        "Interrupt" => 2,
-        "Quit" => 3,
-        "Illegal instruction" => 4,
-        "Aborted" | "Abort trap" => 6,
-        "Killed" => 9,
-        "Segmentation fault" => 11,
-        "Broken pipe" => 13,
-        "Alarm clock" => 14,
-        "Terminated" => 15,
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn signal_descriptions_map_to_numbers() {
-        assert_eq!(signal_number("Hangup: 1"), Some(1));
-        assert_eq!(signal_number("Killed: 9"), Some(9));
-        assert_eq!(signal_number("Terminated: 15"), Some(15));
-        assert_eq!(signal_number("Signal 31"), Some(31));
-        assert_eq!(signal_number("Hangup"), Some(1));
-        assert_eq!(signal_number("Segmentation fault"), Some(11));
-        assert_eq!(signal_number("exit status unavailable"), None);
-    }
 
     #[test]
     fn default_title_is_the_program_basename() {

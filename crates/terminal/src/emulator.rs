@@ -6,11 +6,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape as EngineCursorShape, Processor};
+use alacritty_terminal::vte::ansi::{
+    CursorShape as EngineCursorShape, Processor, Rgb as EngineRgb,
+};
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::{
     Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, TerminalFrame, TerminalSnapshot,
@@ -18,40 +20,79 @@ use heeler_protocol::render::{
 use parking_lot::Mutex;
 
 use crate::error::TerminalError;
+use crate::queries::{CellSizeScanner, Rgb, xterm_color};
 use crate::render::{LinkTable, RenderTracker, convert_row, row_text};
 use crate::sniffer::{OscSniffer, TerminalMeta};
 
 /// Replies produced by one `feed` call beyond this are dropped (a hostile stream of queries
 /// must not grow memory without bound).
 const MAX_PENDING_REPLY_BYTES: usize = 64 * 1024;
+/// Same bound, in queued engine events, for replies that are resolved after the engine ran.
+const MAX_PENDING_REQUESTS: usize = 4096;
 /// Length of the DEC 2026 begin marker `ESC [ ? 2 0 2 6 h`.
 const BSU_LEN: usize = 8;
 /// Same bound for queued metadata events.
 const MAX_PENDING_META: usize = 4096;
 
-#[derive(Debug, Default)]
+/// Colours the terminal reports for OSC 10/11/12 queries until the application sets its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultColors {
+    pub foreground: (u8, u8, u8),
+    pub background: (u8, u8, u8),
+    pub cursor: (u8, u8, u8),
+}
+
+impl Default for DefaultColors {
+    fn default() -> Self {
+        Self {
+            foreground: (0xd4, 0xd4, 0xd4),
+            background: (0x1e, 0x1e, 0x1e),
+            cursor: (0xd4, 0xd4, 0xd4),
+        }
+    }
+}
+
+/// Colour slots of the engine's table that OSC 10/11/12 address.
+const FOREGROUND: usize = 256;
+const BACKGROUND: usize = 257;
+const CURSOR: usize = 258;
+
+/// A reply the engine asked for, in request order. Colour and size replies need the state of
+/// the emulator, so they are completed right after the engine handled them
+/// ([`Emulator::resolve_requests`]).
+enum Request {
+    Text(String),
+    Color(usize, Arc<dyn Fn(EngineRgb) -> String + Send + Sync>),
+    TextArea(Arc<dyn Fn(WindowSize) -> String + Send + Sync>),
+}
+
+#[derive(Default)]
 struct SinkInner {
-    replies: Vec<u8>,
+    requests: Vec<Request>,
     bells: u32,
 }
 
 /// Engine event listener: collects the replies the engine wants written back to the PTY and
 /// bell notifications. Everything else the engine reports is intentionally ignored (clipboard,
-/// colour and text-area queries, mouse-cursor hints).
-#[derive(Debug, Clone, Default)]
+/// mouse-cursor hints).
+#[derive(Clone, Default)]
 struct Sink(Arc<Mutex<SinkInner>>);
 
 impl EventListener for Sink {
     fn send_event(&self, event: Event) {
         let mut inner = self.0.lock();
-        match event {
-            Event::PtyWrite(text) => {
-                if inner.replies.len() + text.len() <= MAX_PENDING_REPLY_BYTES {
-                    inner.replies.extend_from_slice(text.as_bytes());
-                }
+        let request = match event {
+            Event::PtyWrite(text) => Request::Text(text),
+            Event::ColorRequest(index, format) => Request::Color(index, format),
+            Event::TextAreaSizeRequest(format) => Request::TextArea(format),
+            Event::Bell => {
+                inner.bells = inner.bells.saturating_add(1);
+                return;
             }
-            Event::Bell => inner.bells = inner.bells.saturating_add(1),
-            _ => {}
+            _ => return,
+        };
+        if inner.requests.len() < MAX_PENDING_REQUESTS {
+            inner.requests.push(request);
         }
     }
 }
@@ -93,9 +134,12 @@ pub struct Emulator {
     term: Term<Sink>,
     parser: Processor,
     sniffer: OscSniffer,
+    cell_size_scanner: CellSizeScanner,
     sink: Sink,
     links: LinkTable,
     meta: Vec<TerminalMeta>,
+    replies: Vec<u8>,
+    default_colors: DefaultColors,
     title: Option<String>,
     size: TerminalSize,
     /// Bumped whenever the visible state may have changed.
@@ -125,13 +169,24 @@ impl Emulator {
             term: Term::new(config, &dims, sink.clone()),
             parser: Processor::new(),
             sniffer: OscSniffer::new(),
+            cell_size_scanner: CellSizeScanner::new(),
             sink,
             links: LinkTable::default(),
             meta: Vec::new(),
+            replies: Vec::new(),
+            default_colors: DefaultColors::default(),
             title: None,
             size,
             generation: 1,
         })
+    }
+
+    /// Sets the colours reported for OSC 10/11/12 queries while the application has not
+    /// overridden them.
+    #[must_use]
+    pub fn with_default_colors(mut self, colors: DefaultColors) -> Self {
+        self.default_colors = colors;
+        self
     }
 
     pub fn size(&self) -> TerminalSize {
@@ -152,8 +207,29 @@ impl Emulator {
         }
         let meta_start = self.meta.len();
         let was_pending = self.sync_deadline().is_some();
-        self.sniffer.feed(bytes, &mut self.meta);
-        self.parser.advance(&mut self.term, bytes);
+        // Queries are answered in stream order: the engine runs up to the end of each one (so a
+        // colour query sees the colours as they were at that point) and its reply is queued
+        // before the next query is handled. CSI 16 t is not known to the engine; its reply is
+        // produced here.
+        let mut breaks: Vec<(usize, bool)> = Vec::new();
+        let mut color_queries = Vec::new();
+        self.sniffer.feed(bytes, &mut self.meta, &mut color_queries);
+        breaks.extend(color_queries.into_iter().map(|end| (end, false)));
+        let mut cell_size_queries = Vec::new();
+        self.cell_size_scanner.feed(bytes, &mut cell_size_queries);
+        breaks.extend(cell_size_queries.into_iter().map(|end| (end, true)));
+        breaks.sort_unstable();
+        let mut done = 0;
+        for (end, cell_size) in breaks {
+            self.parser.advance(&mut self.term, &bytes[done..end]);
+            self.resolve_requests();
+            if cell_size {
+                self.push_reply(&cell_size_report(self.size));
+            }
+            done = end;
+        }
+        self.parser.advance(&mut self.term, &bytes[done..]);
+        self.resolve_requests();
         self.collect_bell();
         self.apply_titles(meta_start);
         let withheld = self.parser.sync_bytes_count();
@@ -185,14 +261,15 @@ impl Emulator {
     /// Commits an open synchronized-output batch.
     pub fn stop_sync(&mut self) {
         self.parser.stop_sync(&mut self.term);
+        self.resolve_requests();
         self.collect_bell();
         self.generation += 1;
     }
 
-    /// Takes the bytes the engine wants written back to the PTY (DA, DSR, DECRQM, kitty
-    /// keyboard query replies).
+    /// Takes the bytes to write back to the PTY: DA, DSR, DECRQM, kitty keyboard, colour
+    /// (OSC 4/10/11/12) and window size (CSI 14/16/18 t) replies, in query order.
     pub fn drain_replies(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.sink.0.lock().replies)
+        std::mem::take(&mut self.replies)
     }
 
     /// Takes pending metadata events in stream order (bell, at most once per `feed`, last).
@@ -315,13 +392,29 @@ impl Emulator {
     /// Scrollback rows, newest first: `from_line` 0 is the line directly above the viewport,
     /// larger is older. Shorter than `count` at the top of history.
     pub fn history(&mut self, from_line: u32, count: u32) -> Vec<Row> {
+        self.history_while(from_line, count, |_| true)
+    }
+
+    /// Like [`Self::history`], but stops before the first row `keep` rejects. `keep` sees every
+    /// row in order, once, and can account for what it has accepted (e.g. an encoded size
+    /// budget).
+    pub fn history_while(
+        &mut self,
+        from_line: u32,
+        count: u32,
+        mut keep: impl FnMut(&Row) -> bool,
+    ) -> Vec<Row> {
         let available = self.history_len();
         let cols = self.term.columns();
         let end = from_line.saturating_add(count).min(available);
-        let mut rows = Vec::with_capacity(end.saturating_sub(from_line) as usize);
+        let mut rows = Vec::new();
         for index in from_line..end {
             let line = Line(-(index as i32) - 1);
-            rows.push(convert_row(&self.term.grid()[line], cols, &mut self.links));
+            let row = convert_row(&self.term.grid()[line], cols, &mut self.links);
+            if !keep(&row) {
+                break;
+            }
+            rows.push(row);
         }
         rows
     }
@@ -400,9 +493,9 @@ impl Emulator {
             indexed: (0..256usize)
                 .filter_map(|index| rgb(index).map(|color| (index as u8, color)))
                 .collect(),
-            foreground: rgb(256),
-            background: rgb(257),
-            cursor: rgb(258),
+            foreground: rgb(FOREGROUND),
+            background: rgb(BACKGROUND),
+            cursor: rgb(CURSOR),
         }
     }
 
@@ -424,6 +517,54 @@ impl Emulator {
         }
     }
 
+    /// Turns the engine's queued reply requests into bytes.
+    fn resolve_requests(&mut self) {
+        let requests = std::mem::take(&mut self.sink.0.lock().requests);
+        for request in requests {
+            let text = match request {
+                Request::Text(text) => text,
+                Request::Color(index, format) => format(self.color_value(index)),
+                // The engine's format is `height = lines * cell_height`, `width = cols *
+                // cell_width`; one "cell" spanning the window yields the exact pixel size.
+                Request::TextArea(format) => format(WindowSize {
+                    num_lines: 1,
+                    num_cols: 1,
+                    cell_width: self.size.pixel_width,
+                    cell_height: self.size.pixel_height,
+                }),
+            };
+            self.push_reply(text.as_bytes());
+        }
+    }
+
+    fn push_reply(&mut self, bytes: &[u8]) {
+        if self.replies.len() + bytes.len() <= MAX_PENDING_REPLY_BYTES {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+
+    /// Colour for an OSC 4 (palette index) or OSC 10/11/12 (slots 256–258) query: what the
+    /// application set, else the configured default / standard xterm palette.
+    fn color_value(&self, index: usize) -> EngineRgb {
+        let defaults = self.default_colors;
+        let fallback: Rgb = match index {
+            0..=255 => xterm_color(u8::try_from(index).unwrap_or(0)),
+            BACKGROUND => defaults.background,
+            CURSOR => defaults.cursor,
+            _ => defaults.foreground,
+        };
+        let overridden = if index <= CURSOR {
+            self.term.colors()[index]
+        } else {
+            None
+        };
+        overridden.unwrap_or(EngineRgb {
+            r: fallback.0,
+            g: fallback.1,
+            b: fallback.2,
+        })
+    }
+
     fn apply_titles(&mut self, from: usize) {
         for meta in self.meta.iter().skip(from) {
             if let TerminalMeta::Title(title) = meta {
@@ -431,4 +572,12 @@ impl Emulator {
             }
         }
     }
+}
+
+/// `CSI 6 ; cell_height ; cell_width t`, the answer to `CSI 16 t`; `0` when the window's pixel
+/// size is unknown.
+fn cell_size_report(size: TerminalSize) -> Vec<u8> {
+    let cell_height = size.pixel_height.checked_div(size.rows).unwrap_or(0);
+    let cell_width = size.pixel_width.checked_div(size.cols).unwrap_or(0);
+    format!("\x1b[6;{cell_height};{cell_width}t").into_bytes()
 }

@@ -14,7 +14,7 @@ Every key is optional; absent keys are not checked.
 
 | key | meaning |
 |---|---|
-| `size` | `[cols, rows]`, default `[80, 24]` |
+| `size` | `[cols, rows]` or `[cols, rows, pixel_width, pixel_height]`, default `[80, 24]` without pixel size |
 | `grid` | plain text of the first rows (trailing spaces trimmed); rows not listed must be blank |
 | `runs` | `{"<row>": [partial Run, …]}`: exact run list of the row; each run object is a subset match against the serialized `Run` |
 | `wrapped` | per-row soft-wrap flags |

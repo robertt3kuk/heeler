@@ -483,10 +483,61 @@ async fn history_returns_scrollback_newest_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_history_answer_too_big_for_one_frame_is_an_error_not_a_dropped_connection() {
+async fn history_is_capped_per_call_and_paging_covers_the_whole_scrollback() {
     let t = TestDaemon::start().await;
     let client = t.connect().await;
-    // 2500 lines of 120 single-character runs: far beyond the 4 MiB frame limit as JSON.
+    // The scrollback keeps at most 10 000 lines; 12 000 printed lines fill it completely.
+    let session = create(&client, sh("seq 1 12000; echo HISTORY-DONE; exec cat")).await;
+    let tid = terminal_of(&session);
+    let mut view = View::attach(&client, tid, None).await;
+    view.wait_for("output finished", |s| s.contains("HISTORY-DONE"))
+        .await;
+    let history_len = view.screen.history_len;
+    assert_eq!(history_len, 10_000, "the scrollback is full");
+
+    let history = |from_line, count| {
+        let client = client.clone();
+        async move {
+            client
+                .call::<TerminalHistoryRows>(Request::TerminalHistory(TerminalHistory {
+                    terminal_id: tid,
+                    from_line,
+                    count,
+                }))
+                .await
+                .unwrap()
+        }
+    };
+
+    // Far more than exists, and far more than a call may return: capped, connection intact.
+    let first = history(0, 100_000).await;
+    assert_eq!(first.rows.len(), 5_000, "count is clamped to 5 000 rows");
+    status(&client).await;
+
+    // Paging with `from_line` reaches every line, newest first, without gaps or repeats.
+    let mut texts: Vec<String> = first.rows.iter().map(row_text).collect();
+    while texts.len() < history_len as usize {
+        let page = history(u32::try_from(texts.len()).unwrap(), 100_000).await;
+        assert!(!page.rows.is_empty(), "paging stalled at {}", texts.len());
+        assert!(page.rows.len() <= 5_000);
+        assert_eq!(page.from_line as usize, texts.len());
+        texts.extend(page.rows.iter().map(row_text));
+    }
+    assert_eq!(texts.len(), history_len as usize);
+    let newest: u32 = texts[0].trim().parse().unwrap();
+    for (offset, text) in texts.iter().enumerate() {
+        assert_eq!(text.trim(), (newest - offset as u32).to_string());
+    }
+    assert!(history(history_len, 5).await.rows.is_empty());
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_stops_at_the_encoded_size_budget_and_paging_continues() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    // 2500 lines of 120 single-character runs (~3.5 KB of JSON each): well beyond the 2 MiB
+    // budget within the 5 000-row cap.
     let mut wide = sh(
         "L=; for i in $(seq 60); do L=\"$L$(printf '\\033[31ma\\033[32mb')\"; done; \
          yes \"$L\" | head -n 2500; echo HISTORY-DONE; exec cat",
@@ -497,21 +548,39 @@ async fn a_history_answer_too_big_for_one_frame_is_an_error_not_a_dropped_connec
     let mut view = View::attach(&client, tid, None).await;
     view.wait_for("output finished", |s| s.contains("HISTORY-DONE"))
         .await;
+    let history_len = view.screen.history_len as usize;
+    assert!(history_len > 2_000, "{history_len}");
 
-    let request = |count| {
+    let request = |from_line, count| {
         Request::TerminalHistory(TerminalHistory {
             terminal_id: tid,
-            from_line: 0,
+            from_line,
             count,
         })
     };
-    let refused = client.call::<TerminalHistoryRows>(request(2500)).await;
-    assert_eq!(remote_code(refused), ErrorCode::Internal);
-    let some = client
-        .call::<TerminalHistoryRows>(request(20))
+    let first = client
+        .call::<TerminalHistoryRows>(request(0, 5_000))
         .await
         .unwrap();
-    assert_eq!(some.rows.len(), 20);
+    assert!(!first.rows.is_empty());
+    assert!(
+        first.rows.len() < history_len,
+        "the size budget shortens the answer: {} of {history_len}",
+        first.rows.len()
+    );
+    let encoded = serde_json::to_vec(&first.rows).unwrap().len();
+    assert!(encoded <= 2 * 1024 * 1024, "{encoded} bytes of rows");
+
+    let mut covered = first.rows.len();
+    while covered < history_len {
+        let page = client
+            .call::<TerminalHistoryRows>(request(u32::try_from(covered).unwrap(), 5_000))
+            .await
+            .unwrap();
+        assert!(!page.rows.is_empty(), "paging stalled at {covered}");
+        covered += page.rows.len();
+    }
+    assert_eq!(covered, history_len);
     status(&client).await;
     t.stop().await;
 }
@@ -1085,4 +1154,165 @@ async fn closing_a_connection_ends_its_attachments_and_not_the_session() {
     owner.send_input(tid, b"still\r").await.unwrap();
     view.wait_for("echo", |s| s.contains("still")).await;
     t.stop().await;
+}
+
+// Exit signals ----------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_killed_by_a_signal_reports_the_raw_signal_number() {
+    let t = TestDaemon::start().await;
+    let (client, mut events) = t.connect_subscribed().await;
+
+    for (script, signal) in [
+        ("kill -TERM $$; sleep 5", 15),
+        ("kill -HUP $$; sleep 5", 1),
+        ("kill -KILL $$; sleep 5", 9),
+    ] {
+        let session = create(&client, sh(script)).await;
+        let exited = wait_event(&mut events, "session.exited", |e| match e {
+            Event::SessionExited {
+                session_id,
+                code,
+                signal,
+            } if *session_id == session.id => Some((*code, *signal)),
+            _ => None,
+        })
+        .await;
+        assert_eq!(exited, (None, Some(signal)), "{script}");
+        let listed = client
+            .call::<SessionList>(Request::SessionList(SessionListFilter::default()))
+            .await
+            .unwrap();
+        let state = &listed
+            .sessions
+            .iter()
+            .find(|s| s.id == session.id)
+            .unwrap()
+            .state;
+        assert_eq!(
+            *state,
+            SessionState::Exited {
+                code: None,
+                signal: Some(signal)
+            }
+        );
+    }
+    t.stop().await;
+}
+
+// Restart cwd -----------------------------------------------------------------------------------
+
+/// First run: `cd` to `$TARGET`, report it with OSC 7, exit. Later runs (the marker exists):
+/// print where they were started.
+const REPORT_THEN_SHOW: &str = r#"
+if [ -e "$MARK" ]; then
+    echo "NOW-IN=$(pwd -P)"
+    exec cat
+fi
+touch "$MARK"
+cd "$TARGET" || exit 1
+printf '\033]7;file://localhost%s\007' "$(pwd -P)"
+echo FIRST-RUN
+"#;
+
+/// Exits the first run, then waits until the registry shows `cwd` and the exit.
+async fn wait_exited_with_cwd(client: &Client, id: SessionId, cwd: &std::path::Path) {
+    timeout(WAIT, async {
+        loop {
+            let listed = client
+                .call::<SessionList>(Request::SessionList(SessionListFilter::default()))
+                .await
+                .unwrap();
+            let session = listed.sessions.iter().find(|s| s.id == id).unwrap();
+            if matches!(session.state, SessionState::Exited { .. })
+                && session.cwd.as_deref() == Some(cwd)
+            {
+                return;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("session never exited with cwd {}", cwd.display()));
+}
+
+async fn restart(client: &Client, id: SessionId) -> heeler_protocol::messages::SessionInfo {
+    client
+        .call::<SessionResult>(Request::SessionRestart(SessionRef { session_id: id }))
+        .await
+        .unwrap()
+        .session
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_starts_in_the_cwd_the_program_last_reported() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    let work = tempfile::tempdir().unwrap();
+    let target = work.path().join("reported").canonicalize_or_create();
+    let mark = work.path().join("ran");
+
+    let mut spec = sh(REPORT_THEN_SHOW);
+    spec.cwd = Some(PathBuf::from("/"));
+    spec.env
+        .insert("TARGET".into(), target.display().to_string());
+    spec.env.insert("MARK".into(), mark.display().to_string());
+    let session = create(&client, spec).await;
+    assert_eq!(session.cwd, Some(PathBuf::from("/")));
+    wait_exited_with_cwd(&client, session.id, &target).await;
+
+    let restarted = restart(&client, session.id).await;
+    assert_eq!(
+        restarted.cwd,
+        Some(target.clone()),
+        "SessionInfo reflects it"
+    );
+    let mut view = View::attach(&client, terminal_of(&restarted), None).await;
+    let expected = format!("NOW-IN={}", target.display());
+    // The temp path is longer than the 80 columns: look through the wrap.
+    view.wait_for("restarted in the reported directory", |s| {
+        s.lines.concat().contains(&expected)
+    })
+    .await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_falls_back_to_the_spec_cwd_when_the_reported_directory_is_gone() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    let work = tempfile::tempdir().unwrap();
+    let target = work.path().join("doomed").canonicalize_or_create();
+    let mark = work.path().join("ran");
+
+    let mut spec = sh(REPORT_THEN_SHOW);
+    spec.cwd = Some(PathBuf::from("/"));
+    spec.env
+        .insert("TARGET".into(), target.display().to_string());
+    spec.env.insert("MARK".into(), mark.display().to_string());
+    let session = create(&client, spec).await;
+    wait_exited_with_cwd(&client, session.id, &target).await;
+
+    std::fs::remove_dir(&target).unwrap();
+    let restarted = restart(&client, session.id).await;
+    assert_eq!(restarted.cwd, Some(PathBuf::from("/")));
+    let mut view = View::attach(&client, terminal_of(&restarted), None).await;
+    view.wait_for("restarted in the spec directory", |s| {
+        s.contains("NOW-IN=/")
+    })
+    .await;
+    t.stop().await;
+}
+
+/// Creates the directory and returns its canonical path (macOS temp dirs sit behind symlinks,
+/// and `pwd -P` reports the physical path).
+trait CanonicalizeOrCreate {
+    fn canonicalize_or_create(self) -> PathBuf;
+}
+
+impl CanonicalizeOrCreate for PathBuf {
+    fn canonicalize_or_create(self) -> PathBuf {
+        std::fs::create_dir_all(&self).unwrap();
+        self.canonicalize().unwrap()
+    }
 }

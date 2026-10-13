@@ -128,6 +128,8 @@ pub struct ConnContext {
     pub clients: Arc<AtomicU32>,
     pub outbound_queue: usize,
     pub daemon_uid: u32,
+    /// How long a new connection may stay silent before `hello` arrives.
+    pub handshake_timeout: Duration,
     next_conn_id: AtomicU64,
 }
 
@@ -139,6 +141,7 @@ impl ConnContext {
         clients: Arc<AtomicU32>,
         outbound_queue: usize,
         daemon_uid: u32,
+        handshake_timeout: Duration,
     ) -> Self {
         Self {
             router,
@@ -147,6 +150,7 @@ impl ConnContext {
             clients,
             outbound_queue,
             daemon_uid,
+            handshake_timeout,
             next_conn_id: AtomicU64::new(1),
         }
     }
@@ -336,14 +340,22 @@ async fn handle_input(frame: &Frame, handle: &ConnHandle, ctx: &ConnContext) -> 
     }
 }
 
-/// First frame must be `hello`. On success the welcome (and any replay) is queued and the
-/// client's info is returned.
+/// First frame must be `hello`, and must arrive within the handshake timeout. On success the
+/// welcome (and any replay) is queued and the client's info is returned.
 async fn handshake(
     reader: &mut Reader,
     handle: &ConnHandle,
     ctx: &ConnContext,
 ) -> Option<ClientInfo> {
-    let frame = next_frame(reader, handle, ctx).await?;
+    let Ok(first) = timeout(ctx.handshake_timeout, next_frame(reader, handle, ctx)).await else {
+        debug!(
+            conn = %handle.id,
+            timeout_ms = ctx.handshake_timeout.as_millis(),
+            "closing connection: no hello within the handshake timeout"
+        );
+        return None;
+    };
+    let frame = first?;
     let (id, hello) = match parse_hello(&frame) {
         Ok(parsed) => parsed,
         Err((id, error)) => {

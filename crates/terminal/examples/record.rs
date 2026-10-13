@@ -1,7 +1,8 @@
-//! Corpus recorder: runs a command in an 80×24 PTY, answers the terminal's queries through a
-//! live engine (so programs such as vim see a real terminal), and stores
-//! `tests/corpus/recorded/<name>.raw` (the exact bytes the program wrote) plus
-//! `<name>.grid` (the final screen as text, from a fresh replay of the raw bytes).
+//! Corpus recorder: runs a command in a PTY (80×24 unless `--size` says otherwise), answers the
+//! terminal's queries through a live engine (so programs such as vim see a real terminal), and
+//! stores `tests/corpus/recorded/<name>.raw` (the exact bytes the program wrote) plus
+//! `<name>.grid` (the final screen as text, from a fresh replay of the raw bytes). A size other
+//! than 80×24 is stored as `<name>.size` (`COLSxROWS`) so the replay uses it.
 //!
 //! ```text
 //! cargo run -p heeler-terminal --example record -- <name> [options] -- <argv…>
@@ -9,6 +10,7 @@
 //!                               repeatable, executed in order
 //!   --timeout-ms <ms>           kill the program if it runs longer (default 10000)
 //!   --env KEY=VALUE             extra environment, repeatable
+//!   --size COLSxROWS            terminal size (default 80x24)
 //! ```
 
 use std::io::{Read, Write};
@@ -31,6 +33,8 @@ struct Args {
     sends: Vec<(u64, Vec<u8>)>,
     timeout: Duration,
     env: Vec<(String, String)>,
+    cols: u16,
+    rows: u16,
     argv: Vec<String>,
 }
 
@@ -76,6 +80,8 @@ fn parse_args() -> Result<Args> {
         sends: Vec::new(),
         timeout: Duration::from_secs(10),
         env: Vec::new(),
+        cols: 80,
+        rows: 24,
         argv: Vec::new(),
     };
     while let Some(arg) = args.next() {
@@ -100,6 +106,12 @@ fn parse_args() -> Result<Args> {
                 let (key, value) = pair.split_once('=').ok_or("--env needs KEY=VALUE")?;
                 parsed.env.push((key.to_owned(), value.to_owned()));
             }
+            "--size" => {
+                let spec = args.next().ok_or("--size needs COLSxROWS")?;
+                let (cols, rows) = spec.split_once('x').ok_or("--size needs COLSxROWS")?;
+                parsed.cols = cols.parse()?;
+                parsed.rows = rows.parse()?;
+            }
             other => return Err(format!("unknown option {other}").into()),
         }
     }
@@ -112,15 +124,15 @@ fn parse_args() -> Result<Args> {
 fn main() -> Result<()> {
     let args = parse_args()?;
     let size = TerminalSize {
-        cols: 80,
-        rows: 24,
+        cols: args.cols,
+        rows: args.rows,
         pixel_width: 0,
         pixel_height: 0,
     };
 
     let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
+        rows: args.rows,
+        cols: args.cols,
         pixel_width: 0,
         pixel_height: 0,
     })?;
@@ -211,6 +223,12 @@ fn main() -> Result<()> {
         dir.join(format!("{}.grid", args.name)),
         format!("{}\n", grid.trim_end()),
     )?;
+    let size_file = dir.join(format!("{}.size", args.name));
+    if (args.cols, args.rows) == (80, 24) {
+        let _ = std::fs::remove_file(&size_file);
+    } else {
+        std::fs::write(&size_file, format!("{}x{}\n", args.cols, args.rows))?;
+    }
     eprintln!(
         "recorded {}: {} bytes, exit {status}{} -> {}",
         args.name,

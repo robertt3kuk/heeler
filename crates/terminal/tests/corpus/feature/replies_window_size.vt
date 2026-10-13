@@ -1,0 +1,2 @@
+// CSI 18 t (chars), 14 t (window pixels), 16 t (cell pixels) at 100x30 cells, 1000x600 px
+\e[18t\e[14t\e[16t

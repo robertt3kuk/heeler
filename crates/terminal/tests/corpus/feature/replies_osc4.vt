@@ -1,0 +1,4 @@
+// OSC 4 queries: standard xterm table (ansi, cube, grey ramp), an app override, two in one string
+\e]4;1;?\a\e]4;21;?\e\\\e]4;255;?\a
+\e]4;2;rgb:ff/80/00\a\e]4;2;?\a
+\e]4;196;?;232;?\a

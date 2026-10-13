@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::TerminalSnapshot;
-use heeler_terminal::{PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
+use heeler_terminal::{
+    DefaultColors, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
+};
 use tokio::time::timeout;
 
 const LIMIT: Duration = Duration::from_secs(15);
@@ -176,6 +178,48 @@ async fn engine_replies_reach_the_child_byte_for_byte() {
 }
 
 #[tokio::test]
+async fn color_and_window_size_queries_reach_the_child() {
+    // OSC 10 (ST-terminated, configured default colour), OSC 4 (BEL-terminated, xterm table)
+    // and CSI 14/16/18 t; the child reads the exact reply bytes and shows them with `cat -v`.
+    let reply = "\x1b]10;rgb:0a0a/0b0b/0c0c\x1b\\\x1b]4;9;rgb:ffff/0000/0000\x07\x1b[4;480;800t\x1b[6;20;10t\x1b[8;24;80t";
+    let script = format!(
+        r#"stty raw -echo; printf '\033]10;?\033\\\033]4;9;?\007\033[14t\033[16t\033[18t'; dd bs=1 count={} 2>/dev/null | cat -v; printf '\nDONE\n'"#,
+        reply.len()
+    );
+    let mut cfg = config(&["/bin/sh", "-c", &script]);
+    cfg.size = TerminalSize {
+        cols: 80,
+        rows: 24,
+        pixel_width: 800,
+        pixel_height: 480,
+    };
+    cfg.default_colors = DefaultColors {
+        foreground: (0x0a, 0x0b, 0x0c),
+        ..DefaultColors::default()
+    };
+    let term = Terminal::spawn(cfg).expect("spawn");
+    let snapshot = wait_for(&term, "replies", |s| text(s).contains("DONE")).await;
+    let want = "^[]10;rgb:0a0a/0b0b/0c0c^[\\^[]4;9;rgb:ffff/0000/0000^G^[[4;480;800t^[[6;20;10t^[[8;24;80t";
+    // The 83-column reply wraps once at 80 columns.
+    let screen = text(&snapshot);
+    assert!(screen.replace('\n', "").contains(want), "screen:\n{screen}");
+}
+
+#[tokio::test]
+async fn exit_reports_the_code_or_the_raw_signal_number() {
+    for (script, code, signal) in [
+        ("exit 3", Some(3), None),
+        ("kill -TERM $$; sleep 5", None, Some(15)),
+        ("kill -KILL $$; sleep 5", None, Some(9)),
+        ("kill -HUP $$; sleep 5", None, Some(1)),
+    ] {
+        let term = Terminal::spawn(config(&["/bin/sh", "-c", script])).expect("spawn");
+        let status = timeout(LIMIT, term.wait_exit()).await.expect("exit");
+        assert_eq!((status.code, status.signal), (code, signal), "{script}");
+    }
+}
+
+#[tokio::test]
 async fn unclosed_synchronized_batch_is_rendered_after_the_timeout() {
     let script = r#"printf '\033[?2026hSYNCED'; sleep 5"#;
     let started = Instant::now();
@@ -246,10 +290,7 @@ async fn terminate_hangs_up_then_kills_after_the_grace_period() {
     term.terminate(Duration::from_millis(400))
         .expect("terminate");
     let status = timeout(LIMIT, term.wait_exit()).await.expect("exit");
-    assert!(
-        status.signal.is_some(),
-        "killed by a signal, got {status:?}"
-    );
+    assert_eq!(status.signal, Some(9), "killed by SIGKILL, got {status:?}");
     assert!(
         started.elapsed() >= Duration::from_millis(300),
         "grace period was honoured"

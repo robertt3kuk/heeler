@@ -1,0 +1,2 @@
+// OSC 10/11/12 queries: terminator echo (BEL, then ST); defaults d4d4d4 / 1e1e1e / d4d4d4
+\e]10;?\a\e]11;?\e\\\e]12;?\a

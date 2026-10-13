@@ -725,3 +725,47 @@ async fn client_autostarts_heelerd_when_the_socket_is_absent() {
     .await
     .unwrap();
 }
+
+// Handshake timeout ----------------------------------------------------------------------------
+
+/// Waits for the daemon to close `stream`; fails if it stays open past `WAIT`.
+async fn closed_by_daemon(stream: &mut UnixStream) -> Duration {
+    use tokio::io::AsyncReadExt;
+    let started = std::time::Instant::now();
+    let mut buf = [0u8; 64];
+    match timeout(WAIT, stream.read(&mut buf)).await {
+        Ok(Ok(0)) => started.elapsed(),
+        Ok(Ok(n)) => panic!("daemon sent {n} unexpected bytes to a silent peer"),
+        Ok(Err(_)) => started.elapsed(), // reset counts as closed
+        Err(_) => panic!("the daemon kept a silent connection open"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_that_never_says_hello_is_closed_while_others_work() {
+    use tokio::io::AsyncWriteExt;
+    const TIMEOUT: Duration = Duration::from_millis(400);
+    let t = TestDaemon::start_with(|c| c.handshake_timeout = TIMEOUT).await;
+    let client = t.connect().await;
+
+    // One peer says nothing at all, one starts a frame header and stalls.
+    let mut silent = UnixStream::connect(&t.paths.socket).await.unwrap();
+    let mut stalled = UnixStream::connect(&t.paths.socket).await.unwrap();
+    stalled.write_all(&[0x00, 0x00]).await.unwrap();
+
+    // The daemon keeps serving the well-behaved client meanwhile.
+    let _: DaemonStatusInfo = client.call(Request::DaemonStatus(Empty {})).await.unwrap();
+
+    let waited = closed_by_daemon(&mut silent).await;
+    assert!(
+        waited >= TIMEOUT - Duration::from_millis(100),
+        "closed after {waited:?}, before the timeout"
+    );
+    closed_by_daemon(&mut stalled).await;
+
+    // The timeout covers `hello` only: a handshaken client may idle for longer than it.
+    tokio::time::sleep(TIMEOUT + Duration::from_millis(200)).await;
+    let status: DaemonStatusInfo = client.call(Request::DaemonStatus(Empty {})).await.unwrap();
+    assert_eq!(status.clients, 1, "only the handshaken client is counted");
+    t.stop().await;
+}

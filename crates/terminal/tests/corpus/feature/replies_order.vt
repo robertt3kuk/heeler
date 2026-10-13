@@ -1,0 +1,2 @@
+// Replies come back in query order, engine replies and CSI 16 t alike; near-misses get no reply
+\e[5n\e[16t\e[c\e[16;1t\e[?16t\e[6n\e[116t\e[16t

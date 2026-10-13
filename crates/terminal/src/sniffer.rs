@@ -9,6 +9,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
+use crate::queries::is_color_query;
+
 /// Longest OSC payload that is buffered; longer strings are discarded when they end.
 const MAX_OSC_LEN: usize = 8 * 1024;
 
@@ -63,8 +65,15 @@ impl OscSniffer {
         }
     }
 
-    /// Scans `bytes`, appending any complete metadata events to `out`.
-    pub(crate) fn feed(&mut self, bytes: &[u8], out: &mut Vec<TerminalMeta>) {
+    /// Scans `bytes`, appending any complete metadata events to `out` and, for every colour
+    /// query (OSC 4/10/11/12 with a `?`), the offset just past the byte that ended it to
+    /// `color_queries`: the engine has handled the query once it consumed `bytes[..offset]`.
+    pub(crate) fn feed(
+        &mut self,
+        bytes: &[u8],
+        out: &mut Vec<TerminalMeta>,
+        color_queries: &mut Vec<usize>,
+    ) {
         let mut i = 0;
         while i < bytes.len() {
             match self.state {
@@ -95,11 +104,11 @@ impl OscSniffer {
                     i += 1;
                     match b {
                         0x07 | 0x18 | 0x1a => {
-                            self.finish(out);
+                            self.finish(out, color_queries, i);
                             self.state = State::Ground;
                         }
                         0x1b => {
-                            self.finish(out);
+                            self.finish(out, color_queries, i);
                             self.state = State::Escape;
                         }
                         0x00..=0x06 | 0x08..=0x17 | 0x19 | 0x1c..=0x1f => {}
@@ -111,11 +120,15 @@ impl OscSniffer {
         }
     }
 
-    fn finish(&mut self, out: &mut Vec<TerminalMeta>) {
-        if !self.overflow
-            && let Some(meta) = parse_osc(&self.buf)
-        {
-            out.push(meta);
+    /// Completes the OSC string that ended just before offset `end`.
+    fn finish(&mut self, out: &mut Vec<TerminalMeta>, color_queries: &mut Vec<usize>, end: usize) {
+        if !self.overflow {
+            if let Some(meta) = parse_osc(&self.buf) {
+                out.push(meta);
+            }
+            if is_color_query(&self.buf) {
+                color_queries.push(end);
+            }
         }
         self.buf.clear();
         self.overflow = false;
@@ -207,7 +220,7 @@ mod tests {
         let mut sniffer = OscSniffer::new();
         let mut out = Vec::new();
         for chunk in chunks {
-            sniffer.feed(chunk, &mut out);
+            sniffer.feed(chunk, &mut out, &mut Vec::new());
         }
         out
     }

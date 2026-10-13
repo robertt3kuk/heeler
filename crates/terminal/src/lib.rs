@@ -7,12 +7,13 @@
 
 mod emulator;
 mod error;
+mod queries;
 mod render;
 mod sniffer;
 mod sys;
 mod terminal;
 
-pub use emulator::Emulator;
+pub use emulator::{DefaultColors, Emulator};
 pub use error::TerminalError;
 pub use render::RenderTracker;
 pub use sniffer::{PromptMark, TerminalMeta};

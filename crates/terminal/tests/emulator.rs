@@ -3,7 +3,7 @@
 
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::{Color, CursorShape};
-use heeler_terminal::{Emulator, RenderTracker};
+use heeler_terminal::{DefaultColors, Emulator, RenderTracker};
 
 fn size(cols: u16, rows: u16) -> TerminalSize {
     TerminalSize {
@@ -223,4 +223,40 @@ fn trailing_blank_cells_are_trimmed_but_styled_blanks_are_kept() {
     assert_eq!(snapshot.lines[0].runs[0].text, "ab");
     let styled = &snapshot.lines[1].runs[0];
     assert_eq!((styled.text.as_str(), styled.bg), ("  ", Color::Indexed(1)));
+}
+
+#[test]
+fn configured_default_colors_answer_osc_queries_until_the_app_overrides_them() {
+    let mut em = emulator(10, 3).with_default_colors(DefaultColors {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        cursor: (7, 8, 9),
+    });
+    em.feed(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
+    assert_eq!(
+        String::from_utf8_lossy(&em.drain_replies()),
+        "\x1b]10;rgb:0101/0202/0303\x07\x1b]11;rgb:0404/0505/0606\x07\x1b]12;rgb:0707/0808/0909\x07"
+    );
+    em.feed(b"\x1b]11;rgb:ff/ff/ff\x07\x1b]11;?\x07");
+    assert_eq!(
+        String::from_utf8_lossy(&em.drain_replies()),
+        "\x1b]11;rgb:ffff/ffff/ffff\x07"
+    );
+}
+
+#[test]
+fn a_flood_of_queries_is_answered_within_a_bounded_reply_buffer() {
+    let mut em = emulator(10, 3);
+    for _ in 0..4 {
+        em.feed(&b"\x1b]4;1;?\x07\x1b[16t\x1b[14t".repeat(20_000));
+    }
+    let replies = em.drain_replies();
+    assert!(
+        !replies.is_empty() && replies.len() <= 64 * 1024,
+        "{} bytes",
+        replies.len()
+    );
+    // Still alive and answering after the flood.
+    em.feed(b"\x1b[18t");
+    assert_eq!(em.drain_replies(), b"\x1b[8;3;10t");
 }
