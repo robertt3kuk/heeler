@@ -1,0 +1,25 @@
+[package]
+name = "heeler-client"
+description = "Heeler async protocol client: connect (optionally autostarting heelerd), calls, events, terminal streams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+heeler-core.workspace = true
+heeler-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "time", "process"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
