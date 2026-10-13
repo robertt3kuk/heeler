@@ -12,17 +12,7 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
   3. ~~Default detach key~~ → decided: `ctrl+\` then `d` (M1-C).
   4. Product name: "Heeler" is already used by an iOS console for herdr (heeler.bybee.dev) and by heeler.com (AppSec). Keep as codename or rename before any public release.
-- **M1 tech debt** (being paid in M1-DT1 / M1-DT2, briefs in `docs/briefs/`):
-  1. CLI spawn tests run a nested `cargo build -p heeler-daemon`; `heelerd_dir()` duplicated in two test files → DT2.
-  2. Exit signals reported as `strsignal` text and parsed back via a name table → DT1 (numeric signal).
-  3. `terminal.history` unbounded per call → DT1 (5 000 rows / 2 MiB cap, paging).
-  4. ADR 0002 separate-queues text vs single queue + credit → **done**: ADR 0002 amended (bench evidence).
-  5. `session.restart` ignores OSC 7 cwd → DT1.
-  6. (added) No replies to OSC 4/10/11/12 color queries and CSI 14/16/18 t size queries — TUIs like Claude Code/Codex probe these → DT1.
-  7. (added) No `hello` timeout: a silent connection holds resources forever → DT1 (5 s).
-  8. (added) Corpus lacks agent TUIs (omp, codex) → DT1 records startup screens.
-  9. (added) `heeler attach` on an ended session exits 1 instead of showing the final screen the daemon keeps → DT2.
-  - Accepted, not scheduled: `scrolled` always 0 (full dirty rows on scroll; fine locally, revisit for remote clients M9); new link ids from `terminal.history` arrive with the next frame; `SessionInfo.state` nests as `{"state":{"state":…}}` on the wire (fix with the next breaking protocol bump).
+- **M1 tech debt**: all 9 items closed (2026-10-13, see log). Accepted, not scheduled: `scrolled` always 0 (full dirty rows on scroll; fine locally, revisit for remote clients M9); new link ids from `terminal.history` arrive with the next frame; `SessionInfo.state` nests as `{"state":{"state":…}}` on the wire (fix with the next breaking protocol bump); daemon scrollback fixed at 10 000 lines (no config knob yet).
 
 ## Environment notes
 - macOS 26.6.2 arm64, Rust 1.98.0, Xcode installed **without** separate Metal compiler → GPUI needs `runtime_shaders` (ADR 0003).
@@ -33,6 +23,12 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-13 — M1 tech debt paid
+- DT2 (`c3d556a`): CLI tests locate a prebuilt `heelerd` (fail fast with a build hint, no nested `cargo build`), one shared test harness; `just test` builds `--bins` first; `heeler attach` on an ended session shows the final screen and exits 0 with the end line.
+- DT1 (`f217b14`): `ExitStatus.signal` is the numeric signal (terminal reaps via `waitpid` in `sys.rs`, exactly once); replies to OSC 4/10/11/12 color queries (`default_colors` fg `#d4d4d4`, bg `#1e1e1e`) and CSI 14/16/18 t size queries; `terminal.history` capped at 5 000 rows / 2 MiB per call with paging; restart uses the last existing OSC 7 cwd; 5 s `hello` timeout; corpus recordings `omp_startup`, `codex_startup` (100×30, scanned clean; both probe OSC 10/11).
+- Orchestrator: ADR 0002 amended (single queue + credit); `host::size()` falls back to 80×24 for unset PTY dimensions (found in live check: attach from a PTY without a window size sent 0×0 → `bad_request`); implementer agent instructions require absolute worktree paths (two implementers had written into the main checkout first).
+- Verification: `just check` 203 tests green; live release run: `kill -TERM $$` session listed as `exited (signal 15)`, `terminal.history` with `count: 100000` returned 5 000 rows, attach to an exited session over a PTY showed the final text and `[session exited with code 3]`, exit 0.
 
 ### 2026-10-13 — M1-D2 merged, M1 closed
 - `heeler` session commands + `attach` (raw mode guard incl. panic/SIGTERM/SIGHUP restore, write→flush→ack ordering, SIGWINCH resize, 300 ms restart follow), target resolution (id, prefix ≥ 4, `t:N`, title; ambiguous → exit 2), `history`; 22 new CLI tests incl. 11 PTY-driven attach tests; `crates/daemon/examples/flood.rs`; `docs/demos/M1.md`.
