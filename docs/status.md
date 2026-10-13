@@ -3,9 +3,9 @@
 Newest entry first. Every session ends by updating **Current** and adding a log entry (see `process.md`).
 
 ## Current
-- **Milestone**: M1 — Daemon + CLI terminals (M0 done except M0.4, which ships with M1-B)
-- **Active slice**: M1-B (`../heeler-wt/M1-B`, terminal) and M1-C (`../heeler-wt/M1-C`, CLI) running on the `implementer` agent. M1-A merged (`4addc5d`).
-- **Next action**: review/merge M1-B and M1-C per `process.md`; then M1-D integration (orchestrator): session registry with terminals, attach/frames/ack, CLI `new/ls/attach/send`, bench, demo. Decision for M1-D: the `default` workspace cannot be closed, and closing a workspace with live sessions returns `invalid_state`.
+- **Milestone**: M1 — Daemon + CLI terminals (M0 complete)
+- **Active slice**: M1-C (`../heeler-wt/M1-C`, CLI) and M1-D1 (`../heeler-wt/M1-D1`, daemon sessions/attach) running on the `implementer` agent. Merged: M1-A `4addc5d`, M1-B `dd63216`.
+- **Next action**: review/merge M1-C and M1-D1; then M1-D2 (orchestrator): CLI `new/ls/attach/send/stop` on top of both, M1.7 bench, M1 demo.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
@@ -23,6 +23,12 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Log
 
+
+### 2026-10-13 — M1-B merged
+- `heeler-terminal`: `Emulator` (OSC sniffer → alacritty 0.26 → render DTOs), `Terminal` (portable-pty, reader/writer threads, bounded 256-entry input queue, DEC 2026 150 ms timeout, HUP→KILL terminate, reap once), `RenderTracker` diffs; `Terminal::render` returns a snapshot after resize/palette change (frames carry no size/palette). Semantics documented in `protocol.md`.
+- Conformance corpus (M0.4) + recorder/flood examples. Flood: 180.7 MB/s median, 26.2 MiB peak RSS, history exactly 10 000 lines.
+- Orchestrator: rebased (Cargo.lock conflict resolved from master + cargo re-lock), `just check` 81 tests green, reviewed `sys.rs` (only `unsafe`: `killpg`/`kill`).
+- Open: htop/agent TUI recordings; `PromptMark::D` carries exit code; link table capped at 16 384.
 ### 2026-10-13 — M1-A merged
 - `heeler-daemon` (`heelerd` + lib: paths, flock single instance, stale-socket cleanup, peer-UID check via tokio `peer_cred`, event bus ring 10k events / 8 MiB with atomic handshake+replay, bounded per-connection queues closing slow consumers, in-memory workspace registry actor, router) and `heeler-client` (`connect`, `connect_resuming`, `call`, `events`, `terminal_frames`, `send_input`, autostart).
 - Verified by orchestrator: `just check` 48 tests green after rebase; reviewed bus/conn backpressure and replay atomicity. Implementer ran the manual `heelerd` start / second-instance exit 2 / SIGTERM socket cleanup.

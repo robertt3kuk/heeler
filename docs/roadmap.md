@@ -23,16 +23,16 @@ Exit: workspace builds, gate green, protocol v0 types compile with roundtrip tes
 - [x] M0.1 Cargo workspace (`crates/*`, package `heeler-<dir>`), `rust-toolchain.toml` 1.98.0, `clippy.toml`, `deny.toml`, `justfile` (`just check` = fmt + clippy `-D warnings` + nextest + cargo-deny); pinned deps from ADR 0003/0004 in `[workspace.dependencies]`
 - [x] M0.2 `core` IDs (ULID newtypes, `TerminalId`, `Seq`), `SessionState` machine; `protocol` frames + codec, control envelope, typed requests/results/events, render DTOs, error codes; golden fixtures `crates/protocol/tests/fixtures/v0/`
 - [x] M0.3 Accept ADR 0003 GPUI sourcing, 0004 terminal engine, 0005 agent integration (spike evidence in `docs/spikes/`)
-- [ ] M0.4 Terminal conformance corpus: recorder + PTY transcripts (zsh, vim, htop, omp, codex) into `crates/terminal/tests/corpus/`; port spike feature corpus (SGR, alt screen, scroll regions, wide/emoji, OSC 8/133, DEC 2026, DA/DSR/kitty replies). Executed together with M1 branch B (needs the `terminal` crate).
+- [x] M0.4 Terminal conformance corpus in `crates/terminal/tests/corpus/`: 21 feature streams (whole, byte-by-byte, 7-byte chunks) + recordings (zsh, `seq`, vim) replayed to `.grid`. Open: htop (not installed), agent TUIs (omp, codex) need logins — record during M2 demo prep.
 
 ## M1 — Daemon + CLI terminals
 Exit demo: `heeler new -- omp` in one terminal, `heeler attach <id>` from another, detach/reattach, two clients attached at once, `heeler ls --json`; heavy output keeps daemon memory bounded.
 
-Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A** (M1.1 + M1.2, `daemon` + `client`) and **M1-B** (M1.3 + M0.4, `terminal`) run in parallel; **M1-C** (M1.6 part 1, `cli` + host renderer) starts after M1-A merges; **M1-D** integration by the orchestrator: M1.4 attach, M1.5 registry, CLI `new/ls/attach/send`, M1.7 bench, demo.
+Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A** (M1.1 + M1.2, `daemon` + `client`) and **M1-B** (M1.3 + M0.4, `terminal`) in parallel → merged; **M1-C** (M1.6 part 1, `cli` + host renderer) after M1-A; **M1-D1** (M1.4 + M1.5, daemon sessions/attach) after M1-B, parallel with M1-C; **M1-D2** (orchestrator): CLI `new/ls/attach/send/stop`, M1.7 bench, demo.
 
 - [x] M1.1 `heelerd` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Heeler/`
 - [x] M1.2 Connection layer: framing codec, handshake, per-client bounded queues, event ring with epoch/seq, replay
-- [ ] M1.3 `terminal`: PTY spawn (env injection `HEELER_SOCKET`, `HEELER_SESSION_ID`), reader task → engine, resize, input, exit/reap
+- [x] M1.3 `terminal`: PTY spawn, reader thread → OSC sniffer → engine, writer thread, resize, input, exit/reap, render tracker (merged `dd63216`; 180.7 MB/s, 26.2 MiB @10k lines)
 - [ ] M1.4 Terminal attach: render snapshot + ack-paced `TerminalFrame`s + `terminal.history` (ADR 0004); DEC 2026 sync timeout serviced; OSC sniffer (133/7/0/2/9/777)
 - [ ] M1.5 Session registry in memory: create/list/stop/rename; `session.updated` events
 - [ ] M1.6 `heeler` CLI: `daemon start|stop|status`, `new`, `ls`, `attach` (raw mode, detach key), `send`, `api <method> <json>`
