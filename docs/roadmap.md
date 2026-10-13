@@ -33,8 +33,8 @@ Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A
 - [x] M1.1 `heelerd` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Heeler/`
 - [x] M1.2 Connection layer: framing codec, handshake, per-client bounded queues, event ring with epoch/seq, replay
 - [x] M1.3 `terminal`: PTY spawn, reader thread → OSC sniffer → engine, writer thread, resize, input, exit/reap, render tracker (merged `dd63216`; 180.7 MB/s, 26.2 MiB @10k lines)
-- [ ] M1.4 Terminal attach: render snapshot + ack-paced `TerminalFrame`s + `terminal.history` (ADR 0004); DEC 2026 sync timeout serviced; OSC sniffer (133/7/0/2/9/777)
-- [ ] M1.5 Session registry in memory: create/list/stop/rename; `session.updated` events
+- [x] M1.4 Terminal attach: snapshot queued before the response, credit-1 ack pacing (≤ 1 render / 8 ms), `terminal.history`, resize → snapshot, bounded input path (merged `6039594`)
+- [x] M1.5 Session registry in memory: create/list/stop/restart/rename, metadata events (title/bell/notification/cwd), workspace close and shutdown rules (merged `6039594`)
 - [ ] M1.6 `heeler` CLI: `daemon start|stop|status`, `new`, `ls`, `attach` (raw mode, detach key), `send`, `api <method> <json>`
 - [ ] M1.7 Bench: 200 MB output flood, RSS check, recorded in status
 

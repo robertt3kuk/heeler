@@ -4,15 +4,21 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M1 — Daemon + CLI terminals (M0 complete)
-- **Active slice**: M1-C (`../heeler-wt/M1-C`, CLI) and M1-D1 (`../heeler-wt/M1-D1`, daemon sessions/attach) running on the `implementer` agent. Merged: M1-A `4addc5d`, M1-B `dd63216`.
-- **Next action**: review/merge M1-C and M1-D1; then M1-D2 (orchestrator): CLI `new/ls/attach/send/stop` on top of both, M1.7 bench, M1 demo.
+- **Active slice**: M1-D2 (`../heeler-wt/M1-D2`: CLI `new/ls/attach/send/stop/restart/rename/history`, flood bench, `docs/demos/M1.md`) on the `implementer` agent. Merged: M1-A `4addc5d`, M1-B `dd63216`, M1-C `8a4a583`, M1-D1 `6039594`.
+- **Next action**: review/merge M1-D2; run `docs/demos/M1.md` by hand (real TTY) incl. `omp` attach; record bench numbers; close M1.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
-  3. Default detach key for `heeler attach` (proposal: `ctrl+\` then `d`).
+  3. ~~Default detach key~~ → decided: `ctrl+\` then `d` (M1-C).
   4. Product name: "Heeler" is already used by an iOS console for herdr (heeler.bybee.dev) and by heeler.com (AppSec). Keep as codename or rename before any public release.
 
+- **Tech debt** (schedule into later slices):
+  1. `heeler-cli` spawn tests run a nested `cargo build -p heeler-daemon` (profile coupling, slower tests) — replace with a prebuilt-binary fixture or an `xtask` that builds both bins first.
+  2. `heeler-terminal` reports exit signals as `strsignal` text; daemon parses it back via a name table — expose the signal number from the terminal crate.
+  3. `terminal.history` builds the full JSON before the frame-size check — cap `count` per call (e.g. 5 000) and document.
+  4. ADR 0002 says separate control/render queues; implementation uses one bounded queue per connection (safe with credit 1) — reconcile ADR text or split when a second render-heavy client type appears.
+  5. `session.restart` uses the spec `cwd`, not the OSC 7 cwd — revisit with M3 restore.
 ## Environment notes
 - macOS 26.6.2 arm64, Rust 1.98.0, Xcode installed **without** separate Metal compiler → GPUI needs `runtime_shaders` (ADR 0003).
 - Installed Zig 0.16.0 cannot build libghostty-vt 0.2.2 (needs 0.15.2) — not used (ADR 0004).
@@ -22,6 +28,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-13 — M1-C, M1-D1 merged; protocol `SessionResult`
+- M1-C `heeler-cli`: `daemon start|status|stop`, `ws …`, `api`, `events`; exit codes 0/1/2/3; `HostRenderer` (SGR incl. undercurl/underline color, wide runs, OSC 8, modes mirroring, `?2026` wrapping, row diffing, scroll via `CSI S/T`), `DetachDetector`. Orchestrator smoke: start (idempotent), ws new/ls, api, stop, status exit 3.
+- M1-D1 daemon sessions: `heeler-terminal`-backed sessions, attach with credit-1 pacing (snapshot spends credit), bounded input via `spawn_blocking`, metadata events, workspace/shutdown rules, oversized responses → `internal`. 5/5 repeated daemon suite runs green. Reviewed `terminals.rs` render loop (ack → damage → coalesce → render).
+- Orchestrator contract change: `SessionCreated` → `SessionResult` (create/stop/restart/rename), wire unchanged. `just check` 161 tests green.
 
 ### 2026-10-13 — M1-B merged
 - `heeler-terminal`: `Emulator` (OSC sniffer → alacritty 0.26 → render DTOs), `Terminal` (portable-pty, reader/writer threads, bounded 256-entry input queue, DEC 2026 150 ms timeout, HUP→KILL terminate, reap once), `RenderTracker` diffs; `Terminal::render` returns a snapshot after resize/palette change (frames carry no size/palette). Semantics documented in `protocol.md`.
