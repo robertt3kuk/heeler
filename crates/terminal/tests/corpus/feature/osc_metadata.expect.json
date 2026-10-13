@@ -1,0 +1,12 @@
+{
+  "size": [20, 5],
+  "title": "second",
+  "meta": [
+    "Title(\"first\")",
+    "Title(\"second\")",
+    "Cwd(\"/Users/me/a b\")",
+    "Notification { title: \"\", body: \"hello\" }",
+    "Notification { title: \"Build\", body: \"done\" }",
+    "Bell"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "size": [20, 5],
+  "grid": ["primary"],
+  "modes": {"alt_screen": false},
+  "cursor": {"col": 0, "row": 1, "visible": true}
+}

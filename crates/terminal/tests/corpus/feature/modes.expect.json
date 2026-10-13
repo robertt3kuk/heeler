@@ -1,0 +1,13 @@
+{
+  "modes": {
+    "alt_screen": false,
+    "app_cursor": true,
+    "app_keypad": true,
+    "bracketed_paste": true,
+    "mouse": "click",
+    "mouse_sgr": true,
+    "focus_events": true,
+    "alternate_scroll": true,
+    "kitty_keyboard": 0
+  }
+}

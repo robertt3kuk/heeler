@@ -1,0 +1,5 @@
+{
+  "size": [30, 3],
+  "grid": ["beforebatched"],
+  "sync_pending": false
+}

@@ -1,0 +1,8 @@
+{
+  "palette": {
+    "indexed": [[1, [255, 0, 0]]],
+    "foreground": [17, 34, 51],
+    "background": [68, 85, 102],
+    "cursor": [119, 136, 153]
+  }
+}

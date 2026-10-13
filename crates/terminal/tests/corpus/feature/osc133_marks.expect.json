@@ -1,0 +1,11 @@
+{
+  "size": [20, 5],
+  "grid": ["$ cmd", "out"],
+  "meta": [
+    "PromptMark(A)",
+    "PromptMark(B)",
+    "PromptMark(C)",
+    "PromptMark(D { exit_code: Some(0) })",
+    "PromptMark(D { exit_code: None })"
+  ]
+}

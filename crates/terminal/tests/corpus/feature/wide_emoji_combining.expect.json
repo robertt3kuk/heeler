@@ -1,0 +1,12 @@
+{
+  "size": [20, 3],
+  "runs": {
+    "0": [
+      {"text": "界😀", "flags": "WIDE"},
+      {"text": "e\u0301 ", "flags": ""},
+      {"text": "👩\u200d💻", "flags": "WIDE"}
+    ],
+    "1": [{"text": "x", "flags": ""}]
+  },
+  "cursor": {"col": 1, "row": 1}
+}

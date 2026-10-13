@@ -1,0 +1,7 @@
+{
+  "size": [20, 5],
+  "grid": ["alt-screen"],
+  "modes": {"alt_screen": true},
+  "cursor": {"col": 10, "row": 0},
+  "history_len": 0
+}

@@ -1,0 +1,13 @@
+{
+  "size": [40, 10],
+  "runs": {
+    "0": [{"text": "red", "fg": {"indexed": 1}, "bg": "default", "flags": ""}],
+    "1": [{"text": "brightgreen", "fg": {"indexed": 10}}],
+    "2": [{"text": "i196", "fg": {"indexed": 196}}],
+    "3": [{"text": "rgb", "fg": {"rgb": [1, 2, 3]}, "bg": {"rgb": [4, 5, 6]}}],
+    "4": [{"text": "multi", "flags": "BOLD | ITALIC | INVERSE | STRIKETHROUGH"}],
+    "5": [{"text": "dim", "flags": "DIM"}, {"text": "hid", "flags": "HIDDEN"}],
+    "6": [{"text": "bgfg", "fg": {"indexed": 3}, "bg": {"indexed": 4}}]
+  },
+  "grid": ["red", "brightgreen", "i196", "rgb", "multi", "dimhid", "bgfg"]
+}

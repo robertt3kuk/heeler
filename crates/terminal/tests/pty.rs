@@ -1,0 +1,311 @@
+//! Real PTYs: spawn, input, resize, alternate screen, replies, metadata, teardown.
+#![allow(clippy::expect_used)] // tests assert by panicking
+
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use heeler_protocol::messages::TerminalSize;
+use heeler_protocol::render::TerminalSnapshot;
+use heeler_terminal::{PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
+use tokio::time::timeout;
+
+const LIMIT: Duration = Duration::from_secs(15);
+
+fn size(cols: u16, rows: u16) -> TerminalSize {
+    TerminalSize {
+        cols,
+        rows,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn config(argv: &[&str]) -> TerminalConfig {
+    TerminalConfig {
+        argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        size: size(80, 24),
+        env: BTreeMap::from([("PS1".to_owned(), "$ ".to_owned())]),
+        ..TerminalConfig::default()
+    }
+}
+
+fn text(snapshot: &TerminalSnapshot) -> String {
+    snapshot
+        .lines
+        .iter()
+        .map(|row| {
+            row.runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Waits until `check` accepts a fresh snapshot, re-evaluating on every damage notification.
+async fn wait_for(
+    term: &Terminal,
+    what: &str,
+    check: impl Fn(&TerminalSnapshot) -> bool,
+) -> TerminalSnapshot {
+    let mut damage = term.damage();
+    let mut tracker = RenderTracker::new();
+    let result = timeout(LIMIT, async {
+        loop {
+            let snapshot = term.snapshot(&mut tracker);
+            if check(&snapshot) {
+                return snapshot;
+            }
+            if damage.changed().await.is_err() {
+                return snapshot;
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(snapshot) if check(&snapshot) => snapshot,
+        Ok(snapshot) => panic!(
+            "{what}: terminal closed first; screen:\n{}",
+            text(&snapshot)
+        ),
+        Err(_) => panic!(
+            "{what}: timed out; screen:\n{}",
+            text(&term.snapshot(&mut RenderTracker::new()))
+        ),
+    }
+}
+
+#[tokio::test]
+async fn echo_round_trip_through_write_input() {
+    let term = Terminal::spawn(config(&["/bin/sh"])).expect("spawn sh");
+    assert!(term.pid().is_some());
+    wait_for(&term, "prompt", |s| text(s).contains('$')).await;
+    term.write_input(b"echo heeler-$((20+22))\n")
+        .expect("write");
+    // The typed line contains `heeler-$((`; only the shell's output contains `heeler-42`.
+    let snapshot = wait_for(&term, "echo output", |s| text(s).contains("heeler-42")).await;
+    assert_eq!(snapshot.cols, 80);
+    term.write_input(b"exit 7\n").expect("write");
+    let status = timeout(LIMIT, term.wait_exit())
+        .await
+        .expect("exit in time");
+    assert_eq!(status.code, Some(7));
+    assert!(term.pid().is_none());
+    assert!(
+        term.write_input(b"x").is_err(),
+        "input after exit is rejected"
+    );
+}
+
+#[tokio::test]
+async fn resize_is_observed_by_the_child() {
+    let term = Terminal::spawn(config(&["/bin/sh"])).expect("spawn sh");
+    wait_for(&term, "prompt", |s| text(s).contains('$')).await;
+    term.write_input(b"stty size\n").expect("write");
+    wait_for(&term, "initial size", |s| {
+        text(s).lines().any(|l| l.trim() == "24 80")
+    })
+    .await;
+
+    term.resize(size(100, 30)).expect("resize");
+    assert_eq!((term.size().cols, term.size().rows), (100, 30));
+    term.write_input(b"stty size\n").expect("write");
+    let snapshot = wait_for(&term, "resized", |s| {
+        text(s).lines().any(|l| l.trim() == "30 100")
+    })
+    .await;
+    assert_eq!(
+        (snapshot.cols, snapshot.rows, snapshot.lines.len()),
+        (100, 30, 30)
+    );
+
+    let mut tracker = RenderTracker::new();
+    term.snapshot(&mut tracker);
+    term.resize(size(90, 20)).expect("resize");
+    assert!(
+        term.frame(&mut tracker).is_none(),
+        "a resized tracker needs a snapshot, not a frame"
+    );
+    assert!(matches!(
+        term.render(&mut tracker),
+        Some(heeler_protocol::render::TerminalRender::Snapshot(s)) if (s.cols, s.rows) == (90, 20)
+    ));
+    assert!(term.resize(size(0, 5)).is_err());
+    term.terminate(Duration::from_secs(1)).expect("terminate");
+    timeout(LIMIT, term.wait_exit()).await.expect("exit");
+}
+
+#[tokio::test]
+async fn vim_enters_the_alternate_screen_and_returns() {
+    let term = Terminal::spawn(config(&["vim", "-u", "NONE", "-n"])).expect("spawn vim");
+    let snapshot = wait_for(&term, "vim alt screen", |s| {
+        s.modes.alt_screen && text(s).contains('~')
+    })
+    .await;
+    assert!(snapshot.modes.alt_screen);
+
+    term.write_input(b"ihello heeler\x1b").expect("write");
+    wait_for(&term, "inserted text", |s| text(s).contains("hello heeler")).await;
+
+    term.write_input(b":q!\r").expect("write");
+    let status = timeout(LIMIT, term.wait_exit()).await.expect("vim exits");
+    assert_eq!(status.code, Some(0));
+    let mut tracker = RenderTracker::new();
+    let snapshot = term.snapshot(&mut tracker);
+    assert!(!snapshot.modes.alt_screen, "alternate screen was left");
+    assert!(
+        !text(&snapshot).contains("hello heeler"),
+        "primary screen restored"
+    );
+}
+
+#[tokio::test]
+async fn engine_replies_reach_the_child_byte_for_byte() {
+    // The child switches to raw mode without echo, emits primary DA and DSR-5 queries, reads
+    // exactly the 9 reply bytes (`ESC[?6c` + `ESC[0n`) from its stdin and shows them with
+    // `cat -v` (ESC rendered as `^[`).
+    let script = r#"stty raw -echo; printf '\033[c\033[5n'; dd bs=1 count=9 2>/dev/null | cat -v; printf '\nDONE\n'"#;
+    let term = Terminal::spawn(config(&["/bin/sh", "-c", script])).expect("spawn");
+    let snapshot = wait_for(&term, "replies", |s| text(s).contains("DONE")).await;
+    assert!(
+        text(&snapshot).contains("^[[?6c^[[0n"),
+        "screen:\n{}",
+        text(&snapshot)
+    );
+}
+
+#[tokio::test]
+async fn unclosed_synchronized_batch_is_rendered_after_the_timeout() {
+    let script = r#"printf '\033[?2026hSYNCED'; sleep 5"#;
+    let started = Instant::now();
+    let term = Terminal::spawn(config(&["/bin/sh", "-c", script])).expect("spawn");
+    let mut damage = term.damage();
+    timeout(LIMIT, damage.changed())
+        .await
+        .expect("damage in time")
+        .expect("sender alive");
+    let elapsed = started.elapsed();
+    // The first damage can only be the forced end of the batch, 150 ms after it opened.
+    assert!(
+        elapsed >= Duration::from_millis(120),
+        "rendered too early: {elapsed:?}"
+    );
+    let snapshot = term.snapshot(&mut RenderTracker::new());
+    assert!(text(&snapshot).contains("SYNCED"));
+    term.terminate(Duration::from_secs(1)).expect("terminate");
+    timeout(LIMIT, term.wait_exit()).await.expect("exit");
+}
+
+#[tokio::test]
+async fn metadata_events_are_broadcast() {
+    let term = Terminal::spawn(config(&["/bin/sh"])).expect("spawn sh");
+    wait_for(&term, "prompt", |s| text(s).contains('$')).await;
+    let mut meta = term.metadata();
+    term.write_input(
+        b"printf '\\033]0;heeler-title\\007\\033]133;A\\007\\033]7;file://h/tmp/x\\007\\a'\n",
+    )
+    .expect("write");
+    let mut seen = Vec::new();
+    timeout(LIMIT, async {
+        while seen.len() < 4 {
+            match meta.recv().await {
+                Ok(event) => seen.push(event),
+                Err(error) => panic!("metadata channel: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("metadata in time");
+    assert_eq!(
+        seen,
+        [
+            TerminalMeta::Title("heeler-title".to_owned()),
+            TerminalMeta::PromptMark(PromptMark::A),
+            TerminalMeta::Cwd("/tmp/x".into()),
+            TerminalMeta::Bell,
+        ]
+    );
+    let snapshot = term.snapshot(&mut RenderTracker::new());
+    assert_eq!(snapshot.title.as_deref(), Some("heeler-title"));
+    term.terminate(Duration::from_secs(1)).expect("terminate");
+    timeout(LIMIT, term.wait_exit()).await.expect("exit");
+}
+
+#[tokio::test]
+async fn terminate_hangs_up_then_kills_after_the_grace_period() {
+    // A child that ignores SIGHUP survives the hang-up and is killed once the grace elapsed.
+    let term = Terminal::spawn(config(&[
+        "/bin/sh",
+        "-c",
+        "trap '' HUP; echo ready; while :; do sleep 1; done",
+    ]))
+    .expect("spawn");
+    wait_for(&term, "ready", |s| text(s).contains("ready")).await;
+    let started = Instant::now();
+    term.terminate(Duration::from_millis(400))
+        .expect("terminate");
+    let status = timeout(LIMIT, term.wait_exit()).await.expect("exit");
+    assert!(
+        status.signal.is_some(),
+        "killed by a signal, got {status:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "grace period was honoured"
+    );
+    // Reaped exactly once: waiting again yields the same status.
+    assert_eq!(
+        timeout(LIMIT, term.wait_exit()).await.expect("exit"),
+        status
+    );
+}
+
+#[tokio::test]
+async fn environment_and_cwd_are_applied() {
+    let mut cfg = config(&[
+        "/bin/sh",
+        "-c",
+        "echo T=$TERM C=$COLORTERM P=$TERM_PROGRAM X=$HEELER_X; pwd",
+    ]);
+    cfg.env.insert("HEELER_X".to_owned(), "yes".to_owned());
+    cfg.env.insert("TERM".to_owned(), "dumb".to_owned());
+    cfg.cwd = Some("/".into());
+    let term = Terminal::spawn(cfg).expect("spawn");
+    let status = timeout(LIMIT, term.wait_exit()).await.expect("exit");
+    assert!(status.success());
+    let screen = text(&term.snapshot(&mut RenderTracker::new()));
+    assert!(
+        screen.contains("T=xterm-256color C=truecolor P=heeler X=yes"),
+        "screen:\n{screen}"
+    );
+    assert!(screen.lines().any(|l| l.trim() == "/"), "screen:\n{screen}");
+}
+
+#[tokio::test]
+async fn spawning_a_missing_program_fails_cleanly() {
+    let error =
+        Terminal::spawn(config(&["/definitely/not/a/program"])).expect_err("spawn must fail");
+    assert!(
+        error.to_string().contains("/definitely/not/a/program"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn default_argv_starts_the_login_shell() {
+    let mut cfg = config(&[]);
+    cfg.env.insert("SHELL".to_owned(), "/bin/sh".to_owned());
+    let term = Terminal::spawn(cfg).expect("spawn default shell");
+    assert!(term.pid().is_some());
+    term.terminate(Duration::from_secs(1)).expect("terminate");
+    timeout(LIMIT, term.wait_exit()).await.expect("exit");
+}
+
+#[test]
+fn handles_are_send_sync_and_cheap_to_clone() {
+    fn assert_send_sync<T: Send + Sync + Clone>() {}
+    assert_send_sync::<Terminal>();
+    fn assert_send<T: Send>() {}
+    assert_send::<RenderTracker>();
+}

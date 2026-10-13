@@ -1,0 +1,6 @@
+{
+  "size": [10, 3],
+  "grid": ["3", "4", "5"],
+  "history_len": 2,
+  "history_text": ["2", "1"]
+}

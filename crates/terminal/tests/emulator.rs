@@ -1,0 +1,226 @@
+//! Render tracking, history and bounds of the headless engine.
+#![allow(clippy::expect_used)] // tests assert by panicking
+
+use heeler_protocol::messages::TerminalSize;
+use heeler_protocol::render::{Color, CursorShape};
+use heeler_terminal::{Emulator, RenderTracker};
+
+fn size(cols: u16, rows: u16) -> TerminalSize {
+    TerminalSize {
+        cols,
+        rows,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn emulator(cols: u16, rows: u16) -> Emulator {
+    Emulator::new(size(cols, rows), 10_000).expect("emulator")
+}
+
+#[test]
+fn fresh_tracker_needs_a_snapshot_and_frames_follow() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    assert!(em.needs_snapshot(&tracker));
+    assert!(
+        em.frame(&mut tracker).is_none(),
+        "a fresh tracker never gets a frame"
+    );
+
+    let snapshot = em.snapshot(&mut tracker);
+    assert_eq!((snapshot.cols, snapshot.rows), (10, 3));
+    assert_eq!(snapshot.lines.len(), 3);
+    assert_eq!(snapshot.frame, 1);
+    assert!(!em.needs_snapshot(&tracker));
+    assert!(
+        em.frame(&mut tracker).is_none(),
+        "nothing changed since the snapshot"
+    );
+
+    em.feed(b"hi");
+    let frame = em.frame(&mut tracker).expect("frame after output");
+    assert_eq!(frame.frame, 2);
+    assert_eq!(frame.scrolled, 0);
+    assert_eq!(frame.dirty.len(), 1);
+    assert_eq!(frame.dirty[0].0, 0);
+    assert_eq!(frame.dirty[0].1.runs[0].text, "hi");
+    assert_eq!(frame.cursor.col, 2);
+    assert!(frame.modes.is_none() && frame.title.is_none() && frame.links.is_empty());
+    assert!(em.frame(&mut tracker).is_none());
+}
+
+#[test]
+fn cursor_only_change_produces_a_frame_without_dirty_rows() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    em.snapshot(&mut tracker);
+    em.feed(b"\x1b[2;4H");
+    let frame = em.frame(&mut tracker).expect("cursor moved");
+    assert!(frame.dirty.is_empty());
+    assert_eq!((frame.cursor.col, frame.cursor.row), (3, 1));
+    assert_eq!(frame.cursor.shape, CursorShape::Block);
+}
+
+#[test]
+fn mode_and_title_changes_are_reported_once() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    em.snapshot(&mut tracker);
+    em.feed(b"\x1b[?2004h\x1b]2;hello\x07");
+    let frame = em.frame(&mut tracker).expect("modes and title changed");
+    assert!(frame.modes.is_some_and(|m| m.bracketed_paste));
+    assert_eq!(frame.title, Some(Some("hello".to_owned())));
+    em.feed(b"\x1b]2;\x07");
+    let frame = em.frame(&mut tracker).expect("title cleared");
+    assert_eq!(frame.title, Some(None));
+    assert!(frame.modes.is_none());
+}
+
+#[test]
+fn alt_screen_switch_redraws_changed_rows() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    em.feed(b"main");
+    em.snapshot(&mut tracker);
+    em.feed(b"\x1b[?1049h\x1b[2J\x1b[Halt");
+    let frame = em.frame(&mut tracker).expect("alt screen");
+    assert!(frame.modes.is_some_and(|m| m.alt_screen));
+    assert_eq!(frame.dirty.len(), 1);
+    assert_eq!(frame.dirty[0].1.runs[0].text, "alt");
+    em.feed(b"\x1b[?1049l");
+    let frame = em.frame(&mut tracker).expect("back to primary");
+    assert!(frame.modes.is_some_and(|m| !m.alt_screen));
+    assert_eq!(frame.dirty[0].1.runs[0].text, "main");
+}
+
+#[test]
+fn resize_and_palette_changes_require_a_snapshot() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    em.snapshot(&mut tracker);
+    em.resize(size(12, 4)).expect("resize");
+    assert!(em.needs_snapshot(&tracker));
+    assert!(em.frame(&mut tracker).is_none());
+    let snapshot = em.snapshot(&mut tracker);
+    assert_eq!(
+        (snapshot.cols, snapshot.rows, snapshot.lines.len()),
+        (12, 4, 4)
+    );
+
+    em.feed(b"\x1b]4;5;rgb:01/02/03\x07");
+    assert!(
+        em.needs_snapshot(&tracker),
+        "frames cannot carry palette changes"
+    );
+    let snapshot = em.snapshot(&mut tracker);
+    assert_eq!(snapshot.palette.indexed, vec![(5, (1, 2, 3))]);
+    assert!(!em.needs_snapshot(&tracker));
+}
+
+#[test]
+fn links_are_sent_once_in_the_frame_that_first_references_them() {
+    let mut em = emulator(30, 3);
+    let mut tracker = RenderTracker::new();
+    em.snapshot(&mut tracker);
+    em.feed(b"\x1b]8;;https://a.example\x07a\x1b]8;;\x07");
+    let frame = em.frame(&mut tracker).expect("frame");
+    assert_eq!(frame.links.len(), 1);
+    assert_eq!(
+        (frame.links[0].id, frame.links[0].uri.as_str()),
+        (0, "https://a.example")
+    );
+    assert_eq!(frame.dirty[0].1.runs[0].link, Some(0));
+
+    em.feed(b"\r\n\x1b]8;id=x;https://b.example\x07b\x1b]8;;\x07");
+    let frame = em.frame(&mut tracker).expect("frame");
+    assert_eq!(frame.links.len(), 1);
+    assert_eq!(
+        (frame.links[0].id, frame.links[0].uri.as_str()),
+        (1, "https://b.example")
+    );
+}
+
+#[test]
+fn link_ids_are_stable_across_scrolling_and_history_queries() {
+    let mut em = emulator(20, 2);
+    em.feed(b"\x1b]8;id=k;https://keep.example\x07link\x1b]8;;\x07\r\n1\r\n2\r\n3");
+    let mut tracker = RenderTracker::new();
+    // The link line is in scrollback only: the viewport snapshot does not know it yet.
+    assert!(em.snapshot(&mut tracker).links.is_empty());
+    let linked = |rows: &[heeler_protocol::render::Row]| -> Vec<u32> {
+        rows.iter()
+            .flat_map(|row| &row.runs)
+            .filter_map(|run| run.link)
+            .collect()
+    };
+    assert_eq!(linked(&em.history(0, 10)), vec![0]);
+    // The next frame announces links that were interned in the meantime.
+    em.feed(b"\r\nx");
+    let frame = em.frame(&mut tracker).expect("frame");
+    assert_eq!(frame.links.len(), 1);
+    assert_eq!(frame.links[0].uri, "https://keep.example");
+    // Same id after further scrolling; the table does not grow.
+    assert_eq!(linked(&em.history(0, 10)), vec![0]);
+    assert_eq!(em.links().len(), 1);
+}
+
+#[test]
+fn scrollback_is_bounded_and_history_is_newest_first() {
+    let mut em = Emulator::new(size(10, 3), 100).expect("emulator");
+    for line in 0..5000 {
+        em.feed(format!("line{line}\r\n").as_bytes());
+    }
+    assert_eq!(em.history_len(), 100);
+    let rows = em.history(0, 5);
+    let text: Vec<&str> = rows.iter().map(|r| r.runs[0].text.as_str()).collect();
+    // Viewport shows line4998 + blank (cursor row); history starts right above it.
+    assert_eq!(
+        text,
+        ["line4997", "line4996", "line4995", "line4994", "line4993"]
+    );
+    assert_eq!(em.history(95, 50).len(), 5, "history is shorter at the top");
+    assert!(em.history(100, 10).is_empty());
+}
+
+#[test]
+fn synchronized_output_withholds_visibility_until_closed_or_forced() {
+    let mut em = emulator(20, 3);
+    assert!(em.feed(b"a"));
+    let generation = em.generation();
+    assert!(
+        !em.feed(b"\x1b[?2026hbatched"),
+        "bytes inside an open batch are not visible"
+    );
+    assert_eq!(em.generation(), generation);
+    assert!(em.sync_deadline().is_some());
+    assert_eq!(em.grid_text().lines().next(), Some("a"));
+    em.stop_sync();
+    assert!(em.generation() > generation);
+    assert_eq!(em.grid_text().lines().next(), Some("abatched"));
+    assert!(em.sync_deadline().is_none());
+}
+
+#[test]
+fn degenerate_sizes_are_rejected_and_tiny_ones_work() {
+    assert!(Emulator::new(size(0, 5), 10).is_err());
+    assert!(Emulator::new(size(5, 0), 10).is_err());
+    let mut em = emulator(1, 1);
+    em.feed(b"abc\r\ndef\x1b[?1049h\x1b[?1049l");
+    em.resize(size(3, 2)).expect("resize");
+    assert!(em.resize(size(0, 2)).is_err());
+    let mut tracker = RenderTracker::new();
+    assert_eq!(em.snapshot(&mut tracker).lines.len(), 2);
+}
+
+#[test]
+fn trailing_blank_cells_are_trimmed_but_styled_blanks_are_kept() {
+    let mut em = emulator(10, 2);
+    em.feed(b"ab   \r\n\x1b[41m  \x1b[0m");
+    let mut tracker = RenderTracker::new();
+    let snapshot = em.snapshot(&mut tracker);
+    assert_eq!(snapshot.lines[0].runs.len(), 1);
+    assert_eq!(snapshot.lines[0].runs[0].text, "ab");
+    let styled = &snapshot.lines[1].runs[0];
+    assert_eq!((styled.text.as_str(), styled.bg), ("  ", Color::Indexed(1)));
+}

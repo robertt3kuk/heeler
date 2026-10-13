@@ -1,0 +1,612 @@
+//! PTY ownership around the headless [`Emulator`].
+//!
+//! Threads per terminal:
+//! * `reader` — blocking read of the PTY master → [`Emulator::feed`] → publish damage, forward
+//!   engine replies and metadata.
+//! * `writer` — the single PTY writer. [`Terminal::write_input`] and engine replies (DA, DSR,
+//!   DECRQM, kitty query) all go through its bounded queue, so bytes never interleave.
+//! * `sync` — services the DEC 2026 deadline: a never-closed synchronized batch is force-closed
+//!   after the engine's 150 ms timeout and rendered.
+//! * `waiter` — reaps the child exactly once, lets the other threads release their PTY
+//!   descriptors, then reports the exit status.
+
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use heeler_protocol::messages::TerminalSize;
+use heeler_protocol::render::{Row, TerminalFrame, TerminalRender, TerminalSnapshot};
+use parking_lot::{Condvar, Mutex};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use tokio::sync::{broadcast, watch};
+
+use crate::emulator::Emulator;
+use crate::error::TerminalError;
+use crate::render::RenderTracker;
+use crate::sniffer::TerminalMeta;
+use crate::sys::{self, Signal};
+
+const READ_BUFFER: usize = 64 * 1024;
+/// Queued writer messages (input chunks + replies); input blocks when full, replies are dropped.
+const WRITE_QUEUE: usize = 256;
+const META_CAPACITY: usize = 256;
+/// After the child exits, wait at most this long for the helper threads to release their PTY
+/// file descriptors (a background job holding the slave keeps the reader alive).
+const TEARDOWN_WAIT: Duration = Duration::from_secs(2);
+/// Helper threads holding PTY descriptors: reader, writer, sync.
+const HELPER_THREADS: u32 = 3;
+
+/// Spawns are serialized: `portable-pty` sets `FD_CLOEXEC` after `openpty`, so a concurrent
+/// fork/exec elsewhere in the process could inherit the master (ADR 0004, spike § PTY).
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone)]
+pub struct TerminalConfig {
+    /// Program and arguments; empty = `$SHELL -l` (falling back to `/bin/zsh`).
+    pub argv: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    /// Applied on top of the inherited environment; `TERM`, `COLORTERM` and `TERM_PROGRAM`
+    /// are forced afterwards.
+    pub env: BTreeMap<String, String>,
+    pub size: TerminalSize,
+    /// History lines retained; default 10 000.
+    pub scrollback_lines: usize,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            argv: Vec::new(),
+            cwd: None,
+            env: BTreeMap::new(),
+            size: TerminalSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            scrollback_lines: 10_000,
+        }
+    }
+}
+
+/// How the child ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitStatus {
+    /// Exit code; `None` when the child was killed by a signal.
+    pub code: Option<i32>,
+    /// Description of the terminating signal, if any.
+    pub signal: Option<String>,
+}
+
+impl ExitStatus {
+    pub fn success(&self) -> bool {
+        self.signal.is_none() && self.code == Some(0)
+    }
+}
+
+impl From<portable_pty::ExitStatus> for ExitStatus {
+    fn from(status: portable_pty::ExitStatus) -> Self {
+        match status.signal() {
+            Some(signal) => Self {
+                code: None,
+                signal: Some(signal.to_owned()),
+            },
+            None => Self {
+                code: i32::try_from(status.exit_code()).ok(),
+                signal: None,
+            },
+        }
+    }
+}
+
+struct Core {
+    engine: Mutex<Emulator>,
+    /// Wakes the `sync` thread when a batch opens or at shutdown; always used with `engine`.
+    sync_wake: Condvar,
+    /// Set (while holding `engine`, so the sync thread cannot miss it) at teardown.
+    shutdown: AtomicBool,
+    damage: watch::Sender<u64>,
+    meta: broadcast::Sender<TerminalMeta>,
+    writer: Mutex<Option<SyncSender<Vec<u8>>>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    /// 0 = no live child (not yet started, or already reaped).
+    pid: AtomicU32,
+    exit_status: Mutex<Option<ExitStatus>>,
+    exit_changed: Condvar,
+    exit_tx: watch::Sender<Option<ExitStatus>>,
+    /// Helper threads still holding PTY descriptors.
+    live: Mutex<u32>,
+    live_changed: Condvar,
+}
+
+/// Decrements [`Core::live`] when a helper thread ends (declare it first so it drops last).
+struct LiveGuard(Arc<Core>);
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        *self.0.live.lock() -= 1;
+        self.0.live_changed.notify_all();
+    }
+}
+
+impl Core {
+    /// Forwards engine output produced by the last `feed`/`stop_sync` and announces damage.
+    /// Called with the engine lock held; never blocks.
+    fn publish(&self, engine: &mut Emulator, visible: bool) {
+        let replies = engine.drain_replies();
+        if !replies.is_empty() {
+            self.queue_reply(replies);
+        }
+        for meta in engine.drain_meta() {
+            // No receivers is fine: metadata is best effort for late subscribers.
+            let _ = self.meta.send(meta);
+        }
+        if visible {
+            self.damage.send_modify(|generation| *generation += 1);
+        }
+    }
+
+    fn queue_reply(&self, bytes: Vec<u8>) {
+        let sender = self.writer.lock().clone();
+        if let Some(Err(TrySendError::Full(_))) = sender.map(|tx| tx.try_send(bytes)) {
+            tracing::warn!("PTY write queue full; dropping an engine reply");
+        }
+    }
+
+    fn terminate(self: &Arc<Self>, grace: Duration) -> Result<(), TerminalError> {
+        let pid = self.pid.load(Ordering::Acquire);
+        if pid == 0 {
+            return Ok(());
+        }
+        sys::signal_group(pid, Signal::Hangup).map_err(TerminalError::Signal)?;
+        let core = Arc::clone(self);
+        thread::Builder::new()
+            .name("heeler-term-kill".into())
+            .spawn(move || {
+                let deadline = Instant::now() + grace;
+                let mut status = core.exit_status.lock();
+                while status.is_none() && core.pid.load(Ordering::Acquire) == pid {
+                    if core
+                        .exit_changed
+                        .wait_until(&mut status, deadline)
+                        .timed_out()
+                    {
+                        break;
+                    }
+                }
+                // The waiter zeroes `pid` right after reaping, so a non-matching pid means the
+                // child is gone and the number may already belong to someone else.
+                if core.pid.load(Ordering::Acquire) == pid
+                    && let Err(error) = sys::signal_group(pid, Signal::Kill)
+                {
+                    tracing::debug!(%error, pid, "SIGKILL after grace failed");
+                }
+            })
+            .map_err(|source| TerminalError::Thread {
+                name: "heeler-term-kill",
+                source,
+            })?;
+        Ok(())
+    }
+}
+
+/// Hangs up the child when the last [`Terminal`] handle goes away.
+struct DropGuard(Arc<Core>);
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.terminate(Duration::from_secs(1)) {
+            tracing::debug!(%error, "terminate on drop failed");
+        }
+    }
+}
+
+/// A shell or program running in a PTY, with canonical terminal state kept in the daemon.
+/// Cheap to clone; all clones refer to the same terminal.
+#[derive(Clone)]
+pub struct Terminal {
+    core: Arc<Core>,
+    _guard: Arc<DropGuard>,
+}
+
+impl std::fmt::Debug for Terminal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Terminal")
+            .field("pid", &self.pid())
+            .finish_non_exhaustive()
+    }
+}
+
+fn command(cfg: &TerminalConfig) -> CommandBuilder {
+    let argv: Vec<String> = if cfg.argv.is_empty() {
+        let shell = cfg
+            .env
+            .get("SHELL")
+            .cloned()
+            .or_else(|| std::env::var("SHELL").ok())
+            .filter(|shell| !shell.is_empty())
+            .unwrap_or_else(|| "/bin/zsh".to_owned());
+        vec![shell, "-l".to_owned()]
+    } else {
+        cfg.argv.clone()
+    };
+    // `CommandBuilder` starts from the daemon's own environment.
+    let mut cmd = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
+    for (key, value) in &cfg.env {
+        cmd.env(key, value);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "heeler");
+    if let Some(cwd) = &cfg.cwd {
+        cmd.cwd(cwd);
+    }
+    cmd
+}
+
+fn pty_size(size: TerminalSize) -> PtySize {
+    PtySize {
+        rows: size.rows,
+        cols: size.cols,
+        pixel_width: size.pixel_width,
+        pixel_height: size.pixel_height,
+    }
+}
+
+fn open_error(error: impl std::fmt::Display) -> TerminalError {
+    TerminalError::OpenPty(error.to_string())
+}
+
+impl Terminal {
+    pub fn spawn(cfg: TerminalConfig) -> Result<Self, TerminalError> {
+        let engine = Emulator::new(cfg.size, cfg.scrollback_lines)?;
+        let program = cfg
+            .argv
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "$SHELL".to_owned());
+        let cmd = command(&cfg);
+
+        let (child, master, reader, writer) = {
+            let _spawn = SPAWN_LOCK.lock();
+            let pair = native_pty_system()
+                .openpty(pty_size(cfg.size))
+                .map_err(open_error)?;
+            let mut child = pair
+                .slave
+                .spawn_command(cmd)
+                .map_err(|e| TerminalError::Spawn {
+                    program,
+                    message: format!("{e:#}"),
+                })?;
+            // The slave must not stay open in the daemon or the reader never sees EOF.
+            drop(pair.slave);
+            let master = pair.master;
+            match (master.try_clone_reader(), master.take_writer()) {
+                (Ok(reader), Ok(writer)) => (child, master, reader, writer),
+                (Err(error), _) | (_, Err(error)) => {
+                    kill_and_reap(child.as_mut());
+                    return Err(open_error(format!("{error:#}")));
+                }
+            }
+        };
+
+        let (damage, _) = watch::channel(0u64);
+        let (meta, _) = broadcast::channel(META_CAPACITY);
+        let (exit_tx, _) = watch::channel(None);
+        let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+        let core = Arc::new(Core {
+            engine: Mutex::new(engine),
+            sync_wake: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+            damage,
+            meta,
+            writer: Mutex::new(Some(write_tx)),
+            master: Mutex::new(Some(master)),
+            pid: AtomicU32::new(child.process_id().unwrap_or(0)),
+            exit_status: Mutex::new(None),
+            exit_changed: Condvar::new(),
+            exit_tx,
+            live: Mutex::new(HELPER_THREADS),
+            live_changed: Condvar::new(),
+        });
+
+        // The child is parked in a slot so it can be recovered if the waiter cannot start.
+        let child_slot = Arc::new(Mutex::new(Some(child)));
+        if let Err(error) = start_threads(&core, &child_slot, reader, writer, write_rx) {
+            core.pid.store(0, Ordering::Release);
+            if let Some(mut child) = child_slot.lock().take() {
+                kill_and_reap(child.as_mut());
+            }
+            return Err(error);
+        }
+        Ok(Terminal {
+            core: Arc::clone(&core),
+            _guard: Arc::new(DropGuard(core)),
+        })
+    }
+
+    /// Queues `bytes` for the child's stdin. Blocks only while the (bounded) write queue is
+    /// full, i.e. the child is not reading.
+    pub fn write_input(&self, bytes: &[u8]) -> Result<(), TerminalError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let sender = self
+            .core
+            .writer
+            .lock()
+            .clone()
+            .ok_or(TerminalError::Closed)?;
+        sender
+            .send(bytes.to_vec())
+            .map_err(|_| TerminalError::Closed)
+    }
+
+    /// Resizes the PTY (`TIOCSWINSZ`, delivering SIGWINCH) and the engine.
+    pub fn resize(&self, size: TerminalSize) -> Result<(), TerminalError> {
+        if size.cols == 0 || size.rows == 0 {
+            return Err(TerminalError::InvalidSize {
+                cols: size.cols,
+                rows: size.rows,
+            });
+        }
+        {
+            let master = self.core.master.lock();
+            let master = master.as_ref().ok_or(TerminalError::Closed)?;
+            master
+                .resize(pty_size(size))
+                .map_err(|e| TerminalError::Resize(format!("{e:#}")))?;
+        }
+        let mut engine = self.core.engine.lock();
+        engine.resize(size)?;
+        self.core.publish(&mut engine, true);
+        Ok(())
+    }
+
+    pub fn size(&self) -> TerminalSize {
+        self.core.engine.lock().size()
+    }
+
+    /// Full visible state; resets `tracker` to it.
+    pub fn snapshot(&self, tracker: &mut RenderTracker) -> TerminalSnapshot {
+        self.core.engine.lock().snapshot(tracker)
+    }
+
+    /// Changes since `tracker`'s state; `None` if nothing changed or the tracker needs a
+    /// snapshot (see [`Self::render`]).
+    pub fn frame(&self, tracker: &mut RenderTracker) -> Option<TerminalFrame> {
+        self.core.engine.lock().frame(tracker)
+    }
+
+    /// The next thing to send a client: a snapshot when the tracker needs one (fresh, resized,
+    /// palette changed), otherwise a frame if anything changed.
+    pub fn render(&self, tracker: &mut RenderTracker) -> Option<TerminalRender> {
+        let mut engine = self.core.engine.lock();
+        if engine.needs_snapshot(tracker) {
+            return Some(TerminalRender::Snapshot(engine.snapshot(tracker)));
+        }
+        engine.frame(tracker).map(TerminalRender::Frame)
+    }
+
+    /// Scrollback rows, newest first; `from_line` 0 is the line just above the viewport.
+    pub fn history(&self, from_line: u32, count: u32) -> Vec<Row> {
+        self.core.engine.lock().history(from_line, count)
+    }
+
+    /// Generation counter bumped whenever visible state changed; coalescing (watch semantics).
+    pub fn damage(&self) -> watch::Receiver<u64> {
+        self.core.damage.subscribe()
+    }
+
+    /// Title, bell, notification, cwd and prompt-mark events. Lagging receivers lose the
+    /// oldest events (broadcast semantics).
+    pub fn metadata(&self) -> broadcast::Receiver<TerminalMeta> {
+        self.core.meta.subscribe()
+    }
+
+    /// Process id while the child is running; `None` once it exited and was reaped.
+    pub fn pid(&self) -> Option<u32> {
+        match self.core.pid.load(Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
+    /// Hangs up the child's process group now and kills it after `grace` if it is still
+    /// running. Returns immediately; use [`Self::wait_exit`] to observe the end.
+    pub fn terminate(&self, grace: Duration) -> Result<(), TerminalError> {
+        self.core.terminate(grace)
+    }
+
+    /// Completes when the child has exited, been reaped (exactly once) and the PTY
+    /// descriptors were released (bounded wait, see [`TEARDOWN_WAIT`]).
+    pub async fn wait_exit(&self) -> ExitStatus {
+        let mut rx = self.core.exit_tx.subscribe();
+        match rx.wait_for(Option::is_some).await {
+            Ok(status) => status.clone().unwrap_or_else(lost_status),
+            Err(_) => lost_status(),
+        }
+    }
+}
+
+fn lost_status() -> ExitStatus {
+    ExitStatus {
+        code: None,
+        signal: Some("exit status unavailable".to_owned()),
+    }
+}
+
+fn kill_and_reap(child: &mut (dyn Child + Send + Sync)) {
+    if let Some(pid) = child.process_id()
+        && let Err(error) = sys::signal_group(pid, Signal::Kill)
+    {
+        tracing::debug!(%error, pid, "kill during failed spawn");
+    }
+    if let Err(error) = child.wait() {
+        tracing::debug!(%error, "reaping during failed spawn");
+    }
+}
+
+type ChildSlot = Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>;
+
+/// Starts the helper threads. `Core::live` was preset to [`HELPER_THREADS`]; a failed start
+/// releases the shares of the threads that did not start.
+fn start_threads(
+    core: &Arc<Core>,
+    child: &ChildSlot,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    write_rx: mpsc::Receiver<Vec<u8>>,
+) -> Result<(), TerminalError> {
+    let release = |unstarted: u32, error: TerminalError| {
+        *core.live.lock() -= unstarted;
+        core.live_changed.notify_all();
+        // Unblock the threads that did start so they exit.
+        drop(core.writer.lock().take());
+        error
+    };
+    let spawn = |name: &'static str, body: Box<dyn FnOnce() + Send>| {
+        thread::Builder::new()
+            .name(name.into())
+            .spawn(body)
+            .map(drop)
+            .map_err(|source| TerminalError::Thread { name, source })
+    };
+
+    let c = Arc::clone(core);
+    spawn("heeler-term-read", Box::new(move || reader_loop(c, reader)))
+        .map_err(|e| release(HELPER_THREADS, e))?;
+    let c = Arc::clone(core);
+    spawn(
+        "heeler-term-write",
+        Box::new(move || writer_loop(c, writer, write_rx)),
+    )
+    .map_err(|e| release(HELPER_THREADS - 1, e))?;
+    let c = Arc::clone(core);
+    spawn("heeler-term-sync", Box::new(move || sync_loop(c)))
+        .map_err(|e| release(HELPER_THREADS - 2, e))?;
+    let c = Arc::clone(core);
+    let slot = Arc::clone(child);
+    spawn(
+        "heeler-term-wait",
+        Box::new(move || {
+            // `take` can only fail if the slot was already emptied by the failure path.
+            let child = slot.lock().take();
+            if let Some(child) = child {
+                waiter_loop(c, child);
+            }
+        }),
+    )
+    .map_err(|e| release(0, e))
+}
+
+fn reader_loop(core: Arc<Core>, mut reader: Box<dyn Read + Send>) {
+    let _live = LiveGuard(Arc::clone(&core));
+    let mut buf = vec![0u8; READ_BUFFER];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => {
+                let mut engine = core.engine.lock();
+                let visible = engine.feed(&buf[..read]);
+                core.publish(&mut engine, visible);
+                if engine.sync_deadline().is_some() {
+                    core.sync_wake.notify_one();
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                tracing::debug!(%error, "PTY read ended");
+                break;
+            }
+        }
+    }
+}
+
+fn writer_loop(core: Arc<Core>, mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
+    let _live = LiveGuard(core);
+    while let Ok(bytes) = rx.recv() {
+        if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
+            tracing::debug!(%error, "PTY write failed; closing the input side");
+            break;
+        }
+    }
+}
+
+fn sync_loop(core: Arc<Core>) {
+    let _live = LiveGuard(Arc::clone(&core));
+    let mut engine = core.engine.lock();
+    while !core.shutdown.load(Ordering::Acquire) {
+        match engine.sync_deadline() {
+            None => core.sync_wake.wait(&mut engine),
+            Some(deadline) if Instant::now() >= deadline => {
+                engine.stop_sync();
+                core.publish(&mut engine, true);
+            }
+            Some(deadline) => {
+                core.sync_wake.wait_until(&mut engine, deadline);
+            }
+        }
+    }
+}
+
+fn waiter_loop(core: Arc<Core>, mut child: Box<dyn Child + Send + Sync>) {
+    let status = match child.wait() {
+        Ok(status) => ExitStatus::from(status),
+        Err(error) => {
+            tracing::warn!(%error, "waiting for the child failed");
+            ExitStatus {
+                code: None,
+                signal: Some(format!("wait failed: {error}")),
+            }
+        }
+    };
+    // Reaped: the pid may be recycled from here on, never signal it again.
+    core.pid.store(0, Ordering::Release);
+    release_pty(&core);
+    {
+        let mut slot = core.exit_status.lock();
+        *slot = Some(status.clone());
+        core.exit_changed.notify_all();
+    }
+    core.exit_tx.send_replace(Some(status));
+}
+
+/// Closes the input queue, stops the sync thread, waits (bounded) for the reader to see EOF
+/// — so the child's final output reaches the engine before the exit is reported — and then
+/// closes the PTY master.
+fn release_pty(core: &Core) {
+    drop(core.writer.lock().take());
+    {
+        // Set under the engine lock: the sync thread checks the flag and waits atomically
+        // with respect to it, so the wake-up below cannot be lost.
+        let _engine = core.engine.lock();
+        core.shutdown.store(true, Ordering::Release);
+    }
+    core.sync_wake.notify_all();
+
+    let deadline = Instant::now() + TEARDOWN_WAIT;
+    let mut live = core.live.lock();
+    while *live > 0 {
+        if core
+            .live_changed
+            .wait_until(&mut live, deadline)
+            .timed_out()
+        {
+            tracing::debug!(
+                live = *live,
+                "PTY helper threads still running after the child exited"
+            );
+            break;
+        }
+    }
+    drop(live);
+    drop(core.master.lock().take());
+}

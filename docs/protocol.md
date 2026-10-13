@@ -90,6 +90,13 @@ Modes            { alt_screen, app_cursor, app_keypad, bracketed_paste, mouse: n
 Palette          { indexed: [(u8, rgb)], foreground?, background?, cursor? }   # OSC 4/10/11/12 overrides only
 ```
 
+Semantics produced by the `terminal` crate (what clients can rely on):
+- Rows list runs left to right; a wide character is one run character and spans two columns (spacer cells omitted), combining characters are appended to their base. Trailing default-style blanks are trimmed, so a row's runs may cover fewer columns than `cols`; the rest is blank.
+- `Run.link` is an index into the terminal's link table (`Link.id == index`, stable for the terminal's lifetime, capped at 16 384 entries; later links render unlinked). A snapshot carries the whole table, a frame the entries added since the last snapshot/frame sent to that client.
+- `scrolled` is always 0: a scrolling viewport is reported as the rows that differ.
+- Frames carry neither dimensions nor palette. After a resize or a palette change (OSC 4/10/11/12) the daemon sends a fresh `TerminalSnapshot` instead of a frame (`Terminal::render`).
+- `terminal.history`: `from_line` 0 is the line directly above the viewport, rows are newest first; the alternate screen has no history (`history_len` = 0 while it is active).
+
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.
 

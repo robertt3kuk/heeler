@@ -1,0 +1,12 @@
+{
+  "size": [40, 10],
+  "runs": {
+    "0": [{"text": "plain", "flags": "UNDERLINE"}],
+    "1": [{"text": "double", "flags": "DOUBLE_UNDERLINE"}],
+    "2": [{"text": "curly", "flags": "UNDERCURL"}],
+    "3": [{"text": "dotted", "flags": "DOTTED_UNDERLINE"}],
+    "4": [{"text": "dashed", "flags": "DASHED_UNDERLINE"}],
+    "5": [{"text": "colored", "flags": "UNDERLINE", "underline_color": {"rgb": [9, 8, 7]}}],
+    "6": [{"text": "gone", "flags": "", "underline_color": null}]
+  }
+}

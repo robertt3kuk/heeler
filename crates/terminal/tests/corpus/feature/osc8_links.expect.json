@@ -1,0 +1,12 @@
+{
+  "size": [40, 4],
+  "runs": {
+    "0": [
+      {"text": "pre ", "link": null},
+      {"text": "link", "link": 0},
+      {"text": " post", "link": null}
+    ],
+    "1": [{"text": "B", "link": 1}, {"text": " ", "link": null}, {"text": "again", "link": 1}]
+  },
+  "links": ["https://example.com", "https://b.example/x"]
+}
