@@ -12,12 +12,17 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
   3. ~~Default detach key~~ → decided: `ctrl+\` then `d` (M1-C).
   4. Product name: "Heeler" is already used by an iOS console for herdr (heeler.bybee.dev) and by heeler.com (AppSec). Keep as codename or rename before any public release.
-- **Tech debt** (schedule into later slices):
-  1. `heeler-cli` spawn tests run a nested `cargo build -p heeler-daemon` (profile coupling, slower tests) — replace with a prebuilt-binary fixture or an `xtask` that builds both bins first.
-  2. `heeler-terminal` reports exit signals as `strsignal` text; daemon parses it back via a name table — expose the signal number from the terminal crate.
-  3. `terminal.history` builds the full JSON before the frame-size check — cap `count` per call (e.g. 5 000) and document.
-  4. ADR 0002 says separate control/render queues; implementation uses one bounded queue per connection (safe with credit 1) — reconcile ADR text or split when a second render-heavy client type appears.
-  5. `session.restart` uses the spec `cwd`, not the OSC 7 cwd — revisit with M3 restore.
+- **M1 tech debt** (being paid in M1-DT1 / M1-DT2, briefs in `docs/briefs/`):
+  1. CLI spawn tests run a nested `cargo build -p heeler-daemon`; `heelerd_dir()` duplicated in two test files → DT2.
+  2. Exit signals reported as `strsignal` text and parsed back via a name table → DT1 (numeric signal).
+  3. `terminal.history` unbounded per call → DT1 (5 000 rows / 2 MiB cap, paging).
+  4. ADR 0002 separate-queues text vs single queue + credit → **done**: ADR 0002 amended (bench evidence).
+  5. `session.restart` ignores OSC 7 cwd → DT1.
+  6. (added) No replies to OSC 4/10/11/12 color queries and CSI 14/16/18 t size queries — TUIs like Claude Code/Codex probe these → DT1.
+  7. (added) No `hello` timeout: a silent connection holds resources forever → DT1 (5 s).
+  8. (added) Corpus lacks agent TUIs (omp, codex) → DT1 records startup screens.
+  9. (added) `heeler attach` on an ended session exits 1 instead of showing the final screen the daemon keeps → DT2.
+  - Accepted, not scheduled: `scrolled` always 0 (full dirty rows on scroll; fine locally, revisit for remote clients M9); new link ids from `terminal.history` arrive with the next frame; `SessionInfo.state` nests as `{"state":{"state":…}}` on the wire (fix with the next breaking protocol bump).
 
 ## Environment notes
 - macOS 26.6.2 arm64, Rust 1.98.0, Xcode installed **without** separate Metal compiler → GPUI needs `runtime_shaders` (ADR 0003).

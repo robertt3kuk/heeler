@@ -32,7 +32,9 @@ Clients need: request/response commands and queries, a live event stream, high-v
 
 **Terminal stream**: separate from the event log. `terminal.attach` returns a render snapshot at frame `N`; render frames follow, coalesced and sent only after the client acks the previous frame (latest state wins). Slow clients skip intermediate frames instead of queueing them; the PTY reader is never blocked by a client. Scrollback is fetched with `terminal.history`. Details: ADR 0004.
 
-**Backpressure**: per-client bounded outbound queues (control and data separately). Control queue overflow → disconnect with `slow_consumer`; client reconnects through replay/snapshot.
+**Backpressure**: one bounded outbound queue per connection (default 1 024 messages) carries control messages and render frames. Render frames cannot fill it: each attachment holds at most one unacked render (credit 1), so render traffic is bounded by the number of attachments. Overflow therefore comes only from control traffic (events, responses) and closes that connection (`slow_consumer` in the daemon log); the client reconnects through replay/snapshot.
+
+*Amended 2026-10-13 (M1 debt):* the original text required separate control and data queues. Credit-1 pacing made the split unnecessary; the M1 flood bench showed `daemon.status` p99 0.11 ms during a 193 MiB flood with one acking and one silent client sharing the daemon. Revisit if a client type without ack pacing (e.g. raw output taps, M7) is added.
 
 **Schema**: Rust types in `protocol` crate are the source; JSON Schema generated (`schemars`) and committed per version for external clients; golden fixtures guard compatibility.
 
