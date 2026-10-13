@@ -78,13 +78,22 @@ Rules: additive changes bump the minor protocol version and are capability-gated
 
 ## Implementer agents
 
-Roles: the **orchestrator** (main omp session) owns contracts (`core`, `protocol`), writes briefs, reviews, integrates, and updates `status.md`/`roadmap.md`. **Implementers** are omp subagents of the project agent `implementer` (`.omp/agents/implementer.md`, model `anthropic/claude-sonnet-5-5:high`), one per slice, each confined to its worktree.
+Roles: the **orchestrator** (main omp session) owns contracts (`core`, `protocol`), writes briefs, reviews, integrates, and updates `status.md`/`roadmap.md`. **Implementers** are omp subagents of the project agent `implementer` (`.omp/agents/implementer.md`, model `anthropic/claude-sonnet-5-5:high`), one per slice, each confined to the checkout its task names.
+
+Two working modes:
+
+| Mode | When | Where |
+|---|---|---|
+| **Worktree** (default) | Parallel slices, or the orchestrator keeps working in the main checkout meanwhile | `../heeler-wt/<slice>` on `slice/<slice>` |
+| **Main checkout** | One slice at a time, nothing else editing the repo (small fixes, debugging, work that needs the user's live environment) | `/Users/workie/proj/heeler` on `slice/<slice>` (task says so explicitly); no worktree |
+
+Humans and the orchestrator can always work directly in the main checkout; only concurrent agents need worktrees.
 
 Loop per slice:
 1. Commit the brief (`docs/briefs/<slice>.md`, template in `docs/briefs/README.md`) on `master`.
-2. `git worktree add ../heeler-wt/<slice> -b slice/<slice>`; dispatch a `task` with `agent: "implementer"` naming the worktree path and brief. Independent slices go in one batch so they run concurrently.
-3. Review the diff against the brief's contract and `AGENTS.md` invariants; run `just check` in the worktree; exercise acceptance steps yourself.
-4. Send fixes to the same agent (`write agent://<id>`) or fix directly; then rebase onto `master`, merge fast-forward, `git worktree remove`, delete the branch.
+2. Worktree mode: `git worktree add ../heeler-wt/<slice> -b slice/<slice>`; main-checkout mode: `git switch -c slice/<slice>` in the main checkout (working tree clean). Dispatch a `task` with `agent: "implementer"` naming the checkout path, the mode, and the brief. Independent slices go in one batch (worktree mode) so they run concurrently.
+3. Review the diff against the brief's contract and `AGENTS.md` invariants; run `just check` in the slice checkout; exercise acceptance steps yourself.
+4. Send fixes to the same agent (`write agent://<id>`) or fix directly; then rebase onto `master`, merge fast-forward, remove the worktree (worktree mode) or `git switch master` (main-checkout mode), delete the branch.
 5. Record the slice in `status.md` (what landed, verification run, deviations).
 
 Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract change comes back as a report item, not an edit. Dependent slices start after their dependency merges. Changing the implementer model = edit `.omp/agents/implementer.md` (one place).
