@@ -3,9 +3,9 @@
 Newest entry first. Every session ends by updating **Current** and adding a log entry (see `process.md`).
 
 ## Current
-- **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: M2-H (`../heeler-wt/M2-H`): compact scrollback store (ADR 0013) for budget B2 + bench B4a/B4b split (ADR 0011). M10-A (shell integration) merged `0758389`; M10-B brief ready (waits for M2-H).
-- **Next action**: review/merge M2-H; on a quiet machine rerun `cargo nextest run --workspace` ×3 and investigate `ack_pacing_keeps_floods_bounded_and_the_daemon_responsive` (flood of 20 MB not finished in the wait window under load ≈ 20; 12.4 s isolated vs 5.7 s in M1) and `fd::descriptors_return_to_the_initial_count` (13 vs 12 under load); M2 demo (M2.8); then M10-B → M10-C.
+- **Milestone**: M2 closing (M2.8 demo pending, needs an unlocked screen) · M3 in progress · M10 in progress. Design: `docs/design.md`, ADR 0010.
+- **Active slices** (overnight, local commits only — **not pushed**, the user pushes in the morning): M3-B agent reporting + resume (`../heeler-wt/M3-B`, protocol 0.4), M10-B block index (`../heeler-wt/M10-B`, protocol 0.5).
+- **Morning checklist (needs the user / an unlocked screen)**: `git push origin master`; `just bench` (B4b was 18.50 / 18.90 ms vs 18.7 ms limit at 60 Hz — two reports, third run blocked by the locked screen); M2 demo with screenshots (`docs/demos/M2.md`); decide whether B4b within 0.5 ms of the limit is a hard fail.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. **Project license — now on the critical path for M11**: Zed's `editor`/`language`/`lsp`/`vim` crates are GPL-3.0 (reusable only if Heeler is GPL-3.0); Warp is AGPL-3.0 (ideas only). Permissive license ⇒ own editor on tree-sitter/ropey/lsp-types (ADR 0012 option B).
@@ -22,6 +22,12 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Antigravity CLI `agy` 1.3.4 is installed but unusable (account not eligible); not part of the process.
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
+
+### 2026-10-14 night — M2-H, M3-A merged (local)
+- M2-H (`f558533`, `343d13e`): compact scrollback per ADR 0013 — engine keeps viewport + 256 rows, older rows in a packed cold store (text + row index + style spans), exact line bound, `ESC[3J`/RIS clear both via a marker, resize reflows the hot window only, `Emulator::logical_lines` for search/blocks. Bench: B2 254.6 → **40.1 MB**, B2w 538 → **84.6 MB**, B5 growth 13.6 → 2.3 MB; B4a 1.34 ms; B4b borderline (above). Dev profile builds `alacritty_terminal`/`vte`/`heeler-terminal` at opt-level 3 — this also fixed the flaky `ack_pacing…` test (20 MB `yes` flood was ~10× slower unoptimized).
+- M3-A (`0e44c24`): `heeler-storage` (SQLite writer actor, WAL, migrations with `VACUUM INTO` backups, schema v1), daemon write-through, restore on start (live sessions respawn with the same id in their last cwd; ended ones listed as `restored`), `daemon.toml` `restore_sessions`, `heeler daemon stop --stop-sessions --forget`, protocol 0.3 (`SessionInfo.restored`, `DaemonShutdown.forget`, capability `session.restore`). Secret-looking env vars are not persisted (ADR 0008). Orchestrator live check: `cd /tmp` in a session → daemon restart → same session id running in `/tmp`, exited one shows `exited (4), restored`. `just check` 652 tests green.
+- Rebase hygiene: a conflict marker slipped into an intermediate M2-H commit during rebase; fixed and squashed before merge (no marker in any commit on master). Implementer rules now forbid push/hard reset; M10-B told to check `git grep '^<<<<<<<'` after rebases.
+- Still open: `new_terminal_starts_in_the_focused_workspace_root_or_home` compares `/var/…` vs `/private/var/…` under the default `$TMPDIR` (flaky on this machine) — fix with canonical paths like the split test.
 ## Log
 
 ### 2026-10-14 — M2-F merged; default shell fix
