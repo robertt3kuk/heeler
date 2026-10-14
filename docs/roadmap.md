@@ -1,6 +1,6 @@
 # Roadmap
 
-Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Milestone numbers are IDs, not order; the agreed **execution order** is: M2 (incl. M2.7–M2.9) → M10 shell integration + blocks → M3 persistence → M12 projects & workspaces → M4 → M13 agent & subagent monitor → M5 → M6 → M11 editor → M15 visualizations → M14 browser → M7 → M8 → M9. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
+Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Milestone numbers are IDs, not order; the agreed **execution order** is: M2 (incl. M2.7–M2.9) → M10 shell integration + blocks → M3 persistence → M12 projects & workspaces → M17 session history & search → M4 → M13 agent & subagent monitor → M5 → M16 assistant chat → M6 → M11 editor → M15 visualizations → M14 browser → M7 → M8 → M9. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
 
 ```mermaid
 flowchart LR
@@ -23,6 +23,9 @@ flowchart LR
   M4 --> M13[M13 Agent + subagent monitor]
   M2 --> M15[M15 Visualizations]
   M2 --> M14[M14 Embedded browser]
+  M3 --> M17[M17 Session history + search]
+  M5 --> M16[M16 Assistant chat]
+  M17 --> M16
 ```
 
 ## M0 — Foundations
@@ -114,10 +117,24 @@ Exit demo: open a file from the sessions panel/⌘P next to a terminal; tree-sit
 - Crates per ADR 0012: `buffer`, `syntax`, `lsp_client` (servers supervised by the daemon), `code_view` (GPUI); `ItemRef::File` in the workbench; one theme for chrome/terminal/syntax.
 
 ## M12 — Projects and workspaces
-Exit demo: open three projects (⌘O → folder / recent list), each with its own sessions and layout; switch between them without losing state; workspace-level settings override (`<repo>/.heeler/settings.toml`); a project with several repos; empty workspaces hidden.
-- Daemon: workspace roots (one or more repos), recent projects list, per-workspace defaults (shell, env, start cwd); persisted via M3.
+Exit demo: open three projects (⌘O → folder / recent list), each with its own sessions and layout; switch between them without losing state; reorder workspaces by drag and switch the sort mode; pin one; the **Home** workspace opens on your notes folder with a scratch chat; workspace-level settings override (`<repo>/.heeler/settings.toml`); a project with several repos; empty workspaces hidden.
+- Daemon: workspace roots (one or more repos), recent projects list, per-workspace defaults (shell, env, start cwd), workspace order + pins; persisted via M3.
+- **Home workspace**: always present, bound to a configurable folder (`workspaces.home_folder`, e.g. `~/Notes`) for notes, docs, and scratch sessions/chats that belong to no project; cannot be deleted, can be renamed.
+- **Sorting and arrangement** (Orca-like): sort modes `manual` (drag to reorder, the default) · `recent activity` · `attention first` · `name`; pin to top; group by project (multi-repo project groups); filters: hide empty, hide sleeping (no live sessions), hide CLI-created; "always show the active workspace"; a sidebar filter box + ⌘J jump palette reaching hidden ones.
 - Desktop: ⌘O project picker (recent + folder dialog), workspace switcher in the sidebar header and ⌘K, per-workspace layout state (each workspace remembers its own pane tree), new sessions start in the active workspace root.
-- CLI: `heeler ws open <path>`, `heeler ws use <id>`.
+- CLI: `heeler ws open <path>`, `heeler ws use <id>`, `heeler ws move <id> --before <id>`, `heeler ws pin <id>`.
+
+## M16 — Assistant chat
+Exit demo: ⌥Space (or the assistant panel) opens a quick chat for questions without starting a session; history of past assistant chats is searchable and resumable; inside a workspace the assistant answers with context it is allowed to read — `@omp` (an agent session's transcript), `@shell` (a terminal's recent output or a block), `@file`, `@search` (M17 index) — shown as attached context chips; nothing is read without being attached or allowed in settings.
+- Built on the M5 gateway (any provider/local model) and the M4 chat view; conversations persisted (M3 storage) and indexed (M17).
+- Two scopes: global (Home) assistant and per-workspace assistant; context providers are read-only, bounded (token budget, truncation shown), and permission-gated per workspace (`assistant.context.*` settings).
+
+## M17 — Session history index and search
+Exit demo: enable indexing (opt-in), search "which session ran `cargo test -p daemon`" or a phrase from an old conversation and find Heeler sessions, terminal blocks, assistant chats, and external agent sessions (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini); open a result or **Resume** it (runs the agent's resume command in a new terminal with the same cwd and session id); `heeler search "<query>" --json`.
+- Index: local SQLite FTS5 + BM25 with role weighting (user/assistant/tool) and a separate identifier column (paths, commands, symbols) — the approach Orca measured to beat dense vectors/rerankers on ~1M real messages; tool calls and commands indexed as text.
+- Sources: Heeler journals (blocks text, agent events, assistant chats) and external transcript stores (`~/.claude/projects`, `~/.codex/sessions` + `state_*.sqlite`, `~/.omp/agent/sessions`, OpenCode, Cursor, Gemini); adapters versioned per format.
+- Incremental, cheap scanning: FSEvents + per-file offsets/mtimes, never re-walking the whole tree on a timer (Orca issue #27008 is the counter-example); history range (all / 90 / 30 days), index size + Clear in settings; data never leaves the machine.
+- Surfaces: History panel (filters: agent, project, date, role), ⌘K / jump palette integration, assistant `@search`, CLI.
 
 ## M13 — Agent and subagent monitor
 Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and Claude Code in terminals; the monitor panel shows each agent's state (working / blocked / done / idle) and its subagent tree with activity, model, duration and tokens when the agent exposes them; clicking jumps to the transcript or terminal; attention rollups include subagents.

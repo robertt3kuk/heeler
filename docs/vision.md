@@ -48,7 +48,13 @@ Inspirations and what we take from each:
 - Optional block view built on shell integration (OSC 133): command + output units with exit status and duration, jump between commands, copy/collapse a block, send a block to an agent as context. Toggle `terminal.blocks`.
 
 ### Projects and workspaces
-- One workspace per project (folder or repo, several repos allowed): create from a folder/recent project, switch with ⌘O, sessions/agents/layout grouped per workspace, workspace-level settings overrides. Empty workspaces (no sessions, no terminals) are hidden from the sidebar by default.
+- One workspace per project (folder or repo, several repos allowed): create from a folder/recent project, switch with ⌘O, sessions/agents/layout grouped per workspace, workspace-level settings overrides. Sort modes (manual drag like Orca, recent, attention, name), pins, project groups, filters; empty workspaces hidden by default. A permanent **Home** workspace bound to a configurable folder for notes, docs, and scratch sessions/chats.
+
+### Assistant chat
+- A quick assistant for questions without starting a session (global and per workspace), with persistent searchable history; in a workspace it can read neighbouring sessions (agent transcripts, terminal output/blocks, files, past-session search) only through explicitly attached or permitted context.
+
+### Session history and search
+- Opt-in local index of all sessions — Heeler terminals/blocks, agent sessions, assistant chats, and external agent histories (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini) — with full-text search and one-click resume.
 
 ### Agent and subagent monitor
 - Track every coding agent — structured (Codex app-server, ACP) and TUI agents in terminals (OMP, Claude Code, Codex, OpenCode) — with live state (working / blocked / done / idle) and their **subagents** as a tree (OMP task agents, Codex/ACP subagents): current activity, model, duration, tokens when available, jump to transcript/terminal.
