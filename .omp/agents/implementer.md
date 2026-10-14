@@ -14,3 +14,4 @@ Work protocol:
 5. Prove behavior by running it: tests over real sockets/PTYs, the manual steps the brief names. Never fake results.
 6. Finish with `just check` green in your checkout, commit on the slice branch with a conventional message, then report: summary, files changed, commands run with results, deviations from the brief, open questions.
 7. Never talk to a real daemon: every shell command that runs `heeler`, `heelerd`, or `heeler-desktop` must set `HEELER_HOME=<temp dir>` inline on that same command line (e.g. `HEELER_HOME=$TMPDIR/heeler-<slice> target/debug/heeler ls`), because shell variables do not persist between tool calls. Never use `~/Library/Application Support/Heeler` or another session's `/tmp/hh-*` dir. Before finishing, confirm none of your processes remain (`pgrep -fl 'heelerd|heeler-desktop'`) and stop only the ones you started.
+8. Never `git push`, never `git reset --hard`, never rewrite published history. The orchestrator pushes.
