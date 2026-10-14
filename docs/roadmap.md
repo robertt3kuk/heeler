@@ -84,7 +84,7 @@ Exit demo: chat with an OpenAI-compatible endpoint and a local Ollama model; swi
 - [x] M5.1 `gateway` provider trait + OpenAI-compatible + Anthropic adapters, streaming
 - [x] M5.2 Local endpoints (Ollama/LM Studio) discovery
 - [x] M5.3 Keychain credential store + `provider.*` protocol
-- [ ] M5.4 Direct chat view reuses chat components
+- [x] M5.4 Direct chat view reuses chat components — Models settings, direct picker, model switching and credential recovery actions (M5-B)
 
 ## M6 — macOS integration
 Exit demo: with the window closed, an agent finishing triggers a native notification; an approval notification's "Approve" action unblocks the agent; launch-at-login agent mode works.
