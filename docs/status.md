@@ -4,8 +4,8 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: M2-F (performance budgets + `docs/demos/M2.md`) — brief next. Waves 1–2 merged (`1f87334`).
-- **Next action**: write `docs/briefs/M2-F.md` (measure every `vision.md` budget with repeatable scripts: idle RSS/CPU desktop + daemon, keystroke→paint latency via in-app tracing, 200 MB flood with UI responsiveness, cold start; fix what misses), run it, then run the M2 demo myself with screenshots.
+- **Active slice**: M2-F (`../heeler-wt/M2-F`: perf budgets B1–B6, release crash root cause, panic hook, `docs/perf.md`) resumed after a rate-limit stop. M2-G merged (`00e10d2`).
+- **Next action**: review/merge M2-F (verify: crash root cause + regression test, no new `heeler-desktop` `.ips` during `just bench`, numbers in `docs/perf.md`); then write `docs/demos/M2.md` and run the M2 demo with screenshots; close M2.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
@@ -23,6 +23,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-14 — M2-G merged: daemon lifecycle with the app
+- Design (with the user): the app starts `heelerd`; on quit it stops the daemon when no session is live, otherwise follows `app.on_quit` (`ask` default: Keep running · Stop sessions & daemon · Cancel + Don't ask again; `keep_running`; `stop_daemon`). Daemon controls (status, Start/Restart/Stop, Open Logs, working-mode selector) in the `Daemon` menu, a popover on the `connection` status item, and ⌘K. SIGTERM/SIGINT/SIGHUP quit cleanly and keep the daemon. `heeler daemon restart [--stop-sessions]`. `design.md` § Daemon lifecycle.
+- `just check` 558 tests green. Orchestrator ran it live (temp `HEELER_HOME`); the user is exercising that build.
+- Incidents: M2-F's release bench produced 4 `heeler-desktop` SIGABRT crashes (macOS "quit unexpectedly" dialogs) — root cause assigned to M2-F with a panic hook to `desktop.log`. M2-G's implementer once ran `heeler daemon stop --stop-sessions` against the user's real daemon (no user sessions lost); implementer rules now require inline `HEELER_HOME` on every command.
 
 ### 2026-10-14 — M2 wave 2 merged
 - M2-E2 (`21659c0`): `terminal.set_colors` end to end; daemon advertises `terminal.colors`; client re-sends colors after re-attach.
