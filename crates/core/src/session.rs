@@ -36,6 +36,9 @@ pub enum SessionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     Spawned,
+    /// An agent session finished starting (process initialized, conversation open) and waits
+    /// for the first message; unlike `Spawned` no turn is in progress.
+    Ready,
     TurnStarted,
     TurnFinished,
     ApprovalRequested,
@@ -73,6 +76,7 @@ impl SessionState {
 
         let next = match (self, &event) {
             (S::Starting, E::Spawned) => S::Running,
+            (S::Starting, E::Ready) => S::Idle,
             (S::Running, E::TurnFinished) => S::Idle,
             (S::Idle, E::TurnStarted) => S::Running,
             (S::Running, E::ApprovalRequested) => S::WaitingApproval,

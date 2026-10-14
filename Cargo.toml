@@ -9,6 +9,7 @@ rust-version = "1.98"
 publish = false
 
 [workspace.dependencies]
+heeler-agents = { path = "crates/agents" }
 heeler-client = { path = "crates/client" }
 heeler-core = { path = "crates/core" }
 heeler-daemon = { path = "crates/daemon" }

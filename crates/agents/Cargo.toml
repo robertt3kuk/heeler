@@ -1,0 +1,32 @@
+[package]
+name = "heeler-agents"
+description = "Agent adapters behind one AgentAdapter trait: Codex app-server over stdio JSON-RPC (ADR 0005), and the fixture tool that records, scrubs and replays its transcripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "heeler_agents"
+
+[[bin]]
+name = "heeler-codex-fixture"
+path = "src/bin/codex_fixture.rs"
+
+[dependencies]
+futures.workspace = true
+heeler-core.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "process", "io-util", "sync", "time", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

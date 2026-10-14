@@ -77,6 +77,21 @@ ulid_id!(
     Epoch,
     "epoch"
 );
+ulid_id!(
+    /// One user-message-to-completion cycle of an agent session (local id; the provider has its own).
+    TurnId,
+    "turn"
+);
+ulid_id!(
+    /// One message, reasoning block, tool call, or file change of an agent turn (local id).
+    ItemId,
+    "item"
+);
+ulid_id!(
+    /// One permission request an agent session made; stable across clients and restarts.
+    ApprovalId,
+    "approval"
+);
 
 /// Daemon-assigned terminal handle, unique within an epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
