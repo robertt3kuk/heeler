@@ -3,9 +3,9 @@
 Newest entry first. Every session ends by updating **Current** and adding a log entry (see `process.md`).
 
 ## Current
-- **Milestone**: M2 — GPUI terminal client (M0, M1 complete)
-- **Active slice**: none.
-- **Next action**: M2 kickoff per `process.md` § Milestone cadence: refresh risks R1/R2/R5, write briefs for M2.1 (app shell: window, sidebar, tabs, splits) + M2.2 (client reconnect/reconciliation, GPUI entity store) + M2.3/M2.4 (terminal view: GPUI element painting `Row` runs, cursor, selection, key/mouse encoding, IME, resize/font metrics), pinned GPUI rev from ADR 0003. Optional: run `docs/demos/M1.md` yourself in two real terminal windows (resize step was only exercised in tests).
+- **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
+- **Active slice**: wave 1 running on the `implementer` agent in worktrees: M2-A `client::Connection`, M2-B `desktop` workbench core, M2-C `terminal_view`, M2-D `settings` (briefs in `docs/briefs/`).
+- **Next action**: review/merge wave-1 slices as they finish (Cargo.toml/Cargo.lock/deny.toml merge conflicts expected — resolve by union + re-lock); visually verify M2-B and M2-C myself (agents may not screenshot); then write M2-E (panels + wiring + settings UI; add a protocol method for terminal default colors so OSC 10/11 replies follow the UI theme).
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
