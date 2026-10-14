@@ -473,13 +473,17 @@ dependencies = [
  "bytes",
  "futures",
  "heeler-core",
+ "heeler-daemon",
  "heeler-protocol",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

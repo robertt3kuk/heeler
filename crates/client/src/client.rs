@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use heeler_core::{Epoch, Seq, TerminalId};
@@ -32,6 +32,8 @@ const CAPABILITIES: &[&str] = &["terminal.render.v1"];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
 const AUTOSTART_POLL: Duration = Duration::from_millis(25);
+/// A missing socket triggers at most one autostart per this interval when dialing repeatedly.
+const AUTOSTART_INTERVAL: Duration = Duration::from_secs(10);
 /// Events buffered per [`Client::events`] receiver before it starts lagging.
 const EVENT_BUFFER: usize = 1024;
 /// Terminal render messages buffered per [`Client::terminal_frames`] receiver.
@@ -99,12 +101,28 @@ impl Client {
         opts: ConnectOptions,
         resume: Option<ResumePoint>,
     ) -> Result<Resumed, ClientError> {
+        Self::connect_gated(opts, resume, || true).await
+    }
+
+    /// [`connect_resuming`](Self::connect_resuming) where `permit` decides whether a missing
+    /// socket may trigger an autostart (consulted only when `opts.autostart` is set).
+    pub(crate) async fn connect_gated(
+        opts: ConnectOptions,
+        resume: Option<ResumePoint>,
+        permit: impl FnOnce() -> bool,
+    ) -> Result<Resumed, ClientError> {
         let socket = opts
             .socket
             .clone()
             .or_else(default_socket_path)
             .ok_or(ClientError::NoSocketPath)?;
-        let stream = dial(&socket, opts.autostart.as_deref(), opts.socket.is_some()).await?;
+        let stream = dial(
+            &socket,
+            opts.autostart.as_deref(),
+            opts.socket.is_some(),
+            permit,
+        )
+        .await?;
 
         let (read_half, write_half) = stream.into_split();
         let mut reader = FramedRead::new(read_half, FrameCodec);
@@ -195,7 +213,10 @@ impl Client {
     /// Replaces any earlier receiver for the same terminal.
     pub fn terminal_frames(&self, id: TerminalId) -> mpsc::Receiver<TerminalRender> {
         let (tx, rx) = mpsc::channel(TERMINAL_BUFFER);
-        self.shared.terminals().insert(id, tx);
+        // On a closed connection the sender is dropped at once: the receiver ends immediately.
+        if !self.shared.pending().closed {
+            self.shared.terminals().insert(id, tx);
+        }
         rx
     }
 
@@ -208,6 +229,21 @@ impl Client {
                 .map_err(|_| ClientError::Disconnected)?;
         }
         Ok(())
+    }
+
+    /// Sends `req` without waiting for (or keeping) its response; the daemon's answer is
+    /// discarded by the read loop. Never blocks: a full outbox drops the request.
+    pub(crate) fn notify(&self, req: &Request) -> Result<(), ClientError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = ControlMessage::request(id, req)?.to_frame()?;
+        match self.outbox.try_send(frame) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("outbox full, dropping a fire-and-forget request");
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(ClientError::Disconnected),
+        }
     }
 
     pub fn epoch(&self) -> Epoch {
@@ -379,16 +415,41 @@ fn is_unreachable(e: &io::Error) -> bool {
     )
 }
 
+/// Limits autostart attempts to one per [`AUTOSTART_INTERVAL`]; used by reconnecting callers
+/// that dial repeatedly.
+#[derive(Debug, Default)]
+pub(crate) struct AutostartThrottle {
+    last: Option<Instant>,
+}
+
+impl AutostartThrottle {
+    /// `true` (and starts a new interval) if an autostart is allowed now.
+    pub(crate) fn permit(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < AUTOSTART_INTERVAL)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+/// Dials `socket`. When it is unreachable and `autostart` is set, spawns `heelerd` if `permit`
+/// agrees and waits up to [`AUTOSTART_WAIT`] for it; otherwise returns the dial error.
 async fn dial(
     socket: &Path,
     autostart: Option<&Path>,
     socket_explicit: bool,
+    permit: impl FnOnce() -> bool,
 ) -> Result<UnixStream, ClientError> {
     let first = match UnixStream::connect(socket).await {
         Ok(stream) => return Ok(stream),
         Err(e) => e,
     };
-    let Some(binary) = autostart.filter(|_| is_unreachable(&first)) else {
+    let Some(binary) = autostart.filter(|_| is_unreachable(&first) && permit()) else {
         return Err(first.into());
     };
     spawn_daemon(binary, socket_explicit.then_some(socket))?;
