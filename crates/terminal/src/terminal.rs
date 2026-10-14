@@ -139,7 +139,9 @@ struct Core {
     live_changed: Condvar,
 }
 
-/// Decrements [`Core::live`] when a helper thread ends (declare it first so it drops last).
+/// Decrements [`Core::live`] when a helper thread ends. Must drop after the thread's PTY
+/// handle: parameters drop after the body's locals, so the loops move their handle into a
+/// local declared after the guard.
 struct LiveGuard(Arc<Core>);
 
 impl Drop for LiveGuard {
@@ -561,8 +563,9 @@ fn start_threads(
     .map_err(|e| release(0, e))
 }
 
-fn reader_loop(core: Arc<Core>, mut reader: Box<dyn Read + Send>) {
+fn reader_loop(core: Arc<Core>, reader: Box<dyn Read + Send>) {
     let _live = LiveGuard(Arc::clone(&core));
+    let mut reader = reader;
     let mut buf = vec![0u8; READ_BUFFER];
     loop {
         match reader.read(&mut buf) {
@@ -584,8 +587,9 @@ fn reader_loop(core: Arc<Core>, mut reader: Box<dyn Read + Send>) {
     }
 }
 
-fn writer_loop(core: Arc<Core>, mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
+fn writer_loop(core: Arc<Core>, writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
     let _live = LiveGuard(core);
+    let mut writer = writer;
     while let Ok(bytes) = rx.recv() {
         if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
             tracing::debug!(%error, "PTY write failed; closing the input side");
