@@ -19,6 +19,7 @@ use tracing::info;
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
 use crate::history::HistoryService;
+use crate::providers::ProviderService;
 use crate::registry::RegistryHandle;
 use crate::terminals::TerminalHub;
 
@@ -195,7 +196,30 @@ impl Router {
                     .await?;
                 ok(&Empty {})
             }
+            Request::ChatSetModel(req) => ok(&SessionResult {
+                session: self.registry.set_chat_model(req).await?,
+            }),
+            Request::ProviderList(_) => ok(&self.providers().list().await?),
+            Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
+            Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),
+            Request::ProviderRemove(req) => {
+                self.providers().remove(&req.provider_id).await?;
+                ok(&Empty {})
+            }
+            Request::ProviderSetCredential(req) => ok(&self
+                .providers()
+                .set_credential(&req.provider_id, req.secret)
+                .await?),
+            Request::ProviderClearCredential(req) => {
+                ok(&self.providers().clear_credential(&req.provider_id).await?)
+            }
+            Request::ProviderModels(req) => ok(&self.providers().models(&req.provider_id).await?),
+            Request::ProviderDiscover(_) => ok(&self.providers().discover().await?),
         }
+    }
+
+    fn providers(&self) -> &Arc<ProviderService> {
+        self.registry.chats().providers()
     }
 
     /// The session must be a chat session with a running agent.

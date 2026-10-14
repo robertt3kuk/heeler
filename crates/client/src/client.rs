@@ -19,6 +19,10 @@ use heeler_protocol::messages::{
     ClientInfo, Empty, Event, Hello, Request, ResumePoint, SessionInfo, SessionRef, SessionResult,
     Welcome, decode_result,
 };
+use heeler_protocol::provider::{
+    ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
+    ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
+};
 use heeler_protocol::render::TerminalRender;
 use heeler_protocol::tree::{AgentTree, AgentTreeRequest};
 use heeler_protocol::{
@@ -46,6 +50,9 @@ pub(crate) const HISTORY_CAPABILITY: &str = "history.search";
 pub(crate) const CHAT_CAPABILITY: &str = "chat.codex";
 /// Capability for `agent.tree` and `agent.tree_updated` (protocol 0.10).
 pub(crate) const AGENT_TREE_CAPABILITY: &str = "agent.tree";
+/// Capability for `provider.*` and direct chats (`chat.create` with agent `direct`,
+/// `chat.set_model`; protocol 0.11).
+pub(crate) const DIRECT_CAPABILITY: &str = "chat.direct";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -56,6 +63,7 @@ const CAPABILITIES: &[&str] = &[
     HISTORY_CAPABILITY,
     CHAT_CAPABILITY,
     AGENT_TREE_CAPABILITY,
+    DIRECT_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `heelerd` can take
@@ -256,6 +264,15 @@ impl Client {
             .any(|capability| capability == CHAT_CAPABILITY)
     }
 
+    /// True when the daemon advertised capability `chat.direct` (model providers and direct
+    /// chats; protocol 0.11).
+    pub fn supports_direct_chat(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == DIRECT_CAPABILITY)
+    }
+
     /// True when the daemon advertised capability `agent.tree` (protocol 0.10).
     pub fn supports_agent_tree(&self) -> bool {
         self.welcome
@@ -344,6 +361,92 @@ impl Client {
             agent: agent.to_owned(),
         }))
         .await
+    }
+
+    /// Switches the model (and optionally the provider) of a running direct chat.
+    pub async fn chat_set_model(
+        &self,
+        session_id: SessionId,
+        provider_id: Option<String>,
+        model: impl Into<String>,
+    ) -> Result<SessionInfo, ClientError> {
+        let result: SessionResult = self
+            .call(Request::ChatSetModel(ChatSetModel {
+                session_id,
+                provider_id,
+                model: model.into(),
+            }))
+            .await?;
+        Ok(result.session)
+    }
+
+    /// The configured model providers, oldest first.
+    pub async fn provider_list(&self) -> Result<Vec<ProviderInfo>, ClientError> {
+        let list: ProviderList = self.call(Request::ProviderList(Empty {})).await?;
+        Ok(list.providers)
+    }
+
+    pub async fn provider_add(&self, req: ProviderAdd) -> Result<ProviderInfo, ClientError> {
+        let result: ProviderResult = self.call(Request::ProviderAdd(req)).await?;
+        Ok(result.provider)
+    }
+
+    pub async fn provider_update(&self, req: ProviderUpdate) -> Result<ProviderInfo, ClientError> {
+        let result: ProviderResult = self.call(Request::ProviderUpdate(req)).await?;
+        Ok(result.provider)
+    }
+
+    /// Forgets a provider and its stored API key.
+    pub async fn provider_remove(&self, provider_id: impl Into<String>) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::ProviderRemove(ProviderRef {
+            provider_id: provider_id.into(),
+        }))
+        .await
+        .map(|_| ())
+    }
+
+    /// Hands the daemon an API key to keep in the Keychain; it is never sent back.
+    pub async fn provider_set_credential(
+        &self,
+        provider_id: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Result<ProviderInfo, ClientError> {
+        let result: ProviderResult = self
+            .call(Request::ProviderSetCredential(ProviderSetCredential {
+                provider_id: provider_id.into(),
+                secret: secret.into(),
+            }))
+            .await?;
+        Ok(result.provider)
+    }
+
+    pub async fn provider_clear_credential(
+        &self,
+        provider_id: impl Into<String>,
+    ) -> Result<ProviderInfo, ClientError> {
+        let result: ProviderResult = self
+            .call(Request::ProviderClearCredential(ProviderRef {
+                provider_id: provider_id.into(),
+            }))
+            .await?;
+        Ok(result.provider)
+    }
+
+    /// The models a provider offers right now.
+    pub async fn provider_models(
+        &self,
+        provider_id: impl Into<String>,
+    ) -> Result<ProviderModels, ClientError> {
+        self.call(Request::ProviderModels(ProviderRef {
+            provider_id: provider_id.into(),
+        }))
+        .await
+    }
+
+    /// Asks the daemon to look for Ollama and LM Studio on this machine.
+    pub async fn provider_discover(&self) -> Result<Vec<DiscoveredProvider>, ClientError> {
+        let found: ProviderDiscovery = self.call(Request::ProviderDiscover(Empty {})).await?;
+        Ok(found.found)
     }
 
     /// Permission requests waiting for an answer (of one session, or of all).

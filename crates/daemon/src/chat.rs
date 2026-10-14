@@ -1,5 +1,5 @@
-//! Agent chat sessions (protocol 0.9): one adapter process per session, the approval engine,
-//! and the journal.
+//! Chat sessions (protocol 0.9 agents, 0.11 direct model chat): one adapter process per Codex
+//! session or one [`DirectSession`] per direct chat, the approval engine, and the journal.
 //!
 //! The registry owns the sessions' records and lifecycle; [`ChatManager`] owns what runs: the
 //! adapters, a pump task per session that numbers, journals and publishes every event, and the
@@ -39,10 +39,14 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::bus::EventBus;
+use crate::direct::{DirectSession, Target};
+use crate::providers::ProviderService;
 use crate::registry::{self, ChatNotifier};
 
-/// The only agent today.
+/// The Codex app-server agent.
 pub const AGENT_CODEX: &str = "codex";
+/// The model gateway: no agent, a provider's chat API.
+pub use heeler_protocol::provider::AGENT_DIRECT;
 
 /// How long a fetched model catalog is reused.
 const MODEL_CACHE: Duration = Duration::from_secs(60);
@@ -60,6 +64,19 @@ pub struct ChatSpec {
     /// resumes.
     #[serde(default)]
     pub thread_id: Option<String>,
+    /// `direct` only: the provider the conversation talks to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// `direct` only: sent to the model ahead of the conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+}
+
+/// What runs a session: an agent process, or the model gateway.
+#[derive(Debug, Clone)]
+enum Backend {
+    Agent(Arc<dyn AgentAdapter>),
+    Direct(Arc<DirectSession>),
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -70,7 +87,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Debug)]
 struct Live {
     id: SessionId,
-    adapter: Arc<dyn AgentAdapter>,
+    backend: Backend,
     /// The next event's `seq`.
     next_seq: AtomicU64,
     /// A turn is in progress, or `chat.send` is starting one.
@@ -94,6 +111,8 @@ pub struct ChatManager {
     storage: Storage,
     notifier: ChatNotifier,
     codex: CodexConfig,
+    providers: Arc<ProviderService>,
+    max_context_chars: usize,
     live: Mutex<HashMap<SessionId, Arc<Live>>>,
     approvals: Mutex<HashMap<ApprovalId, Pending>>,
     models: Mutex<Option<(Instant, Vec<ModelInfo>)>>,
@@ -133,16 +152,39 @@ impl ChatManager {
         storage: Storage,
         notifier: ChatNotifier,
         codex: CodexConfig,
+        providers: Arc<ProviderService>,
+        max_context_chars: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             bus,
             storage,
             notifier,
             codex,
+            providers,
+            max_context_chars,
             live: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
             models: Mutex::new(None),
         })
+    }
+
+    /// The model providers of this daemon.
+    pub(crate) fn providers(&self) -> &Arc<ProviderService> {
+        &self.providers
+    }
+
+    /// Whether the session has a running backend (not merely a record).
+    pub(crate) fn is_running(&self, id: SessionId) -> bool {
+        lock(&self.live).contains_key(&id)
+    }
+
+    /// The highest journaled `seq` of a session.
+    async fn journal_end(&self, id: SessionId) -> Result<u64, ErrorBody> {
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || storage.chat().last_seq(id))
+            .await
+            .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))?
+            .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))
     }
 
     /// Starts (or resumes, when `spec.thread_id` is set) the agent of a session and begins
@@ -153,22 +195,19 @@ impl ChatManager {
         cwd: PathBuf,
         spec: &ChatSpec,
     ) -> Result<Started, ErrorBody> {
+        if spec.agent == AGENT_DIRECT {
+            return self.start_direct(id, spec).await;
+        }
         if spec.agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT})",
                     spec.agent
                 ),
             ));
         }
-        let storage = self.storage.clone();
-        let last = tokio::task::spawn_blocking(move || storage.chat().last_seq(id))
-            .await
-            .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))?
-            .map_err(|e| {
-                ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}"))
-            })?;
+        let last = self.journal_end(id).await?;
         let start = StartSpec {
             cwd,
             model: spec.model.clone(),
@@ -185,7 +224,7 @@ impl ChatManager {
             .map_err(|e| provider_error(&e, &self.codex.program))?;
         let live = Arc::new(Live {
             id,
-            adapter,
+            backend: Backend::Agent(adapter),
             next_seq: AtomicU64::new(last + 1),
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
@@ -195,6 +234,89 @@ impl ChatManager {
         info!(session = %id, model = %started.model, resumed = started.resumed, "chat agent started");
         tokio::spawn(self.clone().pump(live, events));
         Ok(started)
+    }
+
+    /// Opens a direct chat: no process, just the session's target and its journal.
+    async fn start_direct(
+        self: &Arc<Self>,
+        id: SessionId,
+        spec: &ChatSpec,
+    ) -> Result<Started, ErrorBody> {
+        let (Some(provider_id), Some(model)) = (spec.provider_id.clone(), spec.model.clone())
+        else {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a direct chat needs a provider and a model",
+            ));
+        };
+        let last = self.journal_end(id).await?;
+        // The conversation's running token total continues from the newest `usage` event.
+        let storage = self.storage.clone();
+        let usage =
+            tokio::task::spawn_blocking(move || storage.chat().items_of_kind(id, "usage", 1))
+                .await
+                .map_err(|e| {
+                    ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}"))
+                })?
+                .map_err(|e| {
+                    ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}"))
+                })?
+                .last()
+                .and_then(|row| serde_json::from_str::<AgentEvent>(&row.event_json).ok())
+                .and_then(|event| match event.kind {
+                    AgentEventKind::Usage { total, .. } => total,
+                    _ => None,
+                })
+                .unwrap_or_default();
+        let (tx, events) = mpsc::channel(256);
+        let session = DirectSession::new(
+            id,
+            self.storage.clone(),
+            self.providers.clone(),
+            tx,
+            self.max_context_chars,
+            Target {
+                provider_id: provider_id.clone(),
+                model: model.clone(),
+                system_prompt: spec.system_prompt.clone(),
+            },
+            usage,
+        );
+        let live = Arc::new(Live {
+            id,
+            backend: Backend::Direct(session),
+            next_seq: AtomicU64::new(last + 1),
+            busy: AtomicBool::new(false),
+            open_turn: Mutex::new(None),
+            stopping: AtomicBool::new(false),
+        });
+        lock(&self.live).insert(id, live.clone());
+        info!(session = %id, provider = %provider_id, %model, "direct chat started");
+        tokio::spawn(self.clone().pump(live, events));
+        Ok(Started {
+            model,
+            // There is no provider-side conversation: the session is its own thread.
+            thread_id: id.to_string(),
+            resumed: spec.thread_id.is_some(),
+        })
+    }
+
+    /// Switches the model of a running direct chat; its next turn uses it.
+    pub(crate) async fn set_model(
+        &self,
+        id: SessionId,
+        provider_id: String,
+        model: String,
+    ) -> Result<(), ErrorBody> {
+        let live = self.live(id)?;
+        let Backend::Direct(session) = &live.backend else {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "only a direct chat has a switchable model",
+            ));
+        };
+        session.set_model(provider_id, model).await;
+        Ok(())
     }
 
     fn live(&self, id: SessionId) -> Result<Arc<Live>, ErrorBody> {
@@ -212,7 +334,12 @@ impl ChatManager {
             return;
         };
         live.stopping.store(true, Ordering::Release);
-        tokio::spawn(async move { live.adapter.shutdown().await });
+        tokio::spawn(async move {
+            match &live.backend {
+                Backend::Agent(adapter) => adapter.shutdown().await,
+                Backend::Direct(session) => session.shutdown().await,
+            }
+        });
     }
 
     /// Sends the user's message; the turn's events follow on the bus.
@@ -239,18 +366,36 @@ impl ChatManager {
                 "a turn is already in progress; wait for it or interrupt it",
             ));
         }
-        match live.adapter.send_message(text).await {
-            Ok(turn) => Ok(turn.turn_id),
-            Err(error) => {
-                live.busy.store(false, Ordering::Release);
-                Err(ErrorBody::new(ErrorCode::ProviderError, error.to_string()))
-            }
+        let started = match &live.backend {
+            Backend::Agent(adapter) => adapter
+                .send_message(text)
+                .await
+                .map(|turn| turn.turn_id)
+                .map_err(|error| ErrorBody::new(ErrorCode::ProviderError, error.to_string())),
+            Backend::Direct(session) => session.send(text).await,
+        };
+        if started.is_err() {
+            live.busy.store(false, Ordering::Release);
         }
+        started
     }
 
     pub async fn interrupt(&self, id: SessionId) -> Result<(), ErrorBody> {
         let live = self.live(id)?;
-        match live.adapter.interrupt().await {
+        let adapter = match &live.backend {
+            Backend::Agent(adapter) => adapter,
+            Backend::Direct(session) => {
+                return if session.interrupt() {
+                    Ok(())
+                } else {
+                    Err(ErrorBody::new(
+                        ErrorCode::InvalidState,
+                        "no turn is in progress",
+                    ))
+                };
+            }
+        };
+        match adapter.interrupt().await {
             Ok(()) => Ok(()),
             Err(AgentError::NoTurn) => Err(ErrorBody::new(
                 ErrorCode::InvalidState,
@@ -309,7 +454,13 @@ impl ChatManager {
             pending.info.session_id
         };
         let live = self.live(session)?;
-        match live.adapter.respond(approval, option_id).await {
+        let Backend::Agent(adapter) = &live.backend else {
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("approval {approval} is not pending"),
+            ));
+        };
+        match adapter.respond(approval, option_id).await {
             Ok(()) => Ok(()),
             Err(AgentError::UnknownApproval) => Err(ErrorBody::new(
                 ErrorCode::InvalidState,
@@ -364,6 +515,12 @@ impl ChatManager {
     }
 
     pub async fn models(&self, agent: &str) -> Result<ChatModels, ErrorBody> {
+        if agent == AGENT_DIRECT {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a direct chat's models come from its provider: use `provider.models`",
+            ));
+        }
         if agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,

@@ -20,6 +20,10 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "CC0-1.0", # notify (file watcher); public-domain dedication
+  # webpki-root-certs, pulled in by rustls-platform-verifier (reqwest, the model gateway): the
+  # Mozilla CA list as data, permissively licensed. On macOS the verifier uses the system trust
+  # store; the list is only a fallback it links.
+  "CDLA-Permissive-2.0",
   "ISC",
   # File-level copyleft only: used unmodified by GPUI's font stack (cbindgen, dwrote, option-ext).
   "MPL-2.0",

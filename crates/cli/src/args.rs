@@ -65,9 +65,12 @@ pub enum Command {
     /// Manage the session history index (opt-in, local)
     #[command(subcommand)]
     Index(IndexCommand),
-    /// Chat with a coding agent (Codex) through the daemon
+    /// Chat with a coding agent (Codex) or directly with a model, through the daemon
     #[command(subcommand)]
     Chat(ChatCommand),
+    /// Model providers for direct chat: OpenAI, Anthropic, Ollama, OpenAI-compatible servers
+    #[command(subcommand)]
+    Provider(ProviderCommand),
     /// List the permission requests of agent chats that wait for an answer
     Approvals,
     /// Answer a permission request with one of the options it offers (see `heeler approvals`)
@@ -88,6 +91,78 @@ pub enum ChatCommand {
     Interrupt(TargetArgs),
     /// List the models the agent offers
     Models,
+    /// Switch the model of a direct chat for its next turn (the history stays)
+    Model(ChatModelArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ChatModelArgs {
+    #[arg(help = TARGET_HELP)]
+    pub target: String,
+    /// The model (see `heeler provider models <provider>`)
+    pub model: String,
+    /// Switch to another provider as well (default: keep the chat's provider)
+    #[arg(long, value_name = "ID")]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// Configure a provider; a key is stored separately with `heeler provider key`
+    Add(ProviderAddArgs),
+    /// Store an API key in the Keychain (read from stdin without echo, or from an environment
+    /// variable)
+    Key(ProviderKeyArgs),
+    /// List the configured providers
+    Ls,
+    /// List the models a provider offers
+    Models(ProviderIdArgs),
+    /// Forget a provider and its stored key
+    Rm(ProviderIdArgs),
+    /// Look for Ollama (127.0.0.1:11434) and LM Studio (127.0.0.1:1234) on this machine
+    Discover(ProviderDiscoverArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAddArgs {
+    /// openai, anthropic, ollama or openai-compatible
+    #[arg(value_parser = ["openai", "anthropic", "ollama", "openai-compatible"])]
+    pub kind: String,
+    /// Display name; the provider's id is made from it (default: the kind)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Where the provider is (default: the kind's own; required for openai-compatible, e.g.
+    /// http://127.0.0.1:1234/v1)
+    #[arg(long, value_name = "URL")]
+    pub base_url: Option<String>,
+    /// The model chats use when they name none
+    #[arg(long = "model", value_name = "MODEL")]
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderKeyArgs {
+    /// The provider's id (see `heeler provider ls`)
+    pub provider: String,
+    /// Read the key from this environment variable instead of stdin
+    #[arg(long, value_name = "VAR", conflicts_with = "clear")]
+    pub from_env: Option<String>,
+    /// Delete the stored key instead
+    #[arg(long)]
+    pub clear: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderIdArgs {
+    /// The provider's id (see `heeler provider ls`)
+    pub provider: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderDiscoverArgs {
+    /// Configure the servers that were found and are not configured yet
+    #[arg(long)]
+    pub add: bool,
 }
 
 #[derive(Debug, Args)]
@@ -99,7 +174,8 @@ pub struct ChatNewArgs {
     /// Directory the agent works in (default: the current directory)
     #[arg(long, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
-    /// Model from `heeler chat models` (default: the agent catalog's default)
+    /// Model from `heeler chat models` (default: the agent catalog's default); with --direct a
+    /// model of the provider (default: the provider's default model)
     #[arg(long)]
     pub model: Option<String>,
     /// When the agent asks before acting: untrusted, on-request (default), never
@@ -108,9 +184,18 @@ pub struct ChatNewArgs {
     /// What the agent may touch: read-only, workspace-write (default), danger-full-access
     #[arg(long, value_name = "MODE", value_parser = parse_sandbox)]
     pub sandbox: Option<SandboxMode>,
-    /// Session title (default: `codex · <directory>`)
+    /// Session title (default: `codex · <directory>`, or `<provider> · <model>` with --direct)
     #[arg(long)]
     pub title: Option<String>,
+    /// Chat directly with a model of a provider (no agent, no tools); needs --provider
+    #[arg(long, requires = "provider")]
+    pub direct: bool,
+    /// The provider of a direct chat (see `heeler provider ls`)
+    #[arg(long, value_name = "ID", requires = "direct")]
+    pub provider: Option<String>,
+    /// System prompt of a direct chat
+    #[arg(long, value_name = "TEXT", requires = "direct")]
+    pub system: Option<String>,
 }
 
 #[derive(Debug, Args)]

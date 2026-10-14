@@ -19,10 +19,12 @@ bytes.workspace = true
 futures.workspace = true
 heeler-agents.workspace = true
 heeler-core.workspace = true
+heeler-gateway.workspace = true
 heeler-index.workspace = true
 heeler-protocol.workspace = true
 heeler-storage.workspace = true
 heeler-terminal.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -35,6 +37,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 heeler-client.workspace = true
+heeler-gateway = { workspace = true, features = ["test-support"] }
 libc.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true

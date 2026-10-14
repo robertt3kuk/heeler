@@ -31,7 +31,7 @@ pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
 pub use rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
 };
 pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
@@ -152,6 +152,10 @@ impl Storage {
 
     pub fn approvals(&self) -> Approvals<'_> {
         Approvals(self)
+    }
+
+    pub fn providers(&self) -> Providers<'_> {
+        Providers(self)
     }
 
     pub fn app_meta(&self) -> AppMeta<'_> {
@@ -382,6 +386,19 @@ impl Chat<'_> {
             .read(move |conn| sql::chat_items(conn, session, before, limit))
     }
 
+    /// The newest `limit` events whose `type` is `kind`, oldest first (a direct chat reads its
+    /// messages this way).
+    pub fn items_of_kind(
+        &self,
+        session: SessionId,
+        kind: &str,
+        limit: u32,
+    ) -> Result<Vec<ChatItemRow>> {
+        let kind = kind.to_owned();
+        self.0
+            .read(move |conn| sql::chat_items_of_kind(conn, session, &kind, limit))
+    }
+
     /// The highest journaled `seq`; 0 when nothing was journaled.
     pub fn last_seq(&self, session: SessionId) -> Result<u64> {
         self.0.read(move |conn| sql::chat_last_seq(conn, session))
@@ -416,6 +433,26 @@ impl Approvals<'_> {
     /// Requests never resolved (what a crashed daemon left behind).
     pub fn unresolved(&self) -> Result<Vec<ApprovalRow>> {
         self.0.read(|conn| sql::approvals(conn, None, true))
+    }
+}
+
+/// Model provider configuration (never the credential: that is in the Keychain).
+#[derive(Debug, Clone, Copy)]
+pub struct Providers<'a>(&'a Storage);
+
+impl Providers<'_> {
+    /// Inserts the provider or replaces everything but its creation time.
+    pub fn upsert(&self, row: ProviderRow) -> Result<()> {
+        self.0.write(Write::UpsertProvider(Box::new(row)))
+    }
+
+    pub fn delete(&self, id: &str) -> Result<()> {
+        self.0.write(Write::DeleteProvider(id.to_owned()))
+    }
+
+    /// Oldest first.
+    pub fn list(&self) -> Result<Vec<ProviderRow>> {
+        self.0.read(sql::list_providers)
     }
 }
 

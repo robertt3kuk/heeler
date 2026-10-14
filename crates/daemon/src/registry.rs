@@ -29,6 +29,7 @@ use heeler_protocol::messages::{
     SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
     WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRename,
 };
+use heeler_protocol::provider::ChatSetModel;
 use heeler_protocol::tree::{AgentTree, NodeReport};
 use heeler_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use heeler_terminal::{
@@ -39,9 +40,11 @@ use tracing::{debug, error, warn};
 
 use crate::agent;
 use crate::bus::{EventBus, PublishError};
-use crate::chat::{AGENT_CODEX, ChatManager, ChatSpec};
+use crate::chat::{AGENT_CODEX, AGENT_DIRECT, ChatManager, ChatSpec};
 use crate::config::RestoreMode;
+use crate::direct::MAX_SYSTEM_PROMPT_BYTES;
 use crate::projects::{self, Folder};
+use crate::providers::ProviderService;
 use crate::restore::{self, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
 use crate::tree::{self, TreeState};
@@ -140,6 +143,8 @@ enum Command {
     },
     /// Whether the session is a chat session, and live.
     ChatTarget(SessionId, Reply<bool>),
+    /// `chat.set_model`: answered once the switch is journaled.
+    SetChatModel(ChatSetModel, Reply<SessionInfo>),
 }
 
 /// How a chat session's pump reaches the registry.
@@ -331,6 +336,12 @@ impl RegistryHandle {
     pub async fn chat_target(&self, id: SessionId) -> Result<bool, ErrorBody> {
         self.ask(|r| Command::ChatTarget(id, r)).await
     }
+
+    /// Switches the model (and optionally the provider) of a running direct chat; its next
+    /// turn uses it and the journal records the switch.
+    pub async fn set_chat_model(&self, req: ChatSetModel) -> Result<SessionInfo, ErrorBody> {
+        self.ask(|r| Command::SetChatModel(req, r)).await
+    }
 }
 
 /// One terminal session and the daemon-side state around it.
@@ -476,6 +487,10 @@ pub struct RegistryConfig {
     pub activity_interval: Duration,
     /// How to start `codex app-server` for chat sessions.
     pub codex: CodexConfig,
+    /// The model providers of direct chats.
+    pub providers: Arc<ProviderService>,
+    /// `gateway.max_context_chars`.
+    pub max_context_chars: usize,
 }
 
 /// Starts the actor from the stored state. It stops when every [`RegistryHandle`] is dropped.
@@ -495,6 +510,8 @@ pub fn spawn(
         config.storage.clone(),
         ChatNotifier { tx: tx.downgrade() },
         config.codex,
+        config.providers,
+        config.max_context_chars,
     );
     let (workspaces, home, next_position) =
         restored_workspaces(&stored, &config.storage, &config.home_folder);
@@ -813,6 +830,7 @@ impl SessionRegistry {
                 Command::ChatTarget(id, reply) => {
                     let _ = reply.send(self.chat_target(id));
                 }
+                Command::SetChatModel(req, reply) => self.set_chat_model(req, reply),
             }
         }
         self.flush_dirty();
@@ -1847,15 +1865,20 @@ impl SessionRegistry {
 
     /// Adds the session (state `starting`) and stores it; the agent is started by the caller.
     fn begin_chat(&mut self, req: ChatCreate) -> Result<usize, ErrorBody> {
-        if req.agent != AGENT_CODEX {
+        if req.agent != AGENT_CODEX && req.agent != AGENT_DIRECT {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT})",
                     req.agent
                 ),
             ));
         }
+        let direct = if req.agent == AGENT_DIRECT {
+            Some(self.direct_target(&req)?)
+        } else {
+            None
+        };
         let workspace_id = match req.workspace_id {
             Some(id) => {
                 self.index_of(id)?;
@@ -1865,18 +1888,34 @@ impl SessionRegistry {
                 .workspace_containing(&req.cwd)
                 .map_or(self.home, |index| self.workspaces[index].info.id),
         };
-        let spec = ChatSpec {
-            agent: req.agent,
-            model: req.model.filter(|m| !m.trim().is_empty()),
-            approval_policy: req.approval_policy.unwrap_or_default(),
-            sandbox: req.sandbox.unwrap_or_default(),
-            thread_id: None,
+        let spec = match direct {
+            Some((provider_id, model, system_prompt)) => ChatSpec {
+                agent: req.agent,
+                model: Some(model),
+                approval_policy: Default::default(),
+                sandbox: Default::default(),
+                thread_id: None,
+                provider_id: Some(provider_id),
+                system_prompt,
+            },
+            None => ChatSpec {
+                agent: req.agent,
+                model: req.model.filter(|m| !m.trim().is_empty()),
+                approval_policy: req.approval_policy.unwrap_or_default(),
+                sandbox: req.sandbox.unwrap_or_default(),
+                thread_id: None,
+                provider_id: None,
+                system_prompt: None,
+            },
         };
         let folder = req
             .cwd
             .file_name()
             .map_or_else(|| "chat".to_owned(), |n| n.to_string_lossy().into_owned());
-        let default_title = format!("{} · {folder}", spec.agent);
+        let default_title = match (&spec.provider_id, &spec.model) {
+            (Some(provider), Some(model)) => format!("{provider} · {model}"),
+            _ => format!("{} · {folder}", spec.agent),
+        };
         let chosen = req
             .title
             .as_deref()
@@ -1931,6 +1970,128 @@ impl SessionRegistry {
         self.persist_session(index);
         self.sync_workspace(workspace);
         Ok(index)
+    }
+
+    /// What a direct chat talks to: its provider, the model (the request's, else the provider's
+    /// default) and the system prompt.
+    fn direct_target(
+        &self,
+        req: &ChatCreate,
+    ) -> Result<(String, String, Option<String>), ErrorBody> {
+        let bad = |message: String| ErrorBody::new(ErrorCode::BadRequest, message);
+        let Some(provider_id) = req.provider_id.as_deref().filter(|p| !p.is_empty()) else {
+            return Err(bad(
+                "a direct chat needs a provider (`provider_id`, see `heeler provider ls`)".into(),
+            ));
+        };
+        let provider = self.chats.providers().require(provider_id)?;
+        let model = req
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
+            .or(provider.default_model)
+            .ok_or_else(|| {
+                bad(format!(
+                    "no model: name one, or give provider `{provider_id}` a default model"
+                ))
+            })?;
+        let system_prompt = req
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned);
+        if system_prompt
+            .as_ref()
+            .is_some_and(|p| p.len() > MAX_SYSTEM_PROMPT_BYTES)
+        {
+            return Err(bad(format!(
+                "the system prompt is longer than {MAX_SYSTEM_PROMPT_BYTES} bytes"
+            )));
+        }
+        Ok((provider.id, model, system_prompt))
+    }
+
+    /// `chat.set_model`: the session's spec and info change now; the running chat is told, and
+    /// the reply waits until its journal has the notice.
+    fn set_chat_model(&mut self, req: ChatSetModel, reply: Reply<SessionInfo>) {
+        match self.switch_chat_model(req) {
+            Ok((index, switch)) => {
+                let info = self.sessions[index].info.clone();
+                let chats = self.chats.clone();
+                let id = info.id;
+                tokio::spawn(async move {
+                    let result = match switch {
+                        Some((provider_id, model)) => {
+                            chats.set_model(id, provider_id, model).await.map(|()| info)
+                        }
+                        None => Ok(info),
+                    };
+                    let _ = reply.send(result);
+                });
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+
+    /// Validates and applies the switch; `None` means nothing changed.
+    #[allow(clippy::type_complexity)]
+    fn switch_chat_model(
+        &mut self,
+        req: ChatSetModel,
+    ) -> Result<(usize, Option<(String, String)>), ErrorBody> {
+        let index = self.session_index(req.session_id)?;
+        let session = &self.sessions[index];
+        let Some(spec) = &session.chat else {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!("session {} is not a chat session", req.session_id),
+            ));
+        };
+        if spec.agent != AGENT_DIRECT {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "only a direct chat has a switchable model",
+            ));
+        }
+        if !session.info.state.is_live() || !self.chats.is_running(req.session_id) {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!(
+                    "chat session {} is not running (`heeler restart` it first)",
+                    req.session_id
+                ),
+            ));
+        }
+        let model = req.model.trim();
+        if model.is_empty() {
+            return Err(ErrorBody::new(ErrorCode::BadRequest, "the model is empty"));
+        }
+        let current_provider = spec.provider_id.clone().unwrap_or_default();
+        let provider_id = match req.provider_id.as_deref().filter(|p| !p.is_empty()) {
+            Some(provider) => self.chats.providers().require(provider)?.id,
+            None => current_provider.clone(),
+        };
+        if provider_id == current_provider && spec.model.as_deref() == Some(model) {
+            return Ok((index, None));
+        }
+        let model = model.to_owned();
+        let session = &mut self.sessions[index];
+        if let Some(spec) = &mut session.chat {
+            spec.provider_id = Some(provider_id.clone());
+            spec.model = Some(model.clone());
+        }
+        if let Some(chat) = &mut session.info.chat {
+            chat.provider_id = Some(provider_id.clone());
+            chat.model.clone_from(&model);
+        }
+        self.emit_session(index);
+        self.persist_session(index);
+        Ok((index, Some((provider_id, model))))
     }
 
     /// Starts the agent of a `Starting` chat session on a task; the outcome comes back as
@@ -2188,6 +2349,8 @@ impl SessionRegistry {
                         approval_policy: Default::default(),
                         sandbox: Default::default(),
                         thread_id: None,
+                        provider_id: None,
+                        system_prompt: None,
                     },
                     Some(format!("stored spec unreadable: {error}")),
                 )
@@ -2773,6 +2936,7 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
         sandbox: spec.sandbox,
         turn_active: false,
         pending_approvals: 0,
+        provider_id: spec.provider_id.clone(),
     }
 }
 

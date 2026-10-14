@@ -1,0 +1,1 @@
+{"id":22,"result":{"found":[{"base_url":"http://127.0.0.1:11434","kind":"ollama","models":["llama3.3:70b","qwen3:8b"],"name":"Ollama","provider_id":"ollama"},{"base_url":"http://127.0.0.1:1234/v1","kind":"openai-compatible","models":[],"name":"LM Studio"}]}}

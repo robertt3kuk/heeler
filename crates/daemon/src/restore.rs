@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use heeler_core::{ObservationTree, SessionId};
 use heeler_protocol::messages::TerminalSpec;
-use heeler_storage::{RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
+use heeler_storage::{ProviderRow, RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 use serde::{Deserialize, Serialize};
 
 /// Everything the registry needs to rebuild its state.
@@ -16,6 +16,8 @@ pub struct Stored {
     pub recent_projects: Vec<RecentProject>,
     /// What the daemon knew about the agents of each session when it stopped.
     pub agent_trees: HashMap<SessionId, ObservationTree>,
+    /// Configured model providers, oldest first.
+    pub providers: Vec<ProviderRow>,
 }
 
 /// Blocking: reads the whole durable state. Run it off the async threads.
@@ -25,6 +27,7 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
         sessions: storage.sessions().list()?,
         recent_projects: storage.recent_projects().list()?,
         agent_trees: crate::tree::load(storage)?,
+        providers: storage.providers().list()?,
     })
 }
 

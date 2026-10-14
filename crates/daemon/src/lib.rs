@@ -12,7 +12,9 @@
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 //! - [`history`]: the opt-in session history index (`heeler-index`) and the `history.*` requests.
-//! - [`chat`]: agent chat sessions: adapters, the approval engine, the journal.
+//! - [`chat`]: chat sessions: agent adapters, direct model chats, the approval engine, the journal.
+//! - [`direct`]: direct model chat: a session whose "agent" is the model gateway.
+//! - [`providers`]: model providers: SQLite config, Keychain credentials, adapters.
 //! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
 //! - [`tree`]: the per-session agent observation tree: event coalescing, rollup, storage.
 
@@ -22,10 +24,12 @@ pub mod chat;
 pub mod config;
 pub mod conn;
 pub mod daemon;
+pub mod direct;
 pub mod error;
 pub mod history;
 pub mod paths;
 pub mod projects;
+pub mod providers;
 pub mod registry;
 pub mod restore;
 pub mod router;
@@ -37,3 +41,4 @@ pub use config::{DaemonSettings, HistorySettings, RestoreMode};
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;
 pub use paths::Paths;
+pub use providers::GatewayConfig;

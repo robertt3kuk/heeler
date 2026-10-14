@@ -1,4 +1,4 @@
-//! `heeler chat new|send|log|attach|interrupt|models`, `heeler approvals`, `heeler approve`.
+//! `heeler chat new|send|log|attach|interrupt|models|model`, `heeler approvals`, `heeler approve`.
 
 use std::io::Write as _;
 
@@ -6,11 +6,12 @@ use heeler_client::Client;
 use heeler_core::{AgentEvent, ApprovalId, SessionKind};
 use heeler_protocol::chat::{ApprovalInfo, ApprovalList, ChatCreate, ChatHistory};
 use heeler_protocol::messages::{Empty, Event, Request, SessionInfo, SessionResult, Subscribed};
+use heeler_protocol::provider::AGENT_DIRECT;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{Ctx, print_line};
-use crate::args::{ApproveArgs, ChatCommand, ChatNewArgs, ChatSendArgs, TargetArgs};
+use crate::args::{ApproveArgs, ChatCommand, ChatModelArgs, ChatNewArgs, ChatSendArgs, TargetArgs};
 use crate::error::CliError;
 use heeler_cli::chat_render::ChatPrinter;
 
@@ -28,6 +29,7 @@ impl Ctx {
             ChatCommand::Attach(TargetArgs { target }) => self.chat_attach(&target).await,
             ChatCommand::Interrupt(TargetArgs { target }) => self.chat_interrupt(&target).await,
             ChatCommand::Models => self.chat_models().await,
+            ChatCommand::Model(args) => self.chat_model(args).await,
         }
     }
 
@@ -54,15 +56,18 @@ impl Ctx {
             Some((target, _)) => Some(self.resolve_workspace_id(&client, &target).await?),
             None => None,
         };
+        let direct = args.direct;
         let session = client
             .chat_create(ChatCreate {
                 workspace_id: workspace,
                 cwd,
-                agent: "codex".to_owned(),
+                agent: if direct { AGENT_DIRECT } else { "codex" }.to_owned(),
                 model: args.model,
                 approval_policy: args.approval_policy,
                 sandbox: args.sandbox,
                 title: args.title,
+                provider_id: args.provider,
+                system_prompt: args.system,
             })
             .await
             .map_err(|e| self.fail(e))?;
@@ -70,9 +75,37 @@ impl Ctx {
         self.print(&result, || {
             let session = &result.session;
             match &session.chat {
+                Some(chat) if direct => format!(
+                    "session {} direct {} / {}",
+                    session.id,
+                    chat.provider_id.as_deref().unwrap_or("?"),
+                    chat.model
+                ),
                 Some(chat) => format!(
                     "session {} {} {} (approvals: {}, sandbox: {})",
                     session.id, chat.agent, chat.model, chat.approval_policy, chat.sandbox
+                ),
+                None => format!("session {}", session.id),
+            }
+        })
+    }
+
+    async fn chat_model(&self, args: ChatModelArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let session = self.resolve_chat(&client, &args.target).await?;
+        let session = client
+            .chat_set_model(session.id, args.provider, args.model)
+            .await
+            .map_err(|e| self.fail(e))?;
+        let result = SessionResult { session };
+        self.print(&result, || {
+            let session = &result.session;
+            match &session.chat {
+                Some(chat) => format!(
+                    "session {} direct {} / {}",
+                    session.id,
+                    chat.provider_id.as_deref().unwrap_or("?"),
+                    chat.model
                 ),
                 None => format!("session {}", session.id),
             }

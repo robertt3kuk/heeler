@@ -132,3 +132,18 @@ pub struct ApprovalRow {
     /// Which client answered (`cli`, `desktop`, ...); absent for expiries.
     pub decided_by: Option<String>,
 }
+
+/// A model provider's configuration. The credential is not here: it is in the Keychain, and
+/// `keychain_ref` only names where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRow {
+    /// A short slug, unique; also the Keychain account.
+    pub id: String,
+    /// `openai`, `anthropic`, `ollama` or `openai-compatible`.
+    pub kind: String,
+    pub name: String,
+    pub base_url: String,
+    pub default_model: Option<String>,
+    pub keychain_ref: String,
+    pub created_at_ms: u64,
+}

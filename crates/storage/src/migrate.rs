@@ -48,6 +48,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "agent_trees",
         sql: include_str!("../migrations/0004_agent_trees.sql"),
     },
+    Migration {
+        version: 5,
+        name: "providers",
+        sql: include_str!("../migrations/0005_providers.sql"),
+    },
 ];
 
 /// Schema version recorded in the database; 0 for a database without `app_meta`.

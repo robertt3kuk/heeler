@@ -189,7 +189,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "workspace.projects",
             "history.search",
             "chat.codex",
-            "agent.tree"
+            "agent.tree",
+            "chat.direct"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

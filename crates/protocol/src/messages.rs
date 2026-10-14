@@ -21,6 +21,9 @@ use crate::chat::{
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::history::{HistorySearch, HistorySetEnabled};
+use crate::provider::{
+    ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
+};
 use crate::render::Row;
 use crate::tree::{AgentTreeRequest, NodeReport};
 
@@ -149,6 +152,39 @@ pub enum Request {
     /// Capability `chat.codex`: answer a permission request with one of its options.
     #[serde(rename = "approval.respond")]
     ApprovalRespond(ApprovalRespond),
+    /// Capability `chat.direct` (protocol 0.11): the configured model providers; answered with
+    /// `ProviderList`.
+    #[serde(rename = "provider.list")]
+    ProviderList(Empty),
+    /// Capability `chat.direct`: configure a provider; answered with `ProviderResult`.
+    #[serde(rename = "provider.add")]
+    ProviderAdd(ProviderAdd),
+    /// Capability `chat.direct`: change a provider's name, base URL or default model.
+    #[serde(rename = "provider.update")]
+    ProviderUpdate(ProviderUpdate),
+    /// Capability `chat.direct`: forget a provider and its stored credential; answered with
+    /// `Empty`.
+    #[serde(rename = "provider.remove")]
+    ProviderRemove(ProviderRef),
+    /// Capability `chat.direct`: store the API key in the Keychain. The secret is never echoed
+    /// or logged.
+    #[serde(rename = "provider.set_credential")]
+    ProviderSetCredential(ProviderSetCredential),
+    /// Capability `chat.direct`: delete the stored API key.
+    #[serde(rename = "provider.clear_credential")]
+    ProviderClearCredential(ProviderRef),
+    /// Capability `chat.direct`: ask the provider which models it offers; answered with
+    /// `ProviderModels`.
+    #[serde(rename = "provider.models")]
+    ProviderModels(ProviderRef),
+    /// Capability `chat.direct`: look for Ollama and LM Studio on this machine (once, on
+    /// request); answered with `ProviderDiscovery`.
+    #[serde(rename = "provider.discover")]
+    ProviderDiscover(Empty),
+    /// Capability `chat.direct`: switch the model of a direct chat for its next turn; answered
+    /// with `SessionResult`.
+    #[serde(rename = "chat.set_model")]
+    ChatSetModel(ChatSetModel),
 }
 
 impl Request {

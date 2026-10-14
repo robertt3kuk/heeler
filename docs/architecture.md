@@ -29,7 +29,7 @@ flowchart LR
 
 ## Crates
 
-Crates are created when their first milestone starts (no empty placeholders); package names are `heeler-<dir>`. Present now: `core`, `protocol`, `daemon` (`heelerd` + lib), `client`, `terminal`, `agents` (Codex chat, `docs/agents.md`).
+Crates are created when their first milestone starts (no empty placeholders); package names are `heeler-<dir>`. Present now: `core`, `protocol`, `daemon` (`heelerd` + lib), `client`, `terminal`, `agents` (Codex chat, `docs/agents.md`), `gateway` (direct model chat, `docs/gateway.md`).
 
 ```text
 crates/

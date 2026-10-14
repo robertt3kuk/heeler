@@ -129,6 +129,8 @@ impl Chat {
                 approval_policy: policy,
                 sandbox,
                 title: None,
+                provider_id: None,
+                system_prompt: None,
             }))
             .await
             .unwrap()
@@ -391,6 +393,8 @@ async fn an_unknown_model_is_refused_with_the_catalog() {
             approval_policy: None,
             sandbox: None,
             title: None,
+            provider_id: None,
+            system_prompt: None,
         }))
         .await
         .unwrap_err();
@@ -943,6 +947,8 @@ async fn creating_a_chat_validates_the_request() {
                     approval_policy: None,
                     sandbox: None,
                     title: None,
+                    provider_id: None,
+                    system_prompt: None,
                 }))
                 .await
         }
@@ -1004,6 +1010,8 @@ async fn an_unsupported_codex_version_fails_the_session_with_a_clear_reason() {
             approval_policy: None,
             sandbox: None,
             title: None,
+            provider_id: None,
+            system_prompt: None,
         }))
         .await;
     let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
@@ -1048,6 +1056,8 @@ async fn a_missing_codex_says_where_to_configure_it() {
             approval_policy: None,
             sandbox: None,
             title: None,
+            provider_id: None,
+            system_prompt: None,
         }))
         .await;
     let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {

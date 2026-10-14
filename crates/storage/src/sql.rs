@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use crate::error::{Result, StorageError};
 use crate::rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
 };
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
@@ -76,6 +76,9 @@ pub enum Write {
     UpsertChatTurn(ChatTurnRow),
     /// Inserts an approval or replaces how it ended.
     UpsertApproval(Box<ApprovalRow>),
+    /// Inserts a provider or replaces everything but its creation time.
+    UpsertProvider(Box<ProviderRow>),
+    DeleteProvider(String),
     /// Crash-injection points for the tests.
     #[cfg(test)]
     Fault(Fault),
@@ -190,6 +193,30 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         Write::AppendChatItem(row) => append_chat_item(conn, row)?,
         Write::UpsertChatTurn(row) => upsert_chat_turn(conn, row)?,
         Write::UpsertApproval(row) => upsert_approval(conn, row)?,
+        Write::UpsertProvider(row) => {
+            conn.execute(
+                "INSERT INTO providers (id, kind, name, base_url, default_model, keychain_ref, \
+                     created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, name = excluded.name, \
+                     base_url = excluded.base_url, default_model = excluded.default_model, \
+                     keychain_ref = excluded.keychain_ref",
+                params![
+                    row.id,
+                    row.kind,
+                    row.name,
+                    row.base_url,
+                    row.default_model,
+                    row.keychain_ref,
+                    ms(row.created_at_ms)
+                ],
+            )
+            .map_err(StorageError::sqlite("writing a provider"))?;
+        }
+        Write::DeleteProvider(id) => {
+            conn.execute("DELETE FROM providers WHERE id = ?1", [id])
+                .map_err(StorageError::sqlite("deleting a provider"))?;
+        }
         #[cfg(test)]
         Write::Fault(Fault::Panic) => panic!("injected writer panic"),
         #[cfg(test)]
@@ -540,6 +567,43 @@ pub fn chat_items(
     Ok(items)
 }
 
+/// The newest `limit` events of one `kind` of the session, oldest first.
+pub fn chat_items_of_kind(
+    conn: &Connection,
+    session: SessionId,
+    kind: &str,
+    limit: u32,
+) -> Result<Vec<ChatItemRow>> {
+    let context = "reading chat events of one kind";
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, ts_ms, turn_id, item_id, kind, event_json FROM chat_items \
+             WHERE session_id = ?1 AND kind = ?2 ORDER BY seq DESC LIMIT ?3",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map(
+            params![session.to_string(), kind, i64::from(limit)],
+            |row| {
+                Ok(ChatItemRow {
+                    session_id: session,
+                    seq: unms(row.get(0)?),
+                    ts_ms: unms(row.get(1)?),
+                    turn_id: row.get(2)?,
+                    item_id: row.get(3)?,
+                    kind: row.get(4)?,
+                    event_json: row.get(5)?,
+                })
+            },
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let mut items = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(StorageError::sqlite(context))?;
+    items.reverse();
+    Ok(items)
+}
+
 /// The highest journaled `seq` of the session (0 for an empty journal).
 pub fn chat_last_seq(conn: &Connection, session: SessionId) -> Result<u64> {
     let last: Option<i64> = conn
@@ -691,4 +755,30 @@ fn approval_from(row: &Row<'_>) -> Result<ApprovalRow> {
         option_id: row.get(9).map_err(read_err)?,
         decided_by: row.get(10).map_err(read_err)?,
     })
+}
+
+/// Every provider, oldest first.
+pub fn list_providers(conn: &Connection) -> Result<Vec<ProviderRow>> {
+    let context = "listing providers";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, name, base_url, default_model, keychain_ref, created_at_ms \
+             FROM providers ORDER BY created_at_ms, rowid",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProviderRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                name: row.get(2)?,
+                base_url: row.get(3)?,
+                default_model: row.get(4)?,
+                keychain_ref: row.get(5)?,
+                created_at_ms: unms(row.get(6)?),
+            })
+        })
+        .map_err(StorageError::sqlite(context))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(StorageError::sqlite(context))
 }

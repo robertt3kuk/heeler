@@ -23,6 +23,7 @@ use heeler_protocol::chat::*;
 use heeler_protocol::control::ControlMessage;
 use heeler_protocol::history::*;
 use heeler_protocol::messages::*;
+use heeler_protocol::provider::*;
 use heeler_protocol::render::*;
 use heeler_protocol::tree::*;
 use heeler_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
@@ -113,6 +114,49 @@ fn chat_info() -> ChatInfo {
         sandbox: SandboxMode::ReadOnly,
         turn_active: true,
         pending_approvals: 1,
+        provider_id: None,
+    }
+}
+
+fn direct_chat_session_info() -> SessionInfo {
+    SessionInfo {
+        title: "openrouter · llama-3.3-70b".into(),
+        state: SessionState::Running,
+        command: vec!["direct".into()],
+        chat: Some(ChatInfo {
+            agent: "direct".into(),
+            model: "meta-llama/llama-3.3-70b-instruct".into(),
+            approval_policy: ApprovalPolicy::OnRequest,
+            sandbox: SandboxMode::WorkspaceWrite,
+            turn_active: true,
+            pending_approvals: 0,
+            provider_id: Some("openrouter".into()),
+        }),
+        ..chat_session_info()
+    }
+}
+
+fn provider_info() -> ProviderInfo {
+    ProviderInfo {
+        id: "openrouter".into(),
+        kind: "openai-compatible".into(),
+        name: "OpenRouter".into(),
+        base_url: "https://openrouter.ai/api/v1".into(),
+        default_model: Some("meta-llama/llama-3.3-70b-instruct".into()),
+        has_credential: true,
+        created_at_ms: 1_791_894_100_000,
+    }
+}
+
+fn local_provider_info() -> ProviderInfo {
+    ProviderInfo {
+        id: "ollama".into(),
+        kind: "ollama".into(),
+        name: "ollama".into(),
+        base_url: "http://127.0.0.1:11434".into(),
+        default_model: None,
+        has_credential: false,
+        created_at_ms: 1_791_894_110_000,
     }
 }
 
@@ -575,6 +619,8 @@ fn requests() -> Vec<(&'static str, Request)> {
                 approval_policy: Some(ApprovalPolicy::Untrusted),
                 sandbox: Some(SandboxMode::ReadOnly),
                 title: Some("fix the build".into()),
+                provider_id: None,
+                system_prompt: None,
             }),
         ),
         (
@@ -587,6 +633,8 @@ fn requests() -> Vec<(&'static str, Request)> {
                 approval_policy: None,
                 sandbox: None,
                 title: None,
+                provider_id: None,
+                system_prompt: None,
             }),
         ),
         (
@@ -715,6 +763,91 @@ fn requests() -> Vec<(&'static str, Request)> {
                 session_id: Some(sid()),
             }),
         ),
+        (
+            "chat_create_direct",
+            Request::ChatCreate(ChatCreate {
+                workspace_id: None,
+                cwd: "/repo".into(),
+                agent: AGENT_DIRECT.into(),
+                model: Some("meta-llama/llama-3.3-70b-instruct".into()),
+                approval_policy: None,
+                sandbox: None,
+                title: None,
+                provider_id: Some("openrouter".into()),
+                system_prompt: Some("Answer in one sentence.".into()),
+            }),
+        ),
+        (
+            "chat_set_model",
+            Request::ChatSetModel(ChatSetModel {
+                session_id: sid(),
+                provider_id: None,
+                model: "llama3.3:70b".into(),
+            }),
+        ),
+        (
+            "chat_set_model_provider",
+            Request::ChatSetModel(ChatSetModel {
+                session_id: sid(),
+                provider_id: Some("ollama".into()),
+                model: "llama3.3:70b".into(),
+            }),
+        ),
+        ("provider_list", Request::ProviderList(Empty {})),
+        (
+            "provider_add",
+            Request::ProviderAdd(ProviderAdd {
+                kind: "openai-compatible".into(),
+                name: "OpenRouter".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                default_model: Some("meta-llama/llama-3.3-70b-instruct".into()),
+            }),
+        ),
+        (
+            "provider_add_minimal",
+            Request::ProviderAdd(ProviderAdd {
+                kind: "ollama".into(),
+                name: "ollama".into(),
+                base_url: None,
+                default_model: None,
+            }),
+        ),
+        (
+            "provider_update",
+            Request::ProviderUpdate(ProviderUpdate {
+                provider_id: "openrouter".into(),
+                name: Some("OpenRouter (work)".into()),
+                base_url: None,
+                default_model: Some(String::new()),
+            }),
+        ),
+        (
+            "provider_remove",
+            Request::ProviderRemove(ProviderRef {
+                provider_id: "openrouter".into(),
+            }),
+        ),
+        (
+            // A placeholder, not a key of any account.
+            "provider_set_credential",
+            Request::ProviderSetCredential(ProviderSetCredential {
+                provider_id: "openrouter".into(),
+                secret: "not-a-real-key".into(),
+            }),
+        ),
+        (
+            "provider_clear_credential",
+            Request::ProviderClearCredential(ProviderRef {
+                provider_id: "openrouter".into(),
+            }),
+        ),
+        (
+            "provider_models",
+            Request::ProviderModels(ProviderRef {
+                provider_id: "openrouter".into(),
+            }),
+        ),
+        ("provider_discover", Request::ProviderDiscover(Empty {})),
     ]
 }
 
@@ -1018,6 +1151,12 @@ fn events() -> Vec<(&'static str, Event)> {
                     }),
                     ..session_info()
                 },
+            },
+        ),
+        (
+            "session_updated_chat_direct",
+            Event::SessionUpdated {
+                session: direct_chat_session_info(),
             },
         ),
     ]
@@ -1490,6 +1629,80 @@ fn responses_match_fixtures() {
             )
             .unwrap(),
         ),
+        (
+            "chat_session_result_direct",
+            ControlMessage::ok(
+                18,
+                &SessionResult {
+                    session: direct_chat_session_info(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "provider_list",
+            ControlMessage::ok(
+                19,
+                &ProviderList {
+                    providers: vec![provider_info(), local_provider_info()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "provider_result",
+            ControlMessage::ok(
+                20,
+                &ProviderResult {
+                    provider: provider_info(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "provider_models",
+            ControlMessage::ok(
+                21,
+                &ProviderModels {
+                    provider_id: "openrouter".into(),
+                    models: vec![ModelInfo {
+                        id: "meta-llama/llama-3.3-70b-instruct".into(),
+                        display_name: "meta-llama/llama-3.3-70b-instruct".into(),
+                        description: "meta-llama".into(),
+                        is_default: true,
+                        hidden: false,
+                        default_reasoning_effort: None,
+                        reasoning_efforts: vec![],
+                    }],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "provider_discovery",
+            ControlMessage::ok(
+                22,
+                &ProviderDiscovery {
+                    found: vec![
+                        DiscoveredProvider {
+                            kind: "ollama".into(),
+                            name: "Ollama".into(),
+                            base_url: "http://127.0.0.1:11434".into(),
+                            models: vec!["llama3.3:70b".into(), "qwen3:8b".into()],
+                            provider_id: Some("ollama".into()),
+                        },
+                        DiscoveredProvider {
+                            kind: "openai-compatible".into(),
+                            name: "LM Studio".into(),
+                            base_url: "http://127.0.0.1:1234/v1".into(),
+                            models: vec![],
+                            provider_id: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
     ];
     for (name, message) in cases {
         let json = String::from_utf8(message.to_json().unwrap()).unwrap();
@@ -1582,4 +1795,30 @@ fn events_of_a_newer_agent_decode_as_opaque_kinds_only_when_known() {
         "event": {"session_id": sid(), "seq": 1, "ts_ms": 1, "type": "from_the_future"}
     });
     assert!(Event::decode("chat.event", data).is_err());
+}
+
+#[test]
+fn a_credential_request_never_prints_its_secret() {
+    let request = Request::ProviderSetCredential(ProviderSetCredential {
+        provider_id: "openrouter".into(),
+        secret: "super-secret-value".into(),
+    });
+    let printed = format!("{request:?}");
+    assert!(!printed.contains("super-secret-value"), "{printed}");
+    assert!(printed.contains("openrouter"));
+}
+
+#[test]
+fn no_response_or_event_fixture_has_a_secret_field() {
+    // Only `provider.set_credential` carries one, and only as a request.
+    for entry in std::fs::read_dir(fixture_dir()).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("request_") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"secret\""), "{name} has a secret field");
+        assert!(!text.contains("not-a-real-key"), "{name}");
+    }
 }

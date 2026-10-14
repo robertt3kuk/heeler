@@ -21,6 +21,9 @@
 //! [codex]                        # chat sessions (protocol 0.9)
 //! bin = "/Users/me/.local/bin/codex"   # default: `codex` on the daemon's PATH
 //! args = ["app-server", "-c", 'model_reasoning_effort="low"']   # default: ["app-server"]
+//!
+//! [gateway]                      # direct model chat (protocol 0.11, docs/gateway.md)
+//! max_context_chars = 200000     # oldest messages are left out of a request beyond this
 //! ```
 
 use std::io;
@@ -50,6 +53,27 @@ pub struct DaemonSettings {
     pub home_folder: Option<PathBuf>,
     pub history: HistorySettings,
     pub codex: CodexSettings,
+    pub gateway: GatewaySettings,
+}
+
+/// `gateway.max_context_chars` when the setting is absent.
+pub const DEFAULT_MAX_CONTEXT_CHARS: usize = 200_000;
+
+/// `[gateway]` of `daemon.toml`: direct model chat.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct GatewaySettings {
+    /// The most characters of conversation one request carries: the oldest messages that do not
+    /// fit are left out (and the turn says so). The system prompt does not count.
+    pub max_context_chars: usize,
+}
+
+impl Default for GatewaySettings {
+    fn default() -> Self {
+        Self {
+            max_context_chars: DEFAULT_MAX_CONTEXT_CHARS,
+        }
+    }
 }
 
 /// `[codex]` of `daemon.toml`: how chat sessions start `codex app-server`.
@@ -126,6 +150,8 @@ struct File {
     history: HistorySettings,
     #[serde(default)]
     codex: CodexSettings,
+    #[serde(default)]
+    gateway: GatewaySettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -163,6 +189,11 @@ impl DaemonSettings {
                 file.history.range_days
             )));
         }
+        if file.gateway.max_context_chars == 0 {
+            return Err(toml::de::Error::custom(
+                "gateway.max_context_chars must be at least 1",
+            ));
+        }
         let home_folder = file
             .workspaces
             .home_folder
@@ -173,6 +204,7 @@ impl DaemonSettings {
             home_folder,
             history: file.history,
             codex: file.codex,
+            gateway: file.gateway,
         })
     }
 }
@@ -269,6 +301,21 @@ mod tests {
             config.args,
             ["app-server", "-c", "model_reasoning_effort=\"low\""]
         );
+    }
+
+    #[test]
+    fn the_gateway_context_limit_defaults_and_is_validated() {
+        assert_eq!(
+            DaemonSettings::parse("", None)
+                .unwrap()
+                .gateway
+                .max_context_chars,
+            200_000
+        );
+        let settings =
+            DaemonSettings::parse("[gateway]\nmax_context_chars = 5000\n", None).unwrap();
+        assert_eq!(settings.gateway.max_context_chars, 5000);
+        assert!(DaemonSettings::parse("[gateway]\nmax_context_chars = 0\n", None).is_err());
     }
 
     #[test]

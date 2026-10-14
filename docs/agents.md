@@ -134,4 +134,4 @@ Tests: `crates/chat_view` (unit), `crates/desktop/tests/chat_gpui.rs` (an in-pro
 
 ## Limits
 
-One agent (Codex), one conversation per session, text input only (no images; terminal blocks are quoted into the text). Questions of the agent (`requestUserInput`) and MCP elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: heeler`).
+One agent (Codex; direct model chat has its own page, `docs/gateway.md`), one conversation per session, text input only (no images; terminal blocks are quoted into the text). Questions of the agent (`requestUserInput`) and MCP elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: heeler`).

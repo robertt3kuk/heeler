@@ -27,6 +27,7 @@ use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::history::HistoryService;
 use crate::paths::Paths;
 use crate::projects;
+use crate::providers::{GatewayConfig, ProviderService};
 use crate::registry::{self, RegistryConfig};
 use crate::restore::{self, Stored};
 use crate::router::Router;
@@ -59,6 +60,9 @@ pub struct DaemonConfig {
     pub activity_interval: Duration,
     /// How to start `codex app-server`; `None` follows `[codex]` of `daemon.toml`.
     pub codex: Option<CodexConfig>,
+    /// Credential store, HTTP policy and discovery targets of the model gateway; the default is
+    /// the Keychain and the well-known local ports.
+    pub gateway: GatewayConfig,
 }
 
 impl DaemonConfig {
@@ -71,6 +75,7 @@ impl DaemonConfig {
             heeler_bin: None,
             activity_interval: registry::ACTIVITY_INTERVAL,
             codex: None,
+            gateway: GatewayConfig::default(),
         }
     }
 }
@@ -134,7 +139,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         .clone()
         .unwrap_or_else(|| paths.default_home_folder.clone());
     let home_folder = prepare_home_folder(home_folder).await?;
-    let (storage, stored) = open_storage(&paths.database).await?;
+    let (storage, mut stored) = open_storage(&paths.database).await?;
     remove_stale_socket(&paths.socket)?;
     let listener = UnixListener::bind(&paths.socket).map_err(DaemonError::io(format!(
         "binding {}",
@@ -169,6 +174,20 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         }
     };
     let restoring = stored.sessions.len();
+    let providers = ProviderService::new(
+        storage.clone(),
+        config
+            .gateway
+            .credentials
+            .unwrap_or_else(heeler_gateway::system_store),
+        heeler_gateway::Http::new(config.gateway.http)
+            .map_err(|e| DaemonError::Gateway(e.to_string()))?,
+        config
+            .gateway
+            .discovery
+            .unwrap_or_else(heeler_gateway::discovery::default_targets),
+        std::mem::take(&mut stored.providers),
+    );
     let registry = registry::spawn(
         bus.clone(),
         hub.clone(),
@@ -181,6 +200,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             home_folder,
             activity_interval: config.activity_interval,
             codex: config.codex.unwrap_or_else(|| settings.codex.to_config()),
+            providers,
+            max_context_chars: settings.gateway.max_context_chars,
         },
         stored,
     );

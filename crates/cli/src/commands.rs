@@ -24,6 +24,7 @@ mod attach;
 mod chat;
 mod history;
 mod integration;
+mod providers;
 mod sessions;
 mod workspaces;
 
@@ -64,6 +65,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Search(args) => ctx?.search(args).await,
         Command::Index(command) => ctx?.index(command).await,
         Command::Chat(command) => ctx?.chat(command).await,
+        Command::Provider(command) => ctx?.provider(command).await,
         Command::Approvals => ctx?.approvals().await,
         Command::Approve(args) => ctx?.approve(args).await,
     }

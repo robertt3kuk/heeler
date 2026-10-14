@@ -38,6 +38,8 @@ pub enum DaemonError {
         #[source]
         source: Box<toml::de::Error>,
     },
+    #[error("cannot set up the model gateway: {0}")]
+    Gateway(String),
     #[error("daemon task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
 }

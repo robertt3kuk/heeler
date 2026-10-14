@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use crate::migrate::Migration;
 use crate::sql::Fault;
 use crate::{
-    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy,
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, ProviderRow,
     RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow, Write, migrate,
 };
 use heeler_core::ApprovalId;
@@ -96,7 +96,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -146,7 +146,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -387,7 +387,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -1005,5 +1005,103 @@ fn migrating_v3_adds_the_agent_tree_table_and_keeps_the_data() {
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
     storage.close();
     assert!(table_exists(&db(&dir), "agent_trees"));
+    integrity_ok(&db(&dir));
+}
+
+#[test]
+fn chat_events_can_be_read_by_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    for (seq, kind) in [
+        (1, "turn_started"),
+        (2, "message_end"),
+        (4, "message_end"),
+        (5, "usage"),
+        (6, "message_end"),
+    ] {
+        storage.chat().append(chat_item(id, seq, kind)).unwrap();
+    }
+    let all: Vec<u64> = storage
+        .chat()
+        .items_of_kind(id, "message_end", 10)
+        .unwrap()
+        .iter()
+        .map(|r| r.seq)
+        .collect();
+    assert_eq!(all, [2, 4, 6]);
+    let newest: Vec<u64> = storage
+        .chat()
+        .items_of_kind(id, "message_end", 2)
+        .unwrap()
+        .iter()
+        .map(|r| r.seq)
+        .collect();
+    assert_eq!(newest, [4, 6], "the newest window, oldest first");
+    assert!(
+        storage
+            .chat()
+            .items_of_kind(id, "notice", 10)
+            .unwrap()
+            .is_empty()
+    );
+    storage.close();
+}
+
+fn provider(id: &str, created: u64) -> ProviderRow {
+    ProviderRow {
+        id: id.to_owned(),
+        kind: "openai-compatible".to_owned(),
+        name: format!("{id} name"),
+        base_url: "http://127.0.0.1:1234/v1".to_owned(),
+        default_model: Some("m1".to_owned()),
+        keychain_ref: format!("dev.heeler.provider/{id}"),
+        created_at_ms: created,
+    }
+}
+
+#[test]
+fn providers_are_stored_updated_and_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let storage = Storage::open(db(&dir)).unwrap();
+        assert!(storage.providers().list().unwrap().is_empty());
+        storage.providers().upsert(provider("b", 20)).unwrap();
+        storage.providers().upsert(provider("a", 10)).unwrap();
+        let mut changed = provider("b", 999);
+        changed.default_model = None;
+        changed.base_url = "http://elsewhere/v1".to_owned();
+        storage.providers().upsert(changed).unwrap();
+        storage.close();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    let rows = storage.providers().list().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], provider("a", 10));
+    assert_eq!(rows[1].id, "b");
+    assert_eq!(rows[1].created_at_ms, 20, "the creation time is kept");
+    assert_eq!(rows[1].default_model, None);
+    assert_eq!(rows[1].base_url, "http://elsewhere/v1");
+    storage.providers().delete("a").unwrap();
+    storage.providers().delete("missing").unwrap();
+    assert_eq!(storage.providers().list().unwrap().len(), 1);
+    storage.close();
+}
+
+#[test]
+fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..4]).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        storage.close();
+    }
+    assert!(!table_exists(&db(&dir), "providers"));
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
+    storage.close();
+    assert!(table_exists(&db(&dir), "providers"));
     integrity_ok(&db(&dir));
 }

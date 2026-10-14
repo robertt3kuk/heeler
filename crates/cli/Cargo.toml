@@ -29,6 +29,7 @@ unicode-width.workspace = true
 [dev-dependencies]
 heeler-agents.workspace = true
 heeler-daemon.workspace = true
+heeler-gateway = { workspace = true, features = ["test-support"] }
 parking_lot.workspace = true
 portable-pty.workspace = true
 tempfile.workspace = true

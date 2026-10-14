@@ -2,6 +2,7 @@
 //!
 //! - [`blocks`]: terminal block DTOs (protocol 0.5).
 //! - [`chat`]: agent chat and approval DTOs (protocol 0.9).
+//! - [`provider`]: model provider and direct chat DTOs (protocol 0.11).
 //! - [`history`]: session history search DTOs (protocol 0.8).
 //! - [`frame`]: length-prefixed frames and the tokio codec.
 //! - [`control`]: JSON control envelope (requests, responses, events).
@@ -16,6 +17,7 @@ pub mod error;
 pub mod frame;
 pub mod history;
 pub mod messages;
+pub mod provider;
 pub mod render;
 pub mod tree;
 
@@ -29,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 10,
+    minor: 11,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

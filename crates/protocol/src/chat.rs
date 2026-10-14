@@ -1,4 +1,5 @@
-//! Agent chat sessions and approvals (protocol 0.9, capability `chat.codex`): DTOs of
+//! Agent chat sessions and approvals (protocol 0.9, capability `chat.codex`; direct chats since
+//! 0.11, capability `chat.direct`): DTOs of
 //! `chat.*`, `approval.*` and their events. The event itself is the core
 //! [`AgentEvent`](heeler_core::AgentEvent).
 
@@ -30,9 +31,10 @@ pub struct ChatCreate {
     pub workspace_id: Option<WorkspaceId>,
     /// An existing directory, absolute: the agent works there.
     pub cwd: PathBuf,
-    /// `codex` is the only agent today.
+    /// `codex`, or `direct` (protocol 0.11): the model gateway, no agent in between.
     pub agent: String,
-    /// A model from `chat.models`; absent takes the agent catalog's default.
+    /// A model from `chat.models` (`provider.models` for `direct`); absent takes the agent
+    /// catalog's default (the provider's `default_model` for `direct`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Absent means `on-request`.
@@ -43,6 +45,13 @@ pub struct ChatCreate {
     pub sandbox: Option<SandboxMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Protocol 0.11 (capability `chat.direct`), `agent: "direct"` only: the provider to talk
+    /// to (`provider.list`); required there, ignored for other agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// Protocol 0.11, `agent: "direct"` only: sent to the model ahead of the conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 /// `chat.send`: the user's message; the turn's events follow as `chat.event`.
@@ -145,4 +154,7 @@ pub struct ChatInfo {
     /// Permission requests waiting for an answer.
     #[serde(default)]
     pub pending_approvals: u32,
+    /// Protocol 0.11: the provider of a direct chat (`agent: "direct"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
 }
