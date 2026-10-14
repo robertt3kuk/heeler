@@ -1113,6 +1113,129 @@ fn toggle_overview_round_trips() {
     assert!(!state.docks.left.visible);
 }
 
+/// A non-trivial pre-overview layout: grid, ratios dragged, an active tab, a resized dock.
+fn customized_grid() -> WorkbenchState {
+    let mut state = grid();
+    state.add_item(PaneId(3), item("c2")).unwrap();
+    state.set_active_item(PaneId(3), 0).unwrap();
+    state.set_divider(&[], 0, 0.3).unwrap();
+    state.set_divider(&[1], 0, 0.7).unwrap();
+    state.resize_dock(DockPosition::Left, 333.0);
+    state.open_panel(&PanelId::new("notifications"), DockPosition::Bottom);
+    state.focus_pane(PaneId(4)).unwrap();
+    check(&state);
+    state
+}
+
+#[test]
+fn overview_toggle_restores_the_exact_previous_state() {
+    let presets = default_presets();
+    let mut state = customized_grid();
+    let before = state.clone();
+    state.toggle_preset("overview", &presets).unwrap();
+    assert_eq!(state.preset, "overview");
+    assert_eq!(state.panes().len(), 1, "overview shows one pane");
+    assert!(state.stashed.is_some());
+    check(&state);
+    state.toggle_preset("overview", &presets).unwrap();
+    check(&state);
+    assert!(state.stashed.is_none());
+    assert_eq!(state, before);
+}
+
+#[test]
+fn items_opened_during_overview_land_in_the_restored_first_pane() {
+    let presets = default_presets();
+    let mut state = customized_grid();
+    let before = state.clone();
+    state.toggle_preset("overview", &presets).unwrap();
+    let pane = state.active_pane_id();
+    state
+        .add_item(
+            pane,
+            ItemRef::Terminal {
+                session: "new".into(),
+            },
+        )
+        .unwrap();
+    // A panel opened while in overview counts as new too.
+    state.open_panel(&PanelId::new("sessions"), DockPosition::Left);
+    state.toggle_preset("overview", &presets).unwrap();
+    check(&state);
+    let first = state.first_pane_id();
+    let items = &state.pane(first).unwrap().items;
+    assert_eq!(
+        items.last(),
+        Some(&ItemRef::Terminal {
+            session: "new".into()
+        })
+    );
+    assert!(state.find_panel(&PanelId::new("overview")).is_none());
+    // Everything else is as before: same tree shape and other panes untouched.
+    let mut expected = before.clone();
+    expected
+        .pane_mut_for_test(first)
+        .items
+        .push(ItemRef::Terminal {
+            session: "new".into(),
+        });
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn items_closed_during_overview_stay_closed() {
+    let presets = default_presets();
+    let mut state = customized_grid();
+    state.toggle_preset("overview", &presets).unwrap();
+    let pane = state.active_pane_id();
+    let index = state
+        .pane(pane)
+        .unwrap()
+        .items
+        .iter()
+        .position(|i| *i == item("b"))
+        .unwrap();
+    state.close_item(pane, index).unwrap();
+    state.toggle_preset("overview", &presets).unwrap();
+    check(&state);
+    assert!(!state.all_items().contains(&item("b")));
+    assert!(
+        state.pane(PaneId(2)).is_none(),
+        "pane that only held `b` is gone"
+    );
+}
+
+#[test]
+fn quitting_while_in_overview_still_restores_on_toggle() {
+    let presets = default_presets();
+    let mut state = customized_grid();
+    let before = state.clone();
+    state.toggle_preset("overview", &presets).unwrap();
+    let json = state.to_json().unwrap();
+    let mut relaunched = WorkbenchState::from_json(&json).unwrap();
+    assert_eq!(relaunched, state);
+    relaunched.toggle_preset("overview", &presets).unwrap();
+    check(&relaunched);
+    assert_eq!(relaunched, before);
+}
+
+#[test]
+fn other_presets_discard_the_saved_layout() {
+    let presets = default_presets();
+    let mut state = customized_grid();
+    state.toggle_preset("overview", &presets).unwrap();
+    state.apply_preset(&LayoutPreset::focus_preset());
+    assert!(state.stashed.is_none());
+    check(&state);
+    // Re-applying overview while in overview keeps the original stash.
+    let mut state = customized_grid();
+    let before = state.clone();
+    state.apply_preset(&LayoutPreset::overview_preset());
+    state.apply_preset(&LayoutPreset::overview_preset());
+    state.toggle_preset("overview", &presets).unwrap();
+    assert_eq!(state, before);
+}
+
 #[test]
 fn toggle_overview_without_history_returns_to_default() {
     let presets = default_presets();
@@ -1239,6 +1362,12 @@ fn duplicate_pane_ids_are_reassigned_on_load() {
 }
 
 // ---- randomized invariant check --------------------------------------------------------
+
+impl WorkbenchState {
+    fn pane_mut_for_test(&mut self, id: PaneId) -> &mut Pane {
+        self.center.pane_mut(id).unwrap()
+    }
+}
 
 struct Lcg(u64);
 

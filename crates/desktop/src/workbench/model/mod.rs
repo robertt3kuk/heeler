@@ -38,9 +38,52 @@ pub struct WorkbenchState {
     /// Preset that was active before `preset`, used to toggle the overview back.
     #[serde(default)]
     pub previous_preset: Option<String>,
+    /// The layout from before a center-override preset (the overview) was applied. Toggling the
+    /// overview off restores it exactly; applying a preset that keeps the center discards it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stashed: Option<Box<SavedLayout>>,
     /// Next pane id to hand out; ids are never reused within a state.
     #[serde(default)]
     next_pane: u64,
+}
+
+/// A [`WorkbenchState`] minus its own stash and pane-id counter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedLayout {
+    pub docks: Docks,
+    pub center: PaneTree,
+    pub zoomed: Option<PaneId>,
+    pub focus: FocusTarget,
+    #[serde(default = "default_preset_name")]
+    pub preset: String,
+    #[serde(default)]
+    pub previous_preset: Option<String>,
+}
+
+impl SavedLayout {
+    fn of(state: &WorkbenchState) -> Self {
+        Self {
+            docks: state.docks.clone(),
+            center: state.center.clone(),
+            zoomed: state.zoomed,
+            focus: state.focus,
+            preset: state.preset.clone(),
+            previous_preset: state.previous_preset.clone(),
+        }
+    }
+
+    fn into_state(self, next_pane: u64) -> WorkbenchState {
+        WorkbenchState {
+            docks: self.docks,
+            center: self.center,
+            zoomed: self.zoomed,
+            focus: self.focus,
+            preset: self.preset,
+            previous_preset: self.previous_preset,
+            stashed: None,
+            next_pane,
+        }
+    }
 }
 
 fn default_preset_name() -> String {
@@ -58,6 +101,7 @@ impl Default for WorkbenchState {
             focus: FocusTarget::Pane(first),
             preset: default_preset_name(),
             previous_preset: None,
+            stashed: None,
             next_pane: 2,
         };
         state.normalize();
@@ -76,6 +120,7 @@ impl WorkbenchState {
             focus: FocusTarget::Pane(PaneId(0)),
             preset: default_preset_name(),
             previous_preset: None,
+            stashed: None,
             next_pane: 0,
         };
         state.normalize();
@@ -202,6 +247,13 @@ impl WorkbenchState {
             _ => self.first_pane_id(),
         };
         self.center.normalize(fallback);
+
+        if let Some(saved) = self.stashed.take() {
+            let mut inner = saved.into_state(self.next_pane);
+            inner.normalize();
+            self.next_pane = self.next_pane.max(inner.next_pane);
+            self.stashed = Some(Box::new(SavedLayout::of(&inner)));
+        }
 
         if let Some(zoomed) = self.zoomed
             && self.center.pane(zoomed).is_none()

@@ -2,10 +2,10 @@
 
 use super::{
     Dock, DockPosition, Docks, FocusTarget, ItemRef, ModelError, Pane, PaneTree, PanelId,
-    WorkbenchState,
+    SavedLayout, WorkbenchState,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What a preset does to the center.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,6 +109,16 @@ impl WorkbenchState {
     /// one pane (override items first).
     pub fn apply_preset(&mut self, preset: &LayoutPreset) {
         let placed = preset.placed_panels();
+        // A center override (overview) remembers the layout it replaced; re-applying while one
+        // is already remembered keeps the original, and any other preset forgets it.
+        let stash = match &preset.center {
+            CenterLayout::Items(_) => Some(
+                self.stashed
+                    .take()
+                    .unwrap_or_else(|| Box::new(SavedLayout::of(self))),
+            ),
+            CenterLayout::Keep => None,
+        };
         let prev_focus = self.active_pane_id();
         let old_docks = std::mem::replace(&mut self.docks, preset.docks.clone());
         let leftover_panels: Vec<ItemRef> = DockPosition::ALL
@@ -150,11 +160,59 @@ impl WorkbenchState {
         }
         self.zoomed = None;
         self.focus = FocusTarget::Pane(prev_focus);
+        self.stashed = stash;
         self.normalize();
         // `normalize` moved focus to the first pane if the focused one no longer exists.
         if preset.zoom_active {
             self.zoomed = Some(self.active_pane_id());
         }
+    }
+
+    /// Put `saved` back exactly, keeping only items that are still open and adding items opened
+    /// since (other than panels the departing preset placed itself) to the first pane.
+    fn restore_saved(&mut self, saved: SavedLayout, departing_panels: &HashSet<PanelId>) {
+        let mut live: HashMap<ItemRef, usize> = HashMap::new();
+        for item in self.all_items() {
+            *live.entry(item).or_insert(0) += 1;
+        }
+        let mut take = |item: &ItemRef| match live.get_mut(item) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                true
+            }
+            _ => false,
+        };
+        let mut restored = saved.into_state(self.next_pane);
+        for pos in DockPosition::ALL {
+            restored
+                .docks
+                .get_mut(pos)
+                .panels
+                .retain(|p| take(&ItemRef::Panel { panel: p.clone() }));
+        }
+        for pane in restored.center.panes_mut() {
+            pane.items.retain(|item| take(item));
+        }
+        let mut fresh = Vec::new();
+        for item in self.all_items() {
+            if let Some(count) = live.get_mut(&item)
+                && *count > 0
+            {
+                *count -= 1;
+                if item
+                    .as_panel()
+                    .is_none_or(|p| !departing_panels.contains(p))
+                {
+                    fresh.push(item);
+                }
+            }
+        }
+        // `normalize` below prunes panes the filtering emptied; give them a home first.
+        if let Some(first) = restored.center.first_pane_mut() {
+            first.items.extend(fresh);
+        }
+        restored.normalize();
+        *self = restored;
     }
 
     /// Apply the preset called `name`, or if it is already the current preset, go back to the
@@ -172,6 +230,10 @@ impl WorkbenchState {
             return Ok(());
         }
         let departing = find(name).ok_or_else(|| ModelError::UnknownPreset(name.to_owned()))?;
+        if let Some(saved) = self.stashed.take() {
+            self.restore_saved(*saved, &departing.placed_panels());
+            return Ok(());
+        }
         let back_name = self
             .previous_preset
             .clone()
