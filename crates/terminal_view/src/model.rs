@@ -324,7 +324,7 @@ impl TerminalModel {
         self.frame = s.frame;
         self.ready = true;
         self.history_len = s.history_len;
-        self.viewport_top = s.viewport_top;
+        let old_top = std::mem::replace(&mut self.viewport_top, s.viewport_top);
 
         let mut history_grew = 0;
         let mut history_reset = false;
@@ -336,7 +336,7 @@ impl TerminalModel {
             self.history.clear();
             self.history_total = u64::from(s.history_len);
         } else {
-            history_grew = s.history_len - old_len;
+            history_grew = history_growth(old_len, s.history_len, old_top, s.viewport_top);
             self.history_total += u64::from(history_grew);
         }
         self.purge_history();
@@ -395,7 +395,7 @@ impl TerminalModel {
 
         let old_len = self.history_len;
         self.history_len = f.history_len;
-        self.viewport_top = f.viewport_top;
+        let old_top = std::mem::replace(&mut self.viewport_top, f.viewport_top);
         let mut history_grew = 0;
         let mut history_reset = false;
         if f.history_len < old_len {
@@ -403,7 +403,7 @@ impl TerminalModel {
             self.history.clear();
             self.history_total = u64::from(f.history_len);
         } else {
-            history_grew = f.history_len - old_len;
+            history_grew = history_growth(old_len, f.history_len, old_top, f.viewport_top);
             self.history_total += u64::from(history_grew);
         }
         self.frame = f.frame;
@@ -487,6 +487,14 @@ impl TerminalModel {
             .trim_end_matches(' ')
             .to_owned()
     }
+}
+
+/// Lines that scrolled into the history between two updates: the history length's growth, or —
+/// once the history is at its bound and its length stands still — the advance of the daemon's
+/// viewport number.
+fn history_growth(old_len: u32, new_len: u32, old_top: u64, new_top: u64) -> u32 {
+    let by_top = u32::try_from(new_top.saturating_sub(old_top)).unwrap_or(u32::MAX);
+    (new_len - old_len).max(by_top)
 }
 
 #[cfg(test)]
@@ -592,15 +600,18 @@ mod tests {
         assert_eq!(m.oldest_line(), 0);
         assert_eq!(m.abs_of(31), Some(501));
         assert_eq!(m.abs_of(0), Some(470));
-        // The history is at its bound: lines scroll off, the model's own count stands still, but
-        // the daemon's number moves and so does the mapping.
+        // The history is at its bound: lines scroll off and the history length stands still, but
+        // the model numbering advances with the daemon's, so a line keeps its model number (and a
+        // cached history row keyed by it keeps meaning the same text).
         let mut f = frame(2, &[], 30);
         f.viewport_top = 507;
-        m.apply_frame(f).unwrap();
-        assert_eq!(m.line_of(507), 30);
-        assert_eq!(m.line_of(500), 23);
+        let applied = m.apply_frame(f).unwrap();
+        assert_eq!(applied.history_grew, 7);
+        assert_eq!(m.line_of(500), 30, "line 500 kept its model number");
+        assert_eq!(m.line_of(507), 37);
+        assert_eq!(m.oldest_line(), 7, "seven lines fell off the bound");
         // A terminal with fewer lines than the number says maps below zero.
-        assert_eq!(m.line_of(0), 30 - 507);
+        assert_eq!(m.line_of(0), 37 - 507);
         assert_eq!(m.abs_of(-1000), None);
     }
 
