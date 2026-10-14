@@ -48,7 +48,7 @@ flowchart TB
 
 | Action | Mouse | Keyboard (default) |
 |---|---|---|
-| Split right / down | pane menu | ⌘D / ⌘⇧D |
+| Split right / down (new pane starts a new terminal in the focused terminal's cwd) | pane menu | ⌘D / ⌘⇧D |
 | Move tab to split | drag tab to a pane edge (drop zones) | ⌘K → "Move tab to new split…" |
 | Move panel to another dock | drag panel tab to dock, or panel menu "Move to ▸" | ⌘K → "Move panel…" |
 | Open panel as center tab | panel menu "Open as tab" | ⌘K |
@@ -203,6 +203,7 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 | status bar | 22 px | 26 px |
 | base spacing | 4 px | 6 px |
 | corner radius | 6 px | 8 px |
+| terminal padding (all sides) | 6 px | 8 px |
 
 - **Terminal themes**: built-in `heeler-dark` (bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `heeler-light`; theme follows system appearance unless pinned. Later: import Ghostty theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees (M2.3).
 - **Motion**: ≤ 150 ms, ease-out; no motion on terminal content; respects Reduce Motion.
