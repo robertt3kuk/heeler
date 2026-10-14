@@ -46,7 +46,9 @@ crates/
   security/       Keychain, permission policy evaluation, redaction
   notifications/  notification intents from domain events (daemon side)
   cli/            heeler binary
-  desktop/        Heeler GPUI app (only crate linking GPUI)
+  settings/       layered TOML settings store, schema registry, watcher, keymap (no GPUI; ADR 0010)
+  terminal_view/  GPUI terminal element/view over render DTOs, input encoding (UI crate)
+  desktop/        Heeler GPUI app: workbench (docks, pane tree, panels, presets), wiring (UI crate)
   notifier/       macOS notification helper (M6)
 xtask/            bundle, sign, schema export, corpus recording
 ```
@@ -58,6 +60,8 @@ flowchart BT
   client --> cli
   client --> desktop
   client --> notifier
+  protocol --> terminal_view --> desktop
+  settings --> desktop
   core --> terminal & runtime & storage & security & notifications
   runtime --> agents
   core --> gateway
@@ -65,7 +69,7 @@ flowchart BT
   protocol --> daemon
 ```
 
-Arrows point from dependency to dependent. Forbidden: anything depending on `daemon`; `desktop`/`cli` depending on service crates; any non-`desktop` crate depending on GPUI.
+Arrows point from dependency to dependent. Forbidden: anything depending on `daemon`; UI crates or `cli` depending on service crates; GPUI in any non-UI crate (UI crates: `desktop`, `terminal_view`, later `chat_view`, `notifier`).
 
 ## Domain model
 
@@ -86,7 +90,7 @@ erDiagram
 
 - **Session kinds**: `terminal` (PTY), `harness` (structured agent over Codex app-server/ACP), `direct` (gateway chat). One lifecycle: `starting → running → (waiting_approval) → idle | exited(code) | failed(reason) | stopped`.
 - **Agent attention state** (rolled up to workspace): `idle | working | blocked | done(unread)`; harness sessions derive it from events, TUI agents from integration hooks then screen manifests (M7).
-- Workspace membership and tab grouping are daemon state (needed by CLI, restore, orchestration). Split geometry, focus, scroll, theme are desktop state persisted by the desktop.
+- Workspace membership is daemon state (needed by CLI, restore, orchestration). Tabs, splits, docks, presets, focus, scroll, and theme are desktop state (ADR 0010).
 
 ## Daemon internals
 
@@ -151,12 +155,13 @@ Subscribe → `welcome.resume = replayed` (seq in ring) or `snapshot_required` �
 | State | Owner | Persistence |
 |---|---|---|
 | Processes, PTYs, canonical terminal grid | daemon | memory (scrollback bounded, not persisted by default) |
-| Workspaces, sessions, tab grouping, cwd, resume refs | daemon | SQLite |
+| Workspaces, sessions, cwd, resume refs | daemon | SQLite |
 | Conversations, turns, items, approvals, decisions | daemon | SQLite (Heeler journal is authoritative; ADR 0005) |
 | Tasks, worktrees, dependencies | daemon | SQLite |
 | Provider config | daemon | SQLite; secrets in Keychain (ADR 0008) |
 | Event log | daemon | in-memory ring per epoch |
-| Split geometry, focus, scroll, selection, theme, window frames | desktop | desktop state file |
+| Workbench layout (docks, pane tree, open items, sizes), focus, scroll, selection, window frames | desktop | `desktop-state.json` per window |
+| Settings, presets, keymap, themes | desktop | `settings.toml`, `keymap.toml`, `<repo>/.heeler/settings.toml` (ADR 0010) |
 | Notification presentation | notifier/desktop | none |
 
 ## Persistence and restore (ADR 0006, 0009)

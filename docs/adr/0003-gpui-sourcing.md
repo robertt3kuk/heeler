@@ -27,7 +27,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false, features = ["font-kit", "runtime_shaders"] }
 ```
 
-- Only the `desktop` (and later `notifier` if it uses GPUI) crate may depend on GPUI.
+- Only UI crates may depend on GPUI: `desktop`, `terminal_view`, later `chat_view` and `notifier` (amended by ADR 0010).
 - Build our own small widget set (tabs, splits, list, input, chat bubbles) on GPUI primitives; port specific components from Zed's `ui` crate where licensing (GPL/Apache per crate) allows — check per crate before copying.
 - GPUI bumps are explicit slices (`chore(desktop): bump gpui to <rev>`) with the M2 demo re-run.
 

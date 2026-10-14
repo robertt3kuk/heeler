@@ -34,7 +34,7 @@ Inspirations and what we take from each:
 - Direct model chat via our own model gateway: OpenAI-compatible, Anthropic, Gemini, local (Ollama/LM Studio/llama.cpp server); credentials in Keychain.
 
 ### Orchestration
-- Git worktree per task, multiple repositories per workspace, task list with dependencies, parallel agents and subagents, review/diff of agent changes, merge/cleanup.
+- Per-task placement chosen by the user: **main checkout** (the repo as it is, e.g. one agent or quick fixes) or **git worktree** (isolated parallel work); multiple repositories per workspace, task list with dependencies, parallel agents and subagents, review/diff of agent changes, merge/cleanup. Heeler never forces a worktree, and it warns when two live agents write to the same checkout.
 - Attention model: unread, blocked, completed rollups up to tab/workspace/dock badge.
 
 ### macOS integration

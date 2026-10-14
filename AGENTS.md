@@ -18,7 +18,8 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 
 ## Invariants (review blockers)
 - Daemon owns processes, PTYs, terminal state, sessions, conversations, approvals, credentials, worktrees. Clients only render and send commands (ADR 0001).
-- Dependencies point inward: `desktop`/`cli` → `client` → `protocol` → `core`. Nothing depends on `daemon`. Only `desktop` links GPUI (ADR 0003).
+- Dependencies point inward: UI crates (`desktop`, `terminal_view`) and `cli` → `client` → `protocol` → `core`. Nothing depends on `daemon`. Only UI crates link GPUI; `settings`, `client`, service crates never do (ADR 0003, ADR 0010).
+- Every UI feature is a registered panel / pane item / status item with its own settings namespace; nothing in the layout is hard-wired (ADR 0010, `docs/design.md`).
 - Permissions are enforced in the daemon; UI only collects decisions.
 - Secrets only in Keychain via the daemon; never in SQLite, logs, events, or fixtures (ADR 0008).
 - Subscription logins are used only through vendor harnesses (Codex, Claude Code); never reuse their tokens.

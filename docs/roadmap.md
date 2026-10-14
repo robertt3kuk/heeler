@@ -40,14 +40,17 @@ Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A
 
 **M1 done (2026-10-13).** Demo checklist: `docs/demos/M1.md`.
 
-## M2 — GPUI terminal client
-Exit demo: run OMP and Codex TUI in the GPUI app with correct input/rendering; tabs + splits; close app → sessions keep running → reopen restores views; daemon restart → app reconnects; budgets in `vision.md` measured.
-- [ ] M2.1 App shell: window, workspace sidebar, tabs, split panes (GPUI-side layout state)
-- [ ] M2.2 `client` crate: async connection, reconnect with backoff, replay/snapshot reconciliation, entity store for GPUI
-- [ ] M2.3 Terminal view: grid rendering, cursor, selection/copy, scrollback, IME, key/mouse encoding, bracketed paste
-- [ ] M2.4 Resize + font metrics + theme; damage-based repaint
-- [ ] M2.5 Session list + create/stop from UI; CLI and GUI concurrently on same session
-- [ ] M2.6 Performance pass against budgets
+## M2 — GPUI workbench and terminal client
+Exit demo: run OMP and Codex TUI in the GPUI app with correct input/rendering; move panels between docks, split/move/zoom panes, switch presets (default / focus / overview); edit `settings.toml` and see it hot-reload (density, terminal font/theme, panel options); close app → sessions keep running → reopen restores layout and views; daemon restart → app reconnects; budgets in `vision.md` measured. Design: `docs/design.md`, ADR 0010.
+
+Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `desktop` workbench core), **M2-C** (M2.3, `terminal_view`), **M2-D** (M2.4 engine, `settings`); wave 2 — **M2-E** (M2.5 panels + wiring + settings UI); wave 3 — **M2-F** (M2.6, orchestrator).
+
+- [ ] M2.1 Workbench core: native chrome (transparent titlebar, vibrancy left dock), docks L/R/B hosting panel stacks, center split tree with per-pane tabs, drag & drop (tab → split edge / dock, panel → dock), resize, zoom, focus navigation, action registry + ⌘K palette skeleton, `PanelRegistry`/`StatusItemRegistry`, layout state persistence, presets
+- [ ] M2.2 `client::Connection`: reconnect with backoff, replay/snapshot reconciliation into a state store, terminal handles that re-attach after reconnect, usable from GPUI's executor
+- [ ] M2.3 `terminal_view`: grid rendering with shaped-row cache, cursor, selection/copy/paste, scrollback viewing, IME + non-Latin layouts, key (legacy + kitty) and mouse (SGR) encoding, resize from font metrics, theme colors reported to the daemon
+- [ ] M2.4 Settings: layered TOML (defaults < user < workspace < runtime), typed namespaces with schemas, hot reload, keymap file, theme + density tokens
+- [ ] M2.5 Panels and wiring: sessions sidebar (Needs you, workspaces, configurable rows), status bar items, overview board (live previews, attention sort), inspector (session info now; approvals/changes later), session create/stop/restart/rename, generated settings UI (⌘,), CLI and GUI concurrently on one session
+- [ ] M2.6 Performance pass against budgets + M2 demo
 
 ## M3 — Persistence and restore
 Exit demo: kill `heelerd`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
@@ -80,7 +83,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 **First vertical slice complete after M6** — run the full acceptance list from the spec.
 
 ## M7 — Orchestration
-- Worktree per task (create/list/remove), multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
+- Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Heeler as MCP server exposing its own control surface to agents.
