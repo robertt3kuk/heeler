@@ -12,6 +12,7 @@ mod monitor;
 pub mod palette;
 pub mod panels;
 pub mod persistence;
+mod providers;
 pub mod registry;
 mod render;
 pub mod settings_schema;

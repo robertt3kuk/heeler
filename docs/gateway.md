@@ -93,6 +93,22 @@ max_context_chars = 200000     # characters of conversation per request; the old
 
 Providers, keys, and models are not configuration files: use `heeler provider …`.
 
+## Desktop
+
+Settings → **models** (or ⌘K → **Models: Manage Providers…**) manages provider configuration
+through `heelerd`: add/edit endpoint and default model, remove with confirmation, list/refresh
+models, discover local Ollama/LM Studio, and set/clear credentials. The key prompt is masked,
+supports paste, redacts Debug output and moves its input into one IPC request on submit.
+Neither the key nor provider secrets are saved in desktop state or settings files.
+
+⌘⌥T creates a direct chat; ⌘⇧T also offers configured direct providers alongside Codex.
+Type to filter the model list, choose the default or another model, and optionally set a
+system prompt. Direct chats reuse the streaming transcript and usage footer. The header's
+**Switch model…** control (or ⌘K → **Chat: Switch Model…**) changes the next turn's provider
+and model; switching is disabled during a turn. The journal displays the switch notice.
+Missing/rejected keys offer **Set key…**; missing models offer **Pick another model…**.
+Other gateway errors remain inline, including the provider's retry-after hint for rate limits.
+
 ## CLI
 
 ```text
@@ -113,4 +129,4 @@ Real providers are never contacted. Adapter tests (`crates/gateway/tests/adapter
 
 ## Limits
 
-Text only (no images or files, no tools), no reasoning or thinking display, no Gemini or other native APIs (Gemini's OpenAI-compatible endpoint works as `openai-compatible`), no OAuth flows, no per-request settings beyond `gateway.max_context_chars` (temperature and max tokens exist in the provider layer but are not exposed yet), no desktop UI (M5.4), no cost accounting. Keys are not shared with agents the daemon runs.
+Text only (no images or files, no tools), no reasoning or thinking display, no Gemini or other native APIs (Gemini's OpenAI-compatible endpoint works as `openai-compatible`), no OAuth flows, no per-request settings beyond `gateway.max_context_chars` (temperature and max tokens exist in the provider layer but are not exposed yet), no cost accounting. Keys are not shared with agents the daemon runs.

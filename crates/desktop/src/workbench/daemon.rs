@@ -553,6 +553,7 @@ impl Workbench {
             message: SharedString::from(message),
             confirm_label: "Keep sessions running".into(),
             input: None,
+            secure_input: false,
             choice: Some(ModalChoice {
                 label: "Stop sessions & daemon".into(),
                 run: Rc::new(|this, result, window, cx| {

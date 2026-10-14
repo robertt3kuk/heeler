@@ -13,10 +13,19 @@ use super::actions::modal as modal_actions;
 use super::view::Workbench;
 
 /// What the dialog hands its action: the prompt text and the state of the checkbox.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ModalResult {
     pub input: Option<String>,
     pub checked: bool,
+}
+
+impl std::fmt::Debug for ModalResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModalResult")
+            .field("input", &self.input.as_ref().map(|_| "<redacted>"))
+            .field("checked", &self.checked)
+            .finish()
+    }
 }
 
 pub(crate) type ModalAction =
@@ -61,6 +70,8 @@ pub struct Modal {
     pub message: SharedString,
     pub confirm_label: SharedString,
     pub input: Option<String>,
+    /// Write-only input: mask render snapshots and Debug; never put a key in view text.
+    pub secure_input: bool,
     pub(crate) choice: Option<ModalChoice>,
     pub checkbox: Option<ModalCheckbox>,
     pub(crate) on_confirm: ModalAction,
@@ -70,7 +81,14 @@ impl std::fmt::Debug for Modal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Modal")
             .field("title", &self.title)
-            .field("input", &self.input)
+            .field(
+                "input",
+                &if self.secure_input {
+                    Some("<redacted>")
+                } else {
+                    self.input.as_deref()
+                },
+            )
             .field("choice", &self.choice.as_ref().map(|c| &c.label))
             .field("checkbox", &self.checkbox)
             .finish_non_exhaustive()
@@ -93,6 +111,7 @@ impl Workbench {
                 message: message.into(),
                 confirm_label: confirm_label.into(),
                 input: None,
+                secure_input: false,
                 choice: None,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, _, window, cx| on_confirm(this, window, cx)),
@@ -115,6 +134,7 @@ impl Workbench {
                 message: prompt.message.into(),
                 confirm_label: prompt.confirm_label.into(),
                 input: Some(prompt.initial.to_owned()),
+                secure_input: false,
                 choice: None,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, result, window, cx| {
@@ -224,7 +244,24 @@ impl Workbench {
     }
 
     pub(crate) fn render_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let modal = self.modal.clone()?;
+        let stored = self.modal.as_ref()?;
+        // Do not clone the raw credential into the render tree.
+        let modal = Modal {
+            title: stored.title.clone(),
+            message: stored.message.clone(),
+            confirm_label: stored.confirm_label.clone(),
+            input: stored.input.as_ref().map(|input| {
+                if stored.secure_input {
+                    "•".repeat(input.chars().count())
+                } else {
+                    input.clone()
+                }
+            }),
+            secure_input: stored.secure_input,
+            choice: stored.choice.clone(),
+            checkbox: stored.checkbox.clone(),
+            on_confirm: Rc::clone(&stored.on_confirm),
+        };
         let theme = self.theme;
         let tokens = self.density.ui();
         let hover = theme.hover;
@@ -276,13 +313,18 @@ impl Workbench {
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                             let keystroke = &event.keystroke;
+                            let paste = (keystroke.modifiers.platform && keystroke.key == "v")
+                                .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
+                                .flatten();
                             let Some(Modal {
                                 input: Some(input), ..
                             }) = &mut this.modal
                             else {
                                 return;
                             };
-                            if keystroke.key == "backspace" {
+                            if let Some(text) = paste {
+                                input.push_str(&text);
+                            } else if keystroke.key == "backspace" {
                                 input.pop();
                             } else if !keystroke.modifiers.platform
                                 && !keystroke.modifiers.control

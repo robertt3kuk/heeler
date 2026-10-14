@@ -402,12 +402,21 @@ impl ChatView {
         let presentation = self.sessions.read(cx).presentation(info);
         let chat = info.chat.as_ref();
         let detail = chat.map(|chat| {
-            format!(
-                "{} · {} · approvals {} · sandbox {}",
-                chat.agent, chat.model, chat.approval_policy, chat.sandbox
-            )
+            if chat.agent == "direct" {
+                format!(
+                    "{} · {}",
+                    chat.provider_id.as_deref().unwrap_or("provider"),
+                    chat.model
+                )
+            } else {
+                format!(
+                    "{} · {} · approvals {} · sandbox {}",
+                    chat.agent, chat.model, chat.approval_policy, chat.sandbox
+                )
+            }
         });
         let pending = self.pending.len();
+        let session = self.session;
         div()
             .relative()
             .flex()
@@ -439,6 +448,26 @@ impl ChatView {
                     .text_size(px(tokens.section_font_size + 1.0))
                     .child(SharedString::from(text))
             }))
+            .when(chat.is_some_and(|chat| chat.agent == "direct"), |s| {
+                s.child(
+                    button(
+                        "chat-switch-model",
+                        "Switch model…",
+                        ButtonKind::Plain,
+                        chat.is_some_and(|chat| !chat.turn_active),
+                        look,
+                    )
+                    .when(chat.is_some_and(|chat| !chat.turn_active), |b| {
+                        b.on_click(move |_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(actions::SwitchChatModelById(session.to_string())),
+                                cx,
+                            );
+                        })
+                    })
+                    .child(probe(&self.regions, Region::Chat("switch-model"))),
+                )
+            })
             .when(pending > 0, |s| {
                 s.child(
                     div()
@@ -452,6 +481,53 @@ impl ChatView {
             })
             .child(probe(&self.regions, Region::Chat("header")))
             .into_any_element()
+    }
+
+    pub(super) fn provider_error_action(
+        &self,
+        message: &str,
+        look: &Look,
+        cx: &App,
+    ) -> Option<AnyElement> {
+        let info = self.sessions.read(cx).session(self.session)?;
+        let chat = info.chat.as_ref().filter(|chat| chat.agent == "direct")?;
+        let session = self.session;
+        if message.contains("HTTP 401")
+            || message.contains("HTTP 403")
+            || message.contains("no API key")
+        {
+            let id = chat.provider_id.clone()?;
+            Some(
+                button("chat-fix-key", "Set key…", ButtonKind::Plain, true, look)
+                    .child(probe(&self.regions, Region::Chat("fix-key")))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(actions::SetProviderKey(id.clone())), cx)
+                    })
+                    .into_any_element(),
+            )
+        } else if message.contains("not found:") {
+            Some(
+                button(
+                    "chat-fix-model",
+                    "Pick another model…",
+                    ButtonKind::Plain,
+                    !chat.turn_active,
+                    look,
+                )
+                .child(probe(&self.regions, Region::Chat("fix-model")))
+                .when(!chat.turn_active, |b| {
+                    b.on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(actions::SwitchChatModelById(session.to_string())),
+                            cx,
+                        );
+                    })
+                })
+                .into_any_element(),
+            )
+        } else {
+            None
+        }
     }
 
     fn render_banner(&self, look: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -472,6 +548,7 @@ impl ChatView {
             _ => return None,
         };
         let hover = theme.hover;
+        let recovery = self.provider_error_action(&text, look, cx);
         Some(
             div()
                 .relative()
@@ -485,6 +562,7 @@ impl ChatView {
                 .border_color(theme.border)
                 .text_color(color)
                 .child(div().flex_1().min_w_0().child(SharedString::from(text)))
+                .children(recovery)
                 .when(dismissable, |s| {
                     s.child(
                         div()

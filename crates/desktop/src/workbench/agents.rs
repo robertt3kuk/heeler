@@ -59,13 +59,29 @@ pub struct AgentPicker {
     /// `chat.create` is in flight.
     pub creating: bool,
     pub error: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_query: String,
+    pub system_prompt: Option<String>,
+    pub switch_session: Option<SessionId>,
+    pub direct: bool,
 }
 
 impl AgentPicker {
     /// The models the dialog lists.
     pub fn shown(&self) -> Vec<&ModelInfo> {
         match &self.models {
-            Models::Ready(models) => models.iter().filter(|m| !m.hidden).collect(),
+            Models::Ready(models) => {
+                let query = self.model_query.to_lowercase();
+                models
+                    .iter()
+                    .filter(|m| {
+                        !m.hidden
+                            && (query.is_empty()
+                                || m.id.to_lowercase().contains(&query)
+                                || m.display_name.to_lowercase().contains(&query))
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -225,6 +241,14 @@ impl Workbench {
 
     /// ⌘⇧T: asks which agent and model to start, in the active workspace.
     pub fn new_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_agent_picker(false, window, cx);
+    }
+
+    pub fn new_direct_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_agent_picker(true, window, cx);
+    }
+
+    fn open_agent_picker(&mut self, direct: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (connected, supported, workspace, cwd) = {
             let store = self.sessions.read(cx);
             let workspace = self.target_workspace(store);
@@ -258,8 +282,18 @@ impl Workbench {
             cwd,
             creating: false,
             error: None,
+            provider_id: None,
+            model_query: String::new(),
+            system_prompt: None,
+            switch_session: None,
+            direct,
         });
         window.focus(&self.agent_focus, cx);
+        if direct {
+            self.refresh_providers(cx);
+            cx.notify();
+            return;
+        }
         let task = self
             .sessions
             .update(cx, |store, cx| store.chat_models(CODEX, cx));
@@ -269,6 +303,9 @@ impl Workbench {
                 let Some(picker) = &mut this.agent_picker else {
                     return;
                 };
+                if picker.direct {
+                    return;
+                }
                 picker.models = match answer {
                     Ok(models) => Models::Ready(models),
                     Err(error) => Models::Failed(error),
@@ -284,6 +321,7 @@ impl Workbench {
         })
         .detach();
         cx.notify();
+        self.refresh_providers(cx);
     }
 
     pub fn close_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -329,16 +367,26 @@ impl Workbench {
         };
         picker.creating = true;
         picker.error = None;
+        if let Some(session) = picker.switch_session {
+            let provider_id = picker.provider_id.clone();
+            self.confirm_model_switch(session, provider_id, model, window, cx);
+            return;
+        }
         let request = ChatCreate {
             workspace_id: picker.workspace,
             cwd,
-            agent: CODEX.to_owned(),
+            agent: if picker.provider_id.is_some() {
+                "direct"
+            } else {
+                CODEX
+            }
+            .to_owned(),
             model: Some(model),
             approval_policy: None,
             sandbox: None,
             title: None,
-            provider_id: None,
-            system_prompt: None,
+            provider_id: picker.provider_id.clone(),
+            system_prompt: picker.system_prompt.clone(),
         };
         let task = self
             .sessions
@@ -388,8 +436,12 @@ impl Workbench {
                 .child(div().child(name));
             match later {
                 None => row
-                    .bg(theme.accent.opacity(0.25))
-                    .child(div().text_color(theme.muted).child("selected"))
+                    .id("agent-codex")
+                    .when(!picker.direct, |s| s.bg(theme.accent.opacity(0.25)))
+                    .cursor_pointer()
+                    .when(!picker.creating, |s| {
+                        s.on_click(cx.listener(|this, _, window, cx| this.new_agent(window, cx)))
+                    })
                     .into_any_element(),
                 Some(milestone) => row
                     .id(ElementId::from(SharedString::from(format!("agent-{id}"))))
@@ -402,6 +454,25 @@ impl Workbench {
                     .into_any_element(),
             }
         });
+        let providers: Vec<AnyElement> = self
+            .providers
+            .providers
+            .iter()
+            .map(|provider| {
+                let id = provider.id.clone();
+                let selected = picker.provider_id.as_deref() == Some(id.as_str());
+                button(
+                    format!("agent-provider-{id}"),
+                    format!("Direct model · {}", provider.name),
+                    ButtonKind::Plain,
+                    !picker.creating,
+                    &look,
+                )
+                .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
+                .on_click(cx.listener(move |this, _, _, cx| this.choose_direct_provider(&id, cx)))
+                .into_any_element()
+            })
+            .collect();
         let models: Vec<AnyElement> = picker
             .shown()
             .iter()
@@ -507,6 +578,24 @@ impl Workbench {
                         .border_color(theme.border)
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                            let Some(picker) = &mut this.agent_picker else {
+                                return;
+                            };
+                            if event.keystroke.key == "backspace" {
+                                picker.model_query.pop();
+                            } else if !event.keystroke.modifiers.platform
+                                && !event.keystroke.modifiers.control
+                                && let Some(text) = &event.keystroke.key_char
+                            {
+                                picker.model_query.push_str(text);
+                            } else {
+                                return;
+                            }
+                            picker.selected = 0;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
                         .on_action(cx.listener(|this, _: &palette::SelectNext, _, cx| {
                             this.agent_picker_select(true, cx);
                         }))
@@ -525,12 +614,50 @@ impl Workbench {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("New agent"),
+                                .child(if picker.switch_session.is_some() {
+                                    "Switch model"
+                                } else if picker.direct {
+                                    "New direct chat"
+                                } else {
+                                    "New agent"
+                                }),
                         )
-                        .child(section("AGENT"))
-                        .children(agents)
+                        .when(picker.switch_session.is_none(), |s| {
+                            s.child(section("AGENT")).children(agents)
+                        })
+                        .children(providers)
+                        .when(self.providers.providers.is_empty(), |s| {
+                            s.child(
+                                button(
+                                    "agent-manage-models",
+                                    "Direct model · Add a provider…",
+                                    ButtonKind::Plain,
+                                    true,
+                                    &look,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.agent_picker = None;
+                                        this.open_models_settings(window, cx);
+                                    },
+                                )),
+                            )
+                        })
                         .child(section("MODEL"))
-                        .children(models)
+                        .child(
+                            div().child(SharedString::from(if picker.model_query.is_empty() {
+                                "Type to filter models".to_owned()
+                            } else {
+                                format!("Filter: {}", picker.model_query)
+                            })),
+                        )
+                        .child(
+                            div()
+                                .id("agent-model-list")
+                                .max_h(px(260.0))
+                                .overflow_y_scroll()
+                                .children(models),
+                        )
                         .children(note.map(|(text, color)| {
                             div()
                                 .px(px(tokens.spacing * 2.0))
@@ -544,6 +671,25 @@ impl Workbench {
                                 .truncate()
                                 .text_color(theme.muted)
                                 .child(SharedString::from(cwd)),
+                        )
+                        .when(
+                            picker.provider_id.is_some() && picker.switch_session.is_none(),
+                            |s| {
+                                s.child(
+                                    button(
+                                        "agent-system-prompt",
+                                        "System prompt…",
+                                        ButtonKind::Plain,
+                                        true,
+                                        &look,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            this.edit_chat_system_prompt(window, cx)
+                                        },
+                                    )),
+                                )
+                            },
                         )
                         .child(
                             div()
@@ -570,6 +716,8 @@ impl Workbench {
                                         "agent-start",
                                         if picker.creating {
                                             "Starting…"
+                                        } else if picker.switch_session.is_some() {
+                                            "Switch ↩"
                                         } else {
                                             "Start ↩"
                                         },

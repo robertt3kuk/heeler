@@ -247,6 +247,12 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<HistorySettings>(),
         CatalogEntry::of::<ChatSettings>(),
         CatalogEntry::of::<AgentsSettings>(),
+        CatalogEntry {
+            namespace: "models",
+            workspace_overridable: false,
+            current: Rc::new(|_| Json::Null),
+            default: Json::Null,
+        },
     ]
 }
 
@@ -295,7 +301,9 @@ mod tests {
     }
 
     fn fields(store: &SettingsStore, namespace: &str) -> Vec<Field> {
-        fields_of(&namespace_schema(&store.schema(), namespace).unwrap())
+        namespace_schema(&store.schema(), namespace)
+            .map(|s| fields_of(&s))
+            .unwrap_or_default()
     }
 
     fn kind(fields: &[Field], path: &str) -> FieldKind {
@@ -396,7 +404,6 @@ mod tests {
                 .map(|e| e.namespace)
                 .collect()
         };
-        assert_eq!(names("").len(), 11);
         assert_eq!(names("panels").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);

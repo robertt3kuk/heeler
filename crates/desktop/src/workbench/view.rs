@@ -241,6 +241,7 @@ pub struct Workbench {
     pub(crate) known_approvals: std::collections::HashSet<ApprovalId>,
     /// The ⌘⇧T dialog.
     pub(crate) agent_picker: Option<AgentPicker>,
+    pub(crate) providers: super::providers::ProvidersState,
     pub(crate) agent_focus: FocusHandle,
     pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
     /// Folded blocks per terminal, saved with the layout (see [`persistence::CollapsedBlocks`]).
@@ -436,6 +437,7 @@ impl Workbench {
             last_chat: None,
             known_approvals: std::collections::HashSet::new(),
             agent_picker: None,
+            providers: super::providers::ProvidersState::default(),
             agent_focus,
             held: HashMap::new(),
             collapsed_blocks: options

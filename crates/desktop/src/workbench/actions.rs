@@ -85,6 +85,8 @@ actions!(
         ReviewApprovals,
         ShowAgentMonitor,
         ShowOnlyBlockedAgents,
+        ManageProviders,
+        SwitchChatModel,
     ]
 );
 
@@ -157,6 +159,10 @@ data_actions! {
     ApplyPreset(String);
     /// Reveal the panel with this id, opening it in its default dock if it is closed.
     OpenPanel(String);
+    /// Switch the next turn's direct-chat model.
+    SwitchChatModelById(String);
+    /// Open a write-only credential prompt for a provider.
+    SetProviderKey(String);
     /// Move the focused panel (dock tab or panel tab) to a dock or into the center.
     MoveActivePanel(PanelDest);
     /// Move the active tab into a new split at this edge of its pane.
@@ -305,7 +311,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
     let mut out = vec![
         command("Session: New Terminal", NewTerminal),
         command("Session: New Agent…", NewAgent),
-        command("Session: New Chat (arrives with M5)", NewChat),
+        command("Chat: New Direct Chat…", NewChat),
         command("Session: Rename…", RenameSession),
         command("Session: Restart", RestartSession),
         command("Session: Stop…", StopSession),
@@ -393,6 +399,8 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Agent: Interrupt Turn", chat::InterruptTurn),
         command("Agents: Show Monitor", ShowAgentMonitor),
         command("Agents: Show Only Blocked", ShowOnlyBlockedAgents),
+        command("Models: Manage Providers…", ManageProviders),
+        command("Chat: Switch Model…", SwitchChatModel),
     ]);
     out.extend([
         command(

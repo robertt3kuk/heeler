@@ -2479,6 +2479,7 @@ dependencies = [
  "heeler-client",
  "heeler-core",
  "heeler-daemon",
+ "heeler-gateway",
  "heeler-protocol",
  "heeler-settings",
  "heeler-storage",

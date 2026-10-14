@@ -121,6 +121,9 @@ impl Workbench {
             fields,
         });
         window.focus(&self.sheet_focus, cx);
+        if selected == "models" {
+            self.refresh_providers(cx);
+        }
         cx.notify();
     }
 
@@ -156,6 +159,9 @@ impl Workbench {
             sheet.dropdown = None;
             sheet.message = None;
             cx.notify();
+        }
+        if namespace == "models" {
+            self.refresh_providers(cx);
         }
     }
 
@@ -848,6 +854,11 @@ impl Workbench {
             })
             .collect();
         let has_errors = errors.iter().any(|e| e.severity == Severity::Error);
+        let rows = if selected == "models" {
+            vec![self.render_providers(cx)]
+        } else {
+            rows
+        };
 
         let search_box = div()
             .id("sheet-search")

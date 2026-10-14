@@ -1,0 +1,637 @@
+//! Model-provider settings. Configuration belongs to the daemon; keys are write-only inputs.
+
+use super::chat::{ButtonKind, Look, button};
+use super::modal::PromptSpec;
+use super::view::Workbench;
+use gpui::{
+    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
+    px,
+};
+use heeler_core::{ModelInfo, SessionId};
+use heeler_protocol::messages::{Empty, Request, SessionResult};
+use heeler_protocol::provider::{
+    ChatSetModel, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList, ProviderModels,
+    ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
+};
+use std::collections::HashMap;
+
+#[derive(Debug, Default)]
+pub struct ProvidersState {
+    pub providers: Vec<ProviderInfo>,
+    pub models: HashMap<String, Vec<ModelInfo>>,
+    pub error: Option<String>,
+    pub loading: bool,
+}
+
+impl Workbench {
+    pub fn providers(&self) -> &[ProviderInfo] {
+        &self.providers.providers
+    }
+    fn provider_call<T>(
+        &mut self,
+        request: Request,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let connection = self.sessions.read(cx).connection().clone();
+        let task = cx.background_spawn(async move {
+            connection
+                .call::<T>(request)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(answer) => done(this, answer, cx),
+                    Err(error) => {
+                        this.providers.loading = false;
+                        if let Some(picker) = &mut this.agent_picker
+                            && picker.direct
+                        {
+                            picker.creating = false;
+                            picker.error = Some(error.clone());
+                        }
+                        this.providers.error = Some(error);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn open_models_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(Some("models"), window, cx);
+    }
+
+    pub fn refresh_providers(&mut self, cx: &mut Context<Self>) {
+        self.providers.loading = true;
+        self.providers.error = None;
+        self.provider_call(
+            Request::ProviderList(Empty {}),
+            |this, list: ProviderList, cx| {
+                this.providers.providers = list.providers;
+                this.providers.loading = false;
+                if this
+                    .agent_picker
+                    .as_ref()
+                    .is_some_and(|p| p.direct && p.provider_id.is_none())
+                {
+                    if let Some(id) = this.providers.providers.first().map(|p| p.id.clone()) {
+                        this.choose_direct_provider(&id, cx);
+                    } else if let Some(picker) = &mut this.agent_picker {
+                        picker.models = super::agents::Models::Ready(Vec::new());
+                        picker.error = Some("Configure a provider in Models settings first".into());
+                    }
+                }
+            },
+            cx,
+        );
+    }
+
+    fn remember_provider(&mut self, info: ProviderInfo) {
+        if let Some(existing) = self
+            .providers
+            .providers
+            .iter_mut()
+            .find(|p| p.id == info.id)
+        {
+            *existing = info;
+        } else {
+            self.providers.providers.push(info);
+        }
+    }
+
+    pub fn set_provider_key(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let provider_id = id.to_owned();
+        self.open_prompt(
+            PromptSpec {
+                title: "Set API key",
+                message: "Stored only in macOS Keychain by heelerd. Paste the key here.",
+                initial: "",
+                confirm_label: "Store key",
+            },
+            move |this, secret, _, cx| {
+                // The modal has been taken from Workbench before this callback runs. Move the key
+                // into the one request; it never enters settings, state files or provider metadata.
+                this.provider_call(
+                    Request::ProviderSetCredential(ProviderSetCredential {
+                        provider_id: provider_id.clone(),
+                        secret,
+                    }),
+                    |this, result: ProviderResult, _| this.remember_provider(result.provider),
+                    cx,
+                );
+            },
+            window,
+            cx,
+        );
+        if let Some(modal) = &mut self.modal {
+            modal.secure_input = true;
+        }
+    }
+
+    pub fn clear_provider_key(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.provider_call(
+            Request::ProviderClearCredential(ProviderRef {
+                provider_id: id.to_owned(),
+            }),
+            |this, result: ProviderResult, _| this.remember_provider(result.provider),
+            cx,
+        );
+    }
+
+    pub fn remove_provider(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let id = id.to_owned();
+        self.open_confirm(
+            "Remove provider?",
+            "Existing chats keep their history; this provider and its stored key will be removed.",
+            "Remove",
+            move |this, _, cx| {
+                let removed = id.clone();
+                this.provider_call(
+                    Request::ProviderRemove(ProviderRef {
+                        provider_id: id.clone(),
+                    }),
+                    move |this, _: Empty, _| {
+                        this.providers.providers.retain(|p| p.id != removed);
+                        this.providers.models.remove(&removed);
+                    },
+                    cx,
+                );
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub fn provider_models(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.provider_call(
+            Request::ProviderModels(ProviderRef {
+                provider_id: id.to_owned(),
+            }),
+            |this, answer: ProviderModels, _| {
+                this.providers
+                    .models
+                    .insert(answer.provider_id, answer.models);
+            },
+            cx,
+        );
+    }
+
+    /// Add/edit uses the existing prompt dialogs for non-secret fields. The kind stays fixed
+    /// on edits: changing a wire format is a new provider, not a silent conversion.
+    pub fn edit_provider(
+        &mut self,
+        existing: Option<ProviderInfo>,
+        kind: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = kind.to_owned();
+        let name = existing
+            .as_ref()
+            .map_or(kind.as_str(), |p| p.name.as_str())
+            .to_owned();
+        let spec = PromptSpec {
+            title: "Provider name",
+            message: "Display name",
+            initial: &name,
+            confirm_label: "Next",
+        };
+        let old = existing.clone();
+        self.open_prompt(
+            spec,
+            move |this, name, window, cx| {
+                let url = old.as_ref().map(|p| p.base_url.clone()).unwrap_or_else(|| {
+                    match kind.as_str() {
+                        "anthropic" => "https://api.anthropic.com".into(),
+                        "ollama" => "http://127.0.0.1:11434".into(),
+                        "openai-compatible" => "http://127.0.0.1:1234/v1".into(),
+                        _ => "https://api.openai.com/v1".into(),
+                    }
+                });
+                let old = old.clone();
+                let kind = kind.clone();
+                this.open_prompt(
+                    PromptSpec {
+                        title: "Provider endpoint",
+                        message: "Base URL (HTTP or HTTPS, without credentials)",
+                        initial: &url,
+                        confirm_label: "Next",
+                    },
+                    move |this, base_url, window, cx| {
+                        let old = old.clone();
+                        let kind = kind.clone();
+                        let name = name.clone();
+                        let initial = old
+                            .as_ref()
+                            .and_then(|p| p.default_model.as_deref())
+                            .unwrap_or("auto")
+                            .to_owned();
+                        this.open_prompt(
+                            PromptSpec {
+                                title: "Default model",
+                                message: "Model ID, or auto to use the provider's default",
+                                initial: &initial,
+                                confirm_label: "Save",
+                            },
+                            move |this, model, _, cx| {
+                                let default_model = (model != "auto").then_some(model);
+                                let req = if let Some(old) = &old {
+                                    Request::ProviderUpdate(ProviderUpdate {
+                                        provider_id: old.id.clone(),
+                                        name: Some(name.clone()),
+                                        base_url: Some(base_url.clone()),
+                                        default_model: Some(default_model.unwrap_or_default()),
+                                    })
+                                } else {
+                                    Request::ProviderAdd(ProviderAdd {
+                                        kind: kind.clone(),
+                                        name: name.clone(),
+                                        base_url: Some(base_url.clone()),
+                                        default_model,
+                                    })
+                                };
+                                this.provider_call(
+                                    req,
+                                    |this, result: ProviderResult, _| {
+                                        this.remember_provider(result.provider)
+                                    },
+                                    cx,
+                                );
+                            },
+                            window,
+                            cx,
+                        );
+                    },
+                    window,
+                    cx,
+                );
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub fn discover_providers(&mut self, cx: &mut Context<Self>) {
+        self.provider_call(
+            Request::ProviderDiscover(Empty {}),
+            |this, result: ProviderDiscovery, _| {
+                let entries = result
+                    .found
+                    .into_iter()
+                    .filter(|p| p.provider_id.is_none())
+                    .map(|p| {
+                        let name = p.name.clone();
+                        let request = ProviderAdd {
+                            kind: p.kind,
+                            name: p.name,
+                            base_url: Some(p.base_url),
+                            default_model: p.models.first().cloned(),
+                        };
+                        super::view::MenuEntry {
+                            label: format!("Add {name}").into(),
+                            checked: false,
+                            disabled: false,
+                            run: std::rc::Rc::new(move |this, _, cx| {
+                                this.provider_call(
+                                    Request::ProviderAdd(request.clone()),
+                                    |this, result: ProviderResult, _| {
+                                        this.remember_provider(result.provider)
+                                    },
+                                    cx,
+                                );
+                            }),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if entries.is_empty() {
+                    this.providers.error = Some(
+                        "No unconfigured local model servers found on ports 11434 or 1234".into(),
+                    );
+                } else {
+                    this.context_menu = Some(super::view::ContextMenu {
+                        position: gpui::point(px(400.0), px(180.0)),
+                        entries,
+                    });
+                }
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn render_providers(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let look = Look::of(cx);
+        let mut body = div().flex().flex_col().gap(px(12.0)).py(px(12.0))
+            .child(div().child("Models and providers"))
+            .child(div().text_color(look.theme.muted).child("Provider configuration belongs to heelerd. Keys are write-only and stored in Keychain."));
+        let mut add = div().flex().flex_wrap().gap(px(6.0));
+        for (kind, label) in [
+            ("openai", "Add OpenAI"),
+            ("anthropic", "Add Anthropic"),
+            ("ollama", "Add Ollama"),
+            ("openai-compatible", "Add compatible"),
+        ] {
+            add = add.child(
+                button(
+                    format!("provider-add-{kind}"),
+                    label,
+                    ButtonKind::Plain,
+                    true,
+                    &look,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.edit_provider(None, kind, window, cx)
+                })),
+            );
+        }
+        body = body.child(add).child(
+            div()
+                .flex()
+                .gap(px(6.0))
+                .child(
+                    button(
+                        "provider-refresh",
+                        "Refresh",
+                        ButtonKind::Plain,
+                        true,
+                        &look,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_providers(cx))),
+                )
+                .child(
+                    button(
+                        "provider-discover",
+                        "Discover local",
+                        ButtonKind::Plain,
+                        true,
+                        &look,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.discover_providers(cx))),
+                ),
+        );
+        if self.providers.loading {
+            body = body.child("Loading providers…");
+        }
+        if let Some(error) = &self.providers.error {
+            body = body.child(
+                div()
+                    .text_color(look.theme.error)
+                    .child(SharedString::from(error.clone())),
+            );
+        }
+        for provider in &self.providers.providers {
+            let id = provider.id.clone();
+            let edit = provider.clone();
+            let key = id.clone();
+            let clear = id.clone();
+            let remove = id.clone();
+            let models = id.clone();
+            let mut row = div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .p(px(10.0))
+                .border_1()
+                .border_color(look.theme.border)
+                .child(SharedString::from(format!(
+                    "{} · {} · key {}",
+                    provider.name,
+                    provider.kind,
+                    if provider.has_credential {
+                        "✓"
+                    } else {
+                        "—"
+                    }
+                )))
+                .child(
+                    div()
+                        .text_color(look.theme.muted)
+                        .child(SharedString::from(format!(
+                            "{} · default {}",
+                            provider.base_url,
+                            provider.default_model.as_deref().unwrap_or("auto")
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .child(
+                            button(
+                                format!("provider-edit-{id}"),
+                                "Edit",
+                                ButtonKind::Plain,
+                                true,
+                                &look,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.edit_provider(Some(edit.clone()), &edit.kind, window, cx)
+                                },
+                            )),
+                        )
+                        .child(
+                            button(
+                                format!("provider-key-{id}"),
+                                "Set key…",
+                                ButtonKind::Plain,
+                                true,
+                                &look,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.set_provider_key(&key, window, cx),
+                            )),
+                        )
+                        .child(
+                            button(
+                                format!("provider-clear-{id}"),
+                                "Clear key",
+                                ButtonKind::Plain,
+                                true,
+                                &look,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.clear_provider_key(&clear, cx),
+                            )),
+                        )
+                        .child(
+                            button(
+                                format!("provider-models-{id}"),
+                                "Models / refresh",
+                                ButtonKind::Plain,
+                                true,
+                                &look,
+                            )
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.provider_models(&models, cx)
+                                }),
+                            ),
+                        )
+                        .child(
+                            button(
+                                format!("provider-remove-{id}"),
+                                "Remove…",
+                                ButtonKind::Plain,
+                                true,
+                                &look,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.remove_provider(&remove, window, cx)
+                                },
+                            )),
+                        ),
+                );
+            if let Some(models) = self.providers.models.get(&id) {
+                for model in models {
+                    row = row.child(
+                        div()
+                            .text_color(look.theme.muted)
+                            .child(SharedString::from(model.id.clone())),
+                    );
+                }
+            }
+            body = body.child(row);
+        }
+        body.into_any_element()
+    }
+
+    pub fn choose_direct_provider(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(picker) = &mut self.agent_picker else {
+            return;
+        };
+        if picker.creating {
+            return;
+        }
+        picker.direct = true;
+        picker.provider_id = Some(id.to_owned());
+        picker.models = super::agents::Models::Loading;
+        picker.error = None;
+        picker.selected = 0;
+        picker.model_query.clear();
+        let chosen = id.to_owned();
+        let default_model = self
+            .providers
+            .providers
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.default_model.clone());
+        self.provider_call(
+            Request::ProviderModels(ProviderRef {
+                provider_id: id.to_owned(),
+            }),
+            move |this, mut result: ProviderModels, _| {
+                let Some(picker) = &mut this.agent_picker else {
+                    return;
+                };
+                if picker.provider_id.as_deref() != Some(chosen.as_str()) {
+                    return;
+                }
+                if let Some(default) = &default_model {
+                    for model in &mut result.models {
+                        model.is_default = &model.id == default;
+                    }
+                }
+                picker.models = super::agents::Models::Ready(result.models);
+                picker.selected = picker
+                    .shown()
+                    .iter()
+                    .position(|m| m.is_default)
+                    .unwrap_or(0);
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    pub fn edit_chat_system_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let initial = self
+            .agent_picker
+            .as_ref()
+            .and_then(|p| p.system_prompt.clone())
+            .unwrap_or_default();
+        self.open_prompt(
+            PromptSpec {
+                title: "System prompt",
+                message: "Optional instructions for this direct chat",
+                initial: &initial,
+                confirm_label: "Use",
+            },
+            |this, text, window, cx| {
+                if let Some(picker) = &mut this.agent_picker {
+                    picker.system_prompt = Some(text);
+                }
+                window.focus(&this.agent_focus, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub fn open_model_switch(
+        &mut self,
+        session: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let allowed = self
+            .sessions
+            .read(cx)
+            .session(session)
+            .and_then(|s| s.chat.as_ref())
+            .is_some_and(|chat| chat.agent == "direct" && !chat.turn_active);
+        if !allowed {
+            self.set_notice("Models can be switched between turns of a direct chat", cx);
+            return;
+        }
+        self.new_direct_chat(window, cx);
+        if let Some(picker) = &mut self.agent_picker {
+            picker.switch_session = Some(session);
+        }
+    }
+
+    pub(crate) fn confirm_model_switch(
+        &mut self,
+        session: SessionId,
+        provider_id: Option<String>,
+        model: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let connection = self.sessions.read(cx).connection().clone();
+        let task = cx.background_spawn(async move {
+            connection
+                .call::<SessionResult>(Request::ChatSetModel(ChatSetModel {
+                    session_id: session,
+                    provider_id,
+                    model,
+                }))
+                .await
+                .map_err(|e| e.to_string())
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(_) => this.close_agent_picker(window, cx),
+                Err(error) => {
+                    if let Some(picker) = &mut this.agent_picker {
+                        picker.creating = false;
+                        picker.error = Some(error);
+                    }
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}

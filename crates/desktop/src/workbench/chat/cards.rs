@@ -135,7 +135,18 @@ impl ChatView {
                 &mut ids,
                 cx,
             ),
-            Body::Footer(footer) => footer_card(footer, &look),
+            Body::Footer(footer) => {
+                let recovery = match &footer.outcome {
+                    TurnOutcome::Failed { message, .. } => {
+                        self.provider_error_action(message, &look, cx)
+                    }
+                    _ => None,
+                };
+                div()
+                    .child(footer_card(footer, &look))
+                    .children(recovery)
+                    .into_any_element()
+            }
             Body::Notice { level, message } => notice_card(*level, message, &look),
         };
         div()

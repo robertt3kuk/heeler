@@ -130,11 +130,28 @@ impl TestDaemon {
         Self::start_inner(None, Some(codex))
     }
 
+    pub fn start_with_gateway(gateway: heeler_daemon::GatewayConfig) -> Self {
+        Self::start_configured(None, None, gateway)
+    }
+
+    pub fn http_mock(&self) -> heeler_gateway::testing::MockServer {
+        self.rt()
+            .block_on(heeler_gateway::testing::MockServer::start())
+    }
+
     fn start_with(daemon_toml: Option<&str>) -> Self {
         Self::start_inner(daemon_toml, None)
     }
 
     fn start_inner(daemon_toml: Option<&str>, codex: Option<heeler_agents::CodexConfig>) -> Self {
+        Self::start_configured(daemon_toml, codex, heeler_daemon::GatewayConfig::default())
+    }
+
+    fn start_configured(
+        daemon_toml: Option<&str>,
+        codex: Option<heeler_agents::CodexConfig>,
+        gateway: heeler_daemon::GatewayConfig,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
         if let Some(text) = daemon_toml {
@@ -148,6 +165,7 @@ impl TestDaemon {
             .unwrap();
         let mut config = DaemonConfig::new(paths.clone());
         config.codex = codex;
+        config.gateway = gateway;
         let daemon = runtime.block_on(heeler_daemon::start(config)).unwrap();
         Self {
             dir,

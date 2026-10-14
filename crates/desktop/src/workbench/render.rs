@@ -362,9 +362,33 @@ impl Workbench {
                 this.open_approvals_picker(window, cx);
             }),
         )
-        .on_action(cx.listener(|this, _: &actions::NewChat, _, cx| {
-            this.set_notice("Chats arrive with M5", cx);
+        .on_action(cx.listener(|this, _: &actions::NewChat, window, cx| {
+            this.new_direct_chat(window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::ManageProviders, window, cx| {
+                this.open_models_settings(window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::SwitchChatModel, window, cx| {
+                if let Some(session) = this.focused_session() {
+                    this.open_model_switch(session, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, action: &actions::SwitchChatModelById, window, cx| {
+                if let Ok(session) = action.0.parse() {
+                    this.open_model_switch(session, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, action: &actions::SetProviderKey, window, cx| {
+                this.set_provider_key(&action.0, window, cx);
+            }),
+        )
         .on_action(
             cx.listener(|this, _: &heeler_terminal_view::SendBlockToAgent, _, cx| {
                 this.set_notice(
