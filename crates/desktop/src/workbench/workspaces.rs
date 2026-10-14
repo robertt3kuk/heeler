@@ -21,11 +21,13 @@ use gpui::{
 };
 use heeler_client::ConnectionState;
 use heeler_core::{SessionId, WorkspaceId};
+use heeler_protocol::history::HistorySource;
 use heeler_protocol::messages::{RecentProject, WorkspaceInfo, WorkspaceKind};
 
 use super::actions::palette;
 use super::modal::PromptSpec;
 use super::palette::fuzzy_score;
+use super::panels::HistoryResume;
 use super::terminals::session_of_item;
 use super::view::{MenuEntry, Workbench};
 use crate::sessions::workspaces as order;
@@ -51,6 +53,14 @@ pub(crate) enum PickerAction {
     OpenProject(PathBuf),
     Workspace(WorkspaceId),
     Session(SessionId),
+    /// A history hit that can be resumed.
+    ResumeHit(HistoryResume),
+    /// A history hit without a resume command: show it in the History panel.
+    ShowHit {
+        query: String,
+        source: HistorySource,
+        key: String,
+    },
 }
 
 /// One row of the picker.
@@ -64,8 +74,24 @@ pub struct PickerEntry {
     pub fixed: bool,
 }
 
+/// Where the ⌘J `?` history search stands.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum HistoryState {
+    /// Nothing typed after the `?`.
+    #[default]
+    Idle,
+    Searching,
+    Done,
+    /// Indexing is off.
+    Disabled,
+    /// The daemon predates `history.*`.
+    Unsupported,
+    Failed(String),
+}
+
 /// An open ⌘O picker or ⌘J palette: the query, the entries, the filtered rows (indices into
-/// `entries`, best first) and the highlighted row.
+/// `entries`, best first) and the highlighted row. A ⌘J query that starts with `?` searches the
+/// session history instead: the rows are then the hits (`history`), best first.
 #[derive(Debug, Clone)]
 pub struct PickerState {
     pub kind: PickerKind,
@@ -75,6 +101,9 @@ pub struct PickerState {
     pub selected: usize,
     /// The project list is still on its way from the daemon.
     pub loading: bool,
+    /// The hits of the `?` search.
+    pub history: Vec<PickerEntry>,
+    pub history_state: HistoryState,
 }
 
 impl PickerState {
@@ -86,14 +115,38 @@ impl PickerState {
             matches: Vec::new(),
             selected: 0,
             loading: false,
+            history: Vec::new(),
+            history_state: HistoryState::Idle,
         };
         state.refilter();
         state
     }
 
+    /// The text after the `?` of a ⌘J history search; `None` for every other query.
+    pub fn history_query(&self) -> Option<&str> {
+        match self.kind {
+            PickerKind::Jump => self.query.strip_prefix('?').map(str::trim),
+            PickerKind::Projects => None,
+        }
+    }
+
+    /// The rows `matches` indexes: the hits in a history search, else the workspaces and sessions.
+    fn shown(&self) -> &[PickerEntry] {
+        if self.history_query().is_some() {
+            &self.history
+        } else {
+            &self.entries
+        }
+    }
+
     /// Recomputes the filtered rows: fixed rows first, then the fuzzy matches, titles before
-    /// details.
-    fn refilter(&mut self) {
+    /// details. In a history search every hit is a row, in the order the index ranked them.
+    pub(super) fn refilter(&mut self) {
+        if self.history_query().is_some() {
+            self.matches = (0..self.history.len()).collect();
+            self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+            return;
+        }
         let mut fixed = Vec::new();
         let mut scored: Vec<(i32, usize)> = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
@@ -122,10 +175,15 @@ impl PickerState {
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
 
-    fn selected_entry(&self) -> Option<&PickerEntry> {
+    /// The row at position `row` of the filtered list.
+    fn entry_at(&self, row: usize) -> Option<&PickerEntry> {
         self.matches
-            .get(self.selected)
-            .and_then(|i| self.entries.get(*i))
+            .get(row)
+            .and_then(|index| self.shown().get(*index))
+    }
+
+    fn selected_entry(&self) -> Option<&PickerEntry> {
+        self.entry_at(self.selected)
     }
 }
 
@@ -677,9 +735,8 @@ impl Workbench {
         self.picker
             .as_ref()
             .map(|p| {
-                p.matches
-                    .iter()
-                    .filter_map(|i| p.entries.get(*i))
+                (0..p.matches.len())
+                    .filter_map(|row| p.entry_at(row))
                     .map(|e| e.title.clone())
                     .collect()
             })
@@ -695,6 +752,7 @@ impl Workbench {
     }
 
     pub fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_search = None;
         if self.picker.take().is_some() {
             self.focus_root(window, cx);
             cx.notify();
@@ -815,12 +873,19 @@ impl Workbench {
     }
 
     pub fn set_picker_query(&mut self, query: &str, cx: &mut Context<Self>) {
-        if let Some(picker) = &mut self.picker {
-            picker.query = query.to_owned();
-            picker.selected = 0;
-            picker.refilter();
-            cx.notify();
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        picker.query = query.to_owned();
+        picker.selected = 0;
+        picker.refilter();
+        let searching_history = picker.history_query().is_some();
+        if searching_history {
+            self.search_history_in_picker(cx);
+        } else {
+            self.picker_search = None;
         }
+        cx.notify();
     }
 
     pub(crate) fn picker_type(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -859,7 +924,7 @@ impl Workbench {
             return;
         };
         let entry = match index {
-            Some(row) => picker.matches.get(row).and_then(|i| picker.entries.get(*i)),
+            Some(row) => picker.entry_at(row),
             None => picker.selected_entry(),
         };
         let Some(action) = entry.map(|e| e.action.clone()) else {
@@ -871,6 +936,10 @@ impl Workbench {
             PickerAction::OpenProject(path) => self.open_project_path(path, window, cx),
             PickerAction::Workspace(workspace) => self.switch_workspace(workspace, window, cx),
             PickerAction::Session(session) => self.open_session(session, window, cx),
+            PickerAction::ResumeHit(resume) => self.resume_history_hit(resume, window, cx),
+            PickerAction::ShowHit { query, source, key } => {
+                self.show_history_hit(&query, source, &key, window, cx);
+            }
         }
     }
 
@@ -890,8 +959,8 @@ impl Workbench {
             .enumerate()
             .skip(start)
             .take(VISIBLE_ROWS)
-            .filter_map(|(row, entry_index)| {
-                let entry = picker.entries.get(*entry_index)?;
+            .filter_map(|(row, _)| {
+                let entry = picker.entry_at(row)?;
                 let selected = row == picker.selected;
                 let hover = theme.hover;
                 Some(
@@ -917,7 +986,13 @@ impl Workbench {
                                 .text_color(theme.muted)
                                 .child(entry.icon.clone()),
                         )
-                        .child(div().flex_none().child(entry.title.clone()))
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(260.0))
+                                .truncate()
+                                .child(entry.title.clone()),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -931,15 +1006,36 @@ impl Workbench {
                 )
             })
             .collect();
-        let hint = match (picker.kind, picker.matches.is_empty(), picker.loading) {
-            (_, _, true) => Some("Loading recent projects…"),
-            (PickerKind::Projects, true, false) => Some("No matching project"),
-            (PickerKind::Jump, true, false) => Some("Nothing matches"),
-            _ => None,
+        let hint: Option<SharedString> = match (
+            picker.history_query().is_some(),
+            picker.matches.is_empty(),
+            picker.loading,
+        ) {
+            (_, _, true) => Some("Loading recent projects…".into()),
+            (true, true, false) => Some(match &picker.history_state {
+                HistoryState::Idle => "Type to search the session history".into(),
+                HistoryState::Searching => "Searching…".into(),
+                HistoryState::Done => "No session matches".into(),
+                HistoryState::Disabled => {
+                    "History indexing is off. Enable it in the History panel (⌘K → Search History)"
+                        .into()
+                }
+                HistoryState::Unsupported => {
+                    "This heelerd does not offer history search; restart it".into()
+                }
+                HistoryState::Failed(error) => format!("History search failed: {error}").into(),
+            }),
+            (true, false, false) => None,
+            (false, true, false) if picker.kind == PickerKind::Projects => {
+                Some("No matching project".into())
+            }
+            (false, true, false) => Some("Nothing matches".into()),
+            (false, false, false) => None,
         };
-        let prompt = match picker.kind {
-            PickerKind::Projects => "Open project ›",
-            PickerKind::Jump => "Jump to ›",
+        let prompt = match (picker.kind, picker.history_query().is_some()) {
+            (PickerKind::Projects, _) => "Open project ›",
+            (PickerKind::Jump, true) => "Search history ›",
+            (PickerKind::Jump, false) => "Jump to ›",
         };
 
         Some(

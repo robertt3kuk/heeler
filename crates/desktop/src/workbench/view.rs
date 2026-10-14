@@ -92,6 +92,9 @@ pub enum Region {
     DockTab(DockPosition, usize),
     /// A workspace row of the sessions panel.
     WorkspaceRow(heeler_core::WorkspaceId),
+    /// A control of the history panel, by name (`search`, `enable`, `clear`, `rebuild`,
+    /// `confirm`).
+    History(&'static str),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -198,6 +201,8 @@ pub struct Workbench {
     pub(crate) pending_workspace: Option<heeler_core::WorkspaceId>,
     /// The ⌘O project picker or ⌘J jump palette.
     pub(crate) picker: Option<PickerState>,
+    /// The ⌘J `?` history search in flight (dropping it cancels it).
+    pub(crate) picker_search: Option<gpui::Task<()>>,
     pub(crate) picker_focus: FocusHandle,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) palette_focus: FocusHandle,
@@ -381,6 +386,7 @@ impl Workbench {
             workspace_root: None,
             pending_workspace: None,
             picker: None,
+            picker_search: None,
             focus_handle,
             palette_focus,
             picker_focus,

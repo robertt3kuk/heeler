@@ -6,6 +6,7 @@
 //! reachable from the palette, menus and panels.
 
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
+use super::panels::{HeelerTarget, HistoryResume};
 use super::registry::PanelRegistry;
 use crate::settings::{OnQuit, WorkspaceSort};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
@@ -80,6 +81,7 @@ actions!(
         ToggleHideEmptyWorkspaces,
         ToggleHideSleepingWorkspaces,
         ToggleHideCliWorkspaces,
+        SearchHistory,
     ]
 );
 
@@ -170,6 +172,12 @@ data_actions! {
     SetWorkspaceSort(WorkspaceSort);
     /// A workspace row was dropped onto another one (manual reordering).
     MoveWorkspaceOnto(WorkspaceDrop);
+    /// Resume a session found in the history index: its command in a new terminal session.
+    ResumeHistoryHit(HistoryResume);
+    /// Copy a resume command line to the clipboard.
+    CopyHistoryCommand(String);
+    /// Show the Heeler session (and block) a history hit points at.
+    OpenHistoryHit(HeelerTarget);
 }
 
 /// Where to open the context menu of a workspace.
@@ -358,6 +366,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
             ToggleHideCliWorkspaces,
         ),
     ]);
+    out.push(command("History: Search History…", SearchHistory));
     out.extend([
         command(
             "Block: Previous Prompt",

@@ -362,6 +362,22 @@ impl Workbench {
                 this.set_notice("Sending a block to an agent arrives with M4", cx);
             }),
         )
+        .on_action(cx.listener(|this, _: &actions::SearchHistory, window, cx| {
+            this.search_history(window, cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ResumeHistoryHit, window, cx| {
+                this.resume_history_hit(a.0.clone(), window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::CopyHistoryCommand, _, cx| {
+            this.copy_history_command(&a.0, cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::OpenHistoryHit, window, cx| {
+                this.open_history_hit(a.0.clone(), window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, a: &actions::JumpToBlock, window, cx| {
             this.jump_to_block(&a.0.session, a.0.block, window, cx);
         }))

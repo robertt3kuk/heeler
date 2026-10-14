@@ -40,12 +40,12 @@ impl LayoutPreset {
         }
     }
 
-    /// `sessions` left, `inspector` right, bottom hidden, center untouched.
+    /// `sessions` and `history` left, `inspector` right, bottom hidden, center untouched.
     pub fn default_preset() -> Self {
         Self {
             name: Self::DEFAULT.to_owned(),
             docks: Self::docks(
-                Dock::new(&["sessions"], 240.0, true),
+                Dock::new(&["sessions", "history"], 240.0, true),
                 Dock::new(&["inspector"], 300.0, true),
             ),
             center: CenterLayout::Keep,
@@ -58,7 +58,7 @@ impl LayoutPreset {
         Self {
             name: Self::FOCUS.to_owned(),
             docks: Self::docks(
-                Dock::new(&["sessions"], 240.0, false),
+                Dock::new(&["sessions", "history"], 240.0, false),
                 Dock::new(&["inspector"], 300.0, false),
             ),
             center: CenterLayout::Keep,
@@ -71,7 +71,7 @@ impl LayoutPreset {
         Self {
             name: Self::OVERVIEW.to_owned(),
             docks: Self::docks(
-                Dock::new(&["sessions"], 240.0, true),
+                Dock::new(&["sessions", "history"], 240.0, true),
                 Dock::new(&["inspector"], 300.0, true),
             ),
             center: CenterLayout::Items(vec![ItemRef::panel("overview")]),

@@ -151,7 +151,10 @@ fn default_presets() -> Vec<LayoutPreset> {
 fn default_state_is_valid() {
     let state = WorkbenchState::default();
     check(&state);
-    assert_eq!(state.docks.left.panels, vec![PanelId::new("sessions")]);
+    assert_eq!(
+        state.docks.left.panels,
+        vec![PanelId::new("sessions"), PanelId::new("history")]
+    );
     assert_eq!(state.docks.right.panels, vec![PanelId::new("inspector")]);
     assert!(!state.docks.bottom.visible);
     assert_eq!(state.panes().len(), 1);
@@ -533,7 +536,7 @@ fn panel_dock_to_center_and_back() {
         .move_panel(&PanelId::new("sessions"), PanelDest::Center)
         .unwrap();
     check(&state);
-    assert!(state.docks.left.panels.is_empty());
+    assert_eq!(state.docks.left.panels, vec![PanelId::new("history")]);
     assert!(
         state
             .active_pane()
@@ -549,7 +552,10 @@ fn panel_dock_to_center_and_back() {
         )
         .unwrap();
     check(&state);
-    assert_eq!(state.docks.left.panels, vec![PanelId::new("sessions")]);
+    assert_eq!(
+        state.docks.left.panels,
+        vec![PanelId::new("history"), PanelId::new("sessions")]
+    );
     assert_eq!(sorted_items(&state), before);
 }
 
@@ -580,7 +586,11 @@ fn dock_reorder() {
     state.open_panel(&PanelId::new("notifications"), DockPosition::Left);
     assert_eq!(
         state.docks.left.panels,
-        vec![PanelId::new("sessions"), PanelId::new("notifications")]
+        vec![
+            PanelId::new("sessions"),
+            PanelId::new("history"),
+            PanelId::new("notifications")
+        ]
     );
     state
         .move_item(
@@ -597,7 +607,11 @@ fn dock_reorder() {
     check(&state);
     assert_eq!(
         state.docks.left.panels,
-        vec![PanelId::new("notifications"), PanelId::new("sessions")]
+        vec![
+            PanelId::new("notifications"),
+            PanelId::new("sessions"),
+            PanelId::new("history")
+        ]
     );
     assert_eq!(state.docks.left.active, Some(PanelId::new("notifications")));
 }

@@ -1,6 +1,6 @@
 //! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
-//! `panels.sessions`, `panels.inspector`, `panels.overview`. `appearance` lives in
-//! `heeler-settings`.
+//! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`.
+//! `appearance` lives in `heeler-settings`.
 //!
 //! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
 //! rounding noise (`1.2`, not `1.2000000476837158`).
@@ -500,6 +500,100 @@ impl Setting for WorkspacesSettings {
     const NAMESPACE: &'static str = "workspaces";
 }
 
+/// How far back the History panel searches by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub enum HistoryRange {
+    /// The last 24 hours.
+    #[serde(rename = "24h")]
+    Day,
+    /// The last 7 days.
+    #[serde(rename = "7d")]
+    Week,
+    /// The last 30 days.
+    #[serde(rename = "30d")]
+    Month,
+    /// Everything the index holds.
+    #[default]
+    #[serde(rename = "all")]
+    All,
+}
+
+impl HistoryRange {
+    pub const ALL: [HistoryRange; 4] = [
+        HistoryRange::Day,
+        HistoryRange::Week,
+        HistoryRange::Month,
+        HistoryRange::All,
+    ];
+
+    /// The value in `settings.toml` and on the chip.
+    pub fn key(self) -> &'static str {
+        match self {
+            HistoryRange::Day => "24h",
+            HistoryRange::Week => "7d",
+            HistoryRange::Month => "30d",
+            HistoryRange::All => "all",
+        }
+    }
+
+    /// Length of the window in milliseconds; `None` for everything.
+    pub fn window_ms(self) -> Option<u64> {
+        const HOUR: u64 = 3_600_000;
+        match self {
+            HistoryRange::Day => Some(24 * HOUR),
+            HistoryRange::Week => Some(7 * 24 * HOUR),
+            HistoryRange::Month => Some(30 * 24 * HOUR),
+            HistoryRange::All => None,
+        }
+    }
+}
+
+/// Which projects the History panel searches by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryScope {
+    /// Only sessions that ran inside the active workspace's first folder.
+    Workspace,
+    /// Every project.
+    #[default]
+    All,
+}
+
+/// The `history` namespace (desktop side of the session history index; whether indexing runs
+/// and where the transcripts are is the daemon's `[history]` section in `daemon.toml`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct HistorySettings {
+    /// Sources the panel searches by default: any of `heeler`, `claude`, `codex`, `omp`; empty
+    /// means all of them.
+    pub sources: Vec<String>,
+    /// Roles the panel searches by default: any of `user`, `assistant`, `tool`, `command`,
+    /// `output`; empty means all of them.
+    pub roles: Vec<String>,
+    /// How far back to search: `24h`, `7d`, `30d` or `all`.
+    pub range: HistoryRange,
+    /// `workspace` (the active workspace) or `all` projects.
+    pub project: HistoryScope,
+    /// Show the matching text under each result.
+    pub show_snippets: bool,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            roles: Vec::new(),
+            range: HistoryRange::All,
+            project: HistoryScope::All,
+            show_snippets: true,
+        }
+    }
+}
+
+impl Setting for HistorySettings {
+    const NAMESPACE: &'static str = "history";
+}
+
 /// What quitting the app does with the daemon while sessions are live (design.md § Daemon
 /// lifecycle). With no live session the daemon always stops with the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -560,6 +654,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<InspectorPanelSettings>();
     store.register::<OverviewPanelSettings>();
     store.register::<WorkspacesSettings>();
+    store.register::<HistorySettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -672,6 +767,7 @@ mod tests {
             "panels.inspector",
             "panels.overview",
             "workspaces",
+            "history",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

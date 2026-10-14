@@ -107,4 +107,4 @@ Unit-level numbers on real-format data: copies of 222 real transcript files (12 
 - A source root that appears after indexing started is picked up on the next enable/restart.
 - Heeler rows only cover blocks and reports seen while indexing was on; terminal output without shell integration (no OSC 133 marks) has no blocks.
 - OpenCode, Cursor and Gemini adapters are not implemented (M17 roadmap lists them; OpenCode is deferred above).
-- The History panel, ⌘K integration and assistant `@search` are M17-B and later.
+- The desktop History panel and the ⌘K / ⌘J integration are in (`docs/design.md` § History panel); assistant `@search` is M16. A hit carries neither the transcript's path (so the panel cannot reveal the file) nor the id of a Heeler block (the panel finds the block by its start time, `ts_ms`).

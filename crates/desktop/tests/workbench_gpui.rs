@@ -49,7 +49,10 @@ fn opens_with_default_layout_and_title(cx: &mut TestAppContext) {
     let state = state(&view, cx);
     assert_eq!(state.preset, "default");
     assert!(state.docks.left.visible && state.docks.right.visible && !state.docks.bottom.visible);
-    assert_eq!(state.docks.left.panels, vec![PanelId::new("sessions")]);
+    assert_eq!(
+        state.docks.left.panels,
+        vec![PanelId::new("sessions"), PanelId::new("history")]
+    );
     assert_eq!(state.panes().len(), 1);
     assert_eq!(cx.window_title().as_deref(), Some("Welcome — Heeler"));
 }
@@ -750,7 +753,11 @@ fn dragging_a_panel_tab_to_a_pane_and_to_another_dock(cx: &mut TestAppContext) {
     let s = state(&view, cx);
     assert_eq!(
         s.docks.left.panels,
-        vec![PanelId::new("inspector"), PanelId::new("sessions")]
+        vec![
+            PanelId::new("inspector"),
+            PanelId::new("sessions"),
+            PanelId::new("history")
+        ]
     );
     assert!(
         !s.pane(pane)

@@ -8,7 +8,7 @@ use heeler_settings::{AppearanceSettings, Setting, SettingsStore};
 use serde_json::Value as Json;
 
 use crate::settings::{
-    AppSettings, InspectorPanelSettings, LayoutSettings, OverviewPanelSettings,
+    AppSettings, HistorySettings, InspectorPanelSettings, LayoutSettings, OverviewPanelSettings,
     SessionsPanelSettings, TerminalSettings, WorkspacesSettings,
 };
 
@@ -243,6 +243,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<InspectorPanelSettings>(),
         CatalogEntry::of::<OverviewPanelSettings>(),
         CatalogEntry::of::<WorkspacesSettings>(),
+        CatalogEntry::of::<HistorySettings>(),
     ]
 }
 
@@ -392,7 +393,7 @@ mod tests {
                 .map(|e| e.namespace)
                 .collect()
         };
-        assert_eq!(names("").len(), 8);
+        assert_eq!(names("").len(), 9);
         assert_eq!(names("panels").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);

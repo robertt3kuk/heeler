@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod history;
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -113,8 +115,20 @@ pub struct TestDaemon {
 
 impl TestDaemon {
     pub fn start() -> Self {
+        Self::start_with(None)
+    }
+
+    /// A daemon whose `daemon.toml` is `daemon_toml` (written before it starts).
+    pub fn start_with_config(daemon_toml: &str) -> Self {
+        Self::start_with(Some(daemon_toml))
+    }
+
+    fn start_with(daemon_toml: Option<&str>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
+        if let Some(text) = daemon_toml {
+            std::fs::write(&paths.config_file, text).unwrap();
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("test-daemon")

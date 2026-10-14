@@ -14,7 +14,8 @@ use heeler_core::TerminalId;
 use heeler_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
-use heeler_protocol::messages::{Request, TerminalSize};
+use heeler_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
+use heeler_protocol::messages::{Empty, Request, TerminalSize};
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -236,6 +237,50 @@ impl Connection {
             max_bytes,
         }))
         .await
+    }
+
+    /// True while connected to a daemon that advertised capability `history.search`
+    /// ([`Client::supports_history`]); false when disconnected.
+    pub fn supports_history(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_history())
+    }
+
+    /// `history.search`: one hit per matching session, best first. Fails with the daemon's
+    /// `invalid_state` while indexing is off.
+    pub async fn history_search(&self, search: HistorySearch) -> Result<HistoryHits, ClientError> {
+        self.call(Request::HistorySearch(search)).await
+    }
+
+    /// `history.status`: whether indexing is on, per-source counters, database size.
+    pub async fn history_status(&self) -> Result<HistoryStatusInfo, ClientError> {
+        self.call(Request::HistoryStatus(Empty {})).await
+    }
+
+    /// `history.set_enabled`: turns indexing on or off (recorded in `daemon.toml`); answers with
+    /// the new status.
+    pub async fn history_set_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<HistoryStatusInfo, ClientError> {
+        self.call(Request::HistorySetEnabled(HistorySetEnabled { enabled }))
+            .await
+    }
+
+    /// `history.clear`: deletes the index and, while indexing is on, starts an empty one.
+    pub async fn history_clear(&self) -> Result<(), ClientError> {
+        self.call::<serde_json::Value>(Request::HistoryClear(Empty {}))
+            .await
+            .map(drop)
+    }
+
+    /// `history.rebuild`: reads every transcript again in the background. Fails with the
+    /// daemon's `invalid_state` while indexing is off.
+    pub async fn history_rebuild(&self) -> Result<(), ClientError> {
+        self.call::<serde_json::Value>(Request::HistoryRebuild(Empty {}))
+            .await
+            .map(drop)
     }
 
     /// A durable view of `terminal` that re-attaches across reconnects. Returns at once; the

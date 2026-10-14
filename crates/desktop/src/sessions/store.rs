@@ -408,12 +408,27 @@ impl SessionsStore {
         cwd: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Task<Result<SessionInfo, String>> {
-        let request = Request::SessionCreate(SessionCreate {
-            workspace_id: workspace,
-            spec: SessionSpec::Terminal(TerminalSpec {
+        self.create_session(
+            workspace,
+            TerminalSpec {
                 cwd,
                 ..TerminalSpec::default()
-            }),
+            },
+            cx,
+        )
+    }
+
+    /// Starts the terminal session `spec` describes in `workspace` (the daemon's default when
+    /// `None`).
+    pub fn create_session(
+        &mut self,
+        workspace: Option<WorkspaceId>,
+        spec: TerminalSpec,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        let request = Request::SessionCreate(SessionCreate {
+            workspace_id: workspace,
+            spec: SessionSpec::Terminal(spec),
         });
         self.run(request, cx)
     }

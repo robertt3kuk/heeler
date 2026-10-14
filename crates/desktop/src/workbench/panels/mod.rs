@@ -2,6 +2,8 @@
 //! namespace `panels.<id>`; the layout decides where it lives.
 
 mod common;
+mod history;
+mod history_model;
 mod inspector;
 mod overview;
 mod sessions;
@@ -17,7 +19,13 @@ use gpui::{
 };
 use std::rc::Rc;
 
-pub use common::{kind_icon, tone_color};
+pub use common::{age_label, kind_icon, tone_color};
+pub use history::{Confirm as HistoryConfirm, HistoryPanel};
+pub use history_model::{
+    DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HeelerTarget, HistoryResume,
+    PICKER_LIMIT as HISTORY_PICKER_LIMIT, Snippet, hit_title, parse_snippet, shell_join,
+    short_path, source_icon, source_label,
+};
 pub use inspector::{BlockRow, InspectorPanel};
 pub use overview::OverviewPanel;
 pub use sessions::{DraggedWorkspace, SessionsPanel};
@@ -66,7 +74,7 @@ impl Render for PlaceholderPanel {
     }
 }
 
-/// `sessions`, `inspector`, `overview`, `notifications`.
+/// `sessions`, `history`, `inspector`, `overview`, `notifications`.
 pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
     registry.register(PanelSpec {
@@ -77,6 +85,16 @@ pub fn builtin_panels() -> PanelRegistry {
         factory: Rc::new(|env, _window, cx| {
             let env = env.clone();
             AnyView::from(cx.new(|cx| SessionsPanel::new(env, cx)))
+        }),
+    });
+    registry.register(PanelSpec {
+        id: "history".into(),
+        title: "History".into(),
+        icon: "⌕".into(),
+        default_dock: DockPosition::Left,
+        factory: Rc::new(|env, _window, cx| {
+            let env = env.clone();
+            AnyView::from(cx.new(|cx| HistoryPanel::new(env, cx)))
         }),
     });
     registry.register(PanelSpec {

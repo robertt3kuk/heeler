@@ -37,7 +37,7 @@ flowchart TB
   PANE --> IT[Items: Terminal, Chat, Diff, any Panel opened as a tab]
 ```
 
-- **Panel**: a registered component with an id, title, icon, default dock, and a typed settings section. Panels: `sessions`, `inspector`, `overview`, `notifications`, later `tasks`, `worktrees`, `providers`, `changes`.
+- **Panel**: a registered component with an id, title, icon, default dock, and a typed settings section. Panels: `sessions`, `history`, `inspector`, `overview`, `notifications`, later `tasks`, `worktrees`, `providers`, `changes`.
 - **Dock**: left, right, bottom. A dock hosts a stack of panels (tabs inside the dock). Docks resize, collapse, and can be emptied.
 - **Center**: a binary split tree of panes; each pane has its own tab strip. Items are session views (terminal/chat), diffs, or any panel opened as a tab.
 - **Status bar**: an ordered list of status items (`connection`, `sessions`, `attention`, `density`, `theme`, `palette_hint`, …) left and right; each is configurable.
@@ -157,15 +157,15 @@ flowchart TB
 </svg>
 ```
 
-Left dock: `sessions` panel (vibrancy). Center: two-column split; right column split again (chat over terminal). Right dock: `inspector` panel. Status bar: `connection`, `sessions`, `attention` | `density`, `theme`, `palette_hint`.
+Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: two-column split; right column split again (chat over terminal). Right dock: `inspector` panel. Status bar: `connection`, `sessions`, `attention` | `density`, `theme`, `palette_hint`.
 
 ### Presets shipped
 
 | Preset | Left dock | Center | Right dock | Bottom dock | Use |
 |---|---|---|---|---|---|
-| `default` | sessions | pane tree | inspector | hidden | daily work |
+| `default` | sessions, history | pane tree | inspector | hidden | daily work |
 | `focus` | hidden | pane tree, zoomed active pane | hidden | hidden | deep terminal work (layout C) |
-| `overview` | sessions | `overview` panel as the only center item | inspector | hidden | many agents at once (layout B) |
+| `overview` | sessions, history | `overview` panel as the only center item | inspector | hidden | many agents at once (layout B) |
 
 ## Session pane header
 
@@ -266,6 +266,13 @@ hide_empty = true              # hide workspaces without sessions
 hide_sleeping = false          # hide workspaces without a live session
 hide_cli_created = false       # hide workspaces the CLI or an agent created
 always_show_active = true      # the workspace you are in stays listed whatever the filters say
+
+[history]
+sources = []                   # default source chips: heeler | claude | codex | omp (empty = all)
+roles = []                     # default role chips: user | assistant | tool | command | output
+range = "all"                  # 24h | 7d | 30d | all
+project = "all"                # workspace | all
+show_snippets = true
 ```
 
 ## Projects and workspaces (M12-B)
@@ -281,6 +288,17 @@ The daemon owns workspaces (protocol 0.6: kind, pin, order, activity, session co
 - **One layout per workspace** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the workspace you are in; switching parks them and brings the other one back exactly. A workspace seen for the first time starts with a single pane under your dock arrangement. Opening a session of another workspace (sidebar, ⌘J, attention, a restored tab) switches first. Terminals of parked workspaces are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the workspace of its first session (else Home); a workspace that vanishes hands the window to Home and its layout is dropped.
 - **Settings**: the first root of the active workspace layers `<root>/.heeler/settings.toml` over the user settings (hot-reloaded, also while it stays active), whether or not a session has focus. New sessions (⌘T, splits of a pane without a session) start in the active workspace, else in Home.
 - **Status bar**: the `workspace` item shows the active workspace; click opens ⌘J.
+
+## History panel (M17-B)
+
+The `history` panel searches the opt-in session history index (`docs/history-index.md`, protocol 0.8 `history.*`): Heeler terminal blocks and the transcripts of Claude Code, Codex and OMP. It lives in the left dock as a tab next to Sessions in every built-in preset and moves like any panel; ⌘K → "Panel: Open History" reveals it.
+
+- **Disabled** (`history.status.enabled = false`, the default): the panel says what turning indexing on reads (the four sources and their default folders), that nothing leaves the machine and that Clear deletes the index, and offers **Enable indexing** (`history.set_enabled`) and a link to the `history` settings. No search is sent while indexing is off.
+- **Search**: a field (debounced 150 ms, `history.search`, 50 sessions) under which filter chips narrow the same search — source (Heeler / Claude / Codex / OMP), role (user · assistant · tool · command · output), date (24h / 7d / 30d / all), project (this workspace = the first folder of the active workspace · all). Chips are toggles; none chosen means all. One row per session: source glyph, title, age, `source · role · folder · N hits`, and the best snippet with the matching words **emphasised** (the index's `«…»` markers are parsed, never drawn). ↑ ↓ select a row, ↩ runs its main action.
+- **Row actions**: **Resume** opens a new terminal session running the hit's `resume_argv` (greyed with the reason when the index has none: Heeler records, ids the resume rules refuse). It starts in the active workspace when one of its folders holds the hit's directory, otherwise `workspace.open` finds or creates the workspace that contains it and the window switches there (Home is a catch-all and only counts for its own folder). A directory that no longer exists falls back to the active workspace's first folder, and a notice says so. **Copy command** puts the shell-quoted resume line on the clipboard. **Open block** / **Open session** (Heeler hits): shows the terminal session and scrolls it to the block (found by its start time) while it is still there. Transcript files are not revealed in Finder: a hit does not carry its path (and no block id) yet.
+- **Footer**: rows, database size, unreadable lines, per-source last indexed time, **Clear…** and **Rebuild…** (both ask first; Clear deletes `index.sqlite`, Heeler's own records cannot come back). While the index fills (after Enable, Rebuild, Clear, or when the panel opens on an empty index) the panel reads the status twice a second and searches again when the row count changes, until it stays put for 2 s (10 s while empty, 60 s at most).
+- **⌘K**: "History: Search History…" reveals the panel and focuses its field. **⌘J**: a query that starts with `?` searches the history inline (top 8 sessions, same filter defaults); ↩ resumes the hit when it can be resumed, else shows it in the panel with the field filled in and the row selected.
+- **Settings** (`history`, desktop side only; whether indexing runs and where the transcripts are belongs to `daemon.toml`): `sources` / `roles` (default chips, empty = all), `range` (`24h` | `7d` | `30d` | `all`), `project` (`workspace` | `all`), `show_snippets`.
 
 ## Terminal blocks (M10-C)
 
@@ -332,7 +350,7 @@ flowchart TD
 | Close tab (detach) / stop session | ⌘W / ⌘⇧W |
 | Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘⌥J |
 | Open project (recent projects, Open Folder…) | ⌘O |
-| Jump to any workspace or session, hidden ones included | ⌘J |
+| Jump to any workspace or session, hidden ones included; `?` + words searches the session history | ⌘J |
 | Overview | ⌘⇧O |
 | Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ |
 | Select / copy the current block's output | ⌘⇧A / ⌘⇧C |
