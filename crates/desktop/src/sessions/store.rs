@@ -9,12 +9,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Entity, Task, WeakEntity};
+use gpui::{AppContext as _, Context, Entity, Task, WeakEntity};
 use heeler_client::{Connection, ConnectionState, Notice, StoreState};
 use heeler_core::{SessionId, TerminalId, WorkspaceId};
 use heeler_protocol::messages::{
-    Request, SessionCreate, SessionInfo, SessionRef, SessionRename, SessionResult, SessionSpec,
-    TerminalSpec, WorkspaceInfo,
+    RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
+    SessionResult, SessionSpec, TerminalSpec, WorkspaceInfo, WorkspaceKind, WorkspaceMove,
+    WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
+    WorkspaceRoot,
 };
 use heeler_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
@@ -34,6 +36,8 @@ pub struct SessionsStore {
     /// The session that had focus most recently; the inspector keeps showing it while a dock or
     /// panel has focus (clicking inside the inspector must not empty it).
     last_focused: Option<SessionId>,
+    /// The workspace the workbench shows (its layout, settings and new sessions).
+    active_workspace: Option<WorkspaceId>,
     terminals: HashMap<SessionId, WeakEntity<TerminalSession>>,
     /// Sessions this desktop created or changed whose events have not reached `state` yet.
     recent: HashMap<SessionId, SessionInfo>,
@@ -100,6 +104,7 @@ impl SessionsStore {
             attention: AttentionTracker::new(),
             focused: None,
             last_focused: None,
+            active_workspace: None,
             terminals: HashMap::new(),
             recent: HashMap::new(),
             colors: None,
@@ -221,6 +226,46 @@ impl SessionsStore {
 
     pub fn workspace(&self, id: WorkspaceId) -> Option<&WorkspaceInfo> {
         self.state.workspaces.iter().find(|w| w.id == id)
+    }
+
+    /// The Home workspace (`kind == home`); the daemon keeps exactly one.
+    pub fn home_workspace(&self) -> Option<&WorkspaceInfo> {
+        self.state
+            .workspaces
+            .iter()
+            .find(|w| w.kind == WorkspaceKind::Home)
+    }
+
+    /// The workspace the workbench shows, when the daemon knows it.
+    pub fn active_workspace(&self) -> Option<&WorkspaceInfo> {
+        self.active_workspace.and_then(|id| self.workspace(id))
+    }
+
+    /// The id of the workspace the workbench shows, known or not.
+    pub fn active_workspace_id(&self) -> Option<WorkspaceId> {
+        self.active_workspace
+    }
+
+    /// Tells the panels which workspace the workbench shows.
+    pub fn set_active_workspace(&mut self, workspace: Option<WorkspaceId>, cx: &mut Context<Self>) {
+        if self.active_workspace != workspace {
+            self.active_workspace = workspace;
+            cx.notify();
+        }
+    }
+
+    /// How many sessions of each workspace need the user.
+    pub fn needs_you_by_workspace(&self) -> HashMap<WorkspaceId, usize> {
+        let mut counts = HashMap::new();
+        for session in self
+            .state
+            .sessions
+            .iter()
+            .filter(|s| self.presentation(s).needs_you)
+        {
+            *counts.entry(session.workspace_id).or_insert(0) += 1;
+        }
+        counts
     }
 
     pub fn session_of(&self, terminal: TerminalId) -> Option<SessionId> {
@@ -434,5 +479,129 @@ impl SessionsStore {
             .ok();
             Ok(info)
         })
+    }
+
+    // ---- workspace commands ----------------------------------------------------------------
+
+    /// One request on the connection, its answer decoded as `T` and mapped by `done`. The store
+    /// itself follows through the events the daemon publishes for the change.
+    fn call<T, R>(
+        &self,
+        request: Request,
+        done: impl FnOnce(T) -> R + Send + 'static,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<R, String>>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+        R: Send + 'static,
+    {
+        let connection = self.connection.clone();
+        cx.background_spawn(async move {
+            connection
+                .call::<T>(request)
+                .await
+                .map(done)
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// `workspace.open`: the workspace containing `path`, created when there is none.
+    pub fn open_workspace(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorkspaceOpened, String>> {
+        let request = Request::WorkspaceOpen(WorkspaceOpen {
+            path,
+            created_by: None,
+        });
+        self.call(request, |opened: WorkspaceOpened| opened, cx)
+    }
+
+    /// `workspace.recent`: the open and remembered projects, newest first.
+    pub fn recent_projects(
+        &mut self,
+        limit: u32,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<RecentProject>, String>> {
+        let request = Request::WorkspaceRecent(WorkspaceRecent { limit: Some(limit) });
+        self.call(request, |recent: RecentProjects| recent.projects, cx)
+    }
+
+    /// `workspace.move`: `workspace` right before `before`, or last.
+    pub fn move_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        before: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceMove(WorkspaceMove {
+            workspace_id: workspace,
+            before,
+        });
+        self.call(request, |_: serde_json::Value| (), cx)
+    }
+
+    pub fn pin_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspacePin(WorkspacePin {
+            workspace_id: workspace,
+            pinned,
+        });
+        self.call(request, |_: WorkspaceInfo| (), cx)
+    }
+
+    pub fn rename_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceRename(WorkspaceRename {
+            workspace_id: workspace,
+            name,
+        });
+        self.call(request, |_: WorkspaceInfo| (), cx)
+    }
+
+    pub fn add_workspace_root(
+        &mut self,
+        workspace: WorkspaceId,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceAddRoot(WorkspaceRoot {
+            workspace_id: workspace,
+            path,
+        });
+        self.call(request, |_: WorkspaceInfo| (), cx)
+    }
+
+    pub fn remove_workspace_root(
+        &mut self,
+        workspace: WorkspaceId,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceRemoveRoot(WorkspaceRoot {
+            workspace_id: workspace,
+            path,
+        });
+        self.call(request, |_: WorkspaceInfo| (), cx)
+    }
+
+    pub fn close_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceClose(WorkspaceRef {
+            workspace_id: workspace,
+        });
+        self.call(request, |_: serde_json::Value| (), cx)
     }
 }

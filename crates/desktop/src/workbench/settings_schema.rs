@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 
 use crate::settings::{
     AppSettings, InspectorPanelSettings, LayoutSettings, OverviewPanelSettings,
-    SessionsPanelSettings, TerminalSettings,
+    SessionsPanelSettings, TerminalSettings, WorkspacesSettings,
 };
 
 /// How a field is edited.
@@ -242,6 +242,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<SessionsPanelSettings>(),
         CatalogEntry::of::<InspectorPanelSettings>(),
         CatalogEntry::of::<OverviewPanelSettings>(),
+        CatalogEntry::of::<WorkspacesSettings>(),
     ]
 }
 
@@ -391,7 +392,7 @@ mod tests {
                 .map(|e| e.namespace)
                 .collect()
         };
-        assert_eq!(names("").len(), 7);
+        assert_eq!(names("").len(), 8);
         assert_eq!(names("panels").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);

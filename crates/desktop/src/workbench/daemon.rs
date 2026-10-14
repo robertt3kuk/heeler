@@ -71,8 +71,8 @@ pub(crate) struct DaemonControl {
     fetch: Option<Task<()>>,
     /// `heelerd.log`, as `Open Logs` reveals it and the popover shows it.
     pub log_path: Option<PathBuf>,
-    /// Reveals a file in Finder.
-    reveal: RevealHandler,
+    /// Reveals a file in Finder (also for workspace folders).
+    pub reveal: RevealHandler,
 }
 
 impl DaemonControl {
@@ -408,7 +408,8 @@ impl Workbench {
         self.daemon.log_path = Some(path);
     }
 
-    /// How `Open Logs` reveals a file (default: Finder through the platform).
+    /// How `Open Logs` and "Reveal in Finder" reveal a path (default: Finder through the
+    /// platform).
     pub fn set_reveal_handler(&mut self, reveal: impl Fn(&Path, &mut App) + 'static) {
         self.daemon.reveal = Rc::new(reveal);
     }

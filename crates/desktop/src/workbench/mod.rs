@@ -15,6 +15,7 @@ mod settings_sheet;
 pub mod style;
 mod terminals;
 mod view;
+mod workspaces;
 
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
@@ -25,3 +26,4 @@ pub use terminals::session_of_item;
 pub use view::{
     DragPreview, DraggedItem, Region, SAVE_DEBOUNCE, Workbench, WorkbenchOptions, preset_label,
 };
+pub use workspaces::{PickerEntry, PickerKind, PickerState};

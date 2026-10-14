@@ -16,6 +16,7 @@ use super::registry::{PanelEnv, PanelRegistry, StatusItemRegistry};
 use super::settings_sheet::SettingsSheet;
 use super::style::{TerminalStyle, UiStyle};
 use super::terminals::TerminalItem;
+use super::workspaces::PickerState;
 use crate::sessions::{SessionsStore, TerminalSession};
 use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
 use crate::theme::{Density, DensityExt as _, Theme};
@@ -89,6 +90,8 @@ pub enum Region {
     Tab(PaneId, usize),
     /// Panel tab `index` of a dock.
     DockTab(DockPosition, usize),
+    /// A workspace row of the sessions panel.
+    WorkspaceRow(heeler_core::WorkspaceId),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -146,6 +149,7 @@ pub(crate) type MenuAction = Rc<dyn Fn(&mut Workbench, &mut Window, &mut Context
 pub(crate) struct MenuEntry {
     pub label: SharedString,
     pub checked: bool,
+    pub disabled: bool,
     pub run: MenuAction,
 }
 
@@ -189,6 +193,12 @@ pub struct Workbench {
     pub(crate) rendered_terminals: std::collections::HashSet<(PaneId, SessionId)>,
     pub(crate) pruned: Vec<Entity<heeler_terminal_view::TerminalView>>,
     pub(crate) workspace_root: Option<PathBuf>,
+    /// A workspace this window just opened whose events have not reached the store yet; it is
+    /// shown anyway instead of falling back to Home.
+    pub(crate) pending_workspace: Option<heeler_core::WorkspaceId>,
+    /// The ⌘O project picker or ⌘J jump palette.
+    pub(crate) picker: Option<PickerState>,
+    pub(crate) picker_focus: FocusHandle,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) palette_focus: FocusHandle,
     pub(crate) menu_focus: FocusHandle,
@@ -277,14 +287,17 @@ impl Workbench {
         sessions.update(cx, |store, cx| {
             store.set_terminal_colors(DefaultColors::from(&terminal_style.palette), cx);
         });
+        let regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>> = Rc::default();
         let env = PanelEnv {
             sessions: sessions.clone(),
             settings: settings.clone(),
+            regions: regions.clone(),
         };
 
         let commands = Rc::new(actions::commands(&presets, &options.panels));
         let focus_handle = cx.focus_handle();
         let palette_focus = cx.focus_handle();
+        let picker_focus = cx.focus_handle();
         let menu_focus = cx.focus_handle();
         let modal_focus = cx.focus_handle();
         let sheet_focus = cx.focus_handle();
@@ -366,8 +379,11 @@ impl Workbench {
             rendered_terminals: std::collections::HashSet::new(),
             pruned: Vec::new(),
             workspace_root: None,
+            pending_workspace: None,
+            picker: None,
             focus_handle,
             palette_focus,
+            picker_focus,
             menu_focus,
             modal_focus,
             sheet_focus,
@@ -381,7 +397,7 @@ impl Workbench {
             panel_views: HashMap::new(),
             notice: None,
             last_title: String::new(),
-            regions: Rc::default(),
+            regions,
             state_path: options.state_path,
             save_task: None,
             _watch: watch,
@@ -738,7 +754,7 @@ impl Workbench {
     }
 
     pub(crate) fn reset_layout(&mut self, cx: &mut Context<Self>) {
-        self.mutate(cx, |s| *s = WorkbenchState::default());
+        self.mutate(cx, |s| s.reset_layout());
     }
 
     /// Drop a dragged tab/panel on a target.
@@ -777,6 +793,7 @@ impl Workbench {
         state.refilter(self.commands.iter().map(|c| c.title.as_ref()));
         self.palette = Some(state);
         self.context_menu = None;
+        self.picker = None;
         window.focus(&self.palette_focus, cx);
         cx.notify();
     }
@@ -887,12 +904,27 @@ impl Workbench {
         })
     }
 
-    /// Close the context menu and run its `index`-th entry.
+    /// Labels of the open context menu's entries that are greyed out.
+    pub fn context_menu_disabled(&self) -> Vec<SharedString> {
+        self.context_menu
+            .as_ref()
+            .map(|m| {
+                m.entries
+                    .iter()
+                    .filter(|e| e.disabled)
+                    .map(|e| e.label.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Close the context menu and run its `index`-th entry (a greyed-out one only closes it).
     pub fn run_menu_entry(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let run = self
             .context_menu
             .as_ref()
             .and_then(|m| m.entries.get(index))
+            .filter(|e| !e.disabled)
             .map(|e| Rc::clone(&e.run));
         self.close_menu(window, cx);
         if let Some(run) = run {
@@ -914,7 +946,18 @@ impl Workbench {
         MenuEntry {
             label: label.into(),
             checked: false,
+            disabled: false,
             run: Rc::new(run),
+        }
+    }
+
+    /// A greyed-out entry that shows why it does nothing.
+    pub(crate) fn disabled_entry(label: impl Into<SharedString>) -> MenuEntry {
+        MenuEntry {
+            label: label.into(),
+            checked: false,
+            disabled: true,
+            run: Rc::new(|_, _, _| {}),
         }
     }
 

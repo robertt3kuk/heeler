@@ -101,6 +101,16 @@ pub fn format_utc(ms: u64) -> String {
 /// Panel header: uppercase title on the left, the ⚙ that opens the panel's settings on the
 /// right.
 pub fn panel_header(title: &str, namespace: &'static str, cx: &App) -> AnyElement {
+    panel_header_with(title, namespace, Vec::new(), cx)
+}
+
+/// [`panel_header`] with `extra` controls between the title and the ⚙.
+pub fn panel_header_with(
+    title: &str,
+    namespace: &'static str,
+    extra: Vec<AnyElement>,
+    cx: &App,
+) -> AnyElement {
     let style = UiStyle::get(cx);
     let tokens = style.density.ui();
     let hover = style.theme.hover;
@@ -120,17 +130,27 @@ pub fn panel_header(title: &str, namespace: &'static str, cx: &App) -> AnyElemen
         )
         .child(
             div()
-                .id(SharedString::from(format!("gear-{namespace}")))
-                .px(px(tokens.spacing))
-                .rounded(px(3.0))
-                .cursor_pointer()
-                .text_color(style.theme.muted)
-                .hover(move |s| s.bg(hover))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(OpenSettingsFor(namespace.to_owned())), cx);
-                })
-                .child("⚙"),
+                .flex()
+                .items_center()
+                .gap(px(tokens.spacing))
+                .children(extra)
+                .child(
+                    div()
+                        .id(SharedString::from(format!("gear-{namespace}")))
+                        .px(px(tokens.spacing))
+                        .rounded(px(3.0))
+                        .cursor_pointer()
+                        .text_color(style.theme.muted)
+                        .hover(move |s| s.bg(hover))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(OpenSettingsFor(namespace.to_owned())),
+                                cx,
+                            );
+                        })
+                        .child("⚙"),
+                ),
         )
         .into_any_element()
 }

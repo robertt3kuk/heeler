@@ -1,4 +1,4 @@
-//! Status bar items: `connection`, `sessions`, `attention`, `density`, `theme`, `palette_hint`.
+//! Status bar items: `connection`, `workspace`, `sessions`, `attention`, `density`, `theme`, `palette_hint`.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -10,7 +10,9 @@ use gpui::{
 use heeler_client::ConnectionState;
 
 use crate::theme::DensityExt as _;
-use crate::workbench::actions::{JumpToNextAttention, ToggleDensity, TogglePalette, daemon};
+use crate::workbench::actions::{
+    JumpToNextAttention, OpenJump, ToggleDensity, TogglePalette, daemon,
+};
 use crate::workbench::registry::{StatusContext, StatusItemRegistry, StatusItemSpec, StatusSide};
 use crate::workbench::style::TextTooltip;
 
@@ -61,7 +63,7 @@ fn tooltip(text: String) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> AnyVie
     }
 }
 
-/// The six built-in status items.
+/// The seven built-in status items.
 pub fn builtin_status_items() -> StatusItemRegistry {
     let mut registry = StatusItemRegistry::new();
     registry.register(StatusItemSpec {
@@ -88,6 +90,23 @@ pub fn builtin_status_items() -> StatusItemRegistry {
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(daemon::Status), cx))
                 .child(div().size(px(7.0)).rounded_full().bg(color))
                 .child(SharedString::from(text))
+                .into_any_element()
+        }),
+    });
+    registry.register(StatusItemSpec {
+        id: "workspace",
+        default_side: StatusSide::Left,
+        render: Rc::new(|ctx: &StatusContext<'_>| {
+            let name = ctx
+                .data
+                .workspace
+                .clone()
+                .unwrap_or_else(|| "no workspace".to_owned());
+            clickable("status-workspace", ctx)
+                .text_color(ctx.theme.fg)
+                .tooltip(tooltip("Active workspace · click to jump".to_owned()))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenJump), cx))
+                .child(SharedString::from(format!("▣ {name}")))
                 .into_any_element()
         }),
     });

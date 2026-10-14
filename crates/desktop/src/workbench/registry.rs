@@ -1,18 +1,23 @@
 //! Panel and status-item registries (ADR 0010: every UI feature is a registered component).
 
 use super::model::{DockPosition, PanelId};
+use super::view::Region;
 use crate::sessions::SessionsStore;
 use crate::theme::{Density, Theme};
-use gpui::{AnyElement, AnyView, App, Entity, SharedString, Window};
+use gpui::{AnyElement, AnyView, App, Bounds, Entity, Pixels, SharedString, Window};
 use heeler_client::ConnectionState;
 use heeler_settings::SettingsStore;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-/// What panels need from the app: the live sessions and the settings.
+/// What panels need from the app: the live sessions, the settings, and where to record the
+/// painted bounds of their interactive rows.
 #[derive(Clone)]
 pub struct PanelEnv {
     pub sessions: Entity<SessionsStore>,
     pub settings: SettingsStore,
+    pub regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
 }
 
 impl std::fmt::Debug for PanelEnv {
@@ -107,6 +112,8 @@ pub struct StatusData {
     /// Epoch of the daemon the state describes, for the connection tooltip.
     pub epoch: Option<String>,
     pub sessions: usize,
+    /// Name of the workspace the window shows.
+    pub workspace: Option<String>,
     /// Sessions that need the user.
     pub needs_you: usize,
     /// Name of the terminal theme in effect.
@@ -168,7 +175,7 @@ pub struct StatusBarLayout {
 impl Default for StatusBarLayout {
     fn default() -> Self {
         Self {
-            left: ["connection", "sessions", "attention"]
+            left: ["connection", "workspace", "sessions", "attention"]
                 .map(str::to_owned)
                 .to_vec(),
             right: ["density", "theme", "palette_hint"]

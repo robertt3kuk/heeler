@@ -423,6 +423,83 @@ impl Setting for OverviewPanelSettings {
     const NAMESPACE: &'static str = "panels.overview";
 }
 
+/// How the sidebar orders workspaces (pinned ones always come first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSort {
+    /// The order the user dragged them into; Home leads the unpinned ones.
+    #[default]
+    Manual,
+    /// Most recent session activity first.
+    Recent,
+    /// Workspaces with sessions that need you first, then by activity.
+    Attention,
+    /// Alphabetical.
+    Name,
+}
+
+impl WorkspaceSort {
+    pub const ALL: [WorkspaceSort; 4] = [
+        WorkspaceSort::Manual,
+        WorkspaceSort::Recent,
+        WorkspaceSort::Attention,
+        WorkspaceSort::Name,
+    ];
+
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            WorkspaceSort::Manual => "manual",
+            WorkspaceSort::Recent => "recent",
+            WorkspaceSort::Attention => "attention",
+            WorkspaceSort::Name => "name",
+        }
+    }
+
+    /// The mode as the sort menu shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            WorkspaceSort::Manual => "Manual",
+            WorkspaceSort::Recent => "Recent activity",
+            WorkspaceSort::Attention => "Attention first",
+            WorkspaceSort::Name => "Name",
+        }
+    }
+}
+
+/// The `workspaces` namespace: how the sidebar sorts and filters workspaces. Pinned workspaces
+/// and Home are never hidden by the filters; hidden workspaces stay reachable through ⌘J.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct WorkspacesSettings {
+    /// `manual`, `recent`, `attention` or `name`.
+    pub sort: WorkspaceSort,
+    /// Hide workspaces without any session.
+    pub hide_empty: bool,
+    /// Hide workspaces without a live session.
+    pub hide_sleeping: bool,
+    /// Hide workspaces the `heeler` CLI (or an agent) created.
+    pub hide_cli_created: bool,
+    /// Keep the workspace you are in visible whatever the filters say.
+    pub always_show_active: bool,
+}
+
+impl Default for WorkspacesSettings {
+    fn default() -> Self {
+        Self {
+            sort: WorkspaceSort::Manual,
+            hide_empty: true,
+            hide_sleeping: false,
+            hide_cli_created: false,
+            always_show_active: true,
+        }
+    }
+}
+
+impl Setting for WorkspacesSettings {
+    const NAMESPACE: &'static str = "workspaces";
+}
+
 /// What quitting the app does with the daemon while sessions are live (design.md § Daemon
 /// lifecycle). With no live session the daemon always stops with the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -482,6 +559,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<SessionsPanelSettings>();
     store.register::<InspectorPanelSettings>();
     store.register::<OverviewPanelSettings>();
+    store.register::<WorkspacesSettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -593,6 +671,7 @@ mod tests {
             "panels.sessions",
             "panels.inspector",
             "panels.overview",
+            "workspaces",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

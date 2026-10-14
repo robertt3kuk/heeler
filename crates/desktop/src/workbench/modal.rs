@@ -128,6 +128,7 @@ impl Workbench {
 
     pub(crate) fn open_modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
+        self.picker = None;
         self.context_menu = None;
         self.modal = Some(modal);
         window.focus(&self.modal_focus, cx);

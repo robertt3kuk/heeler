@@ -9,6 +9,7 @@ mod persist;
 mod preset;
 mod tree;
 mod types;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -21,9 +22,10 @@ pub use types::{
     Axis, Direction, Dock, DockPosition, Docks, Edge, FocusTarget, ItemRef, ModelError, Pane,
     PaneId, PaneTree, PanelId, Rect,
 };
+pub use workspace::WorkspaceLayout;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// Everything the workbench persists and presets rewrite.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,9 +44,17 @@ pub struct WorkbenchState {
     /// overview off restores it exactly; applying a preset that keeps the center discards it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stashed: Option<Box<SavedLayout>>,
-    /// Next pane id to hand out; ids are never reused within a state.
+    /// Next pane id to hand out; ids are never reused within a state, nor across the layouts of
+    /// different workspaces.
     #[serde(default)]
     next_pane: u64,
+    /// The workspace (daemon workspace id) the layout above belongs to; `None` until the
+    /// desktop knows which workspace it shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace: Option<String>,
+    /// The layouts of the workspaces that are not shown right now, by workspace id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parked: BTreeMap<String, WorkspaceLayout>,
 }
 
 /// A [`WorkbenchState`] minus its own stash and pane-id counter.
@@ -82,6 +92,8 @@ impl SavedLayout {
             previous_preset: self.previous_preset,
             stashed: None,
             next_pane,
+            active_workspace: None,
+            parked: BTreeMap::new(),
         }
     }
 }
@@ -103,6 +115,8 @@ impl Default for WorkbenchState {
             previous_preset: None,
             stashed: None,
             next_pane: 2,
+            active_workspace: None,
+            parked: BTreeMap::new(),
         };
         state.normalize();
         state
@@ -122,6 +136,8 @@ impl WorkbenchState {
             previous_preset: None,
             stashed: None,
             next_pane: 0,
+            active_workspace: None,
+            parked: BTreeMap::new(),
         };
         state.normalize();
         if let Some(first) = state.center.first_pane() {
@@ -282,6 +298,7 @@ impl WorkbenchState {
             self.next_pane = self.next_pane.max(inner.next_pane);
             self.stashed = Some(Box::new(SavedLayout::of(&inner)));
         }
+        self.normalize_parked();
 
         if let Some(zoomed) = self.zoomed
             && self.center.pane(zoomed).is_none()

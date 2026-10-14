@@ -219,6 +219,8 @@ impl WorkbenchState {
         if let Some(first) = restored.center.first_pane_mut() {
             first.items.extend(fresh);
         }
+        restored.active_workspace = self.active_workspace.take();
+        restored.parked = std::mem::take(&mut self.parked);
         restored.normalize();
         *self = restored;
     }

@@ -7,7 +7,7 @@
 
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::registry::PanelRegistry;
-use crate::settings::OnQuit;
+use crate::settings::{OnQuit, WorkspaceSort};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 use heeler_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
@@ -68,6 +68,18 @@ actions!(
         ApplyPresetNumber7,
         ApplyPresetNumber8,
         ApplyPresetNumber9,
+        OpenProject,
+        OpenFolder,
+        OpenJump,
+        GoHome,
+        PinActiveWorkspace,
+        RenameActiveWorkspace,
+        AddFolderToWorkspace,
+        CloseActiveWorkspace,
+        RevealWorkspace,
+        ToggleHideEmptyWorkspaces,
+        ToggleHideSleepingWorkspaces,
+        ToggleHideCliWorkspaces,
     ]
 );
 
@@ -148,6 +160,30 @@ data_actions! {
     SetOnQuit(OnQuit);
     /// Scroll the terminal of the session to a block and highlight it.
     JumpToBlock(BlockRef);
+    /// Show the workspace with this id (switching the center to its layout).
+    OpenWorkspace(String);
+    /// Show the context menu of a workspace row.
+    ShowWorkspaceMenu(WorkspaceMenuAt);
+    /// Show the menu of workspace sort modes at this position.
+    ShowSortMenu(gpui::Point<gpui::Pixels>);
+    /// Sort the sidebar's workspaces (`workspaces.sort`).
+    SetWorkspaceSort(WorkspaceSort);
+    /// A workspace row was dropped onto another one (manual reordering).
+    MoveWorkspaceOnto(WorkspaceDrop);
+}
+
+/// Where to open the context menu of a workspace.
+#[derive(Clone, PartialEq, Debug)]
+pub struct WorkspaceMenuAt {
+    pub workspace: String,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
+/// A dragged workspace row and the row it was dropped on (workspace ids).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct WorkspaceDrop {
+    pub dragged: String,
+    pub target: String,
 }
 
 /// A block of a session's terminal (`block` is the daemon's block id).
@@ -283,6 +319,46 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         ),
     ];
     out.extend([
+        command("Workspace: Open Project…", OpenProject),
+        command("Workspace: Open Folder…", OpenFolder),
+        command("Workspace: Jump to Workspace or Session…", OpenJump),
+        command("Workspace: Go to Home", GoHome),
+        command(
+            "Workspace: Pin / Unpin Active Workspace",
+            PinActiveWorkspace,
+        ),
+        command("Workspace: Rename Active Workspace…", RenameActiveWorkspace),
+        command(
+            "Workspace: Add Folder to Active Workspace…",
+            AddFolderToWorkspace,
+        ),
+        command("Workspace: Close Active Workspace", CloseActiveWorkspace),
+        command(
+            "Workspace: Reveal Active Workspace in Finder",
+            RevealWorkspace,
+        ),
+    ]);
+    out.extend(WorkspaceSort::ALL.map(|mode| {
+        command(
+            format!("Workspace: Sort — {}", mode.label()),
+            SetWorkspaceSort(mode),
+        )
+    }));
+    out.extend([
+        command(
+            "Workspace: Toggle Hide Empty Workspaces",
+            ToggleHideEmptyWorkspaces,
+        ),
+        command(
+            "Workspace: Toggle Hide Sleeping Workspaces",
+            ToggleHideSleepingWorkspaces,
+        ),
+        command(
+            "Workspace: Toggle Hide CLI-Created Workspaces",
+            ToggleHideCliWorkspaces,
+        ),
+    ]);
+    out.extend([
         command(
             "Block: Previous Prompt",
             heeler_terminal_view::JumpToPreviousPrompt,
@@ -396,7 +472,9 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<ToggleZoom>("cmd-shift-enter", None),
         bind::<ToggleLeftDock>("cmd-b", None),
         bind::<ToggleRightDock>("cmd-alt-b", None),
-        bind::<ToggleBottomDock>("cmd-j", None),
+        bind::<ToggleBottomDock>("cmd-alt-j", None),
+        bind::<OpenJump>("cmd-j", None),
+        bind::<OpenProject>("cmd-o", None),
         bind::<ToggleOverview>("cmd-shift-o", None),
         bind::<MinimizeWindow>("cmd-m", None),
         bind::<Quit>("cmd-q", None),
@@ -437,6 +515,12 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<modal::Cancel>("escape", Some("Modal")),
         bind::<sheet::Dismiss>("escape", Some("SettingsSheet")),
         bind::<palette::Dismiss>("escape", Some("DaemonPopover")),
+        bind::<palette::SelectNext>("down", Some("Picker")),
+        bind::<palette::SelectNext>("ctrl-n", Some("Picker")),
+        bind::<palette::SelectPrev>("up", Some("Picker")),
+        bind::<palette::SelectPrev>("ctrl-p", Some("Picker")),
+        bind::<palette::Confirm>("enter", Some("Picker")),
+        bind::<palette::Dismiss>("escape", Some("Picker")),
     ];
     let tabs: [&str; 9] = [
         ActivateTab1::name_for_type(),

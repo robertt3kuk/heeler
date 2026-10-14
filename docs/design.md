@@ -55,7 +55,7 @@ flowchart TB
 | Resize | drag splitter / dock edge | ⌃⌘←→↑↓ |
 | Focus neighbour | — | ⌘⌥←→↑↓ |
 | Zoom pane | double-click tab | ⌘⇧↩ |
-| Toggle docks | — | ⌘B left, ⌘⌥B right, ⌘J bottom |
+| Toggle docks | — | ⌘B left, ⌘⌥B right, ⌘⌥J bottom |
 | Switch preset / Overview | title bar menu | ⌘⇧O overview, ⌘⇧1…9 presets |
 | Save current layout as preset | title bar menu | ⌘K → "Save layout as preset…" |
 | Close tab (detach) | × on tab | ⌘W |
@@ -244,7 +244,7 @@ preset = "default"
 left   = { panels = ["sessions"],  size = 240, visible = true }
 right  = { panels = ["inspector"], size = 300, visible = true }
 bottom = { panels = [],            size = 200, visible = false }
-status_bar = { left = ["connection", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
+status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
 
 [panels.sessions]
 group_by = "workspace"         # workspace | state | none
@@ -259,7 +259,28 @@ reveal_on_approval = true
 card_size = "medium"           # small | medium | large
 preview = "live"               # live | static | off
 sort = "attention"             # attention | recent | name
+
+[workspaces]
+sort = "manual"                # manual | recent | attention | name
+hide_empty = true              # hide workspaces without sessions
+hide_sleeping = false          # hide workspaces without a live session
+hide_cli_created = false       # hide workspaces the CLI or an agent created
+always_show_active = true      # the workspace you are in stays listed whatever the filters say
 ```
+
+## Projects and workspaces (M12-B)
+
+The daemon owns workspaces (protocol 0.6: kind, pin, order, activity, session counts, recent projects); the desktop decides how to show them. The sidebar (`sessions` panel, titled "Workspaces") lists them with their sessions.
+
+- **Rows**: `▾ ⌂ ★ NAME  ·····  ● 2  3` — chevron folds the sessions, `⌂` marks Home, `★` a pin, `● n` sessions that need you, then the session count (`live/total` when they differ). Click shows the workspace; right-click opens its menu; the active one is tinted.
+- **Sort** (header button `⇅ Manual ▾`, ⌘K, `workspaces.sort`): `manual` (drag order; Home leads the unpinned ones) · `recent` (last activity) · `attention` (most sessions that need you, then activity) · `name`. Pinned workspaces come first in every mode under a `PINNED` label; ties keep the daemon's order.
+- **Drag** a row onto another to reorder (manual only): it takes that row's slot within its group (pinned or not); onto Home it goes first below Home; Home itself does not move. The desktop sends `workspace.move`; the daemon stores the order.
+- **Filters** (`workspaces.*`, the same header menu, ⌘K): hide empty / sleeping / CLI-created workspaces. Home, pinned workspaces and (`always_show_active`) the active one are never hidden, and a session that needs you stays visible in "Needs you" whatever the filters say. The filter box matches names and folders (any word order); a workspace that matches lists all its sessions. Hidden workspaces stay reachable through ⌘J.
+- **Menu**: Pin/Unpin, Rename…, Add Folder… (system folder panel → `workspace.add_root`), Remove Folder “x” (when there are several roots), Close (greyed with the reason while sessions are live and for Home; asks first, the project stays in ⌘O), Reveal in Finder. Home has one folder, set in `daemon.toml`.
+- **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the workspace. **⌘J** lists every workspace and every session; Enter shows it.
+- **One layout per workspace** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the workspace you are in; switching parks them and brings the other one back exactly. A workspace seen for the first time starts with a single pane under your dock arrangement. Opening a session of another workspace (sidebar, ⌘J, attention, a restored tab) switches first. Terminals of parked workspaces are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the workspace of its first session (else Home); a workspace that vanishes hands the window to Home and its layout is dropped.
+- **Settings**: the first root of the active workspace layers `<root>/.heeler/settings.toml` over the user settings (hot-reloaded, also while it stays active), whether or not a session has focus. New sessions (⌘T, splits of a pane without a session) start in the active workspace, else in Home.
+- **Status bar**: the `workspace` item shows the active workspace; click opens ⌘J.
 
 ## Terminal blocks (M10-C)
 
@@ -309,7 +330,9 @@ flowchart TD
 | Tabs 1–9 in pane | ⌘1…⌘9 |
 | Split right / down | ⌘D / ⌘⇧D |
 | Close tab (detach) / stop session | ⌘W / ⌘⇧W |
-| Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘J |
+| Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘⌥J |
+| Open project (recent projects, Open Folder…) | ⌘O |
+| Jump to any workspace or session, hidden ones included | ⌘J |
 | Overview | ⌘⇧O |
 | Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ |
 | Select / copy the current block's output | ⌘⇧A / ⌘⇧C |

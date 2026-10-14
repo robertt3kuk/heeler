@@ -10,6 +10,7 @@ use super::terminals::session_of_item;
 use super::view::{
     ContextMenu, DragPreview, DraggedItem, Region, Resizing, Workbench, preset_label, steps,
 };
+use super::workspaces::PickerKind;
 use crate::theme::{Density, DensityExt as _};
 use gpui::{
     Action, AnyElement, Bounds, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
@@ -78,6 +79,7 @@ impl Render for Workbench {
         self.rescue_orphaned_focus(window, cx);
         let edge_targets = self.render_hidden_dock_targets(cx);
         let palette = self.render_palette(window, cx);
+        let picker = self.render_picker(window, cx);
         let menu = self.render_context_menu(cx);
         let modal = self.render_modal(cx);
         let daemon_popover = self.render_daemon_popover(cx);
@@ -138,6 +140,7 @@ impl Render for Workbench {
         .children(daemon_popover)
         .children(edge_targets)
         .children(palette)
+        .children(picker)
         .children(menu)
         .children(sheet)
         .children(modal)
@@ -458,6 +461,7 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &palette::Dismiss, window, cx| {
             this.close_menu(window, cx);
             this.close_palette(window, cx);
+            this.close_picker(window, cx);
             this.close_daemon_popover(window, cx);
         }))
         .on_action(cx.listener(|this, _: &actions::Quit, window, cx| {
@@ -485,6 +489,110 @@ impl Workbench {
         .on_action(cx.listener(|this, a: &actions::SetOnQuit, _, cx| {
             this.set_on_quit(a.0, cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::OpenProject, window, cx| {
+            if this
+                .picker()
+                .is_some_and(|p| p.kind == PickerKind::Projects)
+            {
+                this.close_picker(window, cx);
+            } else {
+                this.open_project_picker(window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenFolder, window, cx| {
+            this.open_folder_dialog(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenJump, window, cx| {
+            if this.picker().is_some_and(|p| p.kind == PickerKind::Jump) {
+                this.close_picker(window, cx);
+            } else {
+                this.open_jump_palette(window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &actions::GoHome, window, cx| {
+            let home = this.sessions.read(cx).home_workspace().map(|w| w.id);
+            match home {
+                Some(home) => this.switch_workspace(home, window, cx),
+                None => this.set_notice("No Home workspace yet", cx),
+            }
+        }))
+        .on_action(cx.listener(|this, a: &actions::OpenWorkspace, window, cx| {
+            if let Ok(id) = a.0.parse() {
+                this.switch_workspace(id, window, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ShowWorkspaceMenu, window, cx| {
+                if let Ok(id) = a.0.workspace.parse() {
+                    this.show_workspace_menu(id, a.0.position, window, cx);
+                }
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::ShowSortMenu, window, cx| {
+            this.show_sort_menu(a.0, window, cx);
+        }))
+        .on_action(cx.listener(|this, a: &actions::SetWorkspaceSort, _, cx| {
+            this.set_workspace_sort(a.0, cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::MoveWorkspaceOnto, window, cx| {
+                if let (Ok(dragged), Ok(target)) = (a.0.dragged.parse(), a.0.target.parse()) {
+                    this.drop_workspace(dragged, target, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::PinActiveWorkspace, window, cx| {
+                if let Some(info) = this.active_workspace_info(cx) {
+                    this.pin_workspace(info.id, !info.pinned, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::RenameActiveWorkspace, window, cx| {
+                if let Some(id) = this.active_workspace() {
+                    this.rename_workspace(id, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::AddFolderToWorkspace, window, cx| {
+                match this.active_workspace_info(cx) {
+                    Some(info) if info.kind == heeler_protocol::messages::WorkspaceKind::Home => {
+                        this.set_notice("Home has one folder; change it in daemon.toml", cx);
+                    }
+                    Some(info) => this.add_workspace_folder(info.id, window, cx),
+                    None => {}
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::CloseActiveWorkspace, window, cx| {
+                if let Some(id) = this.active_workspace() {
+                    this.close_workspace(id, window, cx);
+                }
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::RevealWorkspace, _, cx| {
+            if let Some(id) = this.active_workspace() {
+                this.reveal_workspace(id, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ToggleHideEmptyWorkspaces, _, cx| {
+                this.toggle_workspace_filter("hide_empty", cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::ToggleHideSleepingWorkspaces, _, cx| {
+                this.toggle_workspace_filter("hide_sleeping", cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::ToggleHideCliWorkspaces, _, cx| {
+                this.toggle_workspace_filter("hide_cli_created", cx);
+            }),
+        )
     }
 
     // ---- title bar ---------------------------------------------------------------------------
@@ -1361,6 +1469,7 @@ impl Workbench {
                 connection_line: self.daemon_line(cx),
                 epoch: store.state().epoch.map(|e| e.to_string()),
                 sessions: store.sessions().len(),
+                workspace: store.active_workspace().map(|w| w.name.clone()),
                 needs_you: store.needs_you().len(),
                 terminal_theme: heeler_settings::themes::resolve(
                     &self.terminal_settings.theme,
@@ -1566,6 +1675,7 @@ impl Workbench {
             .into_iter()
             .enumerate()
             .map(|(i, entry)| {
+                let disabled = entry.disabled;
                 div()
                     .id(id(format!("menu-row-{i}")))
                     .flex()
@@ -1574,8 +1684,10 @@ impl Workbench {
                     .h(px(tokens.sidebar_row))
                     .px(px(tokens.spacing * 2.0))
                     .rounded(px(tokens.radius - 2.0))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
+                    .when(disabled, |s| s.text_color(theme.muted))
+                    .when(!disabled, |s| {
+                        s.cursor_pointer().hover(move |s| s.bg(hover))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_menu_entry(i, window, cx);
                     }))

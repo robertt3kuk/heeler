@@ -88,7 +88,7 @@ fn dock_toggles_zoom_and_density(cx: &mut TestAppContext) {
     assert!(state(&view, cx).docks.left.visible);
     cx.simulate_keystrokes("cmd-alt-b");
     assert!(!state(&view, cx).docks.right.visible);
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-alt-j");
     assert!(state(&view, cx).docks.bottom.visible);
 
     cx.dispatch_action(actions::SplitRight);

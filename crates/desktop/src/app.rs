@@ -1,6 +1,6 @@
 //! Application bootstrap: keymap, menus, window options, quit routing, and the `run` entry point.
 
-use crate::settings::OnQuit;
+use crate::settings::{OnQuit, WorkspaceSort};
 use crate::workbench::actions::{self, ApplyPreset, SetOnQuit, daemon};
 use crate::workbench::model::LayoutPreset;
 use crate::workbench::persistence;
@@ -69,7 +69,7 @@ pub fn init(cx: &mut App, presets: &[LayoutPreset]) {
     cx.set_menus(menus(presets, &DaemonMenu::default()));
 }
 
-/// App, Session, View, Daemon, and Window menus. Items dispatch the same named actions as the
+/// App, Session, Workspace, View, Daemon, and Window menus. Items dispatch the same named actions as the
 /// keymap and palette.
 pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
     let preset_items = presets.iter().map(|p| {
@@ -99,6 +99,26 @@ pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
             MenuItem::action("Copy Session ID", actions::CopySessionId),
             MenuItem::separator(),
             MenuItem::action("Jump to Next That Needs You", actions::JumpToNextAttention),
+        ]),
+        Menu::new("Workspace").items([
+            MenuItem::action("Open Project…", actions::OpenProject),
+            MenuItem::action("Open Folder…", actions::OpenFolder),
+            MenuItem::action("Jump to Workspace or Session…", actions::OpenJump),
+            MenuItem::action("Go to Home", actions::GoHome),
+            MenuItem::separator(),
+            MenuItem::action("Pin / Unpin", actions::PinActiveWorkspace),
+            MenuItem::action("Rename…", actions::RenameActiveWorkspace),
+            MenuItem::action("Add Folder…", actions::AddFolderToWorkspace),
+            MenuItem::action("Reveal in Finder", actions::RevealWorkspace),
+            MenuItem::action("Close Workspace", actions::CloseActiveWorkspace),
+            MenuItem::separator(),
+            MenuItem::submenu(
+                Menu::new("Sort").items(
+                    WorkspaceSort::ALL.map(|mode| {
+                        MenuItem::action(mode.label(), actions::SetWorkspaceSort(mode))
+                    }),
+                ),
+            ),
         ]),
         Menu::new("View").items([
             MenuItem::action("Toggle Left Dock", actions::ToggleLeftDock),

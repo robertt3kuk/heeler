@@ -307,6 +307,8 @@ impl Workbench {
         let item = ItemRef::Terminal {
             session: session.to_string(),
         };
+        // A session of another workspace brings that workspace's layout along.
+        self.show_workspace_of(session, cx);
         if let Some((pane, index)) = self.state.find_item(&item) {
             self.try_mutate(cx, |s| {
                 s.set_active_item(pane, index)?;
@@ -341,6 +343,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_workspace_of(session, cx);
         let pane = self.state.active_pane_id();
         let item = ItemRef::Terminal {
             session: session.to_string(),
@@ -362,16 +365,12 @@ impl Workbench {
         self.open_session(session, window, cx);
     }
 
-    /// Starts a terminal in the focused session's workspace (the default one otherwise), in the
-    /// workspace root or `$HOME`, and opens it.
+    /// Starts a terminal in the active workspace (Home when none is shown), in its first root
+    /// or `$HOME`, and opens it.
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (workspace, cwd) = {
             let store = self.sessions.read(cx);
-            let workspace = self
-                .focused_session()
-                .and_then(|s| store.session(s))
-                .and_then(|s| store.workspace(s.workspace_id))
-                .or_else(|| store.workspaces().first());
+            let workspace = self.target_workspace(store);
             let cwd = workspace
                 .and_then(|w| w.roots.first().cloned())
                 .or_else(std::env::home_dir);
@@ -398,8 +397,8 @@ impl Workbench {
     }
 
     /// Where a terminal started from `pane` begins: the pane's terminal session's current
-    /// directory (it follows OSC 7) in its workspace; for any other item the default
-    /// workspace's root, else `$HOME`.
+    /// directory (it follows OSC 7) in its workspace; for any other item the active
+    /// workspace's root (Home when none is shown), else `$HOME`.
     fn split_target(
         &self,
         pane: PaneId,
@@ -426,7 +425,7 @@ impl Workbench {
                 )
             }
             None => {
-                let workspace = store.workspaces().first();
+                let workspace = self.target_workspace(store);
                 (workspace.map(|w| w.id), home_or_root(workspace))
             }
         }
@@ -640,8 +639,8 @@ impl Workbench {
     // ---- attention & focus ------------------------------------------------------------------
 
     /// Tells the sessions store which session the user is looking at (a focused terminal tab in
-    /// an active window): that session's unread attention is read, and its workspace's settings
-    /// apply.
+    /// an active window): that session's unread attention is read. The workspace whose settings
+    /// apply is the active one (see `workspaces.rs`).
     pub(crate) fn sync_session_focus(&mut self, cx: &mut Context<Self>) {
         let focused = if self.window_active {
             self.focused_session()
@@ -654,23 +653,12 @@ impl Workbench {
                 store.mark_read(session, cx);
             }
         });
-        if let Some(session) = self.focused_session() {
-            let root = {
-                let store = self.sessions.read(cx);
-                store
-                    .session(session)
-                    .and_then(|s| store.workspace(s.workspace_id))
-                    .and_then(|w| w.roots.first().cloned())
-            };
-            if root != self.workspace_root {
-                self.workspace_root = root.clone();
-                self.settings.set_workspace_root(root);
-            }
-        }
+        self.sync_workspace(cx);
     }
 
     pub(crate) fn on_sessions_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.held.len();
+        self.resolve_active_workspace(cx);
         self.attach_open_items(cx);
         self.prune_collapsed(cx);
         self.sync_session_focus(cx);
@@ -682,7 +670,7 @@ impl Workbench {
         cx.notify();
     }
 
-    /// The workspace root whose settings currently apply, if any.
+    /// The root of the active workspace, whose `.heeler/settings.toml` currently applies.
     pub fn workspace_root(&self) -> Option<&PathBuf> {
         self.workspace_root.as_ref()
     }
