@@ -17,7 +17,7 @@ Architecture of the layout system: ADR 0010.
 1. **Attention first.** The user always sees who needs them (blocked, approval, done-unread) without hunting.
 2. **The terminal is sacred.** Chrome never steals keys from a focused terminal except the documented global shortcuts. Every chrome element can be hidden.
 3. **Nothing is fixed.** Placement, visibility, size, and per-component behavior come from layout + settings, not code paths.
-4. **Closing UI never kills work.** Closing a tab, pane, or window detaches. Stopping a session is an explicit, labelled action.
+4. **Closing UI never kills work silently.** Closing a tab, pane, or window detaches. Stopping a session is an explicit, labelled action. Quitting the app asks what to do with live sessions (see § Daemon lifecycle).
 5. **Native feel, calm surface.** System chrome, restrained color; color carries state, not decoration.
 
 ## Workbench model
@@ -220,6 +220,9 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 - Layout geometry the user drags (sizes, open tabs, split ratios) is **state**, saved in `desktop-state.json`; it becomes a **preset** in settings only when the user saves it.
 
 ```toml
+[app]
+on_quit = "ask"               # ask | keep_running | stop_daemon (asked only while sessions are live)
+
 [appearance]
 density = "compact"            # compact | comfortable
 chrome = "system"              # system | light | dark
@@ -255,6 +258,32 @@ card_size = "medium"           # small | medium | large
 preview = "live"               # live | static | off
 sort = "attention"             # attention | recent | name
 ```
+
+## Daemon lifecycle (until M6 launch agent)
+
+```mermaid
+flowchart TD
+  L[Launch Heeler] --> C{heelerd running?}
+  C -- yes --> A[Connect]
+  C -- no --> S[Start heelerd next to the app binary] --> A
+  Q[⌘Q / close last window] --> LV{live sessions?}
+  LV -- no --> X[Stop heelerd, quit]
+  LV -- yes --> P{app.on_quit}
+  P -- ask --> D[Dialog: Keep running · Stop sessions & daemon · Cancel, with Don't ask again]
+  P -- keep_running --> K[Quit, heelerd keeps sessions]
+  P -- stop_daemon --> X2[Stop sessions, stop heelerd, quit]
+  D --> K
+  D --> X2
+```
+
+- "Don't ask again" writes `app.on_quit`.
+- Closing the last window quits the app (same flow). Closing a tab or pane only detaches.
+- **Daemon controls** — the same set in three places: the `Daemon` menu (menu bar), a popover opened by clicking the `connection` status item, and ⌘K commands:
+  - status: connected/reconnecting, daemon version + protocol, pid, uptime, sessions (live / total), clients, socket path, log path;
+  - actions: Restart Daemon, Stop Daemon (both confirm when sessions are live: they stop; the app stays open and shows "daemon stopped" with a Start button), Start Daemon (when stopped), Open Logs;
+  - **working mode** selector bound to `app.on_quit`: *Ask on quit* · *Keep sessions running after quit* · *Stop daemon with the app* — changing it writes `settings.toml`.
+- The CLI (`heeler daemon start|status|stop|restart`) controls the same daemon; the app reflects CLI-initiated stops/restarts through its reconnect state.
+- Quitting is always clean: layout saved, connection closed, exit code 0; the daemon is stopped through `daemon.shutdown`, never killed. A desktop panic writes message + backtrace to `desktop.log` before exiting.
 
 ## Keyboard defaults
 
