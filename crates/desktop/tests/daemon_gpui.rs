@@ -766,12 +766,15 @@ fn the_mode_control_writes_app_on_quit_and_follows_external_edits(cx: &mut TestA
 
     // An external edit shows up (hot reload) in the setting, the menu and the popover.
     write(daemon.home(), "settings.toml", "[app]\non_quit = \"ask\"\n");
-    wait_until(cx, "the edit to be noticed", |cx| mode(cx) == OnQuit::Ask);
-    let (modes, _) = daemon_menu(cx);
-    assert_eq!(
-        modes.iter().find(|(_, on)| *on).map(|(n, _)| n.as_str()),
-        Some("Ask on quit")
-    );
+    // The setting store may see the edit a tick before the workbench rebuilds the menu bar.
+    wait_until(cx, "the edit to reach the menu", |cx| {
+        mode(cx) == OnQuit::Ask
+            && daemon_menu(cx)
+                .0
+                .iter()
+                .find(|(_, on)| *on)
+                .is_some_and(|(n, _)| n == "Ask on quit")
+    });
     draw(cx);
     assert!(
         view.read_with(cx, |wb, _| wb
