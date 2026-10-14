@@ -1,1 +1,1 @@
-{"event":"terminal.notification","epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","seq":1006,"data":{"body":"done","terminal_id":7,"title":"build"}}
+{"data":{"body":"done","terminal_id":7,"title":"build"},"epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","event":"terminal.notification","seq":1006}

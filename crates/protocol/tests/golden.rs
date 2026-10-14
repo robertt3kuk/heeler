@@ -303,9 +303,34 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0")
 }
 
+/// JSON objects are unordered on the wire, and key order depends on whether some crate in the
+/// build enables `serde_json/preserve_order` (GPUI does). Fixtures therefore store, and tests
+/// compare, a canonical form with recursively sorted keys. Hex fixtures are compared verbatim.
+fn canonical(name: &str, actual: &str) -> String {
+    if !name.ends_with(".json") {
+        return actual.to_owned();
+    }
+    fn sort(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let sorted: BTreeMap<String, serde_json::Value> =
+                    map.into_iter().map(|(k, v)| (k, sort(v))).collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sort).collect())
+            }
+            other => other,
+        }
+    }
+    let value: serde_json::Value = serde_json::from_str(actual).unwrap();
+    serde_json::to_string(&sort(value)).unwrap()
+}
+
 /// Compares against the committed fixture, or rewrites it when `UPDATE_GOLDEN=1`.
 fn check_golden(name: &str, actual: &str) {
     let path = fixture_dir().join(name);
+    let actual = canonical(name, actual);
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
         std::fs::create_dir_all(fixture_dir()).unwrap();
         std::fs::write(&path, format!("{actual}\n")).unwrap();

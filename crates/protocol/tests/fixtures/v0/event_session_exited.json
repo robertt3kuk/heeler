@@ -1,1 +1,1 @@
-{"event":"session.exited","epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","seq":1003,"data":{"code":0,"session_id":"01K7F3B5N2Q9W8E4R6T1Y0V3KM","signal":null}}
+{"data":{"code":0,"session_id":"01K7F3B5N2Q9W8E4R6T1Y0V3KM","signal":null},"epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","event":"session.exited","seq":1003}
