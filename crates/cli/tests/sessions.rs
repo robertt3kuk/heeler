@@ -288,7 +288,6 @@ async fn usage_errors_and_missing_daemon() {
     let t = TestDaemon::start().await;
     for args in [
         &["new", "--env", "no-equals"][..],
-        &["new", "--ws", "not-an-id"],
         &["history", "x", "--lines", "0"],
         &["send", "x"],
         &["rename", "x"],
@@ -297,6 +296,10 @@ async fn usage_errors_and_missing_daemon() {
         let out = t.heeler(args).await;
         assert_eq!(out.code, 2, "{args:?}: {out:?}");
     }
+    // `--ws` takes an id, a prefix or a name; one that matches nothing is a failure, not usage.
+    let out = t.heeler(&["new", "--ws", "not-a-workspace"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("no workspace matches"), "{out:?}");
     // attach needs a terminal; stdin is /dev/null here.
     let out = t.heeler(&["attach", "anything"]).await;
     assert_eq!(out.code, 2, "{out:?}");

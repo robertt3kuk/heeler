@@ -104,6 +104,17 @@ impl Router {
                 self.registry.close_workspace(req.workspace_id).await?;
                 ok(&Empty {})
             }
+            Request::WorkspaceOpen(req) => ok(&self.registry.open_workspace(req).await?),
+            Request::WorkspaceAddRoot(req) => {
+                ok(&self.registry.add_root(req.workspace_id, req.path).await?)
+            }
+            Request::WorkspaceRemoveRoot(req) => ok(&self
+                .registry
+                .remove_root(req.workspace_id, req.path)
+                .await?),
+            Request::WorkspaceRecent(req) => ok(&self.registry.recent_projects(req.limit).await?),
+            Request::WorkspaceMove(req) => ok(&self.registry.move_workspace(req).await?),
+            Request::WorkspacePin(req) => ok(&self.registry.pin_workspace(req).await?),
             Request::SessionSnapshot(_) => ok(&self.registry.snapshot().await?),
             Request::SessionCreate(req) => ok(&SessionResult {
                 session: self.registry.create_session(req).await?,
@@ -149,7 +160,9 @@ impl Router {
     /// terminal's input queue is full.
     pub async fn input(&self, frame: &Frame) -> Result<(), ProtocolError> {
         let (terminal, bytes): (TerminalId, Bytes) = frame.split_terminal()?;
-        self.hub.input(terminal, bytes).await;
+        if self.hub.input(terminal, bytes).await {
+            self.registry.note_activity(terminal);
+        }
         Ok(())
     }
 

@@ -13,6 +13,8 @@ pub const LOCK_FILE: &str = "heelerd.lock";
 pub const LOG_FILE: &str = "heelerd.log";
 pub const DATABASE_FILE: &str = "heeler.db";
 pub const CONFIG_FILE: &str = "daemon.toml";
+/// Name of the Home folder created in the user's home directory (or in `HEELER_HOME`).
+pub const HOME_FOLDER_NAME: &str = "Heeler";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathsError {
@@ -32,6 +34,12 @@ pub struct Paths {
     /// Optional daemon settings, `daemon.toml`.
     pub config_file: PathBuf,
     pub log_dir: PathBuf,
+    /// Folder of the Home workspace unless `daemon.toml` names another: `~/Heeler`, or
+    /// `Heeler` inside `HEELER_HOME` when that is set, so an isolated daemon never creates
+    /// folders in the real home directory.
+    pub default_home_folder: PathBuf,
+    /// The user's home directory, for `~` in `daemon.toml`.
+    pub user_home: Option<PathBuf>,
 }
 
 impl Paths {
@@ -51,13 +59,20 @@ impl Paths {
         user_home: Option<PathBuf>,
     ) -> Result<Self, PathsError> {
         let mut paths = match heeler_home.filter(|v| !v.is_empty()) {
-            Some(home) => Self::in_home(PathBuf::from(home)),
+            Some(home) => Self {
+                user_home,
+                ..Self::in_home(PathBuf::from(home))
+            },
             None => {
                 let user_home = user_home.ok_or(PathsError::NoHomeDir)?;
-                Self::new(
-                    user_home.join("Library/Application Support/Heeler"),
-                    user_home.join("Library/Logs/Heeler"),
-                )
+                Self {
+                    default_home_folder: user_home.join(HOME_FOLDER_NAME),
+                    user_home: Some(user_home.clone()),
+                    ..Self::new(
+                        user_home.join("Library/Application Support/Heeler"),
+                        user_home.join("Library/Logs/Heeler"),
+                    )
+                }
             }
         };
         if let Some(socket) = heeler_socket.filter(|v| !v.is_empty()) {
@@ -80,6 +95,8 @@ impl Paths {
             database: base.join(DATABASE_FILE),
             config_file: base.join(CONFIG_FILE),
             log_dir,
+            default_home_folder: base.join(HOME_FOLDER_NAME),
+            user_home: None,
             base,
         }
     }
@@ -146,6 +163,20 @@ mod tests {
         assert_eq!(p.database, Path::new("/tmp/hh/heeler.db"));
         assert_eq!(p.config_file, Path::new("/tmp/hh/daemon.toml"));
         assert_eq!(p.log_file(), Path::new("/tmp/hh/logs/heelerd.log"));
+    }
+
+    #[test]
+    fn the_home_folder_defaults_to_the_user_home_or_stays_inside_heeler_home() {
+        let real = Paths::resolve(None, None, Some("/Users/u".into())).unwrap();
+        assert_eq!(real.default_home_folder, Path::new("/Users/u/Heeler"));
+        assert_eq!(real.user_home.as_deref(), Some(Path::new("/Users/u")));
+        let isolated = Paths::resolve(os("/tmp/hh"), None, Some("/Users/u".into())).unwrap();
+        assert_eq!(isolated.default_home_folder, Path::new("/tmp/hh/Heeler"));
+        assert_eq!(isolated.user_home.as_deref(), Some(Path::new("/Users/u")));
+        assert_eq!(
+            Paths::in_home("/tmp/x").default_home_folder,
+            Path::new("/tmp/x/Heeler")
+        );
     }
 
     #[test]

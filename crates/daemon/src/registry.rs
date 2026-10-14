@@ -18,11 +18,13 @@ use tokio::time::{Instant, sleep_until};
 use heeler_core::{SessionEvent, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
-    AgentApplied, AgentReleaseRequest, AgentReport, AgentReportRequest, Event, SessionCreate,
-    SessionInfo, SessionList, SessionListFilter, SessionRename, SessionSnapshot, SessionSpec,
-    TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRename,
+    AgentApplied, AgentReleaseRequest, AgentReport, AgentReportRequest, CreatedBy, Event,
+    RECENT_PROJECTS_DEFAULT_LIMIT, RECENT_PROJECTS_MAX_LIMIT, RecentProject, RecentProjects,
+    SessionCreate, SessionInfo, SessionList, SessionListFilter, SessionRename, SessionSnapshot,
+    SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
+    WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRename,
 };
-use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow, Write};
+use heeler_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use heeler_terminal::{
     ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
 };
@@ -32,7 +34,8 @@ use tracing::{debug, error, warn};
 use crate::agent;
 use crate::bus::{EventBus, PublishError};
 use crate::config::RestoreMode;
-use crate::restore::{self, DEFAULT_WORKSPACE_KEY, Stored};
+use crate::projects::{self, Folder};
+use crate::restore::{self, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
 
 /// Commands waiting in the mailbox before senders wait their turn.
@@ -41,7 +44,15 @@ const MAILBOX_CAPACITY: usize = 256;
 /// Time a terminal gets to react to SIGHUP before it is killed.
 pub const STOP_GRACE: Duration = Duration::from_secs(3);
 
-pub const DEFAULT_WORKSPACE_NAME: &str = "default";
+/// Name of the Home workspace when the daemon creates it.
+pub const HOME_WORKSPACE_NAME: &str = "Home";
+
+/// A workspace's `last_active_ms` changes at most this often (session creation excepted).
+pub const ACTIVITY_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Terminals tell the registry about input and output at most this often each; the registry
+/// applies [`ACTIVITY_INTERVAL`] per workspace.
+pub const ACTIVITY_NOTIFY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Title and cwd changes are coalesced: a session is written at most this often because of them.
 const DIRTY_WRITE_INTERVAL: Duration = Duration::from_secs(1);
@@ -61,6 +72,15 @@ enum Command {
     ListWorkspaces(Reply<WorkspaceList>),
     RenameWorkspace(WorkspaceRename, Reply<WorkspaceInfo>),
     CloseWorkspace(WorkspaceId, Reply<()>),
+    /// The folder is already resolved (canonical, repository root found).
+    OpenWorkspace(Folder, Option<CreatedBy>, Reply<WorkspaceOpened>),
+    AddRoot(WorkspaceId, Folder, Reply<WorkspaceInfo>),
+    RemoveRoot(WorkspaceId, PathBuf, Reply<WorkspaceInfo>),
+    RecentProjects(Option<u32>, Reply<RecentProjects>),
+    MoveWorkspace(WorkspaceMove, Reply<WorkspaceList>),
+    PinWorkspace(WorkspacePin, Reply<WorkspaceInfo>),
+    /// Input or output of a terminal; from its watcher task and the input path.
+    Activity(TerminalId),
     Snapshot(Reply<SessionSnapshot>),
     SessionCounts(Reply<SessionCounts>),
     CreateSession(SessionCreate, Reply<SessionInfo>),
@@ -119,6 +139,49 @@ impl RegistryHandle {
 
     pub async fn close_workspace(&self, id: WorkspaceId) -> Result<(), ErrorBody> {
         self.ask(|r| Command::CloseWorkspace(id, r)).await
+    }
+
+    /// The workspace containing `req.path`, or a new one for the folder (its git root).
+    pub async fn open_workspace(&self, req: WorkspaceOpen) -> Result<WorkspaceOpened, ErrorBody> {
+        let folder = resolve_folder(req.path).await?;
+        self.ask(|r| Command::OpenWorkspace(folder, req.created_by, r))
+            .await
+    }
+
+    pub async fn add_root(
+        &self,
+        workspace_id: WorkspaceId,
+        path: PathBuf,
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        let folder = resolve_folder(path).await?;
+        self.ask(|r| Command::AddRoot(workspace_id, folder, r))
+            .await
+    }
+
+    pub async fn remove_root(
+        &self,
+        workspace_id: WorkspaceId,
+        path: PathBuf,
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        self.ask(|r| Command::RemoveRoot(workspace_id, path, r))
+            .await
+    }
+
+    pub async fn recent_projects(&self, limit: Option<u32>) -> Result<RecentProjects, ErrorBody> {
+        self.ask(|r| Command::RecentProjects(limit, r)).await
+    }
+
+    pub async fn move_workspace(&self, req: WorkspaceMove) -> Result<WorkspaceList, ErrorBody> {
+        self.ask(|r| Command::MoveWorkspace(req, r)).await
+    }
+
+    pub async fn pin_workspace(&self, req: WorkspacePin) -> Result<WorkspaceInfo, ErrorBody> {
+        self.ask(|r| Command::PinWorkspace(req, r)).await
+    }
+
+    /// Input reached `terminal`. Never waits: a full mailbox just misses one activity note.
+    pub fn note_activity(&self, terminal: TerminalId) {
+        let _ = self.tx.try_send(Command::Activity(terminal));
     }
 
     pub async fn snapshot(&self) -> Result<SessionSnapshot, ErrorBody> {
@@ -253,6 +316,24 @@ impl SessionEntry {
     }
 }
 
+/// One workspace and the bookkeeping around it.
+#[derive(Debug)]
+struct WorkspaceEntry {
+    /// What clients know: the last published state.
+    info: WorkspaceInfo,
+    /// Session activity happened that `info.last_active_ms` does not show yet (throttled).
+    activity_pending: bool,
+}
+
+impl WorkspaceEntry {
+    fn new(info: WorkspaceInfo) -> Self {
+        Self {
+            info,
+            activity_pending: false,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SessionRegistry {
     bus: Arc<EventBus>,
@@ -265,15 +346,22 @@ struct SessionRegistry {
     heeler_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
     mailbox: mpsc::WeakSender<Command>,
-    default_workspace: WorkspaceId,
-    workspaces: Vec<WorkspaceInfo>,
+    /// The Home workspace: where sessions without a workspace go.
+    home: WorkspaceId,
+    /// In `position` order.
+    workspaces: Vec<WorkspaceEntry>,
+    /// Closed projects, newest first.
+    recent: Vec<stored_rows::RecentProject>,
     /// `position` for the next workspace row.
     next_position: i64,
+    activity_interval: Duration,
     sessions: Vec<SessionEntry>,
     stop_all_waiters: Vec<Reply<()>>,
     storage: Storage,
     /// When sessions with unwritten title/cwd changes are written next.
     flush_at: Option<Instant>,
+    /// When the earliest throttled workspace activity is applied.
+    activity_flush_at: Option<Instant>,
 }
 
 /// What [`spawn`] needs besides the shared services.
@@ -287,6 +375,10 @@ pub struct RegistryConfig {
     pub heeler_bin: PathBuf,
     pub storage: Storage,
     pub restore: RestoreMode,
+    /// The folder of the Home workspace (existing, canonical).
+    pub home_folder: PathBuf,
+    /// Shortest time between two `last_active_ms` updates of one workspace.
+    pub activity_interval: Duration,
 }
 
 /// Starts the actor from the stored state. It stops when every [`RegistryHandle`] is dropped.
@@ -301,8 +393,8 @@ pub fn spawn(
     stored: Stored,
 ) -> RegistryHandle {
     let (tx, rx) = mpsc::channel(MAILBOX_CAPACITY);
-    let (workspaces, default_workspace, next_position) =
-        restored_workspaces(&stored, &config.storage);
+    let (workspaces, home, next_position) =
+        restored_workspaces(&stored, &config.storage, &config.home_folder);
     let mut registry = SessionRegistry {
         bus,
         hub,
@@ -310,32 +402,45 @@ pub fn spawn(
         shell_integration_dir: config.shell_integration_dir,
         heeler_bin: config.heeler_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
-        default_workspace,
+        home,
         workspaces,
+        recent: stored.recent_projects,
         next_position,
+        activity_interval: config.activity_interval,
         sessions: Vec::new(),
         stop_all_waiters: Vec::new(),
         storage: config.storage,
         flush_at: None,
+        activity_flush_at: None,
     };
     registry.restore_sessions(stored.sessions, config.restore);
     tokio::spawn(registry.run(rx));
     RegistryHandle { tx }
 }
 
-/// The stored workspaces, the default one among them (created and stored when missing), and the
-/// next free position.
+/// The stored workspaces, Home among them (created and stored when missing, bound to
+/// `home_folder`), and the next free position.
 fn restored_workspaces(
     stored: &Stored,
     storage: &Storage,
-) -> (Vec<WorkspaceInfo>, WorkspaceId, i64) {
-    let mut workspaces: Vec<WorkspaceInfo> = stored
+    home_folder: &Path,
+) -> (Vec<WorkspaceEntry>, WorkspaceId, i64) {
+    let mut workspaces: Vec<WorkspaceEntry> = stored
         .workspaces
         .iter()
-        .map(|w| WorkspaceInfo {
-            id: w.id,
-            name: w.name.clone(),
-            roots: w.roots.clone(),
+        .map(|w| {
+            WorkspaceEntry::new(WorkspaceInfo {
+                id: w.id,
+                name: w.name.clone(),
+                roots: w.roots.clone(),
+                kind: kind_from_row(w.kind),
+                pinned: w.pinned,
+                position: w.position,
+                created_by: created_by_from_row(w.created_by),
+                last_active_ms: w.last_active_ms,
+                live_sessions: 0,
+                total_sessions: 0,
+            })
         })
         .collect();
     let mut next_position = stored
@@ -344,36 +449,110 @@ fn restored_workspaces(
         .map(|w| w.position)
         .max()
         .map_or(0, |last| last + 1);
-    let existing = stored
-        .default_workspace
-        .filter(|id| workspaces.iter().any(|w| w.id == *id));
-    let default_workspace = existing.unwrap_or_else(|| {
-        let id = WorkspaceId::new();
-        workspaces.push(WorkspaceInfo {
-            id,
-            name: DEFAULT_WORKSPACE_NAME.to_owned(),
-            roots: Vec::new(),
-        });
-        log_write(
-            storage.batch(vec![
-                Write::InsertWorkspace(WorkspaceRow {
-                    id,
-                    name: DEFAULT_WORKSPACE_NAME.to_owned(),
-                    roots: Vec::new(),
-                    created_at_ms: now_ms(),
-                    position: next_position,
-                }),
-                Write::SetMeta {
-                    key: DEFAULT_WORKSPACE_KEY.to_owned(),
-                    value: id.to_string(),
-                },
-            ]),
-            "the default workspace",
-        );
-        next_position += 1;
-        id
-    });
-    (workspaces, default_workspace, next_position)
+    let existing = workspaces
+        .iter_mut()
+        .find(|w| w.info.kind == WorkspaceKind::Home);
+    let home = match existing {
+        Some(home) => {
+            // The configured folder is the truth; the user may have changed it.
+            if home.info.roots != [home_folder] {
+                home.info.roots = vec![home_folder.to_owned()];
+                log_write(
+                    storage
+                        .workspaces()
+                        .set_roots(home.info.id, home.info.roots.clone()),
+                    "the Home folder",
+                );
+            }
+            home.info.id
+        }
+        None => {
+            let now = now_ms();
+            // First in the list, ahead of whatever was stored.
+            let position = stored
+                .workspaces
+                .iter()
+                .map(|w| w.position)
+                .min()
+                .map_or(0, |first| first - 1);
+            let info = WorkspaceInfo {
+                id: WorkspaceId::new(),
+                name: HOME_WORKSPACE_NAME.to_owned(),
+                roots: vec![home_folder.to_owned()],
+                kind: WorkspaceKind::Home,
+                pinned: false,
+                position,
+                created_by: CreatedBy::User,
+                last_active_ms: now,
+                live_sessions: 0,
+                total_sessions: 0,
+            };
+            log_write(
+                storage.workspaces().insert(row_of(&info, now)),
+                "the Home workspace",
+            );
+            let id = info.id;
+            workspaces.insert(0, WorkspaceEntry::new(info));
+            id
+        }
+    };
+    next_position = next_position.max(1);
+    (workspaces, home, next_position)
+}
+
+fn kind_from_row(kind: stored_rows::WorkspaceKind) -> WorkspaceKind {
+    match kind {
+        stored_rows::WorkspaceKind::Home => WorkspaceKind::Home,
+        stored_rows::WorkspaceKind::Project => WorkspaceKind::Project,
+    }
+}
+
+fn kind_to_row(kind: WorkspaceKind) -> stored_rows::WorkspaceKind {
+    match kind {
+        WorkspaceKind::Home => stored_rows::WorkspaceKind::Home,
+        WorkspaceKind::Project => stored_rows::WorkspaceKind::Project,
+    }
+}
+
+fn created_by_from_row(created_by: stored_rows::CreatedBy) -> CreatedBy {
+    match created_by {
+        stored_rows::CreatedBy::User => CreatedBy::User,
+        stored_rows::CreatedBy::Cli => CreatedBy::Cli,
+        stored_rows::CreatedBy::Agent => CreatedBy::Agent,
+    }
+}
+
+fn created_by_to_row(created_by: CreatedBy) -> stored_rows::CreatedBy {
+    match created_by {
+        CreatedBy::User => stored_rows::CreatedBy::User,
+        CreatedBy::Cli => stored_rows::CreatedBy::Cli,
+        CreatedBy::Agent => stored_rows::CreatedBy::Agent,
+    }
+}
+
+/// The row of a workspace that is being created.
+fn row_of(info: &WorkspaceInfo, created_at_ms: u64) -> WorkspaceRow {
+    WorkspaceRow {
+        id: info.id,
+        name: info.name.clone(),
+        roots: info.roots.clone(),
+        kind: kind_to_row(info.kind),
+        pinned: info.pinned,
+        created_by: created_by_to_row(info.created_by),
+        created_at_ms,
+        last_active_ms: info.last_active_ms,
+        position: info.position,
+    }
+}
+
+/// Canonicalises a folder on the blocking pool.
+async fn resolve_folder(path: PathBuf) -> Result<Folder, ErrorBody> {
+    tokio::task::spawn_blocking(move || projects::resolve_folder(&path))
+        .await
+        .map_err(|error| {
+            error!(%error, "resolving a folder failed");
+            ErrorBody::new(ErrorCode::Internal, "could not resolve the folder")
+        })?
 }
 
 /// Storage failures never take request handling down: the in-memory state stays authoritative
@@ -390,11 +569,15 @@ fn log_write(result: Result<(), StorageError>, what: &str) {
 impl SessionRegistry {
     async fn run(mut self, mut mailbox: mpsc::Receiver<Command>) {
         loop {
-            let command = match self.flush_at {
+            let deadline = [self.flush_at, self.activity_flush_at]
+                .into_iter()
+                .flatten()
+                .min();
+            let command = match deadline {
                 Some(deadline) => tokio::select! {
                     command = mailbox.recv() => command,
                     () = sleep_until(deadline) => {
-                        self.flush_dirty();
+                        self.on_timer();
                         continue;
                     }
                 },
@@ -407,9 +590,7 @@ impl SessionRegistry {
                     let _ = reply.send(self.create_workspace(req));
                 }
                 Command::ListWorkspaces(reply) => {
-                    let _ = reply.send(Ok(WorkspaceList {
-                        workspaces: self.workspaces.clone(),
-                    }));
+                    let _ = reply.send(Ok(self.workspace_list()));
                 }
                 Command::RenameWorkspace(req, reply) => {
                     let _ = reply.send(self.rename_workspace(req));
@@ -417,11 +598,30 @@ impl SessionRegistry {
                 Command::CloseWorkspace(id, reply) => {
                     let _ = reply.send(self.close_workspace(id));
                 }
+                Command::OpenWorkspace(folder, created_by, reply) => {
+                    let _ = reply.send(self.open_workspace(&folder, created_by));
+                }
+                Command::AddRoot(id, folder, reply) => {
+                    let _ = reply.send(self.add_root(id, &folder));
+                }
+                Command::RemoveRoot(id, path, reply) => {
+                    let _ = reply.send(self.remove_root(id, &path));
+                }
+                Command::RecentProjects(limit, reply) => {
+                    let _ = reply.send(Ok(self.recent_projects(limit)));
+                }
+                Command::MoveWorkspace(req, reply) => {
+                    let _ = reply.send(self.move_workspace(req));
+                }
+                Command::PinWorkspace(req, reply) => {
+                    let _ = reply.send(self.pin_workspace(req));
+                }
+                Command::Activity(terminal) => self.on_activity(terminal),
                 Command::Snapshot(reply) => {
                     // The actor is the only publisher of the state it snapshots, so the bus's
                     // last seq is exactly the watermark of this state.
                     let _ = reply.send(Ok(SessionSnapshot {
-                        workspaces: self.workspaces.clone(),
+                        workspaces: self.workspace_list().workspaces,
                         sessions: self.sessions.iter().map(|s| s.info.clone()).collect(),
                         seq: self.bus.last_seq(),
                     }));
@@ -480,41 +680,134 @@ impl SessionRegistry {
 
     // Workspaces ------------------------------------------------------------------------------
 
+    fn workspace_list(&self) -> WorkspaceList {
+        WorkspaceList {
+            workspaces: self.workspaces.iter().map(|w| w.info.clone()).collect(),
+        }
+    }
+
+    /// `(live, total)` sessions of a workspace.
+    fn session_counts_of(&self, id: WorkspaceId) -> (u32, u32) {
+        let mut counts = (0, 0);
+        for session in self.sessions.iter().filter(|s| s.info.workspace_id == id) {
+            counts.1 += 1;
+            counts.0 += u32::from(session.info.state.is_live());
+        }
+        counts
+    }
+
+    /// Fills in the session counts after the sessions were restored; nothing is announced
+    /// (clients take a snapshot after a daemon start).
+    fn recount_sessions(&mut self) {
+        for index in 0..self.workspaces.len() {
+            let (live, total) = self.session_counts_of(self.workspaces[index].info.id);
+            let info = &mut self.workspaces[index].info;
+            info.live_sessions = live;
+            info.total_sessions = total;
+        }
+    }
+
+    /// Applies `change`, refreshes the session counts, and announces the result when anything
+    /// differs from what clients know. The event is published before the state changes, so a
+    /// rejected event leaves everything as it was. Storage is the caller's business.
+    fn update_workspace(
+        &mut self,
+        id: WorkspaceId,
+        change: impl FnOnce(&mut WorkspaceInfo),
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        let index = self.index_of(id)?;
+        let mut next = self.workspaces[index].info.clone();
+        change(&mut next);
+        (next.live_sessions, next.total_sessions) = self.session_counts_of(id);
+        if next != self.workspaces[index].info {
+            self.publish(&Event::WorkspaceUpdated {
+                workspace: next.clone(),
+            })?;
+            self.workspaces[index].info = next.clone();
+        }
+        Ok(next)
+    }
+
+    /// Announces new session counts of a workspace (a session changed state).
+    fn sync_workspace(&mut self, id: WorkspaceId) {
+        if let Err(error) = self.update_workspace(id, |_| {}) {
+            warn!(workspace = %id, message = %error.message, "could not announce a workspace change");
+        }
+    }
+
     fn create_workspace(&mut self, req: WorkspaceCreate) -> Result<WorkspaceInfo, ErrorBody> {
         let name = validated_name(req.name, "workspace")?;
+        self.add_project(name, req.roots, req.created_by.unwrap_or_default())
+    }
+
+    /// Creates, announces, and stores a project workspace at the end of the list.
+    fn add_project(
+        &mut self,
+        name: String,
+        roots: Vec<PathBuf>,
+        created_by: CreatedBy,
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        let now = now_ms();
         let workspace = WorkspaceInfo {
             id: WorkspaceId::new(),
             name,
-            roots: req.roots,
+            roots,
+            kind: WorkspaceKind::Project,
+            pinned: false,
+            position: self.next_position,
+            created_by,
+            last_active_ms: now,
+            live_sessions: 0,
+            total_sessions: 0,
         };
         self.publish(&Event::WorkspaceUpdated {
             workspace: workspace.clone(),
         })?;
-        let position = self.next_position;
         self.next_position += 1;
         log_write(
-            self.storage.workspaces().insert(WorkspaceRow {
-                id: workspace.id,
-                name: workspace.name.clone(),
-                roots: workspace.roots.clone(),
-                created_at_ms: now_ms(),
-                position,
-            }),
+            self.storage.workspaces().insert(row_of(&workspace, now)),
             "a new workspace",
         );
-        self.workspaces.push(workspace.clone());
+        self.workspaces.push(WorkspaceEntry::new(workspace.clone()));
+        self.remember_project(&workspace, now);
         Ok(workspace)
+    }
+
+    /// Notes a project in the recent list (by its primary root); Home is not a project.
+    fn remember_project(&mut self, workspace: &WorkspaceInfo, opened_ms: u64) {
+        if workspace.kind != WorkspaceKind::Project {
+            return;
+        }
+        let Some(path) = workspace.roots.first() else {
+            return;
+        };
+        let project = stored_rows::RecentProject {
+            path: path.clone(),
+            name: workspace.name.clone(),
+            last_opened_ms: opened_ms,
+        };
+        match self.recent.iter_mut().find(|r| r.path == project.path) {
+            Some(known) => {
+                known.name.clone_from(&project.name);
+                known.last_opened_ms = known.last_opened_ms.max(opened_ms);
+            }
+            None => self.recent.push(project.clone()),
+        }
+        self.recent.sort_by(|a, b| {
+            b.last_opened_ms
+                .cmp(&a.last_opened_ms)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        self.recent.truncate(stored_rows::RECENT_PROJECTS_KEPT);
+        log_write(
+            self.storage.recent_projects().upsert(project),
+            "a recent project",
+        );
     }
 
     fn rename_workspace(&mut self, req: WorkspaceRename) -> Result<WorkspaceInfo, ErrorBody> {
         let name = validated_name(req.name, "workspace")?;
-        let index = self.index_of(req.workspace_id)?;
-        let mut workspace = self.workspaces[index].clone();
-        workspace.name = name;
-        self.publish(&Event::WorkspaceUpdated {
-            workspace: workspace.clone(),
-        })?;
-        self.workspaces[index] = workspace.clone();
+        let workspace = self.update_workspace(req.workspace_id, |w| w.name = name)?;
         log_write(
             self.storage
                 .workspaces()
@@ -526,10 +819,10 @@ impl SessionRegistry {
 
     fn close_workspace(&mut self, id: WorkspaceId) -> Result<(), ErrorBody> {
         let index = self.index_of(id)?;
-        if id == self.default_workspace {
+        if id == self.home {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidState,
-                "the default workspace cannot be closed",
+                "the Home workspace cannot be closed",
             ));
         }
         let live = self
@@ -544,7 +837,9 @@ impl SessionRegistry {
             ));
         }
         self.publish(&Event::WorkspaceClosed { workspace_id: id })?;
-        self.workspaces.remove(index);
+        let closed = self.workspaces.remove(index).info;
+        // The project stays in the recent list.
+        self.remember_project(&closed, closed.last_active_ms);
         // The sessions' rows go with the workspace's.
         log_write(self.storage.workspaces().delete(id), "a workspace removal");
         // Ended sessions go with their workspace, and so do their terminals.
@@ -559,10 +854,307 @@ impl SessionRegistry {
         Ok(())
     }
 
+    /// The workspace whose root contains `path` (canonical); the deepest root wins, the
+    /// earlier workspace on a tie.
+    fn workspace_containing(&self, path: &Path) -> Option<usize> {
+        let mut best: Option<(usize, usize)> = None;
+        for (index, workspace) in self.workspaces.iter().enumerate() {
+            for root in &workspace.info.roots {
+                if projects::root_contains(root, path) {
+                    let depth = root.components().count();
+                    if best.is_none_or(|(_, deepest)| depth > deepest) {
+                        best = Some((index, depth));
+                    }
+                }
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
+    fn open_workspace(
+        &mut self,
+        folder: &Folder,
+        created_by: Option<CreatedBy>,
+    ) -> Result<WorkspaceOpened, ErrorBody> {
+        if let Some(index) = self.workspace_containing(&folder.path) {
+            let workspace = self.workspaces[index].info.clone();
+            self.remember_project(&workspace, now_ms());
+            return Ok(WorkspaceOpened {
+                workspace,
+                created: false,
+            });
+        }
+        // A project that was closed comes back under the name it had.
+        let name = self
+            .recent
+            .iter()
+            .find(|r| r.path == folder.root)
+            .map_or_else(|| folder.name(), |r| r.name.clone());
+        let workspace = self.add_project(
+            name,
+            vec![folder.root.clone()],
+            created_by.unwrap_or_default(),
+        )?;
+        Ok(WorkspaceOpened {
+            workspace,
+            created: true,
+        })
+    }
+
+    fn project_for_roots(&self, id: WorkspaceId) -> Result<usize, ErrorBody> {
+        let index = self.index_of(id)?;
+        if self.workspaces[index].info.kind == WorkspaceKind::Home {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                "the Home workspace is bound to its folder; set `home_folder` in daemon.toml",
+            ));
+        }
+        Ok(index)
+    }
+
+    fn add_root(&mut self, id: WorkspaceId, folder: &Folder) -> Result<WorkspaceInfo, ErrorBody> {
+        let index = self.project_for_roots(id)?;
+        let current = &self.workspaces[index].info;
+        if current
+            .roots
+            .iter()
+            .any(|root| projects::same_place(root, &folder.root))
+        {
+            return Ok(current.clone());
+        }
+        let workspace = self.update_workspace(id, |w| w.roots.push(folder.root.clone()))?;
+        log_write(
+            self.storage
+                .workspaces()
+                .set_roots(id, workspace.roots.clone()),
+            "workspace roots",
+        );
+        self.remember_project(&workspace, workspace.last_active_ms);
+        Ok(workspace)
+    }
+
+    fn remove_root(&mut self, id: WorkspaceId, path: &Path) -> Result<WorkspaceInfo, ErrorBody> {
+        let index = self.project_for_roots(id)?;
+        let at = self.workspaces[index]
+            .info
+            .roots
+            .iter()
+            .position(|root| projects::same_place(root, path))
+            .ok_or_else(|| {
+                ErrorBody::new(
+                    ErrorCode::NotFound,
+                    format!("{} is not a root of workspace {id}", path.display()),
+                )
+            })?;
+        let workspace = self.update_workspace(id, |w| {
+            w.roots.remove(at);
+        })?;
+        log_write(
+            self.storage
+                .workspaces()
+                .set_roots(id, workspace.roots.clone()),
+            "workspace roots",
+        );
+        Ok(workspace)
+    }
+
+    /// Open projects and closed ones still remembered, newest first. An open project's time is
+    /// its latest activity when that is newer than when it was last opened.
+    fn recent_projects(&self, limit: Option<u32>) -> RecentProjects {
+        let limit = limit
+            .unwrap_or(RECENT_PROJECTS_DEFAULT_LIMIT)
+            .min(RECENT_PROJECTS_MAX_LIMIT);
+        let mut projects: Vec<RecentProject> = Vec::new();
+        for workspace in self.workspaces.iter().map(|w| &w.info) {
+            let Some(path) = workspace.roots.first() else {
+                continue;
+            };
+            if workspace.kind != WorkspaceKind::Project {
+                continue;
+            }
+            let opened = self
+                .recent
+                .iter()
+                .find(|r| &r.path == path)
+                .map_or(0, |r| r.last_opened_ms);
+            projects.push(RecentProject {
+                path: path.clone(),
+                name: workspace.name.clone(),
+                last_opened_ms: opened.max(workspace.last_active_ms),
+                workspace_id: Some(workspace.id),
+            });
+        }
+        for closed in &self.recent {
+            let open = self
+                .workspaces
+                .iter()
+                .any(|w| w.info.roots.contains(&closed.path));
+            if !open {
+                projects.push(RecentProject {
+                    path: closed.path.clone(),
+                    name: closed.name.clone(),
+                    last_opened_ms: closed.last_opened_ms,
+                    workspace_id: None,
+                });
+            }
+        }
+        projects.sort_by(|a, b| {
+            b.last_opened_ms
+                .cmp(&a.last_opened_ms)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        projects.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        RecentProjects { projects }
+    }
+
+    /// Moves a workspace before another (or to the end) and renumbers the positions `0..n`;
+    /// every workspace whose position changed is announced.
+    fn move_workspace(&mut self, req: WorkspaceMove) -> Result<WorkspaceList, ErrorBody> {
+        let from = self.index_of(req.workspace_id)?;
+        if let Some(before) = req.before {
+            self.index_of(before)?;
+            if before == req.workspace_id {
+                return Ok(self.workspace_list());
+            }
+        }
+        let moved = self.workspaces.remove(from);
+        let at = req
+            .before
+            .and_then(|before| self.workspaces.iter().position(|w| w.info.id == before))
+            .unwrap_or(self.workspaces.len());
+        self.workspaces.insert(at, moved);
+
+        let mut writes = Vec::new();
+        let mut changed = Vec::new();
+        for (index, entry) in self.workspaces.iter_mut().enumerate() {
+            let position = i64::try_from(index).unwrap_or(i64::MAX);
+            if entry.info.position != position {
+                entry.info.position = position;
+                writes.push(Write::SetWorkspacePosition {
+                    id: entry.info.id,
+                    position,
+                });
+                changed.push(entry.info.clone());
+            }
+        }
+        self.next_position = i64::try_from(self.workspaces.len()).unwrap_or(i64::MAX);
+        if !writes.is_empty() {
+            log_write(self.storage.batch(writes), "the workspace order");
+            for workspace in changed {
+                self.emit(&Event::WorkspaceUpdated { workspace });
+            }
+        }
+        Ok(self.workspace_list())
+    }
+
+    fn pin_workspace(&mut self, req: WorkspacePin) -> Result<WorkspaceInfo, ErrorBody> {
+        let workspace = self.update_workspace(req.workspace_id, |w| w.pinned = req.pinned)?;
+        log_write(
+            self.storage
+                .workspaces()
+                .set_pinned(workspace.id, workspace.pinned),
+            "a workspace pin",
+        );
+        Ok(workspace)
+    }
+
+    // Workspace activity ----------------------------------------------------------------------
+
+    fn activity_interval_ms(&self) -> u64 {
+        u64::try_from(self.activity_interval.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Input or output in a terminal.
+    fn on_activity(&mut self, terminal: TerminalId) {
+        let Some(index) = self.terminal_index(terminal) else {
+            return;
+        };
+        let session = &self.sessions[index];
+        if session.info.state.is_live() {
+            self.note_activity(session.info.workspace_id, now_ms());
+        }
+    }
+
+    /// Applies the activity now when the workspace was last updated at least one interval ago;
+    /// otherwise remembers it for [`flush_activity`](Self::flush_activity), so a busy workspace
+    /// is announced once per interval with the newest time.
+    fn note_activity(&mut self, workspace: WorkspaceId, at_ms: u64) {
+        let interval = self.activity_interval_ms();
+        let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == workspace) else {
+            return;
+        };
+        let due = entry.info.last_active_ms.saturating_add(interval);
+        if due <= at_ms {
+            self.apply_activity(workspace, at_ms);
+            return;
+        }
+        entry.activity_pending = true;
+        let at = Instant::now() + Duration::from_millis(due - at_ms);
+        self.activity_flush_at = Some(self.activity_flush_at.map_or(at, |first| first.min(at)));
+    }
+
+    fn apply_activity(&mut self, workspace: WorkspaceId, at_ms: u64) {
+        if let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == workspace) {
+            entry.activity_pending = false;
+        }
+        match self.update_workspace(workspace, |w| {
+            w.last_active_ms = w.last_active_ms.max(at_ms);
+        }) {
+            Ok(info) => log_write(
+                self.storage
+                    .workspaces()
+                    .set_last_active(workspace, info.last_active_ms),
+                "workspace activity",
+            ),
+            Err(error) => {
+                warn!(%workspace, message = %error.message, "could not announce workspace activity");
+            }
+        }
+    }
+
+    fn on_timer(&mut self) {
+        let now = Instant::now();
+        if self.flush_at.is_some_and(|at| at <= now) {
+            self.flush_dirty();
+        }
+        if self.activity_flush_at.is_some_and(|at| at <= now) {
+            self.flush_activity();
+        }
+    }
+
+    /// Announces the remembered activity of every workspace whose interval has passed and
+    /// schedules the rest.
+    fn flush_activity(&mut self) {
+        self.activity_flush_at = None;
+        let now = now_ms();
+        let interval = self.activity_interval_ms();
+        let mut ready = Vec::new();
+        let mut wait: Option<u64> = None;
+        for entry in &self.workspaces {
+            if !entry.activity_pending {
+                continue;
+            }
+            let due = entry.info.last_active_ms.saturating_add(interval);
+            if due <= now {
+                ready.push(entry.info.id);
+            } else {
+                wait = Some(wait.map_or(due - now, |w| w.min(due - now)));
+            }
+        }
+        // Stamped with the time of the announcement: the activity happened within the last
+        // interval, and the next announcement is a full interval away.
+        for id in ready {
+            self.apply_activity(id, now);
+        }
+        if let Some(wait) = wait {
+            self.activity_flush_at = Some(Instant::now() + Duration::from_millis(wait));
+        }
+    }
+
     fn index_of(&self, id: WorkspaceId) -> Result<usize, ErrorBody> {
         self.workspaces
             .iter()
-            .position(|w| w.id == id)
+            .position(|w| w.info.id == id)
             .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, format!("workspace {id} not found")))
     }
 
@@ -582,7 +1174,7 @@ impl SessionRegistry {
     }
 
     fn create_session(&mut self, req: SessionCreate) -> Result<SessionInfo, ErrorBody> {
-        let workspace_id = req.workspace_id.unwrap_or(self.default_workspace);
+        let workspace_id = req.workspace_id.unwrap_or(self.home);
         self.index_of(workspace_id)?;
         let SessionSpec::Terminal(spec) = req.spec;
         if let Some(size) = spec.size
@@ -634,8 +1226,28 @@ impl SessionRegistry {
             agent_seqs: BTreeMap::new(),
         });
         let index = self.sessions.len() - 1;
+        // A new session is activity; the workspace announcement that follows the session's
+        // first update carries the new time together with the new counts.
+        self.touch_workspace(workspace_id);
         self.start_terminal(index);
         Ok(self.sessions[index].info.clone())
+    }
+
+    /// Records activity now without announcing it.
+    fn touch_workspace(&mut self, id: WorkspaceId) {
+        let now = now_ms();
+        let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == id) else {
+            return;
+        };
+        entry.activity_pending = false;
+        entry.info.last_active_ms = entry.info.last_active_ms.max(now);
+        let last_active_ms = entry.info.last_active_ms;
+        log_write(
+            self.storage
+                .workspaces()
+                .set_last_active(id, last_active_ms),
+            "workspace activity",
+        );
     }
 
     /// Spawns the process for a `Starting` session and moves it to `Running` or `Failed`.
@@ -1018,7 +1630,11 @@ impl SessionRegistry {
         let mut respawn = Vec::new();
         let mut rewrite = Vec::new();
         for row in rows {
-            if !self.workspaces.iter().any(|w| w.id == row.workspace_id) {
+            if !self
+                .workspaces
+                .iter()
+                .any(|w| w.info.id == row.workspace_id)
+            {
                 warn!(session = %row.id, "stored session has no workspace; skipping it");
                 continue;
             }
@@ -1109,6 +1725,9 @@ impl SessionRegistry {
                 None => {}
             }
         }
+        // Before the respawns announce anything: the counts of a restored workspace are right
+        // from the start.
+        self.recount_sessions();
         // `start_terminal` stores the session itself once it is running.
         for index in respawn {
             self.start_terminal(index);
@@ -1170,10 +1789,12 @@ impl SessionRegistry {
 
     // Events ----------------------------------------------------------------------------------
 
-    fn emit_session(&self, index: usize) {
+    /// Announces the session and, when the change moved its workspace's counts, the workspace.
+    fn emit_session(&mut self, index: usize) {
         self.emit(&Event::SessionUpdated {
             session: self.sessions[index].info.clone(),
         });
+        self.sync_workspace(self.sessions[index].info.workspace_id);
     }
 
     /// For changes that already happened: a rejected event is logged, not rolled back.
@@ -1229,9 +1850,27 @@ async fn watch_terminal(
 
     let exit = terminal.wait_exit();
     tokio::pin!(exit);
+    // Output is activity of the session's workspace, reported at most once per
+    // `ACTIVITY_NOTIFY_INTERVAL`; damage that arrives meanwhile is picked up afterwards.
+    let mut damage = terminal.damage();
+    let mut quiet = std::pin::pin!(sleep_until(Instant::now()));
+    let mut throttled = false;
+    let mut watching_output = true;
     let status = loop {
         tokio::select! {
             biased;
+            () = &mut quiet, if throttled => throttled = false,
+            changed = damage.changed(), if watching_output && !throttled => {
+                if changed.is_err() {
+                    watching_output = false;
+                } else {
+                    if !send(Command::Activity(id)).await {
+                        return;
+                    }
+                    throttled = true;
+                    quiet.as_mut().reset(Instant::now() + ACTIVITY_NOTIFY_INTERVAL);
+                }
+            }
             received = meta.recv() => match received {
                 Ok(event) => {
                     if !send(Command::TerminalMeta(id, event)).await {

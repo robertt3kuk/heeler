@@ -99,7 +99,7 @@ async fn ws_new_then_ls_json() {
     );
 
     t.heeler(&["ws", "new", "beta"]).await;
-    let list = t.heeler(&["ws", "ls", "--json"]).await;
+    let list = t.heeler(&["ws", "ls", "--all", "--json"]).await;
     assert_eq!(list.code, 0, "{list:?}");
     let workspaces = list.json()["workspaces"].clone();
     let names: Vec<_> = workspaces
@@ -108,23 +108,23 @@ async fn ws_new_then_ls_json() {
         .iter()
         .map(|w| w["name"].as_str().unwrap().to_owned())
         .collect();
-    // The daemon always has its "default" workspace.
-    assert_eq!(names, ["default", "alpha", "beta"]);
+    // The daemon always has its Home workspace, first.
+    assert_eq!(names, ["Home", "alpha", "beta"]);
     assert_eq!(workspaces[1]["id"], id);
 
-    let human = t.heeler(&["ws", "ls"]).await;
+    let human = t.heeler(&["ws", "ls", "--all"]).await;
     assert!(human.stdout.contains(&id), "{human:?}");
     assert!(human.stdout.contains("alpha"), "{human:?}");
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_ls_on_a_fresh_daemon_shows_the_default_workspace() {
+async fn ws_ls_on_a_fresh_daemon_shows_home() {
     let t = TestDaemon::start().await;
     let out = t.heeler(&["ws", "ls"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.stdout.lines().count(), 2, "header and one row: {out:?}");
-    assert!(out.stdout.lines().nth(1).unwrap().contains("default"));
+    assert!(out.stdout.lines().nth(1).unwrap().contains("Home"));
     let out = t.heeler(&["ws", "ls", "--json"]).await.json();
     assert_eq!(out["workspaces"].as_array().unwrap().len(), 1);
     t.stop().await;
@@ -147,7 +147,7 @@ async fn ws_rename_and_close() {
     assert_eq!(closed.json(), json!({"workspace_id": id, "closed": true}));
     let list = t.heeler(&["ws", "ls", "--json"]).await.json();
     assert_eq!(list["workspaces"].as_array().unwrap().len(), 1);
-    assert_eq!(list["workspaces"][0]["name"], "default");
+    assert_eq!(list["workspaces"][0]["name"], "Home");
     t.stop().await;
 }
 
@@ -254,7 +254,7 @@ async fn events_without_follow_prints_current_state_and_exits() {
         .collect();
     assert_eq!(lines.len(), 2, "{out:?}");
     assert!(lines.iter().all(|l| l["event"] == "workspace.updated"));
-    assert_eq!(lines[0]["data"]["workspace"]["name"], "default");
+    assert_eq!(lines[0]["data"]["workspace"]["name"], "Home");
     assert_eq!(lines[1]["data"]["workspace"]["name"], "one");
     assert_eq!(lines[1]["epoch"], t.daemon.epoch().to_string());
     t.stop().await;
@@ -277,7 +277,7 @@ async fn events_follow_streams_new_events_as_json_lines() {
         serde_json::from_str(&line.expect("stdout closed")).unwrap()
     };
 
-    assert_eq!(next().await["data"]["workspace"]["name"], "default");
+    assert_eq!(next().await["data"]["workspace"]["name"], "Home");
     let first = next().await;
     assert_eq!(first["data"]["workspace"]["name"], "before");
     t.heeler(&["ws", "new", "after"]).await;

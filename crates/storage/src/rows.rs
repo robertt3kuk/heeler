@@ -6,14 +6,45 @@ use std::path::PathBuf;
 use heeler_core::{Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
+/// What a workspace is for. The database holds at most one `Home`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Home,
+    Project,
+}
+
+/// Who created a workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatedBy {
+    User,
+    Cli,
+    Agent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRow {
     pub id: WorkspaceId,
     pub name: String,
     pub roots: Vec<PathBuf>,
+    pub kind: WorkspaceKind,
+    pub pinned: bool,
+    pub created_by: CreatedBy,
     pub created_at_ms: u64,
+    /// Latest session activity.
+    pub last_active_ms: u64,
     /// Sort key for listing; unique ordering is the caller's business.
     pub position: i64,
+}
+
+/// A project remembered after its workspace was closed (`recent_projects`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentProject {
+    /// The project's primary root.
+    pub path: PathBuf,
+    pub name: String,
+    pub last_opened_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

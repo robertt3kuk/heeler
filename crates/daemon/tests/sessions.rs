@@ -702,7 +702,7 @@ async fn a_renamed_session_keeps_its_title_while_other_metadata_flows() {
 // 9 ---------------------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn workspace_close_is_refused_for_default_and_for_live_sessions() {
+async fn workspace_close_is_refused_for_home_and_for_live_sessions() {
     let t = TestDaemon::start().await;
     let client = t.connect().await;
     let workspaces = client
@@ -710,7 +710,7 @@ async fn workspace_close_is_refused_for_default_and_for_live_sessions() {
         .await
         .unwrap()
         .workspaces;
-    let default = workspaces.iter().find(|w| w.name == "default").unwrap().id;
+    let default = workspaces.iter().find(|w| w.name == "Home").unwrap().id;
     let close = |id| {
         let client = client.clone();
         async move {
@@ -725,6 +725,7 @@ async fn workspace_close_is_refused_for_default_and_for_live_sessions() {
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: "other".into(),
             roots: vec![],
+            created_by: None,
         }))
         .await
         .unwrap();
@@ -981,6 +982,7 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: "other".into(),
             roots: vec![],
+            created_by: None,
         }))
         .await
         .unwrap();

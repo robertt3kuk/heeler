@@ -27,11 +27,18 @@ pub struct Migration {
 }
 
 /// Migrations shipped in this build.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "projects",
+        sql: include_str!("../migrations/0002_projects.sql"),
+    },
+];
 
 /// Schema version recorded in the database; 0 for a database without `app_meta`.
 pub fn current_version(conn: &Connection) -> Result<u32> {

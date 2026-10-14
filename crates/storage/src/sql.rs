@@ -9,9 +9,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Result, StorageError};
-use crate::rows::{EpochRecord, SessionRow, WorkspaceRow};
+use crate::rows::{CreatedBy, EpochRecord, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow};
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
+
+/// Recent projects remembered; the oldest are dropped when a new one is added.
+pub const RECENT_PROJECTS_KEPT: usize = 200;
 
 /// Epochs remembered in `app_meta`.
 pub const EPOCH_HISTORY_KEPT: usize = 32;
@@ -19,12 +22,32 @@ pub const EPOCH_HISTORY_KEPT: usize = 32;
 /// A mutation. Applied in submission order by the single writer thread.
 #[derive(Debug, Clone)]
 pub enum Write {
-    /// Inserts the workspace; an existing row keeps its `created_at_ms` and `position`.
+    /// Inserts the workspace; an existing row only has its name and roots refreshed.
     InsertWorkspace(WorkspaceRow),
     RenameWorkspace {
         id: WorkspaceId,
         name: String,
     },
+    SetWorkspaceRoots {
+        id: WorkspaceId,
+        roots: Vec<PathBuf>,
+    },
+    SetWorkspacePinned {
+        id: WorkspaceId,
+        pinned: bool,
+    },
+    SetWorkspacePosition {
+        id: WorkspaceId,
+        position: i64,
+    },
+    SetWorkspaceActive {
+        id: WorkspaceId,
+        last_active_ms: u64,
+    },
+    /// Adds or refreshes a recent project (a newer `last_opened_ms` wins; the name is replaced),
+    /// keeping the newest [`RECENT_PROJECTS_KEPT`].
+    UpsertRecentProject(RecentProject),
+    DeleteRecentProject(PathBuf),
     /// Also deletes the workspace's sessions.
     DeleteWorkspace(WorkspaceId),
     /// Inserts or replaces every column except `created_at_ms`.
@@ -54,18 +77,59 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
     match write {
         Write::InsertWorkspace(row) => {
             conn.execute(
-                "INSERT INTO workspaces (id, name, roots_json, created_at_ms, position) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                "INSERT INTO workspaces (id, name, roots_json, kind, pinned, created_by, \
+                     created_at_ms, last_active_ms, position) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT (id) DO UPDATE SET name = excluded.name, roots_json = excluded.roots_json",
                 params![
                     row.id.to_string(),
                     row.name,
                     encode_paths(&row.roots)?,
+                    to_text(&row.kind, "workspace kind")?,
+                    row.pinned,
+                    to_text(&row.created_by, "workspace origin")?,
                     ms(row.created_at_ms),
+                    ms(row.last_active_ms),
                     row.position
                 ],
             )
             .map_err(StorageError::sqlite("inserting a workspace"))?;
+        }
+        Write::SetWorkspaceRoots { id, roots } => {
+            conn.execute(
+                "UPDATE workspaces SET roots_json = ?2 WHERE id = ?1",
+                params![id.to_string(), encode_paths(roots)?],
+            )
+            .map_err(StorageError::sqlite("updating workspace roots"))?;
+        }
+        Write::SetWorkspacePinned { id, pinned } => {
+            conn.execute(
+                "UPDATE workspaces SET pinned = ?2 WHERE id = ?1",
+                params![id.to_string(), pinned],
+            )
+            .map_err(StorageError::sqlite("pinning a workspace"))?;
+        }
+        Write::SetWorkspacePosition { id, position } => {
+            conn.execute(
+                "UPDATE workspaces SET position = ?2 WHERE id = ?1",
+                params![id.to_string(), position],
+            )
+            .map_err(StorageError::sqlite("moving a workspace"))?;
+        }
+        Write::SetWorkspaceActive { id, last_active_ms } => {
+            conn.execute(
+                "UPDATE workspaces SET last_active_ms = ?2 WHERE id = ?1",
+                params![id.to_string(), ms(*last_active_ms)],
+            )
+            .map_err(StorageError::sqlite("recording workspace activity"))?;
+        }
+        Write::UpsertRecentProject(project) => upsert_recent_project(conn, project)?,
+        Write::DeleteRecentProject(path) => {
+            conn.execute(
+                "DELETE FROM recent_projects WHERE path = ?1",
+                [path_str(path)?],
+            )
+            .map_err(StorageError::sqlite("forgetting a recent project"))?;
         }
         Write::RenameWorkspace { id, name } => {
             conn.execute(
@@ -126,6 +190,49 @@ fn upsert_session(conn: &Connection, row: &SessionRow) -> Result<()> {
     Ok(())
 }
 
+fn upsert_recent_project(conn: &Connection, project: &RecentProject) -> Result<()> {
+    let context = "remembering a recent project";
+    conn.execute(
+        "INSERT INTO recent_projects (path, name, last_opened_ms) VALUES (?1, ?2, ?3) \
+         ON CONFLICT (path) DO UPDATE SET name = excluded.name, \
+             last_opened_ms = MAX(last_opened_ms, excluded.last_opened_ms)",
+        params![
+            path_str(&project.path)?,
+            project.name,
+            ms(project.last_opened_ms)
+        ],
+    )
+    .map_err(StorageError::sqlite(context))?;
+    conn.execute(
+        "DELETE FROM recent_projects WHERE path NOT IN \
+             (SELECT path FROM recent_projects ORDER BY last_opened_ms DESC, path LIMIT ?1)",
+        [i64::try_from(RECENT_PROJECTS_KEPT).unwrap_or(i64::MAX)],
+    )
+    .map_err(StorageError::sqlite(context))?;
+    Ok(())
+}
+
+pub fn list_recent_projects(conn: &Connection) -> Result<Vec<RecentProject>> {
+    let context = "listing recent projects";
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, name, last_opened_ms FROM recent_projects \
+             ORDER BY last_opened_ms DESC, path",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RecentProject {
+                path: PathBuf::from(row.get::<_, String>(0)?),
+                name: row.get(1)?,
+                last_opened_ms: unms(row.get(2)?),
+            })
+        })
+        .map_err(StorageError::sqlite(context))?;
+    rows.map(|row| row.map_err(StorageError::sqlite(context)))
+        .collect()
+}
+
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO app_meta (key, value) VALUES (?1, ?2) \
@@ -167,7 +274,8 @@ pub fn epoch_history(conn: &Connection) -> Result<Vec<EpochRecord>> {
 pub fn list_workspaces(conn: &Connection) -> Result<Vec<WorkspaceRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, roots_json, created_at_ms, position FROM workspaces \
+            "SELECT id, name, roots_json, kind, pinned, created_by, created_at_ms, \
+                 last_active_ms, position FROM workspaces \
              ORDER BY position, created_at_ms, id",
         )
         .map_err(StorageError::sqlite("listing workspaces"))?;
@@ -208,14 +316,23 @@ fn collect<T>(
 fn workspace_from(row: &Row<'_>) -> Result<WorkspaceRow> {
     let id: String = row.get(0).map_err(read_err)?;
     let roots_json: String = row.get(2).map_err(read_err)?;
+    let kind: String = row.get(3).map_err(read_err)?;
+    let created_by: String = row.get(5).map_err(read_err)?;
+    let at = |column: &str| format!("workspaces.{column} of {id}");
     Ok(WorkspaceRow {
         id: id
             .parse()
             .map_err(|e| StorageError::corrupt("workspaces.id", e))?,
         name: row.get(1).map_err(read_err)?,
         roots: decode_paths(&roots_json, &id)?,
-        created_at_ms: unms(row.get(3).map_err(read_err)?),
-        position: row.get(4).map_err(read_err)?,
+        kind: from_text::<WorkspaceKind>(&kind)
+            .map_err(|e| StorageError::corrupt(at("kind"), e))?,
+        pinned: row.get(4).map_err(read_err)?,
+        created_by: from_text::<CreatedBy>(&created_by)
+            .map_err(|e| StorageError::corrupt(at("created_by"), e))?,
+        created_at_ms: unms(row.get(6).map_err(read_err)?),
+        last_active_ms: unms(row.get(7).map_err(read_err)?),
+        position: row.get(8).map_err(read_err)?,
     })
 }
 

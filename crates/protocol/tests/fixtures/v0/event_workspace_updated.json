@@ -1,1 +1,1 @@
-{"data":{"workspace":{"id":"01K7F3B5N2Q9W8E4R6T1Y0V3JA","name":"heeler","roots":["/repo"]}},"epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","event":"workspace.updated","seq":1000}
+{"data":{"workspace":{"created_by":"cli","id":"01K7F3B5N2Q9W8E4R6T1Y0V3JA","kind":"project","last_active_ms":1791894170000,"live_sessions":2,"name":"heeler","pinned":true,"position":2,"roots":["/repo","/other-repo"],"total_sessions":5}},"epoch":"01K7F3B5N2Q9W8E4R6T1Y0V3PQ","event":"workspace.updated","seq":1000}

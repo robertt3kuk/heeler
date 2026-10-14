@@ -206,6 +206,7 @@ pub async fn create_workspace(client: &Client, name: &str) -> WorkspaceInfo {
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.to_owned(),
             roots: Vec::new(),
+            created_by: None,
         }))
         .await
         .unwrap()

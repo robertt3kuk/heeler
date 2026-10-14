@@ -40,6 +40,24 @@ pub enum Request {
     WorkspaceRename(WorkspaceRename),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceRef),
+    /// Capability `workspace.projects` (protocol 0.7): the workspace for a folder.
+    #[serde(rename = "workspace.open")]
+    WorkspaceOpen(WorkspaceOpen),
+    /// Capability `workspace.projects` (protocol 0.7).
+    #[serde(rename = "workspace.add_root")]
+    WorkspaceAddRoot(WorkspaceRoot),
+    /// Capability `workspace.projects` (protocol 0.7).
+    #[serde(rename = "workspace.remove_root")]
+    WorkspaceRemoveRoot(WorkspaceRoot),
+    /// Capability `workspace.projects` (protocol 0.7): open and remembered projects.
+    #[serde(rename = "workspace.recent")]
+    WorkspaceRecent(WorkspaceRecent),
+    /// Capability `workspace.projects` (protocol 0.7): manual order.
+    #[serde(rename = "workspace.move")]
+    WorkspaceMove(WorkspaceMove),
+    /// Capability `workspace.projects` (protocol 0.7).
+    #[serde(rename = "workspace.pin")]
+    WorkspacePin(WorkspacePin),
     #[serde(rename = "session.create")]
     SessionCreate(SessionCreate),
     #[serde(rename = "session.list")]
@@ -146,6 +164,101 @@ pub struct WorkspaceCreate {
     pub name: String,
     #[serde(default)]
     pub roots: Vec<PathBuf>,
+    /// Who asks (protocol 0.7); absent means `user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<CreatedBy>,
+}
+
+/// Who created a workspace (protocol 0.7). `agent` is for programmatic callers acting for a
+/// coding agent; the daemon records what the request says and does not verify it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatedBy {
+    #[default]
+    User,
+    Cli,
+    Agent,
+}
+
+/// What a workspace is (protocol 0.7). Exactly one workspace is `home`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Home,
+    #[default]
+    Project,
+}
+
+/// `workspace.open` (protocol 0.7): finds the workspace one of whose roots contains `path`, or
+/// creates one for the folder (its git repository root when inside a repository).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceOpen {
+    /// An existing directory, absolute.
+    pub path: PathBuf,
+    /// Applies when a workspace is created; absent means `user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<CreatedBy>,
+}
+
+/// Result of `workspace.open`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceOpened {
+    pub workspace: WorkspaceInfo,
+    /// A workspace was created for the path (`false`: an existing one contains it).
+    pub created: bool,
+}
+
+/// `workspace.add_root` / `workspace.remove_root` (protocol 0.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRoot {
+    pub workspace_id: WorkspaceId,
+    pub path: PathBuf,
+}
+
+/// `workspace.recent` (protocol 0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WorkspaceRecent {
+    /// At most [`RECENT_PROJECTS_MAX_LIMIT`] are answered; absent means
+    /// [`RECENT_PROJECTS_DEFAULT_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+pub const RECENT_PROJECTS_DEFAULT_LIMIT: u32 = 20;
+pub const RECENT_PROJECTS_MAX_LIMIT: u32 = 50;
+
+/// One project of `workspace.recent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentProject {
+    /// The project's primary root (the first of its workspace's roots).
+    pub path: PathBuf,
+    pub name: String,
+    pub last_opened_ms: u64,
+    /// The open workspace of the project; absent for a closed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
+}
+
+/// Result of `workspace.recent`: newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentProjects {
+    pub projects: Vec<RecentProject>,
+}
+
+/// `workspace.move` (protocol 0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMove {
+    pub workspace_id: WorkspaceId,
+    /// Place the workspace right before this one; absent moves it to the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<WorkspaceId>,
+}
+
+/// `workspace.pin` (protocol 0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspacePin {
+    pub workspace_id: WorkspaceId,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +477,25 @@ pub struct WorkspaceInfo {
     pub id: WorkspaceId,
     pub name: String,
     pub roots: Vec<PathBuf>,
+    /// Protocol 0.7 (capability `workspace.projects`); the fields below default for older
+    /// daemons.
+    #[serde(default)]
+    pub kind: WorkspaceKind,
+    #[serde(default)]
+    pub pinned: bool,
+    /// Manual order; the list is sorted by it.
+    #[serde(default)]
+    pub position: i64,
+    #[serde(default)]
+    pub created_by: CreatedBy,
+    /// Latest session activity: a session created, input typed, or output produced (updated
+    /// at most once per 10 s).
+    #[serde(default)]
+    pub last_active_ms: u64,
+    #[serde(default)]
+    pub live_sessions: u32,
+    #[serde(default)]
+    pub total_sessions: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

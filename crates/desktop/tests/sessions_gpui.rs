@@ -832,10 +832,11 @@ fn workspace_settings_apply_while_their_session_is_focused(cx: &mut TestAppConte
     let (view, cx) = open(cx, &daemon);
     wait_synced(&view, cx, 2);
 
+    // Home has a root too: its folder, which carries no workspace settings here.
     open_session(&view, cx, plain.id);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
-        None
+        Some(std::fs::canonicalize(&daemon.paths.default_home_folder).unwrap())
     );
     assert_eq!(
         view.read_with(cx, |wb, _| wb.terminal_view_settings().font_size),
@@ -866,14 +867,14 @@ fn new_terminal_starts_in_the_focused_workspace_root_or_home(cx: &mut TestAppCon
     let (view, cx) = open(cx, &daemon);
     wait_synced(&view, cx, 1);
 
-    // Nothing focused: the default workspace and $HOME.
+    // Nothing focused: Home and its folder.
     cx.simulate_keystrokes("cmd-t");
     wait_until(cx, "the new session", |cx| {
         view.read_with(cx, |wb, _| wb.focused_session()).is_some()
     });
     let first = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
     let info = daemon.session(first);
-    assert_same_dir(info.cwd.as_deref(), &std::env::home_dir().unwrap());
+    assert_same_dir(info.cwd.as_deref(), &daemon.paths.default_home_folder);
     assert_ne!(info.workspace_id, ws.id);
 
     // From a session of `proj`: same workspace, in its root.
@@ -1313,7 +1314,7 @@ fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppCon
     let below = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
     assert_same_dir(daemon.session(below).cwd.as_deref(), dir.path());
 
-    // From a panel (not a terminal): the workspace root, else $HOME.
+    // From a panel (not a terminal): the Home folder.
     cx.dispatch_action(actions::OpenPanel("sessions".into()));
     cx.dispatch_action(actions::OpenActivePanelAsTab);
     cx.simulate_keystrokes("cmd-d");
@@ -1325,7 +1326,10 @@ fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppCon
             .is_some_and(|s| ![origin.id, right, below].contains(&s))
     });
     let fourth = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
-    assert_eq!(daemon.session(fourth).cwd, std::env::home_dir());
+    assert_same_dir(
+        daemon.session(fourth).cwd.as_deref(),
+        &daemon.paths.default_home_folder,
+    );
 }
 
 #[gpui::test]

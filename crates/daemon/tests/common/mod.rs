@@ -30,6 +30,12 @@ pub struct TestDaemon {
 
 impl TestDaemon {
     pub async fn start() -> Self {
+        Self::start_with("", |_| {}).await
+    }
+
+    /// Starts with `daemon.toml` containing `toml` and `tweak` applied to the config. The Home
+    /// folder defaults to `Heeler` inside the temporary `HEELER_HOME`, never to `~/Heeler`.
+    pub async fn start_with(toml: &str, tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         // Daemon logs show up for failing tests; filter with RUST_LOG.
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
@@ -37,9 +43,12 @@ impl TestDaemon {
             .try_init();
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
-        let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
-            .await
-            .unwrap();
+        if !toml.is_empty() {
+            std::fs::write(&paths.config_file, toml).unwrap();
+        }
+        let mut config = DaemonConfig::new(paths.clone());
+        tweak(&mut config);
+        let daemon = heeler_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,

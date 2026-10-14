@@ -62,9 +62,25 @@ pub struct TerminalEntry {
     terminal: Terminal,
     input: mpsc::Sender<Bytes>,
     ended: Arc<AtomicBool>,
+    /// When the registry last heard about input to this terminal (ms since the epoch).
+    activity_notified_ms: AtomicU64,
 }
 
 impl TerminalEntry {
+    /// True at most once per [`ACTIVITY_NOTIFY_INTERVAL`](crate::registry::ACTIVITY_NOTIFY_INTERVAL):
+    /// the registry should hear about this input.
+    fn activity_notice_due(&self) -> bool {
+        let now = crate::registry::now_ms();
+        let interval =
+            u64::try_from(crate::registry::ACTIVITY_NOTIFY_INTERVAL.as_millis()).unwrap_or(0);
+        let last = self.activity_notified_ms.load(Ordering::Relaxed);
+        now.saturating_sub(last) >= interval
+            && self
+                .activity_notified_ms
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
     pub fn id(&self) -> TerminalId {
         self.id
     }
@@ -154,6 +170,7 @@ impl TerminalHub {
             terminal,
             input,
             ended,
+            activity_notified_ms: AtomicU64::new(0),
         });
         lock(&self.inner).terminals.insert(id, Arc::clone(&entry));
         entry
@@ -384,26 +401,32 @@ impl TerminalHub {
     /// Queues a kind=2 frame body for the terminal. Waits while the terminal's input queue is
     /// full (the child is not reading): that stalls the sending connection's reader only.
     /// Input for unknown or ended terminals is dropped.
-    pub async fn input(&self, id: TerminalId, bytes: Bytes) {
+    ///
+    /// Returns whether the registry should be told about session activity: input was queued
+    /// and no notice for this terminal went out in the last second.
+    pub async fn input(&self, id: TerminalId, bytes: Bytes) -> bool {
         let entry = match self.get(id) {
             Ok(entry) => entry,
             Err(_) => {
                 debug!(terminal = %id, len = bytes.len(), "input for an unknown terminal dropped");
-                return;
+                return false;
             }
         };
         let mut rest = bytes;
+        let mut queued = false;
         while !rest.is_empty() {
             if entry.ended.load(Ordering::Acquire) {
                 debug!(terminal = %id, len = rest.len(), "input for an ended terminal dropped");
-                return;
+                break;
             }
             let slice = rest.split_to(rest.len().min(INPUT_SLICE));
             if entry.input.send(slice).await.is_err() {
                 debug!(terminal = %id, "input drain gone; input dropped");
-                return;
+                break;
             }
+            queued = true;
         }
+        queued && entry.activity_notice_due()
     }
 }
 

@@ -23,6 +23,7 @@ use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::paths::Paths;
+use crate::projects;
 use crate::registry::{self, RegistryConfig};
 use crate::restore::{self, Stored};
 use crate::router::Router;
@@ -51,6 +52,8 @@ pub struct DaemonConfig {
     /// The `heeler` CLI exported to sessions as `HEELER_BIN`; `None` looks for it next to this
     /// executable, then on `PATH`.
     pub heeler_bin: Option<PathBuf>,
+    /// Shortest time between two `last_active_ms` updates of one workspace.
+    pub activity_interval: Duration,
 }
 
 impl DaemonConfig {
@@ -61,6 +64,7 @@ impl DaemonConfig {
             outbound_queue: DEFAULT_OUTBOUND_QUEUE,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             heeler_bin: None,
+            activity_interval: registry::ACTIVITY_INTERVAL,
         }
     }
 }
@@ -118,7 +122,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     // Under the lock nobody else touches the database. A daemon that cannot read its config or
     // open its database must not come up: it would serve an empty state and then overwrite
     // the real one.
-    let settings = DaemonSettings::load(&paths.config_file)?;
+    let settings = DaemonSettings::load(&paths.config_file, paths.user_home.as_deref())?;
+    let home_folder = settings
+        .home_folder
+        .clone()
+        .unwrap_or_else(|| paths.default_home_folder.clone());
+    let home_folder = prepare_home_folder(home_folder).await?;
     let (storage, stored) = open_storage(&paths.database).await?;
     remove_stale_socket(&paths.socket)?;
     let listener = UnixListener::bind(&paths.socket).map_err(DaemonError::io(format!(
@@ -163,6 +172,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             heeler_bin: config.heeler_bin.unwrap_or_else(agent::resolve_heeler_bin),
             storage: storage.clone(),
             restore: settings.restore_sessions,
+            home_folder,
+            activity_interval: config.activity_interval,
         },
         stored,
     );
@@ -288,6 +299,14 @@ async fn accept_loop(
     }
     drop(held);
     info!("heelerd stopped");
+}
+
+/// Creates the Home folder when it is missing (and only then) and returns its canonical path.
+async fn prepare_home_folder(folder: PathBuf) -> Result<PathBuf, DaemonError> {
+    let context = format!("preparing the Home folder {}", folder.display());
+    tokio::task::spawn_blocking(move || projects::ensure_home_folder(&folder))
+        .await?
+        .map_err(DaemonError::io(context))
 }
 
 /// Opens (and migrates) the database and reads its content, off the async threads.

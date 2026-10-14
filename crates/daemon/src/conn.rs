@@ -34,6 +34,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.restore",
     "agent.report",
     "terminal.blocks",
+    "workspace.projects",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

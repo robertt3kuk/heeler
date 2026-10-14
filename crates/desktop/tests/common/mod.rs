@@ -182,6 +182,7 @@ impl TestDaemon {
         self.call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.to_owned(),
             roots: roots.iter().map(|r| r.to_path_buf()).collect(),
+            created_by: None,
         }))
     }
 

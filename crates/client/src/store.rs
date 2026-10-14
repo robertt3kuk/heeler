@@ -26,7 +26,8 @@ pub struct StoreState {
     pub connection: ConnectionState,
     /// Epoch of the daemon this state describes; `None` before the first synchronisation.
     pub epoch: Option<Epoch>,
-    /// The daemon's order: `default` first, then creation order.
+    /// The daemon's manual order (`position`); Home usually comes first. Sort modes, pins and
+    /// filters are the UI's business, from the fields of [`WorkspaceInfo`].
     pub workspaces: Vec<WorkspaceInfo>,
     /// Creation order (`created_at_ms`, then id).
     pub sessions: Vec<SessionInfo>,
@@ -107,6 +108,7 @@ impl StoreState {
             ..Effects::default()
         };
         self.workspaces = snapshot.workspaces;
+        self.workspaces.sort_by_key(|w| w.position);
         self.sessions = snapshot.sessions;
         self.sessions.sort_by_key(session_key);
         effects
@@ -128,6 +130,9 @@ impl StoreState {
                     Some(existing) => *existing = workspace,
                     None => self.workspaces.push(workspace),
                 }
+                // A move announces every changed position; the list follows them (stable, so
+                // equal positions keep their arrival order).
+                self.workspaces.sort_by_key(|w| w.position);
             }
             Event::WorkspaceClosed { workspace_id } => {
                 self.workspaces.retain(|w| w.id != workspace_id);
@@ -192,6 +197,7 @@ mod tests {
     use std::path::PathBuf;
 
     use heeler_core::{SessionKind, SessionState, WorkspaceId};
+    use heeler_protocol::messages::{CreatedBy, WorkspaceKind};
 
     use super::*;
 
@@ -220,6 +226,13 @@ mod tests {
             id: WorkspaceId::new(),
             name: name.into(),
             roots: vec![PathBuf::from("/r")],
+            kind: WorkspaceKind::Project,
+            pinned: false,
+            position: 0,
+            created_by: CreatedBy::User,
+            last_active_ms: 0,
+            live_sessions: 0,
+            total_sessions: 0,
         }
     }
 
@@ -241,6 +254,47 @@ mod tests {
             workspace: renamed.clone(),
         });
         assert_eq!(state.workspaces, vec![renamed, b]);
+    }
+
+    #[test]
+    fn workspace_updates_reorder_the_list_by_position() {
+        let mut state = StoreState::initial();
+        let at = |name: &str, position| WorkspaceInfo {
+            position,
+            ..workspace(name)
+        };
+        let (home, a, b) = (at("home", 0), at("a", 1), at("b", 2));
+        for w in [&b, &home, &a] {
+            state.apply(Event::WorkspaceUpdated {
+                workspace: w.clone(),
+            });
+        }
+        assert_eq!(state.workspaces, vec![home.clone(), a.clone(), b.clone()]);
+
+        // `b` moves before `a`: the daemon announces both new positions.
+        let b_moved = WorkspaceInfo {
+            position: 1,
+            ..b.clone()
+        };
+        let a_moved = WorkspaceInfo {
+            position: 2,
+            ..a.clone()
+        };
+        for w in [&b_moved, &a_moved] {
+            state.apply(Event::WorkspaceUpdated {
+                workspace: (*w).clone(),
+            });
+        }
+        assert_eq!(state.workspaces, vec![home.clone(), b_moved, a_moved]);
+
+        // A snapshot installs the daemon's order too.
+        let snapshot = SessionSnapshot {
+            workspaces: vec![b.clone(), a.clone(), home.clone()],
+            sessions: Vec::new(),
+            seq: heeler_core::Seq(1),
+        };
+        state.install_snapshot(snapshot);
+        assert_eq!(state.workspaces, vec![home, a, b]);
     }
 
     #[test]

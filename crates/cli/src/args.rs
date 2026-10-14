@@ -84,10 +84,19 @@ pub enum DaemonCommand {
     },
 }
 
+const WS_TARGET_HELP: &str =
+    "Workspace id, unique id prefix (at least 4 characters), or exact name";
+
 #[derive(Debug, Subcommand)]
 pub enum WsCommand {
-    /// List workspaces
-    Ls,
+    /// List workspaces (empty ones are hidden unless pinned or Home); pinned ones come first
+    Ls(WsLsArgs),
+    /// Open a folder as a project: finds the workspace containing it, or creates one (named
+    /// after the folder, or its git repository root)
+    Open {
+        /// The folder; relative paths are resolved against the current directory
+        path: PathBuf,
+    },
     /// Create a workspace
     New {
         name: String,
@@ -97,8 +106,72 @@ pub enum WsCommand {
     },
     /// Rename a workspace
     Rename { id: WorkspaceId, name: String },
-    /// Close a workspace
+    /// Close a workspace (it stays in `ws recent`); Home and workspaces with live sessions
+    /// cannot be closed
     Close { id: WorkspaceId },
+    /// Change the manual order: put a workspace before another one, or last
+    Move(WsMoveArgs),
+    /// Keep a workspace at the top of listings
+    Pin {
+        #[arg(help = WS_TARGET_HELP)]
+        target: String,
+    },
+    /// Undo `pin`
+    Unpin {
+        #[arg(help = WS_TARGET_HELP)]
+        target: String,
+    },
+    /// Open projects and closed ones remembered, newest first
+    Recent {
+        /// At most this many (the daemon caps it at 50)
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+        limit: u32,
+    },
+    /// Print `export HEELER_WORKSPACE=<id>`: new sessions of `heeler new` go to that workspace
+    /// (use as `eval "$(heeler ws use NAME)"`)
+    Use {
+        #[arg(help = WS_TARGET_HELP)]
+        target: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct WsLsArgs {
+    /// Order of the listing (pinned workspaces always come first)
+    #[arg(long, value_enum, default_value_t = WsSort::Manual)]
+    pub sort: WsSort,
+    /// Include empty workspaces that are neither pinned nor Home
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WsSort {
+    /// The daemon's manual order (`ws move`)
+    Manual,
+    /// Latest session activity first
+    Recent,
+    /// Workspaces with sessions waiting for you (approvals, blocked agents) first
+    Attention,
+    /// Alphabetical
+    Name,
+}
+
+#[derive(Debug, Args)]
+pub struct WsMoveArgs {
+    #[arg(help = WS_TARGET_HELP)]
+    pub target: String,
+    /// Place it right before this workspace
+    #[arg(
+        long,
+        value_name = "ID|NAME",
+        conflicts_with = "last",
+        required_unless_present = "last"
+    )]
+    pub before: Option<String>,
+    /// Place it after all others
+    #[arg(long)]
+    pub last: bool,
 }
 
 #[derive(Debug, Args)]
@@ -127,9 +200,10 @@ pub struct TargetArgs {
 
 #[derive(Debug, Args)]
 pub struct NewArgs {
-    /// Workspace to create the session in (default: the default workspace)
-    #[arg(long = "ws", value_name = "ID")]
-    pub workspace: Option<WorkspaceId>,
+    /// Workspace to create the session in: id, unique id prefix, or exact name (default:
+    /// $HEELER_WORKSPACE, else Home)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
     /// Working directory (default: the current directory)
     #[arg(long, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
@@ -149,9 +223,9 @@ pub struct NewArgs {
 
 #[derive(Debug, Args)]
 pub struct LsArgs {
-    /// Only sessions of this workspace
-    #[arg(long = "ws", value_name = "ID")]
-    pub workspace: Option<WorkspaceId>,
+    /// Only sessions of this workspace: id, unique id prefix, or exact name
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Args)]

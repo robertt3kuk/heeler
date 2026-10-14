@@ -50,7 +50,7 @@ fn start_and_call_from_a_plain_thread() {
         let state = connection.state().borrow().clone();
         assert_eq!(state.epoch, Some(status.epoch));
         assert_eq!(state.workspaces.len(), 1, "the default workspace");
-        assert_eq!(state.workspaces[0].name, "default");
+        assert_eq!(state.workspaces[0].name, "Home");
         assert!(state.sessions.is_empty());
         connection.shutdown();
     });
@@ -150,7 +150,7 @@ async fn sever_reconnects_and_replays_missed_events_without_duplicates() {
         .iter()
         .map(|w| w.name.as_str())
         .collect();
-    assert_eq!(names, ["default", "before", "during-a", "during-b"]);
+    assert_eq!(names, ["Home", "before", "during-a", "during-b"]);
     let ids = workspace_ids(&state_after.workspaces);
     assert_eq!(
         ids.iter().collect::<HashSet<_>>().len(),

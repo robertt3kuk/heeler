@@ -2409,6 +2409,7 @@ dependencies = [
  "heeler-storage",
  "heeler-terminal",
  "libc",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

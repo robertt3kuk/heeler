@@ -14,7 +14,7 @@ use heeler_daemon::{DaemonConfig, DaemonError, Paths, RunningDaemon};
 use heeler_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Hello, Request,
     ResumeOutcome, ResumePoint, SessionRef, SessionSnapshot, Subscribed, WorkspaceCreate,
-    WorkspaceInfo, WorkspaceList, WorkspaceRef, WorkspaceRename,
+    WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceRef, WorkspaceRename,
 };
 use heeler_protocol::{
     ControlMessage, ErrorBody, ErrorCode, FrameCodec, PROTOCOL_VERSION, ProtocolVersion,
@@ -91,6 +91,7 @@ async fn create_workspace(client: &Client, name: &str) -> WorkspaceInfo {
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.into(),
             roots: vec![],
+            created_by: None,
         }))
         .await
         .unwrap()
@@ -184,7 +185,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "terminal.colors",
             "session.restore",
             "agent.report",
-            "terminal.blocks"
+            "terminal.blocks",
+            "workspace.projects"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);
@@ -341,6 +343,7 @@ async fn workspace_mutations_emit_events_in_seq_order() {
         .call::<WorkspaceInfo>(Request::WorkspaceCreate(WorkspaceCreate {
             name: "  ".into(),
             roots: vec![],
+            created_by: None,
         }))
         .await;
     assert!(matches!(
@@ -355,13 +358,14 @@ async fn workspace_mutations_emit_events_in_seq_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn default_workspace_exists_and_snapshot_carries_seq() {
+async fn home_workspace_exists_and_snapshot_carries_seq() {
     let t = TestDaemon::start().await;
     let client = t.connect().await;
 
     let list: WorkspaceList = client.call(Request::WorkspaceList(Empty {})).await.unwrap();
     assert_eq!(list.workspaces.len(), 1);
-    assert_eq!(list.workspaces[0].name, "default");
+    assert_eq!(list.workspaces[0].name, "Home");
+    assert_eq!(list.workspaces[0].kind, WorkspaceKind::Home);
 
     create_workspace(&client, "second").await;
     let snapshot: SessionSnapshot = client

@@ -10,7 +10,10 @@ use tempfile::TempDir;
 
 use crate::migrate::Migration;
 use crate::sql::Fault;
-use crate::{SessionRow, Storage, StorageError, WorkspaceRow, Write, migrate};
+use crate::{
+    CreatedBy, RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow,
+    Write, migrate,
+};
 
 fn db(dir: &TempDir) -> PathBuf {
     dir.path().join("heeler.db")
@@ -21,7 +24,11 @@ fn workspace(name: &str, position: i64) -> WorkspaceRow {
         id: WorkspaceId::new(),
         name: name.to_owned(),
         roots: vec![PathBuf::from("/work/a"), PathBuf::from("/work/b")],
+        kind: WorkspaceKind::Project,
+        pinned: false,
+        created_by: CreatedBy::User,
         created_at_ms: 1_000 + u64::try_from(position).unwrap(),
+        last_active_ms: 2_000 + u64::try_from(position).unwrap(),
         position,
     }
 }
@@ -43,13 +50,14 @@ fn session(workspace: WorkspaceId, title: &str) -> SessionRow {
 }
 
 const V1: Migration = migrate::MIGRATIONS[0];
-const V2_OK: Migration = Migration {
-    version: 2,
+const V2: Migration = migrate::MIGRATIONS[1];
+const V3_OK: Migration = Migration {
+    version: 3,
     name: "extra",
     sql: "CREATE TABLE extra (x INTEGER NOT NULL);",
 };
-const V2_BROKEN: Migration = Migration {
-    version: 2,
+const V3_BROKEN: Migration = Migration {
+    version: 3,
     name: "broken",
     // The first statement succeeds; the second must roll it back.
     sql: "CREATE TABLE extra (x INTEGER NOT NULL); INSERT INTO no_such_table VALUES (1);",
@@ -87,13 +95,13 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 1);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
     storage.close();
 
-    for table in ["app_meta", "workspaces", "sessions"] {
+    for table in ["app_meta", "workspaces", "sessions", "recent_projects"] {
         assert!(table_exists(&db(&dir), table), "{table}");
     }
     let conn = rusqlite::Connection::open(db(&dir)).unwrap();
@@ -137,7 +145,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 1);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -159,12 +167,12 @@ fn a_backup_is_made_before_a_pending_migration() {
     let dir = tempfile::tempdir().unwrap();
     let ws = workspace("alpha", 0);
     {
-        let storage = Storage::open_with_migrations(db(&dir), &[V1]).unwrap();
+        let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
         storage.workspaces().insert(ws.clone()).unwrap();
         storage.close();
     }
-    let storage = Storage::open_with_migrations(db(&dir), &[V1, V2_OK]).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
+    let storage = Storage::open_with_migrations(db(&dir), &[V1, V2, V3_OK]).unwrap();
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
     storage.close();
     assert!(table_exists(&db(&dir), "extra"));
 
@@ -172,12 +180,12 @@ fn a_backup_is_made_before_a_pending_migration() {
     assert_eq!(files.len(), 1, "{files:?}");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
-        name.starts_with("heeler-") && name.ends_with("-v1.db"),
+        name.starts_with("heeler-") && name.ends_with("-v2.db"),
         "{name}"
     );
     // The backup is the pre-migration database: version 1, data present, no `extra` table.
     assert!(!table_exists(&files[0], "extra"));
-    let old = Storage::open_with_migrations(&files[0], &[V1]).unwrap();
+    let old = Storage::open_with_migrations(&files[0], &[V1, V2]).unwrap();
     assert_eq!(old.workspaces().list().unwrap(), [ws]);
     old.close();
 }
@@ -187,12 +195,12 @@ fn a_failed_migration_keeps_the_original_and_reports_it() {
     let dir = tempfile::tempdir().unwrap();
     let ws = workspace("alpha", 0);
     {
-        let storage = Storage::open_with_migrations(db(&dir), &[V1]).unwrap();
+        let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
         storage.workspaces().insert(ws.clone()).unwrap();
         storage.close();
     }
 
-    let error = Storage::open_with_migrations(db(&dir), &[V1, V2_BROKEN]).unwrap_err();
+    let error = Storage::open_with_migrations(db(&dir), &[V1, V2, V3_BROKEN]).unwrap_err();
     let StorageError::Migration {
         version,
         name,
@@ -202,16 +210,16 @@ fn a_failed_migration_keeps_the_original_and_reports_it() {
     else {
         panic!("expected a migration error, got {error}");
     };
-    assert_eq!((*version, name.as_str()), (2, "broken"));
+    assert_eq!((*version, name.as_str()), (3, "broken"));
     assert!(backup.as_ref().is_some_and(|b| b.exists()));
     let text = error.to_string();
-    assert!(text.contains("migration 2 (broken) failed"), "{text}");
+    assert!(text.contains("migration 3 (broken) failed"), "{text}");
     assert!(text.contains("left unchanged"), "{text}");
 
     // Nothing of the failed migration is visible; the data and version are as before.
     assert!(!table_exists(&db(&dir), "extra"));
-    let storage = Storage::open_with_migrations(db(&dir), &[V1]).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 1);
+    let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
     storage.close();
     integrity_ok(&db(&dir));
@@ -220,16 +228,16 @@ fn a_failed_migration_keeps_the_original_and_reports_it() {
 #[test]
 fn a_database_from_a_newer_build_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    Storage::open_with_migrations(db(&dir), &[V1, V2_OK])
+    Storage::open_with_migrations(db(&dir), &[V1, V2, V3_OK])
         .unwrap()
         .close();
-    let error = Storage::open_with_migrations(db(&dir), &[V1]).unwrap_err();
+    let error = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap_err();
     assert!(
         matches!(
             error,
             StorageError::SchemaTooNew {
-                found: 2,
-                supported: 1,
+                found: 3,
+                supported: 2,
                 ..
             }
         ),
@@ -240,7 +248,7 @@ fn a_database_from_a_newer_build_is_refused() {
 #[test]
 fn only_the_newest_five_backups_are_kept() {
     let dir = tempfile::tempdir().unwrap();
-    Storage::open_with_migrations(db(&dir), &[V1])
+    Storage::open_with_migrations(db(&dir), &[V1, V2])
         .unwrap()
         .close();
     let backup_dir = dir.path().join("backups");
@@ -250,7 +258,7 @@ fn only_the_newest_five_backups_are_kept() {
     }
     fs::write(backup_dir.join("notes.txt"), b"not a backup").unwrap();
 
-    Storage::open_with_migrations(db(&dir), &[V1, V2_OK])
+    Storage::open_with_migrations(db(&dir), &[V1, V2, V3_OK])
         .unwrap()
         .close();
 
@@ -333,6 +341,209 @@ fn workspaces_and_sessions_roundtrip_in_order() {
 
     storage.sessions().delete(a.id).unwrap();
     assert!(storage.sessions().list().unwrap().is_empty());
+}
+
+/// A database as schema v1 wrote it: raw SQL, because the typed API speaks the newest schema.
+fn seed_v1(path: &Path, default: WorkspaceId, other: WorkspaceId) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(V1.sql).unwrap();
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES ('schema_version', '1'), ('default_workspace_id', ?1)",
+        [default.to_string()],
+    )
+    .unwrap();
+    for (id, name, roots, created, position) in [
+        (default, "default", "[]", 100, 0),
+        (other, "api", r#"["/work/api"]"#, 200, 1),
+    ] {
+        conn.execute(
+            "INSERT INTO workspaces (id, name, roots_json, created_at_ms, position) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id.to_string(), name, roots, created, position],
+        )
+        .unwrap();
+    }
+    for (workspace, created, ended) in [(default, 500_i64, None), (other, 300, Some(900_i64))] {
+        conn.execute(
+            "INSERT INTO sessions (id, workspace_id, kind, title, title_locked, spec_json, \
+                 state_json, created_at_ms, ended_at_ms) \
+             VALUES (?1, ?2, 'terminal', 't', 0, '{}', '{\"state\":\"running\"}', ?3, ?4)",
+            rusqlite::params![
+                SessionId::new().to_string(),
+                workspace.to_string(),
+                created,
+                ended
+            ],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn migrating_v1_turns_the_default_workspace_into_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let (default, api) = (WorkspaceId::new(), WorkspaceId::new());
+    seed_v1(&db(&dir), default, api);
+
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows.len(), 2);
+    let home = &rows[0];
+    assert_eq!(home.id, default);
+    assert_eq!(home.kind, WorkspaceKind::Home);
+    assert_eq!(home.name, "Home", "the placeholder name follows");
+    assert!(!home.pinned);
+    assert_eq!(home.created_by, CreatedBy::User);
+    assert_eq!(home.position, 0);
+    // Activity: the newest of creation and end of its sessions.
+    assert_eq!(home.last_active_ms, 500);
+    let project = &rows[1];
+    assert_eq!(project.id, api);
+    assert_eq!(project.kind, WorkspaceKind::Project);
+    assert_eq!(project.name, "api");
+    assert_eq!(project.roots, [PathBuf::from("/work/api")]);
+    assert_eq!(project.last_active_ms, 900);
+    // The pointer is gone: Home is the row with kind `home`.
+    assert_eq!(
+        storage.app_meta().get("default_workspace_id").unwrap(),
+        None
+    );
+    assert!(storage.recent_projects().list().unwrap().is_empty());
+    assert_eq!(
+        storage.sessions().list().unwrap().len(),
+        2,
+        "sessions survive"
+    );
+    storage.close();
+
+    let files = backups(&dir);
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].to_string_lossy().ends_with("-v1.db"));
+}
+
+#[test]
+fn migrating_keeps_a_renamed_default_workspace_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (default, api) = (WorkspaceId::new(), WorkspaceId::new());
+    seed_v1(&db(&dir), default, api);
+    {
+        let conn = rusqlite::Connection::open(db(&dir)).unwrap();
+        conn.execute(
+            "UPDATE workspaces SET name = 'notes' WHERE id = ?1",
+            [default.to_string()],
+        )
+        .unwrap();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(
+        (rows[0].name.as_str(), rows[0].kind),
+        ("notes", WorkspaceKind::Home)
+    );
+    storage.close();
+}
+
+#[test]
+fn there_is_at_most_one_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let home = |name: &str, position| WorkspaceRow {
+        kind: WorkspaceKind::Home,
+        ..workspace(name, position)
+    };
+    let (first, second) = (home("Home", 0), home("Other", 1));
+    storage.workspaces().insert(first.clone()).unwrap();
+    // Rejected by the unique index; the failed write is logged and nothing is stored.
+    storage.workspaces().insert(second).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [first]);
+}
+
+#[test]
+fn workspace_fields_are_updated_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let a = WorkspaceRow {
+        created_by: CreatedBy::Agent,
+        ..workspace("a", 0)
+    };
+    let b = workspace("b", 1);
+    storage.workspaces().insert(a.clone()).unwrap();
+    storage.workspaces().insert(b.clone()).unwrap();
+
+    storage.workspaces().set_pinned(b.id, true).unwrap();
+    storage
+        .workspaces()
+        .set_roots(a.id, vec![PathBuf::from("/x")])
+        .unwrap();
+    storage.workspaces().set_last_active(a.id, 77_000).unwrap();
+    storage
+        .batch(vec![
+            Write::SetWorkspacePosition {
+                id: a.id,
+                position: 5,
+            },
+            Write::SetWorkspacePosition {
+                id: b.id,
+                position: 3,
+            },
+        ])
+        .unwrap();
+
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows.iter().map(|w| w.id).collect::<Vec<_>>(), [b.id, a.id]);
+    assert!(rows[0].pinned && !rows[1].pinned);
+    assert_eq!(rows[0].position, 3);
+    assert_eq!(rows[1].roots, [PathBuf::from("/x")]);
+    assert_eq!(rows[1].last_active_ms, 77_000);
+    assert_eq!(rows[1].created_by, CreatedBy::Agent);
+    assert_eq!(rows[1].created_at_ms, a.created_at_ms);
+}
+
+#[test]
+fn recent_projects_keep_the_newest_time_and_the_newest_two_hundred() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let project = |path: &str, name: &str, at| RecentProject {
+        path: PathBuf::from(path),
+        name: name.to_owned(),
+        last_opened_ms: at,
+    };
+    let recent = storage.recent_projects();
+    recent.upsert(project("/p/a", "a", 10)).unwrap();
+    recent.upsert(project("/p/b", "b", 30)).unwrap();
+    recent.upsert(project("/p/c", "c", 20)).unwrap();
+    // A refresh replaces the name but an older time never wins.
+    recent.upsert(project("/p/b", "b2", 5)).unwrap();
+    recent.upsert(project("/p/a", "a", 40)).unwrap();
+    assert_eq!(
+        recent.list().unwrap(),
+        [
+            project("/p/a", "a", 40),
+            project("/p/b", "b2", 30),
+            project("/p/c", "c", 20)
+        ]
+    );
+    recent.delete(PathBuf::from("/p/c")).unwrap();
+    assert_eq!(recent.list().unwrap().len(), 2);
+
+    for n in 0..250_u64 {
+        recent
+            .upsert(project(&format!("/bulk/{n:03}"), "bulk", 1_000 + n))
+            .unwrap();
+    }
+    let all = recent.list().unwrap();
+    assert_eq!(all.len(), crate::RECENT_PROJECTS_KEPT);
+    assert_eq!(all[0].path, PathBuf::from("/bulk/249"));
+    assert_eq!(all.last().unwrap().path, PathBuf::from("/bulk/050"));
+    storage.close();
+
+    // Durable.
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(
+        storage.recent_projects().list().unwrap().len(),
+        crate::RECENT_PROJECTS_KEPT
+    );
 }
 
 #[test]

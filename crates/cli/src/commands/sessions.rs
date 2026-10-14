@@ -43,6 +43,14 @@ impl Ctx {
             None => std::env::current_dir()?,
         };
         let client = self.connect().await?;
+        let workspace = match super::workspaces::workspace_target(args.workspace) {
+            Some((target, source)) => Some(
+                self.resolve_workspace_id(&client, &target)
+                    .await
+                    .map_err(|error| with_source(error, &target, source))?,
+            ),
+            None => None,
+        };
         // Subscribe before creating so an instantly exiting command is not missed by `attach`.
         let events = client.events();
         if args.attach {
@@ -54,7 +62,7 @@ impl Ctx {
             .call(
                 &client,
                 Request::SessionCreate(SessionCreate {
-                    workspace_id: args.workspace,
+                    workspace_id: workspace,
                     spec: SessionSpec::Terminal(TerminalSpec {
                         command: args.argv,
                         cwd: Some(cwd),
@@ -85,7 +93,11 @@ impl Ctx {
 
     pub(super) async fn ls(&self, args: LsArgs) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let mut list = self.session_list(&client, args.workspace).await?;
+        let workspace = match &args.workspace {
+            Some(target) => Some(self.resolve_workspace_id(&client, target).await?),
+            None => None,
+        };
+        let mut list = self.session_list(&client, workspace).await?;
         list.sessions.sort_by_key(|s| s.created_at_ms);
         self.print(&list, || session_table(&list.sessions, now_ms()))
     }
@@ -264,6 +276,16 @@ impl Ctx {
             Some(terminal) => format!("session {} terminal {terminal}", session.id),
             None => format!("session {}", session.id),
         })
+    }
+}
+
+/// Tells where an unusable workspace name came from when it was not typed on the command line.
+fn with_source(error: CliError, target: &str, source: &str) -> CliError {
+    match error {
+        CliError::Failed(message) if source != "--ws" => {
+            CliError::Failed(format!("{message} (`{target}` comes from ${source})"))
+        }
+        other => other,
     }
 }
 
@@ -453,7 +475,7 @@ fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
 }
 
 /// `5s`, `3m`, `2h`, `4d`: one unit, rounded down.
-fn age_text(secs: u64) -> String {
+pub(super) fn age_text(secs: u64) -> String {
     match secs {
         0..=59 => format!("{secs}s"),
         60..=3599 => format!("{}m", secs / 60),
@@ -462,7 +484,7 @@ fn age_text(secs: u64) -> String {
     }
 }
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

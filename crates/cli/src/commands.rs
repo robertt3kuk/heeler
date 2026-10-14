@@ -5,25 +5,24 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use heeler_client::{Client, ClientError, ConnectOptions, default_socket_path};
-use heeler_core::WorkspaceId;
 use heeler_protocol::ErrorBody;
 use heeler_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
-    SessionListFilter, SessionSnapshot, Subscribed, WorkspaceCreate, WorkspaceInfo, WorkspaceList,
-    WorkspaceRef, WorkspaceRename,
+    SessionListFilter, SessionSnapshot, Subscribed,
 };
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::sleep;
 
-use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs, WsCommand};
+use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs};
 use crate::error::{CliError, is_unreachable};
 
 mod agent;
 mod attach;
 mod integration;
 mod sessions;
+mod workspaces;
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
 const STOP_POLL: Duration = Duration::from_millis(25);
@@ -47,10 +46,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Daemon(DaemonCommand::Restart { stop_sessions }) => {
             ctx?.daemon_restart(stop_sessions).await
         }
-        Command::Ws(WsCommand::Ls) => ctx?.ws_ls().await,
-        Command::Ws(WsCommand::New { name, roots }) => ctx?.ws_new(name, roots).await,
-        Command::Ws(WsCommand::Rename { id, name }) => ctx?.ws_rename(id, name).await,
-        Command::Ws(WsCommand::Close { id }) => ctx?.ws_close(id).await,
+        Command::Ws(command) => ctx?.ws(command).await,
         Command::Api(args) => ctx?.api(args).await,
         Command::Events(args) => ctx?.events(args).await,
         Command::New(args) => ctx?.new_session(args).await,
@@ -257,79 +253,6 @@ impl Ctx {
             start: self.start_output().await?,
         };
         self.print(&out, || format!("restarted: {}", out.start.status.human()))
-    }
-
-    // ---- workspaces ------------------------------------------------------------------------
-
-    async fn ws_ls(&self) -> Result<(), CliError> {
-        let client = self.connect().await?;
-        let list: WorkspaceList = self.call(&client, Request::WorkspaceList(Empty {})).await?;
-        self.print(&list, || {
-            if list.workspaces.is_empty() {
-                return "no workspaces".to_owned();
-            }
-            let width = list
-                .workspaces
-                .iter()
-                .map(|ws| ws.name.chars().count())
-                .max();
-            let width = width.unwrap_or(0).max("NAME".len());
-            let mut table = format!("{:<26}  {:<width$}  ROOTS", "ID", "NAME");
-            for ws in &list.workspaces {
-                let roots: Vec<_> = ws.roots.iter().map(|r| r.display().to_string()).collect();
-                table.push_str(&format!(
-                    "\n{}  {:<width$}  {}",
-                    ws.id,
-                    ws.name,
-                    roots.join(", ")
-                ));
-            }
-            table
-        })
-    }
-
-    async fn ws_new(&self, name: String, roots: Vec<PathBuf>) -> Result<(), CliError> {
-        // The daemon resolves paths from its own working directory, not ours.
-        let roots = roots
-            .iter()
-            .map(std::path::absolute)
-            .collect::<Result<Vec<_>, _>>()?;
-        let client = self.connect().await?;
-        let ws: WorkspaceInfo = self
-            .call(
-                &client,
-                Request::WorkspaceCreate(WorkspaceCreate { name, roots }),
-            )
-            .await?;
-        self.print(&ws, || format!("created {} ({})", ws.id, ws.name))
-    }
-
-    async fn ws_rename(&self, id: WorkspaceId, name: String) -> Result<(), CliError> {
-        let client = self.connect().await?;
-        let ws: WorkspaceInfo = self
-            .call(
-                &client,
-                Request::WorkspaceRename(WorkspaceRename {
-                    workspace_id: id,
-                    name,
-                }),
-            )
-            .await?;
-        self.print(&ws, || format!("renamed {} to {}", ws.id, ws.name))
-    }
-
-    async fn ws_close(&self, id: WorkspaceId) -> Result<(), CliError> {
-        let client = self.connect().await?;
-        let _: Value = self
-            .call(
-                &client,
-                Request::WorkspaceClose(WorkspaceRef { workspace_id: id }),
-            )
-            .await?;
-        self.print(
-            &serde_json::json!({"workspace_id": id, "closed": true}),
-            || format!("closed {id}"),
-        )
     }
 
     // ---- raw API and events ------------------------------------------------------------------

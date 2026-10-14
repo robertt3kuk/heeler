@@ -82,11 +82,37 @@ fn prompt_block() -> Block {
     }
 }
 
+fn ws2() -> WorkspaceId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3JB".parse().unwrap()
+}
+
 fn workspace_info() -> WorkspaceInfo {
     WorkspaceInfo {
         id: ws(),
         name: "heeler".into(),
-        roots: vec!["/repo".into()],
+        roots: vec!["/repo".into(), "/other-repo".into()],
+        kind: WorkspaceKind::Project,
+        pinned: true,
+        position: 2,
+        created_by: CreatedBy::Cli,
+        last_active_ms: 1_791_894_170_000,
+        live_sessions: 2,
+        total_sessions: 5,
+    }
+}
+
+fn home_info() -> WorkspaceInfo {
+    WorkspaceInfo {
+        id: ws2(),
+        name: "Home".into(),
+        roots: vec!["/Users/me/Heeler".into()],
+        kind: WorkspaceKind::Home,
+        pinned: false,
+        position: 0,
+        created_by: CreatedBy::User,
+        last_active_ms: 1_791_894_160_000,
+        live_sessions: 0,
+        total_sessions: 0,
     }
 }
 
@@ -121,6 +147,7 @@ fn requests() -> Vec<(&'static str, Request)> {
             Request::WorkspaceCreate(WorkspaceCreate {
                 name: "heeler".into(),
                 roots: vec!["/repo".into()],
+                created_by: None,
             }),
         ),
         ("workspace_list", Request::WorkspaceList(Empty {})),
@@ -291,6 +318,71 @@ fn requests() -> Vec<(&'static str, Request)> {
                 max_bytes: 65536,
             }),
         ),
+        (
+            "workspace_create_agent",
+            Request::WorkspaceCreate(WorkspaceCreate {
+                name: "scratch".into(),
+                roots: vec![],
+                created_by: Some(CreatedBy::Agent),
+            }),
+        ),
+        (
+            "workspace_open",
+            Request::WorkspaceOpen(WorkspaceOpen {
+                path: "/repo/crates/daemon".into(),
+                created_by: None,
+            }),
+        ),
+        (
+            "workspace_open_cli",
+            Request::WorkspaceOpen(WorkspaceOpen {
+                path: "/repo".into(),
+                created_by: Some(CreatedBy::Cli),
+            }),
+        ),
+        (
+            "workspace_add_root",
+            Request::WorkspaceAddRoot(WorkspaceRoot {
+                workspace_id: ws(),
+                path: "/other-repo".into(),
+            }),
+        ),
+        (
+            "workspace_remove_root",
+            Request::WorkspaceRemoveRoot(WorkspaceRoot {
+                workspace_id: ws(),
+                path: "/other-repo".into(),
+            }),
+        ),
+        (
+            "workspace_recent",
+            Request::WorkspaceRecent(WorkspaceRecent { limit: None }),
+        ),
+        (
+            "workspace_recent_limit",
+            Request::WorkspaceRecent(WorkspaceRecent { limit: Some(50) }),
+        ),
+        (
+            "workspace_move",
+            Request::WorkspaceMove(WorkspaceMove {
+                workspace_id: ws(),
+                before: Some(ws2()),
+            }),
+        ),
+        (
+            "workspace_move_last",
+            Request::WorkspaceMove(WorkspaceMove {
+                workspace_id: ws(),
+                before: None,
+            }),
+        ),
+        (
+            "workspace_pin",
+            Request::WorkspacePin(WorkspacePin {
+                workspace_id: ws(),
+                pinned: true,
+            }),
+        ),
     ]
 }
 
@@ -375,6 +467,12 @@ fn events() -> Vec<(&'static str, Event)> {
             Event::TerminalBlock {
                 terminal_id: TID,
                 block: prompt_block(),
+            },
+        ),
+        (
+            "workspace_updated_home",
+            Event::WorkspaceUpdated {
+                workspace: home_info(),
             },
         ),
     ]
@@ -625,6 +723,54 @@ fn responses_match_fixtures() {
             )
             .unwrap(),
         ),
+        (
+            "workspace_info",
+            ControlMessage::ok(8, &workspace_info()).unwrap(),
+        ),
+        (
+            "workspace_list",
+            ControlMessage::ok(
+                9,
+                &WorkspaceList {
+                    workspaces: vec![home_info(), workspace_info()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "workspace_opened",
+            ControlMessage::ok(
+                10,
+                &WorkspaceOpened {
+                    workspace: workspace_info(),
+                    created: true,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "recent_projects",
+            ControlMessage::ok(
+                11,
+                &RecentProjects {
+                    projects: vec![
+                        RecentProject {
+                            path: "/repo".into(),
+                            name: "heeler".into(),
+                            last_opened_ms: 1_791_894_170_000,
+                            workspace_id: Some(ws()),
+                        },
+                        RecentProject {
+                            path: "/old/project".into(),
+                            name: "project".into(),
+                            last_opened_ms: 1_791_800_000_000,
+                            workspace_id: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
         ("ack", ControlMessage::ok(4, &Empty {}).unwrap()),
         (
             "agent_applied",
@@ -673,5 +819,27 @@ fn unknown_events_are_ignored_not_errors() {
     assert_eq!(
         Event::decode("agent.teleported", serde_json::json!({"x": 1})).unwrap(),
         None
+    );
+}
+
+#[test]
+fn workspaces_of_an_older_daemon_decode_with_defaults() {
+    // Protocol 0.6 and older sent only these three fields.
+    let old = serde_json::json!({"id": ws(), "name": "legacy", "roots": ["/a"]});
+    let decoded: WorkspaceInfo = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        decoded,
+        WorkspaceInfo {
+            id: ws(),
+            name: "legacy".into(),
+            roots: vec!["/a".into()],
+            kind: WorkspaceKind::Project,
+            pinned: false,
+            position: 0,
+            created_by: CreatedBy::User,
+            last_active_ms: 0,
+            live_sessions: 0,
+            total_sessions: 0,
+        }
     );
 }

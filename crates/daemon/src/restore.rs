@@ -1,34 +1,24 @@
 //! Loading durable state at start and the rules for what gets stored (ADR 0006, ADR 0009).
 
-use heeler_core::WorkspaceId;
 use heeler_protocol::messages::TerminalSpec;
-use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow};
+use heeler_storage::{RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 use serde::{Deserialize, Serialize};
-
-/// `app_meta` key of the workspace sessions land in when a client names none.
-pub const DEFAULT_WORKSPACE_KEY: &str = "default_workspace_id";
 
 /// Everything the registry needs to rebuild its state.
 #[derive(Debug, Default)]
 pub struct Stored {
     pub workspaces: Vec<WorkspaceRow>,
     pub sessions: Vec<SessionRow>,
-    pub default_workspace: Option<WorkspaceId>,
+    /// Newest first.
+    pub recent_projects: Vec<RecentProject>,
 }
 
 /// Blocking: reads the whole durable state. Run it off the async threads.
 pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
-    let default_workspace = match storage.app_meta().get(DEFAULT_WORKSPACE_KEY)? {
-        Some(text) => Some(text.parse().map_err(|_| StorageError::Corrupt {
-            what: format!("app_meta.{DEFAULT_WORKSPACE_KEY}"),
-            detail: format!("`{text}` is not a workspace id"),
-        })?),
-        None => None,
-    };
     Ok(Stored {
         workspaces: storage.workspaces().list()?,
         sessions: storage.sessions().list()?,
-        default_workspace,
+        recent_projects: storage.recent_projects().list()?,
     })
 }
 

@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.5
+# Heeler IPC Protocol — v0.7
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.7 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`.
 
 ## Frames
 
@@ -42,7 +42,12 @@ Milestone tag = when the method lands.
 | `daemon.status` | query | → version, uptime, epoch, counts | M1 |
 | `daemon.shutdown` | command | `{stop_sessions: bool, forget?: bool}`; `forget` (capability `session.restore`) drops the stopped sessions from the restore set | M1 |
 | `events.subscribe` | command | `{topics?: [...]}` → current `seq` | M1 |
-| `workspace.create` / `.list` / `.rename` / `.close` | cmd/query | name, root paths | M1 |
+| `workspace.create` / `.list` / `.rename` / `.close` | cmd/query | `create`: `{name, roots?, created_by?: user\|cli\|agent}` → `WorkspaceInfo`; `list` → `{workspaces}` in `position` order; `rename` → `WorkspaceInfo`; `close` → `{}` | M1 |
+| `workspace.open` | command | `{path, created_by?}` → `{workspace, created}`; the workspace one of whose roots contains `path`, else a new one for the folder (git root when inside a repository); capability `workspace.projects` | M12 |
+| `workspace.add_root` / `.remove_root` | command | `{workspace_id, path}` → `WorkspaceInfo`; capability `workspace.projects` | M12 |
+| `workspace.recent` | query | `{limit?}` (default 20, at most 50) → `{projects: [{path, name, last_opened_ms, workspace_id?}]}` newest first; capability `workspace.projects` | M12 |
+| `workspace.move` | command | `{workspace_id, before?}` → `{workspaces}` in the new order; no `before` = last; capability `workspace.projects` | M12 |
+| `workspace.pin` | command | `{workspace_id, pinned}` → `WorkspaceInfo`; capability `workspace.projects` | M12 |
 | `session.create` | command | workspace, kind, command/cwd/env or agent/provider config → ids | M1 |
 | `session.list` | query | filters → sessions + `seq` | M1 |
 | `session.snapshot` | query | → workspaces, sessions, pending approvals + `seq` | M1 |
@@ -71,7 +76,7 @@ Milestone tag = when the method lands.
 
 | Event | Data | M |
 |---|---|---|
-| `workspace.updated` / `workspace.closed` | workspace | M1 |
+| `workspace.updated` / `workspace.closed` | workspace (every field change, see § Projects and workspaces) / workspace id | M1 |
 | `session.updated` | session (state, title, cwd, attention, `restored`, `agent`) | M1 |
 | `session.exited` | session id, exit code/signal | M1 |
 | `terminal.bell` / `terminal.title` / `terminal.notification` | from OSC sniffer | M1 |
@@ -115,7 +120,7 @@ Semantics implemented by the daemon (M1-D1; `crates/daemon/src/{registry,termina
 - `session.exited` carries the raw signal number (e.g. 15 for SIGTERM) in `signal`, `code` is absent for a signal death.
 - `session.restart` starts the process in the last directory the program reported with OSC 7 when that directory still exists, else in the spec `cwd`; `SessionInfo.cwd` reflects the directory used.
 - A connection that has not sent `hello` within 5 s of being accepted is closed (logged at debug); the timeout covers the handshake only.
-- `workspace.close`: `default` and workspaces with live sessions → `invalid_state`; ended sessions leave with their workspace. `daemon.shutdown { stop_sessions: false }` with live sessions → `invalid_state`; every shutdown (request, SIGTERM, SIGINT) hangs up all sessions concurrently and reaps them before the socket is removed.
+- `workspace.close`: Home and workspaces with live sessions → `invalid_state`; ended sessions leave with their workspace, and the project stays in `workspace.recent`. `daemon.shutdown { stop_sessions: false }` with live sessions → `invalid_state`; every shutdown (request, SIGTERM, SIGINT) hangs up all sessions concurrently and reaps them before the socket is removed.
 
 Persistence and restore (M3-A; capability `session.restore`, protocol 0.3; `crates/daemon/src/{registry,restore,config}.rs`, `crates/storage`):
 - Workspaces and sessions are written through to SQLite (`$HEELER_HOME/heeler.db`) on every change: workspace create/rename/close, session create/rename/stop/restart/exit. Title and cwd changes (OSC 0/2, OSC 7) are coalesced: a session is rewritten at most once per second because of them. Writes go to the storage writer thread and never block request handling.
@@ -151,6 +156,20 @@ Block { id, prompt_line, command_line?, output_start?, end_line?, command?, exit
 - `terminal.blocks` answers newest first, ids below `before_id` when given (page with the last id), `limit` clamped to 500, and stops early before the block that would take the JSON encoding past 2 MiB (the first block is always included).
 - `terminal.block_text` answers plain text: soft-wrapped rows joined, trailing spaces and trailing empty lines removed, lines separated by `\n`, the first `max_bytes` bytes (clamped to 512 KiB, cut on a character boundary). `truncated` is true when the text was cut or its first lines were evicted/erased. `command` is the stored text; `output` of a running block reaches the cursor's row. Unknown block (or dropped from the 2 000) → `not_found`; `output` while the alternate screen shows → `invalid_state` (the primary rows are out of reach; `command` still works).
 - `terminal.block` carries the whole block after every change, in the order the changes happened, once for: the prompt start (`A`), its input line becoming known (`B`), the command starting (`C`), finishing (`D` or the next `A`), and each block that became `truncated`. Delivery is the usual bus (seq, replay ring); a client that missed events refetches with `terminal.blocks`.
+
+## Projects and workspaces (protocol 0.7, capability `workspace.projects`)
+
+M12-A; `crates/daemon/src/{registry,projects,config}.rs`, `crates/storage` (schema v2: `workspaces.kind|pinned|created_by|last_active_ms`, table `recent_projects`).
+
+- `WorkspaceInfo` = `{id, name, roots, kind: home|project, pinned, position, created_by: user|cli|agent, last_active_ms, live_sessions, total_sessions}`. Every field is additive and defaults when absent (a 0.6 daemon's workspaces decode as unpinned projects). `workspace.list`, `session.snapshot`, and the client store order workspaces by `position`; pins, sort modes (manual, recent activity, attention, name) and filters are client concerns that read these fields.
+- **Home**: exactly one workspace has `kind: home`; it is created at the first start (named `Home`) and bound to the folder of `daemon.toml` `[workspaces] home_folder` (absolute, or `~/...`; default `~/Heeler`, or `Heeler` inside `$HEELER_HOME` when that is set). A missing folder is created with mode `0700` (with missing parents); an existing one is used as is and nothing is created inside it; a path that is not a directory stops the daemon from starting. Home's only root is that folder, rewritten at start when the setting changed. Home cannot be closed (`invalid_state`), cannot have roots added or removed (`invalid_state`), can be renamed and pinned and moved, and is where `session.create` without `workspace_id` puts the session. A v1 database's `default` workspace becomes Home with its id, sessions, and (unless renamed) name `Home`.
+- **`workspace.open { path }`**: `path` must be an absolute existing directory (`bad_request` / `not_found`); it is canonicalised (symlinks resolved). If a workspace (Home included) has a root containing the path — as a path prefix, comparing a root also through its own symlinks — that workspace is returned with `created: false`; with several matches the deepest root wins, the earlier workspace on a tie. Otherwise a project workspace is created at the end of the list with the single root = the nearest ancestor-or-self holding a `.git` entry (directory or file), else the folder itself; its name is the root's folder name, or the name the project had when it was closed. `created_by` (default `user`) is recorded for new workspaces only. The daemon records what the request claims; `agent` is meant for programmatic callers acting for a coding agent.
+- **Roots**: `roots` may hold several repositories. `workspace.add_root` resolves its path like `open` (canonical, git root) and is idempotent; `workspace.remove_root` takes a root as stored (or the same place through symlinks) and answers `not_found` for anything else. `workspace.create` stores its roots exactly as given.
+- **Recent projects**: opening, creating with roots, adding the first root, and closing a project record it by its primary (first) root in `recent_projects` (path, name, newest `last_opened_ms`; the newest 200 are kept). `workspace.recent` lists the open project workspaces (with `workspace_id`; time = the newer of last opened and `last_active_ms`) and the remembered closed ones (without), newest first, `limit` clamped to 50. Home is never listed.
+- **Order**: `workspace.move` places a workspace before another (`before` unknown → `not_found`) or last, and renumbers `position` as `0..n`; one `workspace.updated` per workspace whose position changed. Moving a workspace before itself or to where it already is changes nothing. New workspaces take the next position. `workspace.pin` sets `pinned` (idempotent). Order and pins are stored.
+- **Activity and counts**: `live_sessions` / `total_sessions` count the workspace's sessions (live states / all, ended and restored ones included). `last_active_ms` moves when a session is created, when input reaches one of its live terminals, and when one produces output; it changes at most once per 10 s per workspace (session creation excepted) and carries the time of the announcement when an update was held back. It is stored.
+- **Events**: `workspace.updated` carries the whole `WorkspaceInfo` after every change of any field — rename, roots, pin, position, activity, and the session counts (published right after the `session.updated` that changed them). Creation is announced the same way; `workspace.closed` stays as it was.
+- **CLI** (`crates/cli/src/commands/workspaces.rs`): `heeler ws open <path>`; `ws ls [--sort manual|recent|attention|name] [--all]` — without `--all` empty workspaces are hidden unless pinned or Home, pinned ones come first in every mode, `attention` ranks workspaces by sessions waiting for the user (a pending approval, or an agent reporting `blocked`) then by activity; `ws move <id|name> --before <id|name>|--last`; `ws pin|unpin <id|name>`; `ws recent [--limit N]`; `ws use <id|name>` prints `export HEELER_WORKSPACE=<id>`. `heeler new` creates its session in `--ws <id|name>`, else `$HEELER_WORKSPACE` (id or name), else Home; `heeler ls --ws` takes an id or a name too. A workspace target is a full id, an exact name (then ignoring case), or an id prefix of at least 4 characters; several matches are a usage error (exit 2), none a failure (exit 1). `ws new` and `ws open` send `created_by: cli`.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.

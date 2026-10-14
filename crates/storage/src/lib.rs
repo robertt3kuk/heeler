@@ -29,8 +29,8 @@ use tracing::{debug, error};
 
 pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
-pub use rows::{EpochRecord, SessionRow, WorkspaceRow};
-pub use sql::{EPOCH_HISTORY_KEPT, Write};
+pub use rows::{CreatedBy, EpochRecord, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow};
+pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
 /// Commands waiting for the writer before submitters wait their turn.
 const QUEUE_CAPACITY: usize = 1024;
@@ -133,6 +133,10 @@ impl Storage {
 
     pub fn sessions(&self) -> Sessions<'_> {
         Sessions(self)
+    }
+
+    pub fn recent_projects(&self) -> RecentProjects<'_> {
+        RecentProjects(self)
     }
 
     pub fn app_meta(&self) -> AppMeta<'_> {
@@ -245,9 +249,48 @@ impl Workspaces<'_> {
         self.0.write(Write::DeleteWorkspace(id))
     }
 
+    /// Replaces the workspace's roots.
+    pub fn set_roots(&self, id: WorkspaceId, roots: Vec<PathBuf>) -> Result<()> {
+        self.0.write(Write::SetWorkspaceRoots { id, roots })
+    }
+
+    pub fn set_pinned(&self, id: WorkspaceId, pinned: bool) -> Result<()> {
+        self.0.write(Write::SetWorkspacePinned { id, pinned })
+    }
+
+    pub fn set_position(&self, id: WorkspaceId, position: i64) -> Result<()> {
+        self.0.write(Write::SetWorkspacePosition { id, position })
+    }
+
+    pub fn set_last_active(&self, id: WorkspaceId, last_active_ms: u64) -> Result<()> {
+        self.0
+            .write(Write::SetWorkspaceActive { id, last_active_ms })
+    }
+
     /// In display order.
     pub fn list(&self) -> Result<Vec<WorkspaceRow>> {
         self.0.read(sql::list_workspaces)
+    }
+}
+
+/// Projects remembered after their workspace closed, keyed by primary root path.
+#[derive(Debug, Clone, Copy)]
+pub struct RecentProjects<'a>(&'a Storage);
+
+impl RecentProjects<'_> {
+    /// Adds the project or refreshes its name and (when newer) its time. Only the newest
+    /// [`RECENT_PROJECTS_KEPT`] are kept.
+    pub fn upsert(&self, project: RecentProject) -> Result<()> {
+        self.0.write(Write::UpsertRecentProject(project))
+    }
+
+    pub fn delete(&self, path: PathBuf) -> Result<()> {
+        self.0.write(Write::DeleteRecentProject(path))
+    }
+
+    /// Newest first.
+    pub fn list(&self) -> Result<Vec<RecentProject>> {
+        self.0.read(sql::list_recent_projects)
     }
 }
 

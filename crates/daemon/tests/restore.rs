@@ -17,7 +17,7 @@ use heeler_protocol::messages::{
     DaemonShutdown, Empty, Request, SessionInfo, SessionRef, SessionRename, SessionResult,
     SessionSnapshot, TerminalSpec, WorkspaceCreate, WorkspaceInfo,
 };
-use heeler_storage::{Migration, SessionRow, Storage};
+use heeler_storage::{Migration, SessionRow, Storage, WorkspaceKind};
 use tokio::time::{sleep, timeout};
 
 async fn snapshot(client: &Client) -> SessionSnapshot {
@@ -41,6 +41,7 @@ async fn workspace(client: &Client, name: &str, roots: Vec<PathBuf>) -> Workspac
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.into(),
             roots,
+            created_by: None,
         }))
         .await
         .unwrap()
@@ -352,11 +353,7 @@ async fn user_changes_survive_a_restart() {
     let snap = snapshot(&client).await;
 
     let names: Vec<_> = snap.workspaces.iter().map(|w| w.name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["default", "kept"],
-        "creation order, closed one gone"
-    );
+    assert_eq!(names, ["Home", "kept"], "creation order, closed one gone");
     assert_eq!(snap.workspaces[1].roots, [PathBuf::from("/tmp")]);
     assert!(snap.sessions.iter().all(|s| s.id != in_dropped.id));
     assert_eq!(find(&snap, named.id).title, "mine");
@@ -413,12 +410,13 @@ async fn resume_references_replace_the_spec_command_and_unusable_rows_fail_clean
 
     let storage = Storage::open(&paths.database).unwrap();
     let default_workspace: WorkspaceId = storage
-        .app_meta()
-        .get("default_workspace_id")
+        .workspaces()
+        .list()
         .unwrap()
-        .expect("the default workspace id is recorded")
-        .parse()
-        .unwrap();
+        .into_iter()
+        .find(|w| w.kind == WorkspaceKind::Home)
+        .expect("the Home workspace is stored")
+        .id;
     let cat_spec = serde_json::to_string(&TerminalSpec {
         command: vec!["/bin/cat".into()],
         env: [("PS1".to_owned(), "$ ".to_owned())].into(),
@@ -496,13 +494,20 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
 
     // A database written by a newer build.
     let newer = Migration {
-        version: 2,
+        version: 3,
         name: "from the future",
         sql: "CREATE TABLE future (x INTEGER NOT NULL);",
     };
-    Storage::open_with_migrations(&paths.database, &[heeler_storage::MIGRATIONS[0], newer])
-        .unwrap()
-        .close();
+    Storage::open_with_migrations(
+        &paths.database,
+        &[
+            heeler_storage::MIGRATIONS[0],
+            heeler_storage::MIGRATIONS[1],
+            newer,
+        ],
+    )
+    .unwrap()
+    .close();
     let error = heeler_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap_err();
