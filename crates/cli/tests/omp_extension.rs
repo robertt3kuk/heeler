@@ -112,6 +112,20 @@ fn the_extension_reports_turns_approvals_and_the_resume_command() {
         return;
     };
 
+    // The daemon orders reports by `seq`, not by arrival: a report whose `heeler` process is
+    // slow to start is overtaken once the extension's per-call timeout lets the next one go.
+    let seq_of = |call: &String| -> u64 {
+        call.split_whitespace()
+            .find_map(|word| word.strip_prefix("--seq="))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let mut calls = calls;
+    calls.sort_by_key(seq_of);
+    let seqs: Vec<u64> = calls.iter().map(seq_of).collect();
+    assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+
     let states: Vec<&str> = calls
         .iter()
         .map(|call| {
@@ -138,18 +152,6 @@ fn the_extension_reports_turns_approvals_and_the_resume_command() {
         );
     }
     assert!(calls[2].contains("--message=Bash approval"), "{}", calls[2]);
-
-    let seqs: Vec<u64> = calls
-        .iter()
-        .map(|call| {
-            call.split_whitespace()
-                .find_map(|word| word.strip_prefix("--seq="))
-                .unwrap()
-                .parse()
-                .unwrap()
-        })
-        .collect();
-    assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
 }
 
 #[test]
