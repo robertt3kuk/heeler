@@ -1,0 +1,26 @@
+# M6-A: app bundle + notification intents (daemon) — no system integration yet (roadmap M6.2, groundwork for M6.1/M6.3)
+
+Agent: implementer   Depends on: M16-A merged (protocol 0.12; this slice takes **0.13**), M13-B (`AgentAttentionChanged`)   Branch: slice/M6-A
+
+## Context
+Read `AGENTS.md`, ADR 0007 (proposed — packaging, launch agent, notifications), ADR 0008 (Keychain bound to code-signing identity), `docs/roadmap.md` § M6, `docs/integrations.md`, `docs/agents.md` (approvals), M13 observation tree, `xtask/`.
+
+**This slice must not trigger any macOS permission prompt or register anything with the system**: no `UNUserNotificationCenter` calls, no `SMAppService` registration, no launching the built bundle, no Keychain access. Those are M6-B and run with the user present.
+
+## Scope (contract changes authorized)
+`xtask` (bundle command), `justfile` (`just bundle`), `assets/macos/` (Info.plists, LaunchAgent plist, icon placeholder), `crates/daemon` (notification intents), `crates/protocol` (0.13, capability `notify.intents`), `crates/client`, `crates/cli`, `docs/packaging.md` (new), `docs/protocol.md`.
+
+## Contract
+- **`cargo run -p xtask -- bundle [--release] [--out target/bundle]`** produces `Heeler.app` exactly in ADR 0007's layout: `Contents/MacOS/{Heeler (desktop), heelerd, heeler}`, `Contents/Info.plist` (bundle id `dev.heeler.Heeler`, version from the workspace, `LSMinimumSystemVersion` 13.0, `NSHighResolutionCapable`), `Contents/Library/LaunchAgents/dev.heeler.daemon.plist` (`BundleProgram` = `Contents/MacOS/heelerd`, `KeepAlive` false, `RunAtLoad` false — registered later via SMAppService), `Contents/Helpers/Heeler Notifier.app` with its own Info.plist (`dev.heeler.Notifier`, `LSUIElement` true) containing a minimal stub executable (a `heeler-notifier` bin target that for now connects to the daemon, subscribes to intents, and logs them — no AppKit/UN calls), `Contents/Resources/` (shell-integration scripts, a placeholder `.icns` generated from an SVG at build time or a checked-in tiny icon). Ad-hoc sign inside-out with `codesign --force --sign - --timestamp=none` (helper first, then binaries, then the app); `codesign --verify --deep --strict` must pass. `just bundle` wraps it.
+- The desktop and CLI already find `heelerd` beside themselves — verify that holds inside the bundle (path resolution unit test on a fake bundle tree); `heeler` CLI inside the bundle autostarts the bundled `heelerd`.
+- **Notification intents** (daemon): `NotificationIntent { id, kind: approval_required | agent_blocked | agent_finished | session_exited_with_error | chat_turn_finished, session_id, workspace_id?, title, body (≤ 240 chars, redacted), actions: [{id, label}] (approval options for approvals; "Open" otherwise), created_at_ms, expires_at_ms? }`, emitted on: pending approval (M4-A), a node becoming blocked (M13-A tree), a root agent going working → idle with outcome completed after ≥ `notify.min_turn_secs` (default 20), a session exiting non-zero, a chat turn finishing while no client has the session focused (clients report focus with a new `client.focus { session_id? }` request). Dedup by (kind, session, node/approval id); rate-limit per session (≤ 1 per 10 s except approvals). Settings `daemon.toml [notify] enabled = true, min_turn_secs = 20, kinds = [...]`.
+- **Protocol 0.13**: event `notify.intent`, request `notify.list` (pending/unacknowledged), `notify.ack { id }`, `notify.act { id, action_id }` (routes approval actions to `approval.respond`; "Open" → `ui.open` event for clients), `client.focus`. Golden fixtures.
+- **CLI**: `heeler notify ls|ack|act`, `heeler notify watch` (prints intents — handy until the Notifier posts real notifications).
+
+## Acceptance
+- xtask test builds a debug bundle into a temp dir and asserts the layout, plist keys (parse with `plist` crate), executables present, `codesign --verify --deep --strict` OK — and that nothing was launched or registered.
+- Daemon tests for each intent trigger, dedup, rate limit, focus suppression, `notify.act` routing an approval decision (fake app-server fixtures from M4-A), ack.
+- `just check` green (keep `just bundle` out of the default gate unless it is fast; add it to CI notes); committed on `slice/M6-A`.
+
+## Rules
+Inline `HEELER_HOME=<temp dir>`; never launch the built `.app`, never call notification/launch-agent/Keychain APIs, never touch `/tmp/hh-*` or the real Heeler home. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase; `pgrep -x heelerd` clean before finishing.
