@@ -41,7 +41,17 @@ if (Object.keys(handlers).length > 0) {
   handlers.tool_approval_resolved?.({}, ui);
   await sleep(150);
   handlers.agent_end?.({}, ui);
-  await sleep(1200);
+  // Wait until every queued report has run (the extension serializes them, each bounded by its
+  // own timeout), instead of guessing a sleep long enough for a loaded machine.
+  const want = Number(process.env.HARNESS_EXPECT_CALLS ?? "0");
+  const log = process.env.HARNESS_CALL_LOG ?? "";
+  const deadline = Date.now() + 20_000;
+  while (want > 0 && Date.now() < deadline) {
+    const text = await Bun.file(log).text().catch(() => "");
+    if (text.split("\n").filter(Boolean).length >= want) break;
+    await sleep(25);
+  }
+  await sleep(200);
 }
 "#;
 
@@ -71,7 +81,8 @@ fn run(env: &[(&str, &str)]) -> Option<Vec<String>> {
         .arg(&harness)
         .env_remove("HEELER_ENV")
         .env_remove("HEELER_SESSION_ID")
-        .env("HEELER_BIN", &fake);
+        .env("HEELER_BIN", &fake)
+        .env("HARNESS_CALL_LOG", &log);
     for (key, value) in env {
         command.env(key, value);
     }
@@ -95,6 +106,7 @@ fn the_extension_reports_turns_approvals_and_the_resume_command() {
     let Some(calls) = run(&[
         ("HEELER_ENV", "1"),
         ("HEELER_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
+        ("HARNESS_EXPECT_CALLS", "5"),
     ]) else {
         eprintln!("skipping: bun is not installed");
         return;
