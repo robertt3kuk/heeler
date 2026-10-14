@@ -1,4 +1,4 @@
-//! The desktop's settings namespaces (design.md § Settings): `terminal`, `layout`,
+//! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
 //! `panels.sessions`, `panels.inspector`, `panels.overview`. `appearance` lives in
 //! `heeler-settings`.
 //!
@@ -412,10 +412,60 @@ impl Setting for OverviewPanelSettings {
     const NAMESPACE: &'static str = "panels.overview";
 }
 
+/// What quitting the app does with the daemon while sessions are live (design.md § Daemon
+/// lifecycle). With no live session the daemon always stops with the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnQuit {
+    /// Ask: keep the sessions running or stop them with the daemon.
+    #[default]
+    Ask,
+    /// Quit and leave `heelerd` running with its sessions.
+    KeepRunning,
+    /// Stop the sessions and `heelerd`, then quit.
+    StopDaemon,
+}
+
+impl OnQuit {
+    pub const ALL: [OnQuit; 3] = [OnQuit::Ask, OnQuit::KeepRunning, OnQuit::StopDaemon];
+
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            OnQuit::Ask => "ask",
+            OnQuit::KeepRunning => "keep_running",
+            OnQuit::StopDaemon => "stop_daemon",
+        }
+    }
+
+    /// The working mode as the daemon controls show it.
+    pub fn label(self) -> &'static str {
+        match self {
+            OnQuit::Ask => "Ask on quit",
+            OnQuit::KeepRunning => "Keep sessions running after quit",
+            OnQuit::StopDaemon => "Stop daemon with the app",
+        }
+    }
+}
+
+/// The `app` namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct AppSettings {
+    /// What quitting does with the daemon while sessions are live: `ask`, `keep_running` or
+    /// `stop_daemon`.
+    pub on_quit: OnQuit,
+}
+
+impl Setting for AppSettings {
+    const NAMESPACE: &'static str = "app";
+}
+
 /// Registers every namespace the desktop owns (plus `appearance`) so the schema and diagnostics
 /// know them from the start.
 pub fn register_all(store: &SettingsStore) {
     store.register::<AppearanceSettings>();
+    store.register::<AppSettings>();
     store.register::<TerminalSettings>();
     store.register::<LayoutSettings>();
     store.register::<SessionsPanelSettings>();
@@ -503,6 +553,17 @@ mod tests {
     }
 
     #[test]
+    fn on_quit_defaults_to_ask_and_reads_the_documented_values() {
+        assert_eq!(AppSettings::default().on_quit, OnQuit::Ask);
+        for mode in OnQuit::ALL {
+            let parsed: AppSettings =
+                toml::from_str(&format!("on_quit = \"{}\"", mode.key())).unwrap();
+            assert_eq!(parsed.on_quit, mode);
+        }
+        assert!(toml::from_str::<AppSettings>("on_quit = \"sometimes\"").is_err());
+    }
+
+    #[test]
     fn defaults_round_trip_through_the_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(heeler_settings::SettingsPaths::in_dir(dir.path()));
@@ -514,6 +575,7 @@ mod tests {
         );
         let schema = store.schema();
         for ns in [
+            "app",
             "appearance",
             "terminal",
             "layout",

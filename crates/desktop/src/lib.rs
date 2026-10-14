@@ -4,5 +4,6 @@
 pub mod app;
 pub mod sessions;
 pub mod settings;
+pub mod signals;
 pub mod theme;
 pub mod workbench;

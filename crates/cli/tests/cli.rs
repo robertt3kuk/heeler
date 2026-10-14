@@ -446,3 +446,98 @@ async fn daemon_start_finds_heelerd_on_path() {
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["started"], true);
 }
+
+// daemon restart (real heelerd process) ------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_restart_without_sessions_gives_a_new_daemon() {
+    heelerd_dir();
+    let home = tempfile::tempdir().unwrap();
+    let _guard = DaemonGuard {
+        home: home.path().to_owned(),
+    };
+    let run = |args: &'static [&'static str]| {
+        let mut cmd = command(Path::new(HEELER), None, args);
+        cmd.env("HEELER_HOME", home.path());
+        finish(cmd)
+    };
+
+    // Nothing runs yet: restart just starts the daemon.
+    let first = run(&["daemon", "restart", "--json"]).await;
+    assert_eq!(first.code, 0, "{first:?}");
+    let first = first.json();
+    assert_eq!(first["was_running"], false);
+    assert_eq!(first["started"], true);
+
+    // An ended session is not live: no flag needed.
+    let ended = run(&["new", "--json", "--", "true"]).await.ok().json();
+    let id = ended["session"]["id"].as_str().unwrap().to_owned();
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let list = run(&["ls", "--json"]).await.ok().json();
+        let session = list["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id.as_str())
+            .cloned()
+            .unwrap();
+        if session["state"]["state"] != "starting" && session["state"]["state"] != "running" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{session}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let second = run(&["daemon", "restart", "--json"]).await;
+    assert_eq!(second.code, 0, "{second:?}");
+    let second = second.json();
+    assert_eq!(second["was_running"], true);
+    assert_eq!(second["started"], true);
+    assert_ne!(second["epoch"], first["epoch"], "a new daemon epoch");
+    assert_ne!(second["pid"], first["pid"], "a new daemon process");
+    assert_eq!(second["sessions"], 0, "the new daemon starts empty");
+
+    let status = run(&["daemon", "status", "--json"]).await.ok().json();
+    assert_eq!(status["epoch"], second["epoch"]);
+
+    let human = run(&["daemon", "restart"]).await.ok();
+    assert!(human.stdout.starts_with("restarted: heelerd"), "{human:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
+    heelerd_dir();
+    let home = tempfile::tempdir().unwrap();
+    let _guard = DaemonGuard {
+        home: home.path().to_owned(),
+    };
+    let run = |args: &'static [&'static str]| {
+        let mut cmd = command(Path::new(HEELER), None, args);
+        cmd.env("HEELER_HOME", home.path());
+        finish(cmd)
+    };
+
+    let started = run(&["daemon", "start", "--json"]).await.ok().json();
+    run(&["new", "--json", "--", "sleep", "600"]).await.ok();
+
+    let refused = run(&["daemon", "restart"]).await;
+    assert_eq!(refused.code, 1, "{refused:?}");
+    assert!(
+        refused.stderr.contains("1 live session(s)")
+            && refused.stderr.contains("daemon restart --stop-sessions"),
+        "the error names the sessions and the flag: {refused:?}"
+    );
+    let still = run(&["daemon", "status", "--json"]).await.ok().json();
+    assert_eq!(still["epoch"], started["epoch"], "nothing was restarted");
+    assert_eq!(still["pid"], started["pid"]);
+
+    let restarted = run(&["daemon", "restart", "--stop-sessions", "--json"]).await;
+    assert_eq!(restarted.code, 0, "{restarted:?}");
+    let restarted = restarted.json();
+    assert_eq!(restarted["was_running"], true);
+    assert_ne!(restarted["epoch"], started["epoch"]);
+    assert_ne!(restarted["pid"], started["pid"]);
+    let list = run(&["ls", "--json"]).await.ok().json();
+    assert!(list["sessions"].as_array().unwrap().is_empty(), "{list}");
+}

@@ -101,6 +101,9 @@ pub struct StatusContext<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusData {
     pub connection: ConnectionState,
+    /// What the connection item says: the connection state, or that the user stopped the
+    /// daemon, or the daemon operation in progress.
+    pub connection_line: (String, super::panels::StatusTone),
     /// Epoch of the daemon the state describes, for the connection tooltip.
     pub epoch: Option<String>,
     pub sessions: usize,

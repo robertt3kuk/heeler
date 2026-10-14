@@ -10,7 +10,7 @@ use gpui::{
 use heeler_client::ConnectionState;
 
 use crate::theme::DensityExt as _;
-use crate::workbench::actions::{JumpToNextAttention, ToggleDensity, TogglePalette};
+use crate::workbench::actions::{JumpToNextAttention, ToggleDensity, TogglePalette, daemon};
 use crate::workbench::registry::{StatusContext, StatusItemRegistry, StatusItemSpec, StatusSide};
 use crate::workbench::style::TextTooltip;
 
@@ -68,7 +68,7 @@ pub fn builtin_status_items() -> StatusItemRegistry {
         id: "connection",
         default_side: StatusSide::Left,
         render: Rc::new(|ctx: &StatusContext<'_>| {
-            let (text, tone) = connection_label(ctx.data.connection);
+            let (text, tone) = ctx.data.connection_line.clone();
             let color = match tone {
                 Tone::Ok => ctx.theme.success,
                 Tone::Warn => ctx.theme.warning,
@@ -79,13 +79,13 @@ pub fn builtin_status_items() -> StatusItemRegistry {
                 || "no daemon epoch yet".to_owned(),
                 |e| format!("daemon epoch {e}"),
             );
-            div()
-                .id("status-connection")
+            clickable("status-connection", ctx)
                 .flex()
                 .items_center()
                 .gap(px(5.0))
                 .text_color(ctx.theme.muted)
-                .tooltip(tooltip(epoch))
+                .tooltip(tooltip(format!("{epoch} · click for the daemon controls")))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(daemon::Status), cx))
                 .child(div().size(px(7.0)).rounded_full().bg(color))
                 .child(SharedString::from(text))
                 .into_any_element()

@@ -1,4 +1,5 @@
-//! A small confirm / prompt dialog (stop session, rename session, save layout as preset).
+//! A small confirm / prompt dialog (stop session, rename session, save layout as preset, quit
+//! with live sessions).
 
 use crate::theme::DensityExt as _;
 use std::rc::Rc;
@@ -11,8 +12,15 @@ use gpui::{
 use super::actions::modal as modal_actions;
 use super::view::Workbench;
 
+/// What the dialog hands its action: the prompt text and the state of the checkbox.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModalResult {
+    pub input: Option<String>,
+    pub checked: bool,
+}
+
 pub(crate) type ModalAction =
-    Rc<dyn Fn(&mut Workbench, Option<String>, &mut Window, &mut Context<Workbench>)>;
+    Rc<dyn Fn(&mut Workbench, ModalResult, &mut Window, &mut Context<Workbench>)>;
 
 /// What a prompt shows.
 #[derive(Debug, Clone, Copy)]
@@ -23,13 +31,38 @@ pub(crate) struct PromptSpec<'a> {
     pub confirm_label: &'a str,
 }
 
+/// A second choice next to the confirm button (for example "Stop sessions & daemon").
+#[derive(Clone)]
+pub struct ModalChoice {
+    pub label: SharedString,
+    pub(crate) run: ModalAction,
+}
+
+impl std::fmt::Debug for ModalChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModalChoice")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A "Don't ask again" style checkbox.
+#[derive(Debug, Clone)]
+pub struct ModalCheckbox {
+    pub label: SharedString,
+    pub checked: bool,
+}
+
 /// What the dialog asks and what happens on OK. `input: Some(..)` makes it a prompt.
+/// Cancel (button, Escape, click outside) closes it without running anything.
 #[derive(Clone)]
 pub struct Modal {
     pub title: SharedString,
     pub message: SharedString,
     pub confirm_label: SharedString,
     pub input: Option<String>,
+    pub(crate) choice: Option<ModalChoice>,
+    pub checkbox: Option<ModalCheckbox>,
     pub(crate) on_confirm: ModalAction,
 }
 
@@ -38,6 +71,8 @@ impl std::fmt::Debug for Modal {
         f.debug_struct("Modal")
             .field("title", &self.title)
             .field("input", &self.input)
+            .field("choice", &self.choice.as_ref().map(|c| &c.label))
+            .field("checkbox", &self.checkbox)
             .finish_non_exhaustive()
     }
 }
@@ -58,6 +93,8 @@ impl Workbench {
                 message: message.into(),
                 confirm_label: confirm_label.into(),
                 input: None,
+                choice: None,
+                checkbox: None,
                 on_confirm: Rc::new(move |this, _, window, cx| on_confirm(this, window, cx)),
             },
             window,
@@ -78,8 +115,10 @@ impl Workbench {
                 message: prompt.message.into(),
                 confirm_label: prompt.confirm_label.into(),
                 input: Some(prompt.initial.to_owned()),
-                on_confirm: Rc::new(move |this, value, window, cx| {
-                    on_confirm(this, value.unwrap_or_default(), window, cx);
+                choice: None,
+                checkbox: None,
+                on_confirm: Rc::new(move |this, result, window, cx| {
+                    on_confirm(this, result.input.unwrap_or_default(), window, cx);
                 }),
             },
             window,
@@ -87,7 +126,7 @@ impl Workbench {
         );
     }
 
-    fn open_modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         self.context_menu = None;
         self.modal = Some(modal);
@@ -122,8 +161,38 @@ impl Workbench {
         }
     }
 
-    /// Closes the dialog and runs its action.
+    /// Ticks or unticks the dialog's checkbox, if it has one.
+    pub fn set_modal_checkbox(&mut self, checked: bool, cx: &mut Context<Self>) {
+        if let Some(Modal {
+            checkbox: Some(checkbox),
+            ..
+        }) = &mut self.modal
+        {
+            checkbox.checked = checked;
+            cx.notify();
+        }
+    }
+
+    fn toggle_modal_checkbox(&mut self, cx: &mut Context<Self>) {
+        let checked = self
+            .modal
+            .as_ref()
+            .and_then(|m| m.checkbox.as_ref())
+            .is_some_and(|c| c.checked);
+        self.set_modal_checkbox(!checked, cx);
+    }
+
+    /// Closes the dialog and runs its confirm action (the primary button).
     pub fn confirm_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_modal(false, window, cx);
+    }
+
+    /// Closes the dialog and runs its second choice, if it has one.
+    pub fn choose_modal_alternative(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_modal(true, window, cx);
+    }
+
+    fn finish_modal(&mut self, alternative: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(modal) = self.modal.take() else {
             return;
         };
@@ -136,8 +205,20 @@ impl Workbench {
             self.modal = Some(modal);
             return;
         }
+        if alternative && modal.choice.is_none() {
+            self.modal = Some(modal);
+            return;
+        }
+        let action = match &modal.choice {
+            Some(choice) if alternative => Rc::clone(&choice.run),
+            _ => Rc::clone(&modal.on_confirm),
+        };
+        let result = ModalResult {
+            input: modal.input,
+            checked: modal.checkbox.is_some_and(|c| c.checked),
+        };
         self.focus_root(window, cx);
-        (modal.on_confirm)(self, modal.input, window, cx);
+        action(self, result, window, cx);
         cx.notify();
     }
 
@@ -244,6 +325,21 @@ impl Workbench {
                                     ),
                             )
                         })
+                        .when_some(modal.checkbox.clone(), |s, checkbox| {
+                            s.child(
+                                div()
+                                    .id("modal-checkbox")
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(tokens.spacing * 2.0))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_modal_checkbox(cx);
+                                    }))
+                                    .child(if checkbox.checked { "☑" } else { "☐" })
+                                    .child(checkbox.label),
+                            )
+                        })
                         .child(
                             div()
                                 .flex()
@@ -254,6 +350,13 @@ impl Workbench {
                                         this.close_modal(window, cx);
                                     }),
                                 ))
+                                .children(modal.choice.as_ref().map(|choice| {
+                                    button("modal-choice", choice.label.clone(), false).on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.choose_modal_alternative(window, cx);
+                                        }),
+                                    )
+                                }))
                                 .child(
                                     button("modal-ok", modal.confirm_label.clone(), true).on_click(
                                         cx.listener(|this, _, window, cx| {

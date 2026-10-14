@@ -326,3 +326,109 @@ pub fn screen_text(model: &heeler_terminal_view::model::TerminalModel) -> String
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// A real `heelerd` process on its own temporary home, started by the connection's autostart
+/// (and again by `Connection::set_autostart`). Stopped through the protocol on drop.
+pub struct ProcessDaemon {
+    pub dir: TempDir,
+    wrapper: PathBuf,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl ProcessDaemon {
+    pub fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = std::env::current_exe().unwrap();
+        let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
+        let heelerd = profile_dir.join("heelerd");
+        assert!(
+            heelerd.is_file(),
+            "heelerd not built: run `cargo build -p heeler-daemon --bin heelerd` (or `just test`)"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        // `ConnectOptions` cannot carry environment, so a wrapper pins the daemon to the home.
+        let wrapper = dir.path().join("heelerd-wrapper.sh");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nexport HEELER_HOME='{}'\nexec '{}'\n",
+                home.display(),
+                heelerd.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        Self {
+            dir,
+            wrapper,
+            runtime,
+        }
+    }
+
+    pub fn home(&self) -> PathBuf {
+        self.dir.path().join("home")
+    }
+
+    pub fn socket(&self) -> PathBuf {
+        self.home().join("heelerd.sock")
+    }
+
+    pub fn options(&self) -> ConnectOptions {
+        ConnectOptions {
+            socket: Some(self.socket()),
+            autostart: Some(self.wrapper.clone()),
+            client: client_info(),
+        }
+    }
+
+    /// One request on a fresh connection (which starts the daemon if it is not running).
+    pub fn call<T: DeserializeOwned + Send + 'static>(&self, request: Request) -> T {
+        let options = self.options();
+        self.runtime.block_on(async move {
+            let client = Client::connect(options).await.unwrap();
+            client.call(request).await.unwrap()
+        })
+    }
+
+    /// A terminal session running `argv`.
+    pub fn create_session(&self, argv: &[&str]) -> SessionInfo {
+        let created: SessionResult = self.call(Request::SessionCreate(SessionCreate {
+            workspace_id: None,
+            spec: SessionSpec::Terminal(TerminalSpec {
+                command: argv.iter().map(|a| (*a).to_owned()).collect(),
+                ..TerminalSpec::default()
+            }),
+        }));
+        created.session
+    }
+}
+
+impl Drop for ProcessDaemon {
+    fn drop(&mut self) {
+        // Ask whichever daemon runs now to stop; none running is fine (no autostart here).
+        let mut options = self.options();
+        options.autostart = None;
+        let socket = self.socket();
+        self.runtime.block_on(async move {
+            if let Ok(client) = Client::connect(options).await {
+                let _ = client
+                    .call::<serde_json::Value>(Request::DaemonShutdown(
+                        heeler_protocol::messages::DaemonShutdown {
+                            stop_sessions: true,
+                        },
+                    ))
+                    .await;
+                let deadline = Instant::now() + WAIT;
+                while socket.exists() && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        });
+    }
+}

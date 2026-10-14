@@ -102,6 +102,8 @@ pub struct TerminalSession {
     /// Why the daemon-side terminal is unreachable for good.
     gone: Option<String>,
     colors: Option<DefaultColors>,
+    /// The user stopped the daemon from the app; nothing reconnects until they start it.
+    daemon_stopped: bool,
     _pump: Task<()>,
 }
 
@@ -151,6 +153,7 @@ impl TerminalSession {
                 reconnecting: false,
                 gone: None,
                 colors,
+                daemon_stopped: false,
                 _pump: Task::ready(()),
             };
             this.bind(terminal, cx);
@@ -223,6 +226,9 @@ impl TerminalSession {
         if let Some(reason) = &self.gone {
             return ViewStatus::Ended(reason.clone());
         }
+        if self.daemon_stopped {
+            return ViewStatus::Ended("The daemon is stopped".to_owned());
+        }
         match &self.info {
             None => return ViewStatus::Ended("The session no longer exists".to_owned()),
             Some(info) => {
@@ -252,6 +258,14 @@ impl TerminalSession {
         }
         self.info = info;
         self.refresh_status(cx);
+    }
+
+    /// The user stopped (or started again) the daemon from the app.
+    pub fn set_daemon_stopped(&mut self, stopped: bool, cx: &mut Context<Self>) {
+        if self.daemon_stopped != stopped {
+            self.daemon_stopped = stopped;
+            self.refresh_status(cx);
+        }
     }
 
     /// The default colors the daemon answers OSC 10/11/12 queries with; remembered for rebinds.

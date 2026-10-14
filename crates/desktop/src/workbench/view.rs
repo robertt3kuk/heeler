@@ -3,6 +3,7 @@
 //! lives in `render.rs`; session and settings behavior in sibling modules.
 
 use super::actions::{self, Command};
+use super::daemon::DaemonControl;
 use super::modal::Modal;
 use super::model::{
     DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource, LayoutPreset, PaneId,
@@ -77,6 +78,10 @@ impl WorkbenchOptions {
 pub enum Region {
     Titlebar,
     StatusBar,
+    /// A status item, by registry id (`connection`, `sessions`, …).
+    StatusItem(&'static str),
+    /// A control of the daemon popover, by element id (`daemon-stop`, `keep_running`, …).
+    Popover(&'static str),
     Center,
     Dock(DockPosition),
     Pane(PaneId),
@@ -185,6 +190,8 @@ pub struct Workbench {
     pub(crate) menu_focus: FocusHandle,
     pub(crate) modal_focus: FocusHandle,
     pub(crate) sheet_focus: FocusHandle,
+    pub(crate) daemon_focus: FocusHandle,
+    pub(crate) daemon: DaemonControl,
     pub(crate) palette: Option<PaletteState>,
     pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) modal: Option<Modal>,
@@ -276,13 +283,14 @@ impl Workbench {
         let menu_focus = cx.focus_handle();
         let modal_focus = cx.focus_handle();
         let sheet_focus = cx.focus_handle();
+        let daemon_focus = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        // Closing the window drops this entity before the quit hooks run: write pending
-        // changes now instead of waiting for the debounce.
+        // Closing the last window starts the quit flow (the window stays until it is decided);
+        // either way pending layout changes are written now instead of after the debounce.
         let this = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            this.update(cx, |this, _| this.flush_save()).ok();
-            true
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |this, cx| this.window_close_requested(window, cx))
+                .unwrap_or(true)
         });
 
         let watch = match settings.start_watching() {
@@ -352,6 +360,8 @@ impl Workbench {
             menu_focus,
             modal_focus,
             sheet_focus,
+            daemon_focus,
+            daemon: DaemonControl::new(),
             palette: None,
             context_menu: None,
             modal: None,
@@ -368,6 +378,7 @@ impl Workbench {
             _subscriptions: subscriptions,
         };
         this.rebind_keys(cx);
+        this.refresh_menus(cx);
         this.sync_session_focus(cx);
         this
     }

@@ -36,6 +36,8 @@ pub struct SessionsStore {
     recent: HashMap<SessionId, SessionInfo>,
     colors: Option<DefaultColors>,
     connected_since: Option<Instant>,
+    /// The user stopped the daemon from the app; attached terminals say so.
+    daemon_stopped: bool,
     _tasks: Vec<Task<()>>,
 }
 
@@ -98,6 +100,7 @@ impl SessionsStore {
             recent: HashMap::new(),
             colors: None,
             connected_since: None,
+            daemon_stopped: false,
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -275,8 +278,28 @@ impl SessionsStore {
         }
         let info = self.session(session)?.clone();
         let terminal = TerminalSession::attach(info, self.connection.clone(), self.colors, cx)?;
+        if self.daemon_stopped {
+            terminal.update(cx, |terminal, cx| terminal.set_daemon_stopped(true, cx));
+        }
         self.terminals.insert(session, terminal.downgrade());
         Some(terminal)
+    }
+
+    /// Whether the user stopped the daemon from the app (it stays down until they start it).
+    pub fn daemon_stopped(&self) -> bool {
+        self.daemon_stopped
+    }
+
+    /// Tells every attached terminal that the daemon was stopped on purpose (or started again).
+    pub fn set_daemon_stopped(&mut self, stopped: bool, cx: &mut Context<Self>) {
+        if self.daemon_stopped == stopped {
+            return;
+        }
+        self.daemon_stopped = stopped;
+        for terminal in self.terminals.values().filter_map(WeakEntity::upgrade) {
+            terminal.update(cx, |terminal, cx| terminal.set_daemon_stopped(stopped, cx));
+        }
+        cx.notify();
     }
 
     /// The attachment of `session`'s terminal if some view holds it right now; never attaches.

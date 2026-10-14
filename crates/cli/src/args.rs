@@ -65,6 +65,12 @@ pub enum DaemonCommand {
         #[arg(long)]
         stop_sessions: bool,
     },
+    /// Stop heelerd and start a new one
+    Restart {
+        /// Stop live sessions first; otherwise the restart is refused while any run
+        #[arg(long)]
+        stop_sessions: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -8,9 +8,9 @@ use heeler_client::{Client, ClientError, ConnectOptions, default_socket_path};
 use heeler_core::WorkspaceId;
 use heeler_protocol::ErrorBody;
 use heeler_protocol::messages::{
-    ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request,
-    SessionSnapshot, Subscribed, WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRef,
-    WorkspaceRename,
+    ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
+    SessionListFilter, SessionSnapshot, Subscribed, WorkspaceCreate, WorkspaceInfo, WorkspaceList,
+    WorkspaceRef, WorkspaceRename,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -33,6 +33,9 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Daemon(DaemonCommand::Status) => ctx.daemon_status().await,
         Command::Daemon(DaemonCommand::Stop { stop_sessions }) => {
             ctx.daemon_stop(stop_sessions).await
+        }
+        Command::Daemon(DaemonCommand::Restart { stop_sessions }) => {
+            ctx.daemon_restart(stop_sessions).await
         }
         Command::Ws(WsCommand::Ls) => ctx.ws_ls().await,
         Command::Ws(WsCommand::New { name, roots }) => ctx.ws_new(name, roots).await,
@@ -117,25 +120,34 @@ impl Ctx {
 
     // ---- daemon ----------------------------------------------------------------------------
 
-    async fn daemon_start(&self) -> Result<(), CliError> {
-        let (client, started) = match Client::connect(self.options(None)).await {
-            Ok(client) => (client, false),
+    /// Connects to the daemon, starting `heelerd` if nothing listens; `true` when it was started.
+    async fn ensure_daemon(&self) -> Result<(Client, bool), CliError> {
+        match Client::connect(self.options(None)).await {
+            Ok(client) => Ok((client, false)),
             Err(ClientError::Io(e)) if is_unreachable(&e) => {
                 let binary = find_heelerd()?;
                 let client = Client::connect(self.options(Some(binary)))
                     .await
                     .map_err(|e| self.fail(e))?;
-                (client, true)
+                Ok((client, true))
             }
-            Err(e) => return Err(self.fail(e)),
-        };
+            Err(e) => Err(self.fail(e)),
+        }
+    }
+
+    async fn start_output(&self) -> Result<StartOut, CliError> {
+        let (client, started) = self.ensure_daemon().await?;
         let info: DaemonStatusInfo = self.call(&client, Request::DaemonStatus(Empty {})).await?;
-        let out = StartOut {
+        Ok(StartOut {
             started,
             status: StatusOut::new(&self.socket, info),
-        };
+        })
+    }
+
+    async fn daemon_start(&self) -> Result<(), CliError> {
+        let out = self.start_output().await?;
         self.print(&out, || {
-            let verb = if started {
+            let verb = if out.started {
                 "started"
             } else {
                 "already running"
@@ -164,6 +176,15 @@ impl Ctx {
 
     async fn daemon_stop(&self, stop_sessions: bool) -> Result<(), CliError> {
         let client = self.connect().await?;
+        self.shutdown_daemon(client, stop_sessions).await?;
+        self.print(&serde_json::json!({"stopped": true}), || {
+            "heelerd stopped".to_owned()
+        })
+    }
+
+    /// Asks the connected daemon to shut down and waits until its socket is gone, so a new
+    /// daemon can start.
+    async fn shutdown_daemon(&self, client: Client, stop_sessions: bool) -> Result<(), CliError> {
         match client
             .call::<Value>(Request::DaemonShutdown(DaemonShutdown { stop_sessions }))
             .await
@@ -187,9 +208,37 @@ impl Ctx {
                 STOP_WAIT.as_secs()
             )));
         }
-        self.print(&serde_json::json!({"stopped": true}), || {
-            "heelerd stopped".to_owned()
-        })
+        Ok(())
+    }
+
+    /// Stops the daemon and starts a new one (new epoch). Refuses while sessions are live
+    /// unless `stop_sessions`; a daemon that is not running is just started.
+    async fn daemon_restart(&self, stop_sessions: bool) -> Result<(), CliError> {
+        let was_running = match self.connect().await {
+            Ok(client) => {
+                if !stop_sessions {
+                    let list: SessionList = self
+                        .call(&client, Request::SessionList(SessionListFilter::default()))
+                        .await?;
+                    let live = list.sessions.iter().filter(|s| s.state.is_live()).count();
+                    if live > 0 {
+                        return Err(CliError::Failed(format!(
+                            "{live} live session(s); heelerd was not restarted. \
+                             Run `heeler daemon restart --stop-sessions` to stop them and restart"
+                        )));
+                    }
+                }
+                self.shutdown_daemon(client, stop_sessions).await?;
+                true
+            }
+            Err(CliError::Unreachable(_)) => false,
+            Err(e) => return Err(e),
+        };
+        let out = RestartOut {
+            was_running,
+            start: self.start_output().await?,
+        };
+        self.print(&out, || format!("restarted: {}", out.start.status.human()))
     }
 
     // ---- workspaces ------------------------------------------------------------------------
@@ -387,6 +436,14 @@ struct StartOut {
     started: bool,
     #[serde(flatten)]
     status: StatusOut,
+}
+
+#[derive(Serialize)]
+struct RestartOut {
+    /// A daemon was stopped first (`false`: none was running, one was only started).
+    was_running: bool,
+    #[serde(flatten)]
+    start: StartOut,
 }
 
 fn format_uptime(secs: u64) -> String {

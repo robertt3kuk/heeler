@@ -5,19 +5,21 @@
 //! `watch` or a `broadcast` handle; none of them needs a Tokio context, so they can be used from
 //! any executor or plain thread.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use heeler_core::TerminalId;
 use heeler_protocol::messages::{Request, TerminalSize};
 use serde::de::DeserializeOwned;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::client::{Client, ConnectOptions};
 use crate::error::ClientError;
+use crate::socket::default_socket_path;
 use crate::store::{ConnectionState, Notice, StoreState};
 use crate::supervisor::Supervisor;
 use crate::terminal::{Command, TerminalHandle, UPDATE_BUFFER, send_command};
@@ -38,6 +40,10 @@ pub(crate) struct Shared {
     client: Mutex<Option<Client>>,
     commands: mpsc::Sender<Command>,
     next_handle: AtomicU64,
+    /// Whether a missing daemon may be started (see [`Connection::set_autostart`]).
+    pub(crate) autostart: AtomicBool,
+    /// Wakes a backoff wait so a reconnect happens now.
+    pub(crate) kick: Notify,
 }
 
 impl Shared {
@@ -92,6 +98,7 @@ impl Drop for Owner {
 pub struct Connection {
     shared: Arc<Shared>,
     owner: Arc<Owner>,
+    socket: Option<PathBuf>,
 }
 
 impl Connection {
@@ -99,6 +106,7 @@ impl Connection {
     /// 10 s) and reconnects with exponential backoff (100 ms doubling to 5 s, ±20 % jitter)
     /// until dropped or shut down.
     pub fn start(opts: ConnectOptions) -> Connection {
+        let socket = opts.socket.clone().or_else(default_socket_path);
         let (state, _) = watch::channel(Arc::new(StoreState::initial()));
         let (notices, _) = broadcast::channel(NOTICE_BUFFER);
         let (commands, command_rx) = mpsc::channel(COMMAND_BUFFER);
@@ -108,6 +116,8 @@ impl Connection {
             client: Mutex::new(None),
             commands,
             next_handle: AtomicU64::new(1),
+            autostart: AtomicBool::new(opts.autostart.is_some()),
+            kick: Notify::new(),
         });
         let cancel = CancellationToken::new();
         let supervisor = Supervisor::new(opts, shared.clone(), command_rx, cancel.clone());
@@ -130,6 +140,7 @@ impl Connection {
                 cancel,
                 thread: Mutex::new(thread),
             }),
+            socket,
         }
     }
 
@@ -142,6 +153,27 @@ impl Connection {
     /// Transient events (bell, exit, restart). A receiver that falls behind misses the oldest.
     pub fn notices(&self) -> broadcast::Receiver<Notice> {
         self.shared.notices.subscribe()
+    }
+
+    /// The socket this connection dials (`ConnectOptions::socket`, else the default location).
+    pub fn socket_path(&self) -> Option<&Path> {
+        self.socket.as_deref()
+    }
+
+    /// Allows or forbids starting `heelerd` when nothing listens (it has no effect without
+    /// [`ConnectOptions::autostart`]). Forbidding keeps the connection retrying quietly, so a
+    /// daemon the user stopped is not brought back; allowing it again reconnects at once and
+    /// starts the daemon without waiting for the autostart interval.
+    pub fn set_autostart(&self, enabled: bool) {
+        let was = self.shared.autostart.swap(enabled, Ordering::AcqRel);
+        if enabled && !was {
+            self.shared.kick.notify_one();
+        }
+    }
+
+    /// Whether a missing daemon is started ([`set_autostart`](Self::set_autostart)).
+    pub fn autostart(&self) -> bool {
+        self.shared.autostart.load(Ordering::Acquire)
     }
 
     /// Sends `req` on the current connection. Fails with [`ClientError::Disconnected`] when

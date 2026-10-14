@@ -564,6 +564,7 @@ impl Workbench {
         if nothing_focused && self.held.len() != before {
             self.focus_root(window, cx);
         }
+        self.on_daemon_state_changed(cx);
         cx.notify();
     }
 
@@ -599,7 +600,10 @@ impl Workbench {
         };
         self.rendered_terminals.insert((pane, id));
         let Some(view) = self.terminal_view(pane, id, window, cx) else {
-            let text = if known {
+            let stopped = self.daemon.stopped;
+            let text = if stopped {
+                "Daemon stopped"
+            } else if known {
                 "Starting…"
             } else if synced {
                 "This session no longer exists. Close the tab."
@@ -615,7 +619,14 @@ impl Workbench {
                 .gap(px(tokens.spacing * 2.0))
                 .text_color(theme.muted)
                 .child(text)
-                .when(!known && synced, |s| {
+                .when(stopped, |s| {
+                    s.child(
+                        self.action_button("daemon-start", "Start", cx, |this, _, cx| {
+                            this.start_daemon(cx);
+                        }),
+                    )
+                })
+                .when(!stopped && !known && synced, |s| {
                     s.child(
                         self.action_button("ended-close", "Close", cx, move |this, _, cx| {
                             this.close_session_tabs(id, cx);
@@ -631,7 +642,29 @@ impl Workbench {
             )
         });
         let mut root = div().relative().size_full().child(view);
-        if ended {
+        if self.daemon.stopped {
+            // The user stopped the daemon: one banner with the way back, instead of Close.
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(tokens.spacing * 2.0))
+                    .right(px(tokens.spacing * 3.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 2.0))
+                    .child(
+                        div()
+                            .text_color(theme.muted)
+                            .text_size(px(tokens.font_size))
+                            .child("Daemon stopped"),
+                    )
+                    .child(
+                        self.action_button("daemon-start", "Start", cx, |this, _, cx| {
+                            this.start_daemon(cx);
+                        }),
+                    ),
+            );
+        } else if ended {
             let mut bar = div()
                 .absolute()
                 .top(px(tokens.spacing * 2.0))
@@ -765,6 +798,9 @@ impl Workbench {
         if changes.contains("layout") {
             self.apply_layout_settings(cx);
         }
+        if changes.contains("app") {
+            self.sync_daemon_menu(cx);
+        }
         cx.notify();
     }
 
@@ -782,7 +818,7 @@ impl Workbench {
         if let Some(palette) = &mut self.palette {
             palette.refilter(self.commands.iter().map(|c| c.title.as_ref()));
         }
-        cx.set_menus(crate::app::menus(&self.presets));
+        self.refresh_menus(cx);
         if layout.preset != previous.preset {
             self.apply_preset_named(&layout.preset.clone(), cx);
         } else if let Some(before) = before

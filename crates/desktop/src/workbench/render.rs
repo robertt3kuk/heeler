@@ -35,7 +35,7 @@ fn key_hint(window: &Window, action: &dyn Action) -> Option<SharedString> {
 }
 
 /// An invisible child that records its parent's painted bounds under `region`.
-fn probe(
+pub(super) fn probe(
     regions: &Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
     region: Region,
 ) -> impl IntoElement {
@@ -80,6 +80,7 @@ impl Render for Workbench {
         let palette = self.render_palette(window, cx);
         let menu = self.render_context_menu(cx);
         let modal = self.render_modal(cx);
+        let daemon_popover = self.render_daemon_popover(cx);
         let sheet = self.render_settings_sheet(cx);
 
         let root = div()
@@ -134,6 +135,7 @@ impl Render for Workbench {
                 ),
         )
         .child(status)
+        .children(daemon_popover)
         .children(edge_targets)
         .children(palette)
         .children(menu)
@@ -448,6 +450,32 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &palette::Dismiss, window, cx| {
             this.close_menu(window, cx);
             this.close_palette(window, cx);
+            this.close_daemon_popover(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::Quit, window, cx| {
+            this.request_quit(window, cx);
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::daemon::Status, window, cx| {
+                this.show_daemon_status(window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::daemon::Restart, window, cx| {
+                this.restart_daemon(window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::daemon::Stop, window, cx| {
+            this.stop_daemon(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::daemon::Start, _, cx| {
+            this.start_daemon(cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::daemon::OpenLogs, _, cx| {
+            this.open_daemon_logs(cx);
+        }))
+        .on_action(cx.listener(|this, a: &actions::SetOnQuit, _, cx| {
+            this.set_on_quit(a.0, cx);
         }))
     }
 
@@ -1322,6 +1350,7 @@ impl Workbench {
             let store = self.sessions.read(cx);
             StatusData {
                 connection: store.connection_state(),
+                connection_line: self.daemon_line(cx),
                 epoch: store.state().epoch.map(|e| e.to_string()),
                 sessions: store.sessions().len(),
                 needs_you: store.needs_you().len(),
@@ -1344,7 +1373,13 @@ impl Workbench {
         let render_side = |ids: &[String]| -> Vec<AnyElement> {
             ids.iter()
                 .filter_map(|item| self.status_items.get(item))
-                .map(|spec| (spec.render)(&ctx))
+                .map(|spec| {
+                    div()
+                        .relative()
+                        .child((spec.render)(&ctx))
+                        .child(probe(&self.regions, Region::StatusItem(spec.id)))
+                        .into_any_element()
+                })
                 .collect()
         };
         let left = render_side(&status_bar.left);

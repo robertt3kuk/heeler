@@ -8,8 +8,8 @@ use heeler_settings::{AppearanceSettings, Setting, SettingsStore};
 use serde_json::Value as Json;
 
 use crate::settings::{
-    InspectorPanelSettings, LayoutSettings, OverviewPanelSettings, SessionsPanelSettings,
-    TerminalSettings,
+    AppSettings, InspectorPanelSettings, LayoutSettings, OverviewPanelSettings,
+    SessionsPanelSettings, TerminalSettings,
 };
 
 /// How a field is edited.
@@ -236,6 +236,7 @@ impl CatalogEntry {
 pub fn catalog() -> Vec<CatalogEntry> {
     vec![
         CatalogEntry::of::<AppearanceSettings>(),
+        CatalogEntry::of::<AppSettings>(),
         CatalogEntry::of::<TerminalSettings>(),
         CatalogEntry::of::<LayoutSettings>(),
         CatalogEntry::of::<SessionsPanelSettings>(),
@@ -347,6 +348,14 @@ mod tests {
             FieldKind::Unsupported(_)
         ));
         assert_eq!(
+            kind(&fields(&store, "app"), "on_quit"),
+            FieldKind::Enum(
+                ["ask", "keep_running", "stop_daemon"]
+                    .map(str::to_owned)
+                    .to_vec()
+            )
+        );
+        assert_eq!(
             kind(&fields(&store, "appearance"), "density"),
             FieldKind::Enum(vec!["compact".into(), "comfortable".into()])
         );
@@ -382,10 +391,11 @@ mod tests {
                 .map(|e| e.namespace)
                 .collect()
         };
-        assert_eq!(names("").len(), 6);
+        assert_eq!(names("").len(), 7);
         assert_eq!(names("panels").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);
+        assert_eq!(names("on_quit"), ["app"]);
         assert!(names("zzzz").is_empty());
     }
 }

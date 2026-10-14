@@ -7,6 +7,7 @@
 
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::registry::PanelRegistry;
+use crate::settings::OnQuit;
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 use heeler_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
@@ -88,6 +89,13 @@ pub mod sheet {
     actions!(settings_sheet, [Dismiss]);
 }
 
+/// Daemon controls (design.md § Daemon lifecycle). The `Daemon` menu, the status-bar popover
+/// and the palette all dispatch these, so there is one implementation.
+pub mod daemon {
+    use gpui::actions;
+    actions!(daemon, [Status, Restart, Stop, Start, OpenLogs]);
+}
+
 macro_rules! data_actions {
     ($($(#[$meta:meta])* $name:ident($ty:ty);)*) => {
         $(
@@ -136,6 +144,8 @@ data_actions! {
     OpenSessionFromOverview(String);
     /// Open the settings sheet at a namespace (`terminal`, `panels.sessions`, …).
     OpenSettingsFor(String);
+    /// Set the working mode (`app.on_quit`): what quitting does with the daemon.
+    SetOnQuit(OnQuit);
 }
 
 /// A palette entry: human title, the action it runs, and the action whose key binding is shown
@@ -248,6 +258,20 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Window: Minimize", MinimizeWindow),
         command("Window: Zoom", ZoomWindow),
         command("App: Quit Heeler", Quit),
+        command("Daemon: Status", daemon::Status),
+        command("Daemon: Restart Daemon", daemon::Restart),
+        command("Daemon: Stop Daemon", daemon::Stop),
+        command("Daemon: Start Daemon", daemon::Start),
+        command("Daemon: Open Logs", daemon::OpenLogs),
+        command("Daemon: Working Mode — Ask on Quit", SetOnQuit(OnQuit::Ask)),
+        command(
+            "Daemon: Working Mode — Keep Sessions Running After Quit",
+            SetOnQuit(OnQuit::KeepRunning),
+        ),
+        command(
+            "Daemon: Working Mode — Stop Daemon With the App",
+            SetOnQuit(OnQuit::StopDaemon),
+        ),
     ];
     for dir in [
         Direction::Left,
@@ -362,6 +386,7 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<modal::Confirm>("enter", Some("Modal")),
         bind::<modal::Cancel>("escape", Some("Modal")),
         bind::<sheet::Dismiss>("escape", Some("SettingsSheet")),
+        bind::<palette::Dismiss>("escape", Some("DaemonPopover")),
     ];
     let tabs: [&str; 9] = [
         ActivateTab1::name_for_type(),

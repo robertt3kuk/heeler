@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use heeler_core::{Epoch, Seq, SessionId, TerminalId};
@@ -410,7 +411,10 @@ impl Supervisor {
     /// `None` when cancelled.
     async fn dial(&mut self, resume: Option<ResumePoint>) -> Option<Result<Resumed, ClientError>> {
         let throttle = &mut self.throttle;
-        let connect = Client::connect_gated(self.opts.clone(), resume, || throttle.permit());
+        let enabled = &self.shared.autostart;
+        let connect = Client::connect_gated(self.opts.clone(), resume, || {
+            enabled.load(Ordering::Acquire) && throttle.permit()
+        });
         let mut connect = pin!(connect);
         loop {
             tokio::select! {
@@ -424,7 +428,8 @@ impl Supervisor {
         }
     }
 
-    /// Waits out a backoff delay; `false` when cancelled.
+    /// Waits out a backoff delay; `false` when cancelled. A [`Connection::set_autostart`]
+    /// that re-enables autostart ends the wait early and lifts the autostart interval.
     async fn idle(&mut self, delay: Duration) -> bool {
         let mut timer = pin!(sleep(delay));
         loop {
@@ -432,6 +437,10 @@ impl Supervisor {
                 biased;
                 _ = self.cancel.cancelled() => return false,
                 () = &mut timer => return true,
+                () = self.shared.kick.notified() => {
+                    self.throttle = AutostartThrottle::default();
+                    return true;
+                }
                 Some(command) = self.commands.recv() => {
                     self.terminals.offline(command, &self.state.sessions);
                 }

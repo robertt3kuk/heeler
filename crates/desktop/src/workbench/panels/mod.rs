@@ -21,7 +21,7 @@ pub use common::{kind_icon, tone_color};
 pub use inspector::InspectorPanel;
 pub use overview::OverviewPanel;
 pub use sessions::SessionsPanel;
-pub use status::{builtin_status_items, connection_label};
+pub use status::{Tone as StatusTone, builtin_status_items, connection_label};
 
 /// A panel that renders its name and a short description.
 #[derive(Debug)]

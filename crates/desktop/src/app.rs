@@ -1,11 +1,12 @@
-//! Application bootstrap: keymap, menus, window options, and the `run` entry point.
+//! Application bootstrap: keymap, menus, window options, quit routing, and the `run` entry point.
 
-use crate::workbench::actions::{self, ApplyPreset};
+use crate::settings::OnQuit;
+use crate::workbench::actions::{self, ApplyPreset, SetOnQuit, daemon};
 use crate::workbench::model::LayoutPreset;
 use crate::workbench::persistence;
 use crate::workbench::{Workbench, WorkbenchOptions};
 use gpui::{
-    App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType, TitlebarOptions,
+    App, AppContext as _, Bounds, Context, Menu, MenuItem, SystemMenuType, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use heeler_client::{ConnectOptions, Connection};
@@ -13,21 +14,64 @@ use heeler_protocol::messages::{ClientInfo, ClientKind};
 use heeler_settings::{SettingsPaths, SettingsStore};
 use std::path::{Path, PathBuf};
 
+/// What the `Daemon` menu shows: the working mode (checked) and whether the daemon is up
+/// (Restart and Stop apply) or not (Start applies).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonMenu {
+    pub on_quit: OnQuit,
+    pub running: bool,
+}
+
+impl Default for DaemonMenu {
+    fn default() -> Self {
+        Self {
+            on_quit: OnQuit::Ask,
+            running: true,
+        }
+    }
+}
+
+/// Runs `run` on the workbench window; quits the app when there is none. Deferred because
+/// the caller may be inside that window's own update.
+fn with_workbench(
+    cx: &mut App,
+    run: impl FnOnce(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static,
+) {
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<Workbench>());
+    match handle {
+        Some(handle) => cx.defer(move |cx| {
+            if handle.update(cx, run).is_err() {
+                cx.quit();
+            }
+        }),
+        None => cx.quit(),
+    }
+}
+
 /// Install the global actions and the menu bar. Key bindings come from the workbench (defaults
-/// plus `keymap.toml`), which rebinds them live.
+/// plus `keymap.toml`), which rebinds them live. Quit is decided by the workbench (live
+/// sessions, `app.on_quit`); this handler only catches the action when no window has focus.
 pub fn init(cx: &mut App, presets: &[LayoutPreset]) {
-    cx.on_action(|_: &actions::Quit, cx| cx.quit());
+    cx.on_action(|_: &actions::Quit, cx| {
+        with_workbench(cx, |workbench, window, cx| {
+            workbench.request_quit(window, cx)
+        });
+    });
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();
         }
     })
     .detach();
-    cx.set_menus(menus(presets));
+    cx.set_menus(menus(presets, &DaemonMenu::default()));
 }
 
-/// App, View, and Window menus. Items dispatch the same named actions as the keymap and palette.
-pub fn menus(presets: &[LayoutPreset]) -> Vec<Menu> {
+/// App, Session, View, Daemon, and Window menus. Items dispatch the same named actions as the
+/// keymap and palette.
+pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
     let preset_items = presets.iter().map(|p| {
         MenuItem::action(
             crate::workbench::preset_label(&p.name),
@@ -72,6 +116,18 @@ pub fn menus(presets: &[LayoutPreset]) -> Vec<Menu> {
             ])),
             MenuItem::separator(),
             MenuItem::action("Command Palette…", actions::TogglePalette),
+        ]),
+        Menu::new("Daemon").items([
+            MenuItem::action("Status…", daemon::Status),
+            MenuItem::separator(),
+            MenuItem::action("Restart Daemon", daemon::Restart).disabled(!daemon_menu.running),
+            MenuItem::action("Stop Daemon", daemon::Stop).disabled(!daemon_menu.running),
+            MenuItem::action("Start Daemon", daemon::Start).disabled(daemon_menu.running),
+            MenuItem::action("Open Logs", daemon::OpenLogs),
+            MenuItem::separator(),
+            MenuItem::submenu(Menu::new("Working Mode").items(OnQuit::ALL.map(|mode| {
+                MenuItem::action(mode.label(), SetOnQuit(mode)).checked(mode == daemon_menu.on_quit)
+            }))),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", actions::MinimizeWindow),
@@ -160,11 +216,33 @@ pub fn run() {
         let options =
             WorkbenchOptions::builtin(settings, connection, persistence::default_state_path());
         init(cx, &LayoutPreset::builtin());
+        watch_signals(cx);
         if let Err(err) = open_workbench(cx, options) {
             tracing::error!("cannot open the workbench window: {err:#}");
             cx.quit();
         }
     });
+}
+
+/// SIGTERM / SIGINT / SIGHUP quit like `app.on_quit = keep_running`: layout saved, connection
+/// closed, exit code 0, the daemon untouched; never a question.
+fn watch_signals(cx: &mut App) {
+    match crate::signals::watch() {
+        Ok(mut signals) => cx
+            .spawn(async move |cx| {
+                while let Some(signal) = signals.recv().await {
+                    tracing::info!(
+                        ?signal,
+                        "terminated by a signal; leaving the daemon running"
+                    );
+                    cx.update(|cx| {
+                        with_workbench(cx, |workbench, _, cx| workbench.quit_leaving_daemon(cx));
+                    });
+                }
+            })
+            .detach(),
+        Err(err) => tracing::warn!("cannot watch for termination signals: {err}"),
+    }
 }
 
 #[cfg(test)]
