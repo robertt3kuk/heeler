@@ -12,6 +12,7 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "CC0-1.0", # notify (file watcher); public-domain dedication
   "ISC",
   "Unicode-3.0",
   "Zlib",
