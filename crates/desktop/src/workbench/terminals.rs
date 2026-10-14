@@ -75,7 +75,17 @@ impl Workbench {
     /// a layout re-attaches all of them), and detaches the ones no tab shows anymore.
     pub(crate) fn attach_open_items(&mut self, cx: &mut Context<Self>) {
         let items = self.open_terminal_items();
-        let wanted: HashSet<SessionId> = items.iter().map(|(_, s)| *s).collect();
+        // Sessions hidden in the overview's stash stay attached (paced at zero cost).
+        let mut wanted: HashSet<SessionId> = items.iter().map(|(_, s)| *s).collect();
+        if let Some(saved) = &self.state.stashed {
+            wanted.extend(
+                saved
+                    .center
+                    .panes()
+                    .into_iter()
+                    .flat_map(|p| p.items.iter().filter_map(session_of_item)),
+            );
+        }
         self.held.retain(|session, _| wanted.contains(session));
         let keep: HashSet<(PaneId, SessionId)> = items.into_iter().collect();
         let gone: Vec<(PaneId, SessionId)> = self

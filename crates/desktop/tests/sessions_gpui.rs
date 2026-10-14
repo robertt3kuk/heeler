@@ -143,6 +143,7 @@ fn a_pane_tab_and_an_overview_card_share_one_attachment(cx: &mut TestAppContext)
         1
     );
 
+    let tab = view.read_with(cx, |wb, _| wb.terminal_view_of(info.id).unwrap());
     // Overview: the board draws the same model at a reduced size.
     cx.simulate_keystrokes("cmd-shift-o");
     let overview = loop {
@@ -155,7 +156,6 @@ fn a_pane_tab_and_an_overview_card_share_one_attachment(cx: &mut TestAppContext)
         overview.read_with(cx, |p, _| p.preview_view(info.id).is_some())
     });
     let preview = overview.read_with(cx, |p, _| p.preview_view(info.id).cloned().unwrap());
-    let tab = view.read_with(cx, |wb, _| wb.terminal_view_of(info.id).unwrap());
     assert_eq!(
         preview.read_with(cx, |v, _| v.shared().clone()),
         tab.read_with(cx, |v, _| v.shared().clone()),
@@ -1320,4 +1320,82 @@ fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppCon
     });
     let fourth = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
     assert_eq!(daemon.session(fourth).cwd, std::env::home_dir());
+}
+
+#[gpui::test]
+fn every_overview_card_shows_its_session_even_unfocused_or_ended(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let omp = daemon.sh_titled("omp", "echo omp-screen; sleep 600");
+    let tests = daemon.sh_titled("tests", "echo tests-screen; sleep 600");
+    let failing = daemon.sh_titled("failing", "echo boom; exit 1");
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 3);
+    open_session(&view, cx, omp.id);
+    wait_screen(&view, cx, omp.id, "omp-screen");
+    // Two more panes; the last one opened has focus, the others are unfocused.
+    for (session, edge) in [
+        (&tests, heeler_desktop::workbench::model::Edge::Right),
+        (&failing, heeler_desktop::workbench::model::Edge::Bottom),
+    ] {
+        cx.dispatch_action(actions::OpenSessionInSplit(actions::SessionSplit {
+            session: session.id.to_string(),
+            edge,
+        }));
+    }
+    wait_screen(&view, cx, omp.id, "omp-screen");
+    wait_screen(&view, cx, tests.id, "tests-screen");
+    wait_screen(&view, cx, failing.id, "boom");
+    assert_eq!(state_of(&view, cx).panes().len(), 3);
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.focused_session()),
+        Some(failing.id)
+    );
+
+    cx.dispatch_action(actions::ApplyPreset("overview".into()));
+    let s = state_of(&view, cx);
+    assert_eq!(s.panes().len(), 1);
+    assert_eq!(
+        s.active_pane().unwrap().items,
+        vec![ItemRef::panel("overview")],
+        "only the board is visible; the tabs wait in the stash"
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).attached_count()),
+        3,
+        "hidden sessions stay attached"
+    );
+
+    let overview = loop {
+        draw(cx);
+        if let Some(panel) = view.read_with(cx, |wb, _| wb.panel::<OverviewPanel>("overview")) {
+            break panel;
+        }
+    };
+    for (id, text) in [
+        (omp.id, "omp-screen"),
+        (tests.id, "tests-screen"),
+        (failing.id, "boom"),
+    ] {
+        wait_until(cx, &format!("the preview of {text}"), |cx| {
+            overview.read_with(cx, |p, _| p.preview_view(id).is_some())
+        });
+        let preview = overview.read_with(cx, |p, _| p.preview_view(id).cloned().unwrap());
+        wait_until(cx, &format!("`{text}` drawn in its card"), |cx| {
+            preview
+                .read_with(cx, |v, _| v.visible_text())
+                .iter()
+                .any(|row| row.contains(text))
+        });
+        assert!(
+            preview
+                .read_with(cx, |v, _| screen_text(&v.model()))
+                .contains(text),
+            "the shared model of {text} is intact"
+        );
+    }
+    // Leaving the overview brings the split layout back with live terminals.
+    cx.simulate_keystrokes("cmd-shift-o");
+    assert_eq!(state_of(&view, cx).panes().len(), 3);
+    wait_screen(&view, cx, omp.id, "omp-screen");
+    wait_screen(&view, cx, failing.id, "boom");
 }

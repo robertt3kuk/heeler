@@ -470,15 +470,57 @@ impl TerminalView {
             - i64::from(self.scroll_offset)
     }
 
-    /// Rows of the screen above the first one shown: a preview too short for the whole screen
-    /// shows the newest rows.
+    /// Rows of the screen above the first one shown. A preview too short for the whole screen
+    /// ends at the last row that has anything on it (content or the cursor), so a shell prompt
+    /// near the top of a tall terminal shows its text instead of blank rows below it.
     pub(crate) fn row_offset(&self) -> u16 {
         match (self.mode, self.layout) {
             (ViewMode::Preview, Some(layout)) => {
-                self.model.get().screen_rows().saturating_sub(layout.rows)
+                let model = self.model.get();
+                let screen = model.screen_rows();
+                if screen <= layout.rows {
+                    return 0;
+                }
+                let blank = |row: &heeler_protocol::render::Row| {
+                    row.runs.iter().all(|run| {
+                        run.text.trim().is_empty()
+                            && run.bg == heeler_protocol::render::Color::Default
+                    })
+                };
+                let last_content = model
+                    .viewport()
+                    .iter()
+                    .rposition(|row| !blank(row))
+                    .and_then(|i| u16::try_from(i).ok());
+                let cursor = model.cursor();
+                let last_cursor = cursor.visible.then_some(cursor.row);
+                let last = last_content
+                    .into_iter()
+                    .chain(last_cursor)
+                    .max()
+                    .unwrap_or(0)
+                    .min(screen - 1);
+                (last + 1).saturating_sub(layout.rows)
             }
             _ => 0,
         }
+    }
+
+    /// The text of the rows as laid out (what the view shows), top to bottom. Empty before the
+    /// first layout.
+    pub fn visible_text(&self) -> Vec<String> {
+        let Some(layout) = self.layout else {
+            return Vec::new();
+        };
+        let model = self.model.get();
+        (0..layout.rows)
+            .map(|r| {
+                model
+                    .row_at(self.line_for_row(r))
+                    .map(TerminalModel::row_text)
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// Cursor shape and whether it blinks: an application's explicit choice wins over the

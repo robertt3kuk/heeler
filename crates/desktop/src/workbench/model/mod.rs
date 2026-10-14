@@ -173,8 +173,36 @@ impl WorkbenchState {
     }
 
     /// Every open item exactly once: dock panels (left, right, bottom) then center items in tree
-    /// order. Used to assert conservation across operations.
+    /// order, then what a center-override preset (the overview) keeps stashed out of sight
+    /// (panels already shown are not repeated). Used to assert conservation across operations.
     pub fn all_items(&self) -> Vec<ItemRef> {
+        let mut items = self.visible_items();
+        if let Some(saved) = &self.stashed {
+            let mut shown: HashSet<PanelId> =
+                items.iter().filter_map(|i| i.as_panel().cloned()).collect();
+            let hidden = DockPosition::ALL
+                .into_iter()
+                .flat_map(|pos| saved.docks.get(pos).panels.iter().cloned())
+                .map(|panel| ItemRef::Panel { panel })
+                .chain(
+                    saved
+                        .center
+                        .panes()
+                        .into_iter()
+                        .flat_map(|p| p.items.clone()),
+                );
+            for item in hidden {
+                match item.as_panel() {
+                    Some(panel) if !shown.insert(panel.clone()) => {}
+                    _ => items.push(item),
+                }
+            }
+        }
+        items
+    }
+
+    /// The items currently on screen (docks and center), without the stash.
+    pub fn visible_items(&self) -> Vec<ItemRef> {
         let mut items: Vec<ItemRef> = DockPosition::ALL
             .into_iter()
             .flat_map(|pos| self.docks.get(pos).panels.iter().cloned())

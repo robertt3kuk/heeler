@@ -5,7 +5,7 @@ use super::{
     SavedLayout, WorkbenchState,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// What a preset does to the center.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -105,10 +105,27 @@ impl WorkbenchState {
     ///
     /// Docks are replaced by the preset's. Panels the preset places are moved to those places;
     /// items it does not place (terminals, chats, placeholders, panels that were open elsewhere)
-    /// are kept in the first pane. A [`CenterLayout::Items`] override flattens the old tree into
-    /// one pane (override items first).
+    /// are kept in the first pane. A [`CenterLayout::Items`] override (the overview) stashes the
+    /// whole layout and shows only its own items; the stash comes back on leaving it.
     pub fn apply_preset(&mut self, preset: &LayoutPreset) {
+        self.apply_preset_from(preset, &LayoutPreset::overview_preset().placed_panels());
+    }
+
+    /// [`Self::apply_preset`] knowing which panels the current center-override preset placed
+    /// (they are not carried over when its stash is restored).
+    fn apply_preset_from(&mut self, preset: &LayoutPreset, departing_panels: &HashSet<PanelId>) {
+        // Leaving a center override for a preset that keeps the center brings the stash back
+        // first, so no path (keys, menu, palette, settings, restore) can lose items.
+        if matches!(preset.center, CenterLayout::Keep)
+            && let Some(saved) = self.stashed.take()
+        {
+            self.restore_saved(*saved, departing_panels);
+            if self.preset == preset.name {
+                return;
+            }
+        }
         let placed = preset.placed_panels();
+        let had_stash = self.stashed.is_some();
         // A center override (overview) remembers the layout it replaced; re-applying while one
         // is already remembered keeps the original, and any other preset forgets it.
         let stash = match &preset.center {
@@ -142,14 +159,18 @@ impl WorkbenchState {
             CenterLayout::Items(items) => {
                 let first_id = self.first_pane_id();
                 let mut all: Vec<ItemRef> = items.clone();
-                all.extend(leftover_panels);
-                for pane in self.center.panes() {
-                    all.extend(
-                        pane.items
-                            .iter()
-                            .filter(|i| i.as_panel().is_none_or(|p| !placed.contains(p)))
-                            .cloned(),
-                    );
+                // Entering the override: everything else lives in the stash and is not shown.
+                // Re-applying it while already in it: what was opened since stays visible.
+                if had_stash {
+                    all.extend(leftover_panels);
+                    for pane in self.center.panes() {
+                        all.extend(
+                            pane.items
+                                .iter()
+                                .filter(|i| i.as_panel().is_none_or(|p| !placed.contains(p)))
+                                .cloned(),
+                        );
+                    }
                 }
                 self.center = PaneTree::single(Pane::new(first_id, all));
             }
@@ -168,45 +189,32 @@ impl WorkbenchState {
         }
     }
 
-    /// Put `saved` back exactly, keeping only items that are still open and adding items opened
-    /// since (other than panels the departing preset placed itself) to the first pane.
+    /// Put `saved` back exactly. Panels the departing preset placed that are no longer open were
+    /// closed while it was current and stay closed; items opened since (other than panels the
+    /// departing preset placed itself) join the first pane.
     fn restore_saved(&mut self, saved: SavedLayout, departing_panels: &HashSet<PanelId>) {
-        let mut live: HashMap<ItemRef, usize> = HashMap::new();
-        for item in self.all_items() {
-            *live.entry(item).or_insert(0) += 1;
-        }
-        let mut take = |item: &ItemRef| match live.get_mut(item) {
-            Some(count) if *count > 0 => {
-                *count -= 1;
-                true
-            }
-            _ => false,
-        };
+        let live: HashSet<PanelId> = self
+            .all_items()
+            .into_iter()
+            .filter_map(|i| i.as_panel().cloned())
+            .collect();
+        let keep_panel = |p: &PanelId| live.contains(p) || !departing_panels.contains(p);
         let mut restored = saved.into_state(self.next_pane);
         for pos in DockPosition::ALL {
-            restored
-                .docks
-                .get_mut(pos)
-                .panels
-                .retain(|p| take(&ItemRef::Panel { panel: p.clone() }));
+            restored.docks.get_mut(pos).panels.retain(&keep_panel);
         }
         for pane in restored.center.panes_mut() {
-            pane.items.retain(|item| take(item));
+            pane.items
+                .retain(|item| item.as_panel().is_none_or(&keep_panel));
         }
-        let mut fresh = Vec::new();
-        for item in self.all_items() {
-            if let Some(count) = live.get_mut(&item)
-                && *count > 0
-            {
-                *count -= 1;
-                if item
-                    .as_panel()
+        let fresh: Vec<ItemRef> = self
+            .all_items()
+            .into_iter()
+            .filter(|item| {
+                item.as_panel()
                     .is_none_or(|p| !departing_panels.contains(p))
-                {
-                    fresh.push(item);
-                }
-            }
-        }
+            })
+            .collect();
         // `normalize` below prunes panes the filtering emptied; give them a home first.
         if let Some(first) = restored.center.first_pane_mut() {
             first.items.extend(fresh);
@@ -228,18 +236,11 @@ impl WorkbenchState {
     ) -> Result<(), ModelError> {
         let find = |n: &str| presets.iter().find(|p| p.name == n);
         let target = find(name).ok_or_else(|| ModelError::UnknownPreset(name.to_owned()))?;
-        if self.stashed.is_some() && matches!(target.center, CenterLayout::Keep) {
-            let departing = find(&self.preset)
-                .cloned()
-                .unwrap_or_else(LayoutPreset::overview_preset);
-            if let Some(saved) = self.stashed.take() {
-                self.restore_saved(*saved, &departing.placed_panels());
-            }
-            if self.preset == target.name {
-                return Ok(());
-            }
-        }
-        self.apply_preset(target);
+        let departing = find(&self.preset)
+            .cloned()
+            .unwrap_or_else(LayoutPreset::overview_preset)
+            .placed_panels();
+        self.apply_preset_from(target, &departing);
         Ok(())
     }
 

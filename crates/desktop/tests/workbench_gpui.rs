@@ -132,9 +132,17 @@ fn presets_and_overview_toggle(cx: &mut TestAppContext) {
     );
     assert_eq!(s.panes().len(), 1);
     assert_eq!(
-        s.panes()[0].items.len(),
-        3,
-        "overview + the two placeholder panes survive"
+        s.panes()[0].items,
+        vec![ItemRef::panel("overview")],
+        "the board is the only visible center item"
+    );
+    assert_eq!(
+        s.all_items()
+            .iter()
+            .filter(|i| matches!(i, ItemRef::Placeholder { .. }))
+            .count(),
+        2,
+        "the placeholder panes wait in the stash"
     );
 
     cx.simulate_keystrokes("cmd-shift-o");

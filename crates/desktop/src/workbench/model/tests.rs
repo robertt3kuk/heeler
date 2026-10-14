@@ -1051,16 +1051,24 @@ fn preset_cycle_never_loses_session_items() {
 }
 
 #[test]
-fn overview_preset_puts_panel_first_and_keeps_tabs() {
+fn overview_preset_shows_only_the_board_and_stashes_the_tabs() {
     let mut state = grid();
     state.apply_preset(&LayoutPreset::overview_preset());
     check(&state);
     assert_eq!(state.panes().len(), 1);
     let pane = state.active_pane().unwrap();
-    assert_eq!(pane.items[0], ItemRef::panel("overview"));
+    assert_eq!(
+        pane.items,
+        vec![ItemRef::panel("overview")],
+        "only the board is shown"
+    );
     assert_eq!(pane.active, 0);
-    assert_eq!(pane.items.len(), 5);
     assert_eq!(state.zoomed, None);
+    // The tabs are not lost: they wait in the stash and count as open items.
+    let all = state.all_items();
+    for name in ["a", "b", "c", "d"] {
+        assert!(all.contains(&item(name)), "{name} is stashed");
+    }
 }
 
 #[test]
@@ -1183,26 +1191,23 @@ fn items_opened_during_overview_land_in_the_restored_first_pane() {
 }
 
 #[test]
-fn items_closed_during_overview_stay_closed() {
+fn panels_closed_during_overview_stay_closed_and_hidden_tabs_come_back() {
     let presets = default_presets();
     let mut state = customized_grid();
     state.toggle_preset("overview", &presets).unwrap();
-    let pane = state.active_pane_id();
-    let index = state
-        .pane(pane)
-        .unwrap()
-        .items
-        .iter()
-        .position(|i| *i == item("b"))
-        .unwrap();
-    state.close_item(pane, index).unwrap();
+    assert!(state.find_panel(&PanelId::new("inspector")).is_some());
+    state.close_panel(&PanelId::new("inspector")).unwrap();
     state.toggle_preset("overview", &presets).unwrap();
     check(&state);
-    assert!(!state.all_items().contains(&item("b")));
-    assert!(
-        state.pane(PaneId(2)).is_none(),
-        "pane that only held `b` is gone"
-    );
+    assert!(state.find_panel(&PanelId::new("inspector")).is_none());
+    for name in ["a", "b", "c", "d", "c2"] {
+        assert!(
+            state.all_items().contains(&item(name)),
+            "{name} was only hidden"
+        );
+    }
+    // The panel the overview placed on the bottom dock before (notifications) is back too.
+    assert!(state.find_panel(&PanelId::new("notifications")).is_some());
 }
 
 #[test]
@@ -1477,6 +1482,10 @@ fn random_operations_preserve_invariants_and_conserve_items() {
             if opens {
                 let after = sorted_items(&state);
                 for it in &before {
+                    // The board only lives while its preset is current.
+                    if *it == format!("{:?}", ItemRef::panel("overview")) {
+                        continue;
+                    }
                     assert!(after.contains(it), "seed {seed}: {it} lost");
                 }
             } else if !closes {

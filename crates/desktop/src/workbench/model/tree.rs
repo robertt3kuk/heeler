@@ -5,6 +5,16 @@ use super::types::{Axis, Edge, Pane, PaneId, PaneTree, Rect};
 /// Smallest share a child of a split may have after a resize.
 pub const MIN_RATIO: f32 = 0.05;
 
+/// `ratio / total`, leaving shares alone that already sum to 1 within float noise so that
+/// normalizing twice (save, load) changes nothing.
+fn rescale(ratio: f32, total: f32) -> f32 {
+    if (total - 1.0).abs() <= 1e-5 {
+        ratio
+    } else {
+        ratio / total
+    }
+}
+
 impl PaneTree {
     /// A tree with one pane.
     pub fn single(pane: Pane) -> Self {
@@ -247,7 +257,11 @@ impl PaneTree {
                 let mut merged: Vec<(f32, PaneTree)> = Vec::with_capacity(kept.len());
                 let total: f32 = kept.iter().map(|(r, _)| r).sum();
                 for (ratio, child) in kept {
-                    let share = if total > 0.0 { ratio / total } else { 0.0 };
+                    let share = if total > 0.0 {
+                        rescale(ratio, total)
+                    } else {
+                        0.0
+                    };
                     match child {
                         PaneTree::Split {
                             axis: child_axis,
@@ -273,7 +287,7 @@ impl PaneTree {
                 }
                 let total: f32 = merged.iter().map(|(r, _)| r).sum();
                 for (ratio, child) in merged {
-                    ratios.push(ratio / total);
+                    ratios.push(rescale(ratio, total));
                     children.push(child);
                 }
                 true
