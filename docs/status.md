@@ -4,8 +4,8 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: M2-F (`../heeler-wt/M2-F`: perf budgets B1–B6, release crash root cause, panic hook, `docs/perf.md`) resumed after a rate-limit stop. M2-G merged (`00e10d2`).
-- **Next action**: review/merge M2-F (verify: crash root cause + regression test, no new `heeler-desktop` `.ips` during `just bench`, numbers in `docs/perf.md`); then write `docs/demos/M2.md` and run the M2 demo with screenshots; close M2.
+- **Active slice**: none. M2-F merged (`5df8b29`): bench harness, crash fix, panic hook, `docs/perf.md`. Budgets: B1, B3, B5, B6 pass; **B2 (daemon RSS 254 MB vs 120 MB) and B4 (keystroke p95 18 ms vs 16 ms) miss** — roadmap backlog B-2/B-3.
+- **Next action**: decide B2/B4 with the user (fix vs ADR amendment); then `docs/demos/M2.md` + M2 demo with screenshots; close M2. Backlog B-1 (login environment for sessions + settings) noted.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
@@ -23,6 +23,12 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+
+### 2026-10-14 — M2-F merged; default shell fix
+- M2-F (`5df8b29`): `xtask bench` (B1–B6, temp homes, SIGTERM teardown, fails on orphans/crashes), latency tracing (`HEELER_TRACE_LATENCY`), scripted key injection (`HEELER_BENCH_INPUT`), panic hook → `desktop.log` (`crash::log_dir` shared with daemon controls), cursor-blink timer only while focused (idle CPU 1.58 → 0.46 %), ack on paint (fast-typing p95 32.3 → 18.4 ms).
+- Crash root cause: the early bench injector dispatched keys inside a `Workbench` update → GPUI "cannot update Workbench while it is already being updated" inside an AppKit callback → abort. Fixed (dispatch via the window context) with a regression test.
+- Orchestrator rerun of `xtask bench`: B1 102.8 MB, B2 254.0 MB (miss), B3 0.46 %, B4 18.5 ms (miss), B5 16.4 ms / +13.6 MB, B6 220 ms; crash reports 4 → 4, no orphans. `just check` 574 tests green.
+- Default shell (user report: fish user got zsh): sessions without a command now run the account login shell from `getpwuid` (`/opt/homebrew/bin/fish` here) with `-l` and `SHELL` set, instead of the daemon's `$SHELL` (`47dfb76`).
 
 ### 2026-10-14 — M2-G merged: daemon lifecycle with the app
 - Design (with the user): the app starts `heelerd`; on quit it stops the daemon when no session is live, otherwise follows `app.on_quit` (`ask` default: Keep running · Stop sessions & daemon · Cancel + Don't ask again; `keep_running`; `stop_daemon`). Daemon controls (status, Start/Restart/Stop, Open Logs, working-mode selector) in the `Daemon` menu, a popover on the `connection` status item, and ⌘K. SIGTERM/SIGINT/SIGHUP quit cleanly and keep the daemon. `heeler daemon restart [--stop-sessions]`. `design.md` § Daemon lifecycle.
