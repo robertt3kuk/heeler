@@ -155,7 +155,10 @@ fn default_state_is_valid() {
         state.docks.left.panels,
         vec![PanelId::new("sessions"), PanelId::new("history")]
     );
-    assert_eq!(state.docks.right.panels, vec![PanelId::new("inspector")]);
+    assert_eq!(
+        state.docks.right.panels,
+        vec![PanelId::new("inspector"), PanelId::new("agents")]
+    );
     assert!(!state.docks.bottom.visible);
     assert_eq!(state.panes().len(), 1);
 }
@@ -521,8 +524,8 @@ fn panel_moves_between_docks_and_reveals_target() {
         )
         .unwrap();
     check(&state);
-    assert!(state.docks.right.panels.is_empty());
-    assert!(state.docks.right.active.is_none());
+    assert_eq!(state.docks.right.panels, vec![PanelId::new("agents")]);
+    assert_eq!(state.docks.right.active, Some(PanelId::new("agents")));
     assert_eq!(state.docks.bottom.panels, vec![PanelId::new("inspector")]);
     assert!(state.docks.bottom.visible);
     assert_eq!(state.focus, FocusTarget::Dock(DockPosition::Bottom));
@@ -577,7 +580,7 @@ fn panel_drop_into_new_split_from_dock() {
         .unwrap();
     check(&state);
     assert_eq!(state.panes().len(), 2);
-    assert!(state.docks.right.panels.is_empty());
+    assert_eq!(state.docks.right.panels, vec![PanelId::new("agents")]);
 }
 
 #[test]

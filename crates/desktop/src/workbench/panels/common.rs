@@ -4,16 +4,21 @@ use crate::theme::DensityExt as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px,
+    AnyElement, App, AppContext as _, Hsla, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
 };
-use heeler_core::SessionKind;
+use heeler_core::{SessionId, SessionKind};
 use heeler_protocol::messages::SessionInfo;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
-use crate::sessions::{Presentation, Tone};
+use crate::sessions::{AgentBadge, Presentation, Tone};
 use crate::theme::Theme;
 use crate::workbench::actions::OpenSettingsFor;
-use crate::workbench::style::UiStyle;
+use crate::workbench::render::probe;
+use crate::workbench::style::{TextTooltip, UiStyle};
+use crate::workbench::{BadgeSite, Region};
 
 pub fn tone_color(theme: &Theme, tone: Tone) -> Hsla {
     match tone {
@@ -34,6 +39,53 @@ pub fn state_dot(theme: &Theme, presentation: &Presentation) -> AnyElement {
     } else {
         dot.border_1().border_color(color).into_any_element()
     }
+}
+
+/// The compact agent badge of a session: `↳2` for the subagents running, `▲` when any node is
+/// blocked; its tooltip lists them. `None` while the session has nothing to show.
+pub fn agent_badge(
+    theme: &Theme,
+    badge: &AgentBadge,
+    site: BadgeSite,
+    session: SessionId,
+    regions: &Rc<RefCell<HashMap<Region, gpui::Bounds<gpui::Pixels>>>>,
+    cx: &App,
+) -> Option<AnyElement> {
+    if badge.is_empty() {
+        return None;
+    }
+    let tokens = UiStyle::get(cx).density.ui();
+    let tip = SharedString::from(badge.tooltip());
+    let site_name = match site {
+        BadgeSite::Row => "row",
+        BadgeSite::Tab => "tab",
+        BadgeSite::Card => "card",
+    };
+    Some(
+        div()
+            .id(SharedString::from(format!(
+                "agent-badge-{site_name}-{session}"
+            )))
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(tokens.spacing))
+            .text_size(px(tokens.section_font_size))
+            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .children(badge.running_text().map(|text| {
+                div()
+                    .text_color(theme.accent)
+                    .child(SharedString::from(text))
+            }))
+            .children(
+                badge
+                    .blocked_text()
+                    .map(|text| div().text_color(theme.warning).child(text)),
+            )
+            .child(probe(regions, Region::AgentBadge(site, session)))
+            .into_any_element(),
+    )
 }
 
 pub fn kind_icon(kind: SessionKind) -> &'static str {
@@ -59,7 +111,7 @@ pub fn placement(info: &SessionInfo) -> String {
     }
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

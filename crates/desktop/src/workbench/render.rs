@@ -389,6 +389,21 @@ impl Workbench {
                 this.open_history_hit(a.0.clone(), window, cx);
             }),
         )
+        .on_action(cx.listener(|this, _: &actions::ShowAgentMonitor, _, cx| {
+            this.show_agent_monitor(cx);
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ShowOnlyBlockedAgents, _, cx| {
+                this.show_only_blocked_agents(cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::ShowAgentNodeMenu, window, cx| {
+                if let Ok(session) = a.0.session.parse() {
+                    this.show_agent_node_menu(session, &a.0.node, a.0.position, window, cx);
+                }
+            }),
+        )
         .on_action(cx.listener(|this, a: &actions::JumpToBlock, window, cx| {
             this.jump_to_block(&a.0.session, a.0.block, window, cx);
         }))
@@ -1335,6 +1350,17 @@ impl Workbench {
         let accent = theme.accent;
         let hover = theme.hover;
         let (icon, title) = self.item_icon_and_title(item, cx);
+        let badge = session_of_item(item).and_then(|id| {
+            let badge = self.sessions.read(cx).agent_badge(id);
+            super::panels::agent_badge(
+                &theme,
+                &badge,
+                super::view::BadgeSite::Tab,
+                id,
+                &self.regions,
+                cx,
+            )
+        });
         let attention = session_of_item(item).and_then(|id| {
             let store = self.sessions.read(cx);
             store
@@ -1409,6 +1435,7 @@ impl Workbench {
             }))
             .child(icon)
             .child(title)
+            .children(badge)
             .children(attention.map(|p| {
                 div()
                     .flex_none()

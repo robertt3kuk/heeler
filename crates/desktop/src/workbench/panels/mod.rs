@@ -1,6 +1,7 @@
 //! Built-in panels and status items. Each panel is registered under its id with a settings
 //! namespace `panels.<id>`; the layout decides where it lives.
 
+mod agents;
 mod common;
 mod history;
 mod history_model;
@@ -19,7 +20,8 @@ use gpui::{
 };
 use std::rc::Rc;
 
-pub use common::{age_label, kind_icon, state_dot, tone_color};
+pub use agents::{AgentsPanel, RowView, SectionView, TICK as AGENTS_TICK};
+pub use common::{age_label, agent_badge, kind_icon, state_dot, tone_color};
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
     DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HeelerTarget, HistoryResume,
@@ -74,7 +76,7 @@ impl Render for PlaceholderPanel {
     }
 }
 
-/// `sessions`, `history`, `inspector`, `overview`, `notifications`.
+/// `sessions`, `history`, `inspector`, `overview`, `agents`, `notifications`.
 pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
     registry.register(PanelSpec {
@@ -115,6 +117,16 @@ pub fn builtin_panels() -> PanelRegistry {
         factory: Rc::new(|env, _window, cx| {
             let env = env.clone();
             AnyView::from(cx.new(|cx| OverviewPanel::new(env, cx)))
+        }),
+    });
+    registry.register(PanelSpec {
+        id: "agents".into(),
+        title: "Agents".into(),
+        icon: "⑂".into(),
+        default_dock: DockPosition::Right,
+        factory: Rc::new(|env, _window, cx| {
+            let env = env.clone();
+            AnyView::from(cx.new(|cx| AgentsPanel::new(env, cx)))
         }),
     });
     registry.register(PanelSpec {

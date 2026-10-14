@@ -16,8 +16,8 @@ use heeler_protocol::chat::{
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, HISTORY_MAX_LIMIT,
 };
 use heeler_protocol::messages::{
-    ClientInfo, Empty, Event, Hello, Request, ResumePoint, SessionInfo, SessionRef, SessionResult,
-    Welcome, decode_result,
+    AgentApplied, AgentReleaseRequest, AgentReportRequest, ClientInfo, Empty, Event, Hello,
+    Request, ResumePoint, SessionInfo, SessionRef, SessionResult, Welcome, decode_result,
 };
 use heeler_protocol::provider::{
     ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
@@ -290,6 +290,20 @@ impl Client {
             .call(Request::AgentTree(AgentTreeRequest { session_id }))
             .await?;
         Ok(tree.observations)
+    }
+
+    /// `agent.report`: what an agent of a session is doing. `true` when the daemon applied it,
+    /// `false` when it ignored it (`seq` not newer, session ended).
+    pub async fn agent_report(&self, req: AgentReportRequest) -> Result<bool, ClientError> {
+        let applied: AgentApplied = self.call(Request::AgentReport(req)).await?;
+        Ok(applied.applied)
+    }
+
+    /// `agent.release`: the agent behind a report source is gone (or, with a node, that one
+    /// subagent ended). `true` when the daemon applied it.
+    pub async fn agent_release(&self, req: AgentReleaseRequest) -> Result<bool, ClientError> {
+        let applied: AgentApplied = self.call(Request::AgentRelease(req)).await?;
+        Ok(applied.applied)
     }
 
     /// Opens an agent conversation as a new session; resolves once the agent is ready.

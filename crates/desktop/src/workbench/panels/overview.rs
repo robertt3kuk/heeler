@@ -16,9 +16,12 @@ use heeler_core::SessionId;
 use heeler_protocol::messages::SessionInfo;
 use heeler_terminal_view::{TerminalView, TerminalViewSettings, ViewMode};
 
-use super::common::{age_label, kind_icon, panel_header, placement, state_dot, tone_color};
+use super::common::{
+    age_label, agent_badge, kind_icon, panel_header, placement, state_dot, tone_color,
+};
 use crate::sessions::TerminalSession;
 use crate::settings::{OverviewPanelSettings, PreviewMode, SortOrder};
+use crate::workbench::BadgeSite;
 use crate::workbench::actions::{OpenSessionFromOverview, SessionMenuAt, ShowSessionMenu};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::style::{TerminalStyle, UiStyle};
@@ -168,6 +171,17 @@ impl Render for OverviewPanel {
                 let open_id = id.clone();
                 let menu_id = id.clone();
                 let preview = self.previews.get(&info.id).map(|p| p.view.clone());
+                let badge = {
+                    let badge = self.env.sessions.read(cx).agent_badge(info.id);
+                    agent_badge(
+                        &theme,
+                        &badge,
+                        BadgeSite::Card,
+                        info.id,
+                        &self.env.regions,
+                        cx,
+                    )
+                };
                 let subtitle = if presentation.detail.is_empty() {
                     presentation.label.clone()
                 } else {
@@ -228,6 +242,7 @@ impl Render for OverviewPanel {
                                     .truncate()
                                     .child(SharedString::from(info.title.clone())),
                             )
+                            .children(badge)
                             .child(
                                 div()
                                     .flex_none()

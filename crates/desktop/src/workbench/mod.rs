@@ -8,6 +8,7 @@ mod daemon_popover;
 mod history;
 mod modal;
 pub mod model;
+mod monitor;
 pub mod palette;
 pub mod panels;
 pub mod persistence;
@@ -28,6 +29,7 @@ pub use registry::{PanelEnv, StatusBarLayout, StatusData};
 pub use settings_sheet::{Edit, SettingsSheet};
 pub use terminals::session_of_item;
 pub use view::{
-    DragPreview, DraggedItem, Region, SAVE_DEBOUNCE, Workbench, WorkbenchOptions, preset_label,
+    BadgeSite, DragPreview, DraggedItem, Region, SAVE_DEBOUNCE, Workbench, WorkbenchOptions,
+    preset_label,
 };
 pub use workspaces::{HistoryState, PickerEntry, PickerKind, PickerState};

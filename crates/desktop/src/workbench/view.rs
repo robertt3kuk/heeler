@@ -76,6 +76,17 @@ impl WorkbenchOptions {
     }
 }
 
+/// Where a session's agent badge is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BadgeSite {
+    /// A row of the sessions panel.
+    Row,
+    /// A tab of a center pane.
+    Tab,
+    /// A card of the overview.
+    Card,
+}
+
 /// A laid-out area of the workbench whose painted bounds are recorded every frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Region {
@@ -119,6 +130,14 @@ pub enum Region {
     AgentPicker(&'static str),
     /// Model row `index` of the new-agent picker.
     AgentModel(usize),
+    /// Node row `index` of the agent monitor, counting every session's rows top to bottom.
+    MonitorRow(usize),
+    /// The fold control of node row `index` of the agent monitor.
+    MonitorFold(usize),
+    /// A filter chip of the agent monitor (`finished`, `blocked`, `scope`).
+    MonitorChip(&'static str),
+    /// The agent badge of a session at one of its places.
+    AgentBadge(BadgeSite, SessionId),
 }
 
 /// A pane tab or dock tab being dragged.

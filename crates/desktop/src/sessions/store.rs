@@ -4,15 +4,15 @@
 //! work on any executor) onto GPUI's executor, tracks attention, hands out one
 //! [`TerminalSession`] per terminal, and runs the session lifecycle commands.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, Context, Entity, Task, WeakEntity};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use heeler_client::{Connection, ConnectionState, Notice, StoreState};
 use heeler_core::agent::ModelInfo;
-use heeler_core::{ApprovalId, SessionId, TerminalId, WorkspaceId};
+use heeler_core::{AgentObservation, ApprovalId, Epoch, SessionId, TerminalId, WorkspaceId};
 use heeler_protocol::chat::{ApprovalInfo, ChatCreate};
 use heeler_protocol::messages::{
     RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
@@ -23,6 +23,7 @@ use heeler_protocol::messages::{
 use heeler_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
 
+use super::agents::{self, AgentAttentionChanged, AgentBadge};
 use super::attention::{AttentionTracker, Presentation, Unread, present};
 use super::terminal::TerminalSession;
 
@@ -50,8 +51,15 @@ pub struct SessionsStore {
     /// Permission requests this window answered, and with which option (the cards say
     /// "answered here" for them, "answered elsewhere" for the rest).
     answered: HashMap<ApprovalId, String>,
+    /// The blocked nodes of each session as of the last synchronised state, once the first
+    /// state of the daemon epoch has been taken as the baseline (what was already blocked when
+    /// the desktop arrived is not news).
+    blocked_seen: Option<HashMap<SessionId, BTreeSet<String>>>,
+    blocked_epoch: Option<Epoch>,
     _tasks: Vec<Task<()>>,
 }
+
+impl EventEmitter<AgentAttentionChanged> for SessionsStore {}
 
 impl std::fmt::Debug for SessionsStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,6 +126,8 @@ impl SessionsStore {
             connected_since: None,
             daemon_stopped: false,
             answered: HashMap::new(),
+            blocked_seen: None,
+            blocked_epoch: None,
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -136,6 +146,7 @@ impl SessionsStore {
         if connected {
             self.attention
                 .observe(self.state.epoch, &self.state.sessions);
+            self.observe_blocked_nodes(cx);
             let known: Vec<SessionId> = self.state.sessions.iter().map(|s| s.id).collect();
             self.recent.retain(|id, _| !known.contains(id));
         }
@@ -160,6 +171,49 @@ impl SessionsStore {
             }
         }
         cx.notify();
+    }
+
+    /// Emits [`AgentAttentionChanged`] for every session in which a node became blocked since
+    /// the last state. The first state of an epoch is the baseline.
+    fn observe_blocked_nodes(&mut self, cx: &mut Context<Self>) {
+        if self.blocked_epoch != self.state.epoch {
+            self.blocked_epoch = self.state.epoch;
+            self.blocked_seen = None;
+        }
+        let now: HashMap<SessionId, Vec<String>> = self
+            .state
+            .trees
+            .iter()
+            .filter_map(|(session, tree)| {
+                let blocked: Vec<String> = agents::blocked_nodes(tree)
+                    .into_iter()
+                    .map(|n| n.node_id)
+                    .collect();
+                (!blocked.is_empty()).then_some((*session, blocked))
+            })
+            .collect();
+        if let Some(before) = &self.blocked_seen {
+            let mut sessions: Vec<SessionId> = now.keys().copied().collect();
+            sessions.sort();
+            for session in sessions {
+                let blocked = &now[&session];
+                let known = before.get(&session);
+                if blocked
+                    .iter()
+                    .any(|id| !known.is_some_and(|k| k.contains(id)))
+                {
+                    cx.emit(AgentAttentionChanged {
+                        session_id: session,
+                        blocked_nodes: blocked.clone(),
+                    });
+                }
+            }
+        }
+        self.blocked_seen = Some(
+            now.into_iter()
+                .map(|(session, ids)| (session, ids.into_iter().collect()))
+                .collect(),
+        );
     }
 
     fn apply_notice(&mut self, notice: &Notice, cx: &mut Context<Self>) {
@@ -288,8 +342,39 @@ impl SessionsStore {
         self.attention.unread(id)
     }
 
+    /// How `info` shows up: its own state, except that a live session in which an agent of the
+    /// observation tree is blocked always needs the user, whatever the session summary says.
     pub fn presentation(&self, info: &SessionInfo) -> Presentation {
-        present(info, self.attention.unread(info.id))
+        let presentation = present(info, self.attention.unread(info.id));
+        if !presentation.needs_you
+            && info.state.is_live()
+            && let Some(tree) = self.state.trees.get(&info.id)
+        {
+            let blocked = agents::blocked_nodes(tree);
+            if !blocked.is_empty() {
+                return agents::blocked_presentation(&blocked);
+            }
+        }
+        presentation
+    }
+
+    /// The observation tree of `session` (capability `agent.tree`), when it has agents.
+    pub fn agent_tree(&self, session: SessionId) -> Option<&AgentObservation> {
+        self.state.trees.get(&session)
+    }
+
+    /// Every observation tree, by session.
+    pub fn agent_trees(&self) -> impl Iterator<Item = &AgentObservation> {
+        self.state.trees.values()
+    }
+
+    /// What the row, tab or card of `session` says about its agents (empty without a tree).
+    pub fn agent_badge(&self, session: SessionId) -> AgentBadge {
+        self.state
+            .trees
+            .get(&session)
+            .map(agents::badge)
+            .unwrap_or_default()
     }
 
     /// Sessions that need the user, in daemon order.

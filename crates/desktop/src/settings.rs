@@ -1,5 +1,6 @@
 //! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
-//! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`, `chat`.
+//! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`, `chat`,
+//! `agents`.
 //! `appearance` lives in `heeler-settings`.
 //!
 //! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
@@ -619,6 +620,44 @@ impl Setting for ChatSettings {
     const NAMESPACE: &'static str = "chat";
 }
 
+/// Which sessions the agent monitor lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentsScope {
+    /// Only sessions of the workspace the window shows.
+    #[default]
+    ActiveWorkspace,
+    /// Every session that has agents.
+    All,
+}
+
+impl AgentsScope {
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            AgentsScope::ActiveWorkspace => "active_workspace",
+            AgentsScope::All => "all",
+        }
+    }
+}
+
+/// The `agents` namespace: what the agent monitor panel lists. Blocked nodes are always listed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct AgentsSettings {
+    /// List agents that have finished (dimmed, their subtree folded into one row). Off, only
+    /// agents that are still around (and the ones above them) are listed.
+    pub show_finished: bool,
+    /// List only blocked agents (and the ones above them).
+    pub only_blocked: bool,
+    /// `active_workspace` or `all`.
+    pub scope: AgentsScope,
+}
+
+impl Setting for AgentsSettings {
+    const NAMESPACE: &'static str = "agents";
+}
+
 /// What quitting the app does with the daemon while sessions are live (design.md § Daemon
 /// lifecycle). With no live session the daemon always stops with the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -681,6 +720,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<WorkspacesSettings>();
     store.register::<HistorySettings>();
     store.register::<ChatSettings>();
+    store.register::<AgentsSettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -805,6 +845,7 @@ mod tests {
             "workspaces",
             "history",
             "chat",
+            "agents",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

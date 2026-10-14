@@ -35,6 +35,7 @@ tracing-subscriber.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 heeler-agents.workspace = true
 heeler-daemon.workspace = true
+heeler-storage.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

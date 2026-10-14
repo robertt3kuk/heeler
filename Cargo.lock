@@ -2481,6 +2481,7 @@ dependencies = [
  "heeler-daemon",
  "heeler-protocol",
  "heeler-settings",
+ "heeler-storage",
  "heeler-terminal-view",
  "schemars",
  "serde",

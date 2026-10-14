@@ -16,7 +16,9 @@ use heeler_protocol::blocks::{
 };
 use heeler_protocol::chat::{ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent};
 use heeler_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
-use heeler_protocol::messages::{Empty, Request, SessionInfo, TerminalSize};
+use heeler_protocol::messages::{
+    AgentReleaseRequest, AgentReportRequest, Empty, Request, SessionInfo, TerminalSize,
+};
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -303,6 +305,18 @@ impl Connection {
         self.shared
             .client()
             .is_some_and(|client| client.supports_chat())
+    }
+
+    /// `agent.report` ([`Client::agent_report`]).
+    pub async fn agent_report(&self, req: AgentReportRequest) -> Result<bool, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.agent_report(req).await
+    }
+
+    /// `agent.release` ([`Client::agent_release`]).
+    pub async fn agent_release(&self, req: AgentReleaseRequest) -> Result<bool, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.agent_release(req).await
     }
 
     /// `chat.create`: opens an agent conversation as a new session.

@@ -163,9 +163,9 @@ Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: t
 
 | Preset | Left dock | Center | Right dock | Bottom dock | Use |
 |---|---|---|---|---|---|
-| `default` | sessions, history | pane tree | inspector | hidden | daily work |
+| `default` | sessions, history | pane tree | inspector, agents | hidden | daily work |
 | `focus` | hidden | pane tree, zoomed active pane | hidden | hidden | deep terminal work (layout C) |
-| `overview` | sessions, history | `overview` panel as the only center item | inspector | hidden | many agents at once (layout B) |
+| `overview` | sessions, history | `overview` panel as the only center item | inspector, agents | hidden | many agents at once (layout B) |
 
 ## Session pane header
 
@@ -242,7 +242,7 @@ preset = "default"
 
 [layout.presets.default]
 left   = { panels = ["sessions"],  size = 240, visible = true }
-right  = { panels = ["inspector"], size = 300, visible = true }
+right  = { panels = ["inspector", "agents"], size = 300, visible = true }
 bottom = { panels = [],            size = 200, visible = false }
 status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
 
@@ -273,6 +273,11 @@ roles = []                     # default role chips: user | assistant | tool | c
 range = "all"                  # 24h | 7d | 30d | all
 project = "all"                # workspace | all
 show_snippets = true
+
+[agents]
+show_finished = false          # list finished agents (dimmed, their subtree folded into one row)
+only_blocked = false           # list only blocked agents (and the ones above them)
+scope = "active_workspace"     # active_workspace | all
 ```
 
 ## Projects and workspaces (M12-B)
@@ -299,6 +304,20 @@ The `history` panel searches the opt-in session history index (`docs/history-ind
 - **Footer**: rows, database size, unreadable lines, per-source last indexed time, **Clear…** and **Rebuild…** (both ask first; Clear deletes `index.sqlite`, Heeler's own records cannot come back). While the index fills (after Enable, Rebuild, Clear, or when the panel opens on an empty index) the panel reads the status twice a second and searches again when the row count changes, until it stays put for 2 s (10 s while empty, 60 s at most).
 - **⌘K**: "History: Search History…" reveals the panel and focuses its field. **⌘J**: a query that starts with `?` searches the history inline (top 8 sessions, same filter defaults); ↩ resumes the hit when it can be resumed, else shows it in the panel with the field filled in and the row selected.
 - **Settings** (`history`, desktop side only; whether indexing runs and where the transcripts are belongs to `daemon.toml`): `sources` / `roles` (default chips, empty = all), `range` (`24h` | `7d` | `30d` | `all`), `project` (`workspace` | `all`), `show_snippets`.
+
+## Agent monitor (M13-B)
+
+The `agents` panel (default: second tab of the right dock in `default`, `focus` (hidden) and `overview`; movable like every panel) draws the daemon's observation tree (`agent.tree`, `agent.tree_updated`, `docs/protocol.md` § Agent observation tree) of every session that has one. The daemon owns the tree; the panel only filters and draws.
+
+- **Sections**: one per session with agents, headed `workspace › session title` (click focuses the session), workspaces in the sidebar's manual order, sessions in creation order. Under it the tree, indented: main agent first, siblings in the order they started (then by id, so rows never jump when a node changes).
+- **Row**: state glyph, name (else agent type, else the agent program or node id), the agent type when it is not the name, model, duration, and a second line with usage and the current activity (one line, 80 characters). Glyphs are never color alone: `●` working (accent, pulses once a second; steady under Reduce Motion), `▲` blocked (warning), `○` idle, `?` unknown (muted; the main agent after a daemon restart until it reports), and for finished agents their outcome: `✓` completed (success), `✗` failed (error), `⊘` interrupted, `⏹` disconnected (muted). Finished rows are dimmed.
+- **Duration** runs from `started_at_ms` (to `ended_at_ms` once finished). It refreshes once a second only while the panel is drawn and a listed agent works or waits for the user; a hidden panel, or a tree with nothing running, wakes nothing.
+- **Usage** is labelled by `usage.kind`, never zero-filled: `1.5k tok · context` (`claude.context`: the latest context, `3.2k/200k` with a window), `3.2k tok · total · $0.31` (`codex.total`), `800 tok · excl. cache` (`omp.tokens` leaves cache reads out). A kind this build does not know shows as the source sent it.
+- **Finished subtrees** (a finished agent whose descendants all finished) are hidden unless `agents.show_finished`, and then folded into their head row (`▸ +3`; the chevron unfolds). A finished agent with a live descendant stays, so the tree stays connected. **Blocked agents are always listed**, with the agents above them.
+- **Chips** at the top toggle `agents.show_finished`, `agents.only_blocked` and `agents.scope` (this workspace · all workspaces) in `settings.toml`. ⌘K: *Agents: Show Monitor*, *Agents: Show Only Blocked*.
+- **Click** a row to focus its session (its terminal or chat tab). **Right-click**: Open Session, *Open Transcript* (only for nodes that reported a `transcript_path`; reveals it in Finder), Copy Node ID.
+- **Badges**: a session's row in the sidebar, its tab and its overview card show `↳2` (subagents working or waiting for you) and `▲` (any node blocked); the tooltip says `2 subagents running` / `Blocked: reviewer`. Nothing is drawn while there is nothing to say.
+- **Attention**: a live session with a blocked node always needs the user (`SessionsStore::presentation` folds the tree over the session summary), so the sidebar's *Needs you*, ⌘⇧J, the workspace counts and the status bar's `attention` item include it. `SessionsStore` emits `AgentAttentionChanged { session_id, blocked_nodes }` when a node becomes blocked (not for what was already blocked when the window connected, not when one is resolved); M6 turns it into a macOS notification.
 
 ## Terminal blocks (M10-C)
 

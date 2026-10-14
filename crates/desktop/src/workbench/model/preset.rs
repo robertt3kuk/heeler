@@ -40,13 +40,13 @@ impl LayoutPreset {
         }
     }
 
-    /// `sessions` and `history` left, `inspector` right, bottom hidden, center untouched.
+    /// `sessions` and `history` left, `inspector` and `agents` right, bottom hidden, center untouched.
     pub fn default_preset() -> Self {
         Self {
             name: Self::DEFAULT.to_owned(),
             docks: Self::docks(
                 Dock::new(&["sessions", "history"], 240.0, true),
-                Dock::new(&["inspector"], 300.0, true),
+                Dock::new(&["inspector", "agents"], 300.0, true),
             ),
             center: CenterLayout::Keep,
             zoom_active: false,
@@ -59,7 +59,7 @@ impl LayoutPreset {
             name: Self::FOCUS.to_owned(),
             docks: Self::docks(
                 Dock::new(&["sessions", "history"], 240.0, false),
-                Dock::new(&["inspector"], 300.0, false),
+                Dock::new(&["inspector", "agents"], 300.0, false),
             ),
             center: CenterLayout::Keep,
             zoom_active: true,
@@ -72,7 +72,7 @@ impl LayoutPreset {
             name: Self::OVERVIEW.to_owned(),
             docks: Self::docks(
                 Dock::new(&["sessions", "history"], 240.0, true),
-                Dock::new(&["inspector"], 300.0, true),
+                Dock::new(&["inspector", "agents"], 300.0, true),
             ),
             center: CenterLayout::Items(vec![ItemRef::panel("overview")]),
             zoom_active: false,

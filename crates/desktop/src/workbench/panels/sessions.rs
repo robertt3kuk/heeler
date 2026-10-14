@@ -14,7 +14,9 @@ use gpui::{
 use heeler_core::{SessionId, WorkspaceId};
 use heeler_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
 
-use super::common::{age_label, kind_icon, panel_header_with, placement, state_dot, tone_color};
+use super::common::{
+    age_label, agent_badge, kind_icon, panel_header_with, placement, state_dot, tone_color,
+};
 use crate::sessions::workspaces as order;
 use crate::settings::{GroupBy, SessionsPanelSettings, WorkspaceSort, WorkspacesSettings};
 use crate::workbench::actions::{
@@ -24,7 +26,7 @@ use crate::workbench::actions::{
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
-use crate::workbench::{DragPreview, Region};
+use crate::workbench::{BadgeSite, DragPreview, Region};
 
 /// Row refresh for the relative ages.
 const AGE_REFRESH: Duration = Duration::from_secs(30);
@@ -586,6 +588,15 @@ impl SessionsPanel {
         let id = info.id.to_string();
         let open_id = id.clone();
         let menu_id = id.clone();
+        let badge = self.env.sessions.read(cx).agent_badge(info.id);
+        let mut badge = agent_badge(
+            &theme,
+            &badge,
+            BadgeSite::Row,
+            info.id,
+            &self.env.regions,
+            cx,
+        );
 
         let mut line = div()
             .flex()
@@ -602,13 +613,15 @@ impl SessionsPanel {
                         .text_color(theme.muted)
                         .child(kind_icon(info.kind)),
                 ),
-                "title" => line.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(info.title.clone())),
-                ),
+                "title" => line
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(info.title.clone())),
+                    )
+                    .children(badge.take()),
                 "placement" => {
                     let place = placement(info);
                     if place.is_empty() {

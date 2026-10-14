@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod agents;
 pub mod chat;
 pub mod history;
 

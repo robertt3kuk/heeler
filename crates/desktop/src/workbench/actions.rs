@@ -83,6 +83,8 @@ actions!(
         ToggleHideCliWorkspaces,
         SearchHistory,
         ReviewApprovals,
+        ShowAgentMonitor,
+        ShowOnlyBlockedAgents,
     ]
 );
 
@@ -135,6 +137,14 @@ pub struct SessionSplit {
     pub edge: Edge,
 }
 
+/// Where to open the context menu of an agent node of a session's observation tree.
+#[derive(Clone, PartialEq, Debug)]
+pub struct AgentNodeAt {
+    pub session: String,
+    pub node: String,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 /// Where to open the context menu of a session.
 #[derive(Clone, PartialEq, Debug)]
 pub struct SessionMenuAt {
@@ -155,6 +165,9 @@ data_actions! {
     OpenSession(String);
     /// Open the session in a new split of the focused pane.
     OpenSessionInSplit(SessionSplit);
+    /// Show the context menu of an agent node of the monitor (Open session, Open transcript,
+    /// Copy node id).
+    ShowAgentNodeMenu(AgentNodeAt);
     StopSessionById(String);
     RenameSessionById(String);
     RestartSessionById(String);
@@ -378,6 +391,8 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Agent: Review Approvals…", ReviewApprovals),
         command("Agent: Send Message", chat::SendMessage),
         command("Agent: Interrupt Turn", chat::InterruptTurn),
+        command("Agents: Show Monitor", ShowAgentMonitor),
+        command("Agents: Show Only Blocked", ShowOnlyBlockedAgents),
     ]);
     out.extend([
         command(
