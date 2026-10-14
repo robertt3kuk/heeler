@@ -161,8 +161,14 @@ pub fn open_workbench(
 ) -> gpui::Result<WindowHandle<Workbench>> {
     let window_options = window_options(cx);
     let handle = cx.open_window(window_options, move |window, cx| {
-        cx.new(|cx| Workbench::new(options, window, cx))
+        cx.new(|cx| {
+            let workbench = Workbench::new(options, window, cx);
+            window.on_next_frame(|_, _| heeler_terminal_view::trace::startup("first_frame"));
+            crate::bench::start(window, cx);
+            workbench
+        })
     })?;
+    heeler_terminal_view::trace::startup("window_opened");
     cx.activate(true);
     Ok(handle)
 }
@@ -204,6 +210,10 @@ pub fn settings_store() -> SettingsStore {
 
 /// Binary entry point: `HEELER_HOME=/tmp/x heeler-desktop`.
 pub fn run() {
+    heeler_terminal_view::trace::startup("main");
+    if let Some(path) = crate::crash::default_log_path() {
+        crate::crash::install(path);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

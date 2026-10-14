@@ -110,6 +110,7 @@ impl SessionsStore {
         let connected = latest.connection == ConnectionState::Connected;
         if connected && !was_connected {
             self.connected_since = Some(Instant::now());
+            heeler_terminal_view::trace::startup("connected");
         } else if !connected {
             // Notices that arrive while (re)connecting replay what happened meanwhile.
             self.connected_since = None;

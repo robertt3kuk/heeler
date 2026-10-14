@@ -24,3 +24,7 @@ deny:
 # Rewrite protocol golden fixtures after an intentional wire change (bump protocol version first).
 update-golden:
     UPDATE_GOLDEN=1 cargo nextest run -p heeler-protocol --locked
+
+# Measure the performance budgets B1-B6 (docs/perf.md); not part of the gate. Extra args: `just bench --only B1,B4`.
+bench *args:
+    cargo run -p xtask --release --locked -- bench {{args}}

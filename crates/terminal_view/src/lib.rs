@@ -19,6 +19,7 @@ mod settings;
 mod shape;
 mod shared;
 pub mod theme;
+pub mod trace;
 mod view;
 
 pub use heeler_protocol::messages::TerminalSize;

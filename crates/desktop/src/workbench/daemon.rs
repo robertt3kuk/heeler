@@ -3,7 +3,6 @@
 //! popover and the palette, and the "daemon stopped" state that keeps a daemon the user
 //! stopped from being brought back until they start it again.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -94,20 +93,9 @@ impl DaemonControl {
     }
 }
 
-/// `heelerd.log` where the daemon writes it: `$HEELER_HOME/logs`, else `~/Library/Logs/Heeler`.
+/// `heelerd.log` where the daemon writes it, next to `desktop.log` ([`crate::crash::log_dir`]).
 pub fn log_file() -> Option<PathBuf> {
-    resolve_log_file(
-        std::env::var_os("HEELER_HOME"),
-        std::env::home_dir().as_deref(),
-    )
-}
-
-fn resolve_log_file(heeler_home: Option<OsString>, user_home: Option<&Path>) -> Option<PathBuf> {
-    let dir = match heeler_home.filter(|v| !v.is_empty()) {
-        Some(home) => PathBuf::from(home).join("logs"),
-        None => user_home?.join("Library/Logs/Heeler"),
-    };
-    Some(dir.join("heelerd.log"))
+    crate::crash::log_dir().map(|dir| dir.join("heelerd.log"))
 }
 
 fn sessions_phrase(live: usize) -> String {

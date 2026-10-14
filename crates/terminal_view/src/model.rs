@@ -172,6 +172,15 @@ impl TerminalModel {
         &self.rows
     }
 
+    /// Whether any viewport row holds non-blank text (a snapshot with a prompt on it).
+    pub fn visible_has_text(&self) -> bool {
+        self.ready
+            && self
+                .rows
+                .iter()
+                .any(|row| !Self::row_text(row).trim().is_empty())
+    }
+
     pub fn cursor(&self) -> Cursor {
         self.cursor
     }

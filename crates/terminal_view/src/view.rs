@@ -55,6 +55,11 @@ pub fn bind_default_keys(cx: &mut App) {
 
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
 const BLINK_INTERVAL: Duration = Duration::from_millis(530);
+/// Blink phases a focused cursor goes through after the last activity (typing, output, focus),
+/// about 5 s like Alacritty's `blinking_timeout`; then it stays solid. An unbounded blink would
+/// repaint the window twice a second for as long as the app is open, which is the whole idle CPU
+/// budget (docs/perf.md, B3).
+const BLINK_TICKS: u32 = 10;
 /// Lines one wheel event may scroll.
 const MAX_WHEEL_LINES: f32 = 64.0;
 /// Hyperlink schemes ⌘-click opens; anything else in an OSC 8 target is untrusted.
@@ -148,9 +153,18 @@ pub struct TerminalView {
 
     pub(crate) blink_on: bool,
     pub(crate) rows: RowCache,
+    /// Keystroke → paint correlation, fed only while `HEELER_TRACE_LATENCY` is on.
+    latency: crate::trace::LatencyTracker,
+    /// Cursor position after the previous applied frame (tracing only).
+    traced_cursor: Option<(u16, u16)>,
 
     _subscriptions: Vec<Subscription>,
-    _blink: Task<()>,
+    /// The running blink timer, while there is one (see [`BLINK_TICKS`]).
+    blink_task: Option<Task<()>>,
+    /// Phases left before the cursor goes solid; reset by activity.
+    blink_ticks_left: u32,
+    /// Whether the view's focus handle has focus (mirrors the focus events).
+    focused: bool,
 }
 
 impl std::fmt::Debug for TerminalView {
@@ -218,23 +232,11 @@ impl TerminalView {
                 }),
                 cx.observe_window_activation(window, |this, _window, cx| {
                     this.blink_on = true;
+                    this.keep_blinking(cx);
                     cx.notify();
                 }),
             ]);
         }
-        let blink = if interactive {
-            cx.spawn_in(window, async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(BLINK_INTERVAL).await;
-                    let alive = this.update_in(cx, |view, window, cx| view.blink_tick(window, cx));
-                    if alive.is_err() {
-                        break;
-                    }
-                }
-            })
-        } else {
-            Task::ready(())
-        };
         Self {
             backend,
             settings,
@@ -261,8 +263,12 @@ impl TerminalView {
             resize_task: None,
             blink_on: true,
             rows: RowCache::default(),
+            latency: crate::trace::LatencyTracker::default(),
+            traced_cursor: None,
             _subscriptions: subscriptions,
-            _blink: blink,
+            blink_task: None,
+            blink_ticks_left: 0,
+            focused: false,
         }
     }
 
@@ -306,6 +312,7 @@ impl TerminalView {
         }
         self.settings = settings;
         self.blink_on = true;
+        self.keep_blinking(cx);
         cx.notify();
     }
 
@@ -327,6 +334,17 @@ impl TerminalView {
                     ));
                 }
                 self.blink_on = true;
+                self.keep_blinking(cx);
+                if crate::trace::enabled() {
+                    // An echo is visible as a replaced cursor row or a moved cursor (Enter).
+                    let cursor = self.model.get().cursor();
+                    let position = (cursor.row, cursor.col);
+                    let moved = self.traced_cursor.replace(position) != Some(position);
+                    self.latency.frame_applied(
+                        std::time::Instant::now(),
+                        applied.snapshot || moved || applied.dirty.contains(&cursor.row),
+                    );
+                }
             }
             SharedEvent::History { from_line, empty } => {
                 self.history_in_flight.remove(from_line);
@@ -562,9 +580,27 @@ impl TerminalView {
         self.backend.ack(frame);
     }
 
+    /// Called when a paint of this view finished: completes the keystrokes its frame echoed and
+    /// reports the first paint of a terminal that shows text (cold start trace).
+    pub(crate) fn painted(&mut self) {
+        if !crate::trace::enabled() {
+            return;
+        }
+        self.latency.painted_and_emit(std::time::Instant::now());
+        if self.mode == ViewMode::Interactive
+            && !crate::trace::startup_seen("first_terminal_painted")
+            && self.model.get().visible_has_text()
+        {
+            crate::trace::startup("first_terminal_painted");
+        }
+    }
+
     /// Records the laid-out grid and reports its size to the backend: at once the first time,
     /// debounced afterwards.
     pub(crate) fn update_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
+        if crate::trace::enabled() {
+            self.latency.prepaint(std::time::Instant::now());
+        }
         self.layout = Some(layout);
         if self.mode == ViewMode::Preview {
             return;
@@ -612,7 +648,14 @@ impl TerminalView {
     // ---- focus and blink -------------------------------------------------------------------
 
     fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
+        self.focused = focused;
         self.blink_on = true;
+        if focused {
+            self.keep_blinking(cx);
+        } else {
+            self.blink_task = None;
+            self.blink_ticks_left = 0;
+        }
         if self.model.get().modes().focus_events && self.accepts_input() {
             self.backend.input(if focused {
                 b"\x1b[I".to_vec()
@@ -623,15 +666,51 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn blink_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (_, blinks) = self.cursor_appearance();
-        if blinks && self.has_focus(window) {
+    /// Activity: the cursor blinks for another [`BLINK_TICKS`] phases. The timer exists only
+    /// while the focused view has a blinking cursor; an idle or unfocused terminal sets none, so
+    /// it never wakes the process.
+    fn keep_blinking(&mut self, cx: &mut Context<Self>) {
+        if self.mode != ViewMode::Interactive || !self.focused {
+            return;
+        }
+        self.blink_ticks_left = BLINK_TICKS;
+        if self.blink_task.is_some() || !self.cursor_appearance().1 {
+            return;
+        }
+        self.blink_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(BLINK_INTERVAL).await;
+                let more = this.update(cx, |view, cx| view.blink_tick(cx));
+                if !more.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// One blink phase. Returns whether the timer keeps running.
+    fn blink_tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let blinks = self.focused && self.cursor_appearance().1;
+        if blinks && self.blink_ticks_left > 0 {
+            self.blink_ticks_left -= 1;
             self.blink_on = !self.blink_on;
             cx.notify();
-        } else if !self.blink_on {
+            if self.blink_ticks_left > 0 {
+                return true;
+            }
+        }
+        // Solid from here on (and visible: the last phase may have been the dark one).
+        self.blink_task = None;
+        if !self.blink_on {
             self.blink_on = true;
             cx.notify();
         }
+        false
+    }
+
+    /// Whether a cursor blink timer is running (false when idle: nothing is scheduled).
+    pub fn blink_timer_active(&self) -> bool {
+        self.blink_task.is_some()
     }
 
     // ---- keyboard --------------------------------------------------------------------------
@@ -649,6 +728,7 @@ impl TerminalView {
     /// Sends bytes the user produced (typing, paste) to the application.
     fn send_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         if !self.accepts_input() || bytes.is_empty() {
+            self.latency.key_unsent();
             return;
         }
         if self.settings.scroll_to_bottom_on_input && self.scroll_offset != 0 {
@@ -658,11 +738,16 @@ impl TerminalView {
         self.selection = None;
         self.selecting = false;
         self.blink_on = true;
+        self.keep_blinking(cx);
         self.backend.input(bytes);
+        if crate::trace::enabled() {
+            self.latency.key_sent(std::time::Instant::now());
+        }
         cx.notify();
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let key_at = crate::trace::enabled().then(std::time::Instant::now);
         let ks = &event.keystroke;
         let m = ks.modifiers;
         if m.platform {
@@ -683,6 +768,11 @@ impl TerminalView {
         }
         if !self.accepts_input() {
             return;
+        }
+        // Printable keys reach the PTY through the input handler after this returns, so the
+        // timer starts here and `send_input` stops it for either path.
+        if let Some(at) = key_at {
+            self.latency.key_started(at);
         }
         if m.shift && !m.control && !m.alt && !self.model.get().modes().alt_screen {
             let page = i32::from(

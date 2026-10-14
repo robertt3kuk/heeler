@@ -165,13 +165,17 @@ impl Element for TerminalElement {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_grid(bounds, state, window, cx);
         });
+        if crate::trace::enabled() {
+            self.view.update(cx, |view, _| view.painted());
+        }
 
-        // Ack only what has been painted: the next frame callback runs after this frame was
-        // presented, so a flood is paced by the display.
+        // Ack only what has been painted. Painting happens at most once per display tick, so a
+        // flood is still paced by the display, and the ack goes out at once: waiting for the
+        // next tick first (as this did) left the daemon without credit for a whole frame after
+        // every paint, which doubled the latency of typing faster than ~25 keys/s (docs/perf.md).
         let shared = self.view.read(cx).shared().clone();
         if let Some(frame) = shared.update(cx, |shared, _| shared.take_ack()) {
-            let view = self.view.clone();
-            window.on_next_frame(move |_, cx| view.read(cx).send_ack(frame));
+            self.view.read(cx).send_ack(frame);
         }
     }
 }

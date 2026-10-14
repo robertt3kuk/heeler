@@ -1412,3 +1412,38 @@ fn assert_same_dir(actual: Option<&std::path::Path>, expected: &std::path::Path)
         expected.display()
     );
 }
+
+/// The benchmark key injection (`HEELER_BENCH_INPUT`) types through the window like real key
+/// events. Dispatching from inside a `Workbench` update used to re-enter the leased entity: a
+/// panic that aborts the process when it happens in a window callback.
+#[gpui::test]
+fn scripted_keys_reach_the_focused_terminal_without_reentering_the_workbench(
+    cx: &mut TestAppContext,
+) {
+    use heeler_desktop::bench::{Script, run};
+
+    let daemon = TestDaemon::start();
+    let echo = daemon.create_session(&["cat"], None);
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+    open_session(&view, cx, echo.id);
+    wait_until(cx, "the cat session to attach", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.terminal_view_of(echo.id)
+                .is_some_and(|v| v.read(cx).model().is_ready())
+        })
+    });
+
+    let script =
+        Script::parse(r#"{"interval_ms":5,"keys":["s","c","r","i","p","t","enter"]}"#).unwrap();
+    view.update_in(cx, |_, window, cx| run(script, window, cx));
+    let mut last = String::new();
+    wait_until(cx, "the scripted keys on the screen", |cx| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        last = screen_of(&view, cx, echo.id).unwrap_or_default();
+        // The PTY echoes the line, then `cat` prints it again.
+        last.matches("script").count() >= 2
+    });
+    assert!(last.matches("script").count() >= 2, "{last}");
+}

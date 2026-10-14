@@ -255,41 +255,25 @@ fn resizes_are_debounced(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn frames_are_acked_after_they_are_painted(cx: &mut TestAppContext) {
+fn frames_are_acked_when_they_are_painted(cx: &mut TestAppContext) {
     let (view, cx, recorder) = setup(cx, TerminalViewSettings::default());
     recorder.take();
+    // The test platform paints a dirty view when the update that dirtied it ends. The ack goes
+    // out with that paint, not a display frame later: the daemon's next frame is then already
+    // here when the next tick comes (docs/perf.md, B4/B5).
     apply(
         &view,
         cx,
         snapshot(7, &["hello", "world"], Modes::default(), 0),
     );
-    assert!(
-        recorder.take().is_empty(),
-        "no ack before the frame was painted"
-    );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        recorder.take().is_empty(),
-        "painted, but the display has not shown it yet"
-    );
-    cx.update(|window, cx| window.simulate_next_frame(cx));
     assert_eq!(recorder.take(), [Call::Ack(7)]);
 
-    // A flood: frames applied while the display has not shown the previous one yet are acked
-    // only when they themselves were painted and a frame has passed.
-    apply(&view, cx, frame(8, &[(0, "a")], 0));
-    assert!(
-        recorder.take().is_empty(),
-        "nothing is acked before the next frame"
-    );
-    apply(&view, cx, frame(9, &[(0, "b")], 0));
-    cx.update(|window, cx| window.simulate_next_frame(cx));
-    let acks = recorder.take();
-    assert_eq!(acks.last(), Some(&Call::Ack(9)), "{acks:?}");
-    assert!(
-        acks.iter().all(|c| matches!(c, Call::Ack(8 | 9))),
-        "{acks:?}"
-    );
+    // Frames applied before one paint are acked once, by the paint that shows the newest.
+    view.update(cx, |view, cx| {
+        view.apply_render(frame(8, &[(0, "a")], 0), cx);
+        view.apply_render(frame(9, &[(0, "b")], 0), cx);
+    });
+    assert_eq!(recorder.take(), [Call::Ack(9)]);
     draw(cx);
     assert!(recorder.take().is_empty(), "each frame is acked once");
 }
@@ -925,7 +909,11 @@ fn unfocused_cursor_is_hollow_and_blink_toggles(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
     assert!(view.read_with(cx, |v, _| v.cursor_blink_visible()));
-    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    cx.update(|window, cx| {
+        // Focus events only reach the view in an active window, like the blink itself.
+        window.activate_window();
+        window.focus(&view.focus_handle(cx), cx);
+    });
     draw(cx);
     cx.executor().advance_clock(Duration::from_millis(600));
     cx.run_until_parked();
@@ -934,6 +922,44 @@ fn unfocused_cursor_is_hollow_and_blink_toggles(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let second = view.read_with(cx, |v, _| v.cursor_blink_visible());
     assert_ne!(first, second, "a focused blinking cursor toggles");
+}
+
+/// An idle terminal must not wake the process: the blink timer exists only while the cursor is
+/// being used, ends in a solid visible cursor, and typing starts it again.
+#[gpui::test]
+fn the_cursor_stops_blinking_when_idle_and_typing_resumes_it(cx: &mut TestAppContext) {
+    let (view, cx, _recorder) = setup(cx, TerminalViewSettings::default());
+    apply(&view, cx, snapshot(1, &["$ "], Modes::default(), 0));
+    draw(cx);
+    // Unfocused: nothing is scheduled at all.
+    assert!(!view.read_with(cx, |v, _| v.blink_timer_active()));
+    cx.update(|window, cx| {
+        // Focus events only reach the view in an active window, like the blink itself.
+        window.activate_window();
+        window.focus(&view.focus_handle(cx), cx);
+    });
+    draw(cx);
+    assert!(view.read_with(cx, |v, _| v.blink_timer_active()));
+
+    // Longer than the blink timeout with no activity.
+    for _ in 0..14 {
+        cx.executor().advance_clock(Duration::from_millis(540));
+        cx.run_until_parked();
+    }
+    assert!(!view.read_with(cx, |v, _| v.blink_timer_active()));
+    assert!(
+        view.read_with(cx, |v, _| v.cursor_blink_visible()),
+        "an idle cursor is solid"
+    );
+
+    cx.simulate_input("x");
+    assert!(view.read_with(cx, |v, _| v.blink_timer_active()));
+    cx.update(|window, cx| window.blur(cx));
+    cx.run_until_parked();
+    assert!(
+        !view.read_with(cx, |v, _| v.blink_timer_active()),
+        "losing focus ends the timer"
+    );
 }
 
 /// A window root that shows an interactive view and a preview of one shared terminal.

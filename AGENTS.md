@@ -10,6 +10,7 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 
 ## Document map
 - `docs/vision.md` — target scope, principles, non-goals, performance budgets
+- `docs/perf.md` — how budgets are measured (`just bench`), latest numbers, misses and fixes
 - `docs/architecture.md` — components, crates, data flows, state ownership
 - `docs/protocol.md` — IPC framing, handshake, sequencing, message catalog
 - `docs/roadmap.md` — milestones, slices (checkboxes), risk register
