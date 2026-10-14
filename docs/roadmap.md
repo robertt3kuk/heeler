@@ -73,11 +73,11 @@ Exit demo: kill `heelerd`, start it → workspaces/sessions reappear, terminals 
 
 ## M4 — Harness chat (Codex)
 Exit demo: open a Codex chat session, stream reply, see tool calls and diffs, approve a command from the UI, approval enforced in daemon; same conversation visible from CLI.
-- [ ] M4.1 `agents::codex` adapter over `codex app-server` stdio JSON-RPC (pin supported Codex range; schema fixtures generated from the installed binary)
-- [ ] M4.2 Unified `AgentEvent` model in `core` + protocol events (`chat.delta`, `agent.tool_call`, `approval.required`, …)
-- [ ] M4.3 Approval engine in daemon (policy + pending decisions + audit rows)
+- [x] M4.1 `agents::codex` adapter over `codex app-server` stdio JSON-RPC (pin supported Codex range; schema fixtures generated from the installed binary)
+- [x] M4.2 Unified `AgentEvent` model in `core` + protocol events (`chat.delta`, `agent.tool_call`, `approval.required`, …)
+- [x] M4.3 Approval engine in daemon (policy + pending decisions + audit rows)
 - [ ] M4.4 Chat view in GPUI: messages, streaming, tool call cards, diff view, approval UI
-- [ ] M4.5 Conversation persistence
+- [x] M4.5 Conversation persistence
 
 ## M5 — Direct model chat
 Exit demo: chat with an OpenAI-compatible endpoint and a local Ollama model; switch model mid-conversation; keys in Keychain.
