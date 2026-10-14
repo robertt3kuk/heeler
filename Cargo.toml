@@ -66,3 +66,14 @@ todo = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# The VT engine and the terminal crate run in every debug-built daemon and desktop test; left
+# unoptimized they are ~10x slower and the flood tests (20 MB through the engine) time out.
+[profile.dev.package.alacritty_terminal]
+opt-level = 3
+
+[profile.dev.package.vte]
+opt-level = 3
+
+[profile.dev.package.heeler-terminal]
+opt-level = 3

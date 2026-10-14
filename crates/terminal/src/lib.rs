@@ -5,16 +5,21 @@
 //! through a [`RenderTracker`]. [`Emulator`] is the same engine without a PTY (corpus replay,
 //! recorder, benchmarks). Engine types never appear in this crate's public API.
 
+#[cfg(test)]
+mod behavior;
 mod emulator;
+#[cfg(test)]
+mod equivalence;
 mod error;
 mod queries;
 mod render;
+mod scrollback;
 pub mod shell_integration;
 mod sniffer;
 mod sys;
 mod terminal;
 
-pub use emulator::{DefaultColors, Emulator};
+pub use emulator::{DefaultColors, Emulator, LineScope, LogicalLine, LogicalLines};
 pub use error::TerminalError;
 pub use render::RenderTracker;
 pub use sniffer::{PromptMark, TerminalMeta};

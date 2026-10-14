@@ -8,7 +8,10 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::Grid;
+use alacritty_terminal::index::Column;
 use alacritty_terminal::index::Line;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     CursorShape as EngineCursorShape, Processor, Rgb as EngineRgb,
@@ -21,7 +24,8 @@ use parking_lot::Mutex;
 
 use crate::error::TerminalError;
 use crate::queries::{CellSizeScanner, Rgb, xterm_color};
-use crate::render::{LinkTable, RenderTracker, convert_row, row_text};
+use crate::render::{LinkTable, RenderTracker, RowScratch, row_text};
+use crate::scrollback::ScrollbackStore;
 use crate::sniffer::{OscSniffer, TerminalMeta};
 
 /// Replies produced by one `feed` call beyond this are dropped (a hostile stream of queries
@@ -33,6 +37,15 @@ const MAX_PENDING_REQUESTS: usize = 4096;
 const BSU_LEN: usize = 8;
 /// Same bound for queued metadata events.
 const MAX_PENDING_META: usize = 4096;
+/// History rows kept in the engine; older rows live in the cold store (ADR 0013).
+const HOT_MARGIN: usize = 256;
+/// Bytes handed to the parser at a time. Bounds how many rows one call can scroll before they
+/// are spilled, i.e. the transient size of the grid (and of the process's resident set, which
+/// the allocator does not give back).
+const SLICE_BYTES: usize = 2048;
+/// Cell flag (bit 15, unused by the engine) set on the oldest hot history row while the cold
+/// store is not empty: its disappearance means the engine cleared its history.
+const MARK: Flags = Flags::from_bits_retain(1 << 15);
 
 /// Colours the terminal reports for OSC 10/11/12 queries until the application sets its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +157,14 @@ pub struct Emulator {
     size: TerminalSize,
     /// Bumped whenever the visible state may have changed.
     generation: u64,
+    /// History rows older than the engine's hot window (ADR 0013).
+    cold: ScrollbackStore,
+    scrollback_lines: usize,
+    /// History rows the engine keeps; older ones are spilled to `cold`.
+    hot_margin: usize,
+    scratch: RowScratch,
+    /// The terminal was resized while the alternate screen hid the primary grid.
+    resized_in_alt: bool,
 }
 
 impl std::fmt::Debug for Emulator {
@@ -158,10 +179,22 @@ impl std::fmt::Debug for Emulator {
 impl Emulator {
     /// `scrollback_lines` bounds the retained history exactly.
     pub fn new(size: TerminalSize, scrollback_lines: usize) -> Result<Self, TerminalError> {
+        Self::with_hot_margin(size, scrollback_lines, HOT_MARGIN)
+    }
+
+    /// [`Self::new`] with an explicit hot window size (tests; `usize::MAX` keeps the whole
+    /// history in the engine, the reference the cold store is checked against).
+    pub(crate) fn with_hot_margin(
+        size: TerminalSize,
+        scrollback_lines: usize,
+        hot_margin: usize,
+    ) -> Result<Self, TerminalError> {
         let dims = validate(size)?;
         let sink = Sink::default();
         let config = Config {
             kitty_keyboard: true,
+            // The engine's own cap is the real bound: it can never lose a row the line bound
+            // keeps, however much one parser call scrolls (ADR 0013).
             scrolling_history: scrollback_lines,
             ..Config::default()
         };
@@ -178,6 +211,11 @@ impl Emulator {
             title: None,
             size,
             generation: 1,
+            cold: ScrollbackStore::default(),
+            scrollback_lines,
+            hot_margin,
+            scratch: RowScratch::default(),
+            resized_in_alt: false,
         })
     }
 
@@ -227,14 +265,14 @@ impl Emulator {
         breaks.sort_unstable();
         let mut done = 0;
         for (end, cell_size) in breaks {
-            self.parser.advance(&mut self.term, &bytes[done..end]);
+            self.advance(&bytes[done..end]);
             self.resolve_requests();
             if cell_size {
                 self.push_reply(&cell_size_report(self.size));
             }
             done = end;
         }
-        self.parser.advance(&mut self.term, &bytes[done..]);
+        self.advance(&bytes[done..]);
         self.resolve_requests();
         self.collect_bell();
         self.apply_titles(meta_start);
@@ -267,6 +305,7 @@ impl Emulator {
     /// Commits an open synchronized-output batch.
     pub fn stop_sync(&mut self) {
         self.parser.stop_sync(&mut self.term);
+        self.settle();
         self.resolve_requests();
         self.collect_bell();
         self.generation += 1;
@@ -285,9 +324,25 @@ impl Emulator {
 
     pub fn resize(&mut self, size: TerminalSize) -> Result<(), TerminalError> {
         let dims = validate(size)?;
+        // Only the hot margin reflows (it already is the only history in the engine).
         self.term.resize(dims);
         self.size = size;
         self.generation += 1;
+        if self.on_alt_screen() {
+            self.resized_in_alt = true;
+        } else {
+            // The reflow may have moved the marker; restore it before `settle` looks for it. A
+            // window enlarged by more rows than the hot window holds pulled all of it into the
+            // viewport, which leaves no row to carry the marker: the cold store goes.
+            let hot = self.term.history_size();
+            if hot == 0 {
+                self.cold.clear();
+            } else if !self.cold.is_empty() {
+                self.mark_oldest_hot(hot);
+            }
+            // `settle` also spills what narrowing pushed past the margin.
+            self.settle();
+        }
         Ok(())
     }
 
@@ -295,9 +350,18 @@ impl Emulator {
         self.title.as_deref()
     }
 
+    /// Rows in the cold store (tests).
+    #[cfg(test)]
+    pub(crate) fn cold_len(&self) -> usize {
+        self.cold.len()
+    }
+
     /// Lines of scrollback currently retained (0 on the alternate screen).
     pub fn history_len(&self) -> u32 {
-        u32::try_from(self.term.history_size()).unwrap_or(u32::MAX)
+        if self.on_alt_screen() {
+            return 0;
+        }
+        u32::try_from(self.term.history_size() + self.cold.len()).unwrap_or(u32::MAX)
     }
 
     /// True when `tracker` cannot be advanced with a [`TerminalFrame`] and needs a fresh
@@ -413,10 +477,28 @@ impl Emulator {
         let available = self.history_len();
         let cols = self.term.columns();
         let end = from_line.saturating_add(count).min(available);
+        // The engine's rows are the newest; `available > 0` implies the primary screen.
+        let hot = u32::try_from(self.term.history_size()).unwrap_or(u32::MAX);
         let mut rows = Vec::new();
         for index in from_line..end {
-            let line = Line(-(index as i32) - 1);
-            let row = convert_row(&self.term.grid()[line], cols, &mut self.links);
+            let row = if index < hot {
+                let line = Line(-(index as i32) - 1);
+                self.scratch
+                    .fill(&self.term.grid()[line], cols, &mut self.links);
+                self.scratch.to_row()
+            } else {
+                // Cold rows are indexed oldest first.
+                let newest_first = (index - hot) as usize;
+                match self
+                    .cold
+                    .len()
+                    .checked_sub(newest_first + 1)
+                    .and_then(|oldest_first| self.cold.get(oldest_first))
+                {
+                    Some(cold) => cold.to_row(),
+                    None => break,
+                }
+            };
             if !keep(&row) {
                 break;
             }
@@ -508,9 +590,111 @@ impl Emulator {
     fn viewport_rows(&mut self) -> Vec<Row> {
         let cols = self.term.columns();
         let lines = self.term.screen_lines();
-        (0..lines)
-            .map(|line| convert_row(&self.term.grid()[Line(line as i32)], cols, &mut self.links))
-            .collect()
+        let mut rows = Vec::with_capacity(lines);
+        for line in 0..lines {
+            self.scratch
+                .fill(&self.term.grid()[Line(line as i32)], cols, &mut self.links);
+            rows.push(self.scratch.to_row());
+        }
+        rows
+    }
+
+    /// Runs `bytes` through the engine in slices and settles the scrollback after each, so the
+    /// grid never holds much more than the hot window.
+    fn advance(&mut self, bytes: &[u8]) {
+        for slice in bytes.chunks(SLICE_BYTES) {
+            self.parser.advance(&mut self.term, slice);
+            self.settle();
+        }
+    }
+
+    fn on_alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Brings the cold store in line with the engine after it ran: notices a cleared history
+    /// (`ESC[3J`, `ESC c`), spills the rows beyond the hot margin and enforces the line bound.
+    fn settle(&mut self) {
+        if self.on_alt_screen() {
+            // The primary grid (hot window) is out of reach; nothing is exposed meanwhile.
+            return;
+        }
+        let hot = self.term.history_size();
+        if !self.cold.is_empty() && (hot == 0 || !self.oldest_hot_is_marked(hot)) {
+            if hot > 0 && self.resized_in_alt {
+                // A resize inside the alternate screen reflowed the hidden grid and lost the
+                // marker; the history is intact.
+                self.mark_oldest_hot(hot);
+            } else {
+                // The engine cleared its history (or recycled all of it at its cap).
+                self.cold.clear();
+            }
+        }
+        self.resized_in_alt = false;
+        self.spill();
+    }
+
+    fn oldest_hot_is_marked(&self, hot: usize) -> bool {
+        let grid = self.term.grid();
+        grid[Line(-(hot as i32))][Column(0)].flags.contains(MARK)
+    }
+
+    fn mark_oldest_hot(&mut self, hot: usize) {
+        self.term.grid_mut()[Line(-(hot as i32))][Column(0)]
+            .flags
+            .insert(MARK);
+    }
+
+    /// Moves history rows beyond the hot margin into the cold store and frees their grid
+    /// memory, marks the oldest remaining hot row and trims the store so that hot + cold never
+    /// exceed `scrollback_lines`.
+    fn spill(&mut self) {
+        let hot = self.term.history_size();
+        let keep = self.hot_margin.max(1);
+        if hot > keep {
+            let cols = self.term.columns();
+            for index in 0..hot - keep {
+                let line = Line(index as i32 - hot as i32);
+                self.scratch
+                    .fill(&self.term.grid()[line], cols, &mut self.links);
+                self.cold.push(&self.scratch);
+            }
+            // Shrinking drops the oldest rows; the second call restores the engine's own cap.
+            let grid = self.term.grid_mut();
+            grid.update_history(keep);
+            grid.update_history(self.scrollback_lines);
+        }
+        let hot = self.term.history_size();
+        self.cold
+            .truncate_to(self.scrollback_lines.saturating_sub(hot));
+        if !self.cold.is_empty() && hot > 0 {
+            self.mark_oldest_hot(hot);
+        }
+    }
+
+    /// Iterates logical lines (rows joined along soft wraps), oldest first, as plain text:
+    /// cold history, hot history and optionally the viewport. A line that wraps across the
+    /// end of the scope is cut there; one that wraps across the oldest retained row starts
+    /// mid-line. Blank rows yield empty lines.
+    pub fn logical_lines(&mut self, scope: LineScope) -> LogicalLines<'_> {
+        let on_alt = self.on_alt_screen();
+        let hot = self.term.history_size();
+        let cold_len = if on_alt { 0 } else { self.cold.len() };
+        let viewport = match scope {
+            LineScope::History => 0,
+            LineScope::HistoryAndViewport => self.term.screen_lines(),
+        };
+        LogicalLines {
+            grid: self.term.grid(),
+            cols: self.term.columns(),
+            cold: &self.cold,
+            links: &mut self.links,
+            scratch: &mut self.scratch,
+            cold_len,
+            hot,
+            total: cold_len + hot + viewport,
+            next: 0,
+        }
     }
 
     fn collect_bell(&mut self) {
@@ -586,4 +770,106 @@ fn cell_size_report(size: TerminalSize) -> Vec<u8> {
     let cell_height = size.pixel_height.checked_div(size.rows).unwrap_or(0);
     let cell_width = size.pixel_width.checked_div(size.cols).unwrap_or(0);
     format!("\x1b[6;{cell_height};{cell_width}t").into_bytes()
+}
+
+/// Which rows [`Emulator::logical_lines`] covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineScope {
+    /// Scrollback only (cold + hot rows; nothing on the alternate screen).
+    History,
+    /// Scrollback followed by the viewport.
+    HistoryAndViewport,
+}
+
+/// One logical line: consecutive rows joined along soft wraps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalLine {
+    /// Index of the line's first row, counted from the oldest retained row (0) through the
+    /// history and, with [`LineScope::HistoryAndViewport`], on into the viewport.
+    pub start: u32,
+    /// Rows the line occupies.
+    pub rows: u32,
+    /// Text of the rows joined; trailing spaces of the last row are removed, blanks that ended
+    /// a wrapped row are kept so the text matches the original line.
+    pub text: String,
+}
+
+/// Iterator returned by [`Emulator::logical_lines`], oldest line first.
+pub struct LogicalLines<'a> {
+    grid: &'a Grid<Cell>,
+    cols: usize,
+    cold: &'a ScrollbackStore,
+    links: &'a mut LinkTable,
+    scratch: &'a mut RowScratch,
+    cold_len: usize,
+    hot: usize,
+    total: usize,
+    next: usize,
+}
+
+impl std::fmt::Debug for LogicalLines<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogicalLines")
+            .field("next", &self.next)
+            .field("total", &self.total)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LogicalLines<'_> {
+    /// Appends row `index`'s text to `out`; returns whether the row soft-wraps.
+    fn push_row(&mut self, index: usize, out: &mut String) -> bool {
+        if let Some(row) = (index < self.cold_len)
+            .then(|| self.cold.get(index))
+            .flatten()
+        {
+            out.push_str(row.text());
+            let wrapped = row.wrapped();
+            if wrapped {
+                out.extend(std::iter::repeat_n(' ', usize::from(row.blank_tail())));
+            }
+            return wrapped;
+        }
+        let rest = index - self.cold_len;
+        let line = if rest < self.hot {
+            Line(rest as i32 - self.hot as i32)
+        } else {
+            Line((rest - self.hot) as i32)
+        };
+        self.scratch
+            .fill(&self.grid[line], self.cols, &mut *self.links);
+        out.push_str(&self.scratch.text);
+        if self.scratch.wrapped {
+            out.extend(std::iter::repeat_n(
+                ' ',
+                usize::from(self.scratch.blank_tail),
+            ));
+        }
+        self.scratch.wrapped
+    }
+}
+
+impl Iterator for LogicalLines<'_> {
+    type Item = LogicalLine;
+
+    fn next(&mut self) -> Option<LogicalLine> {
+        if self.next >= self.total {
+            return None;
+        }
+        let start = self.next;
+        let mut text = String::new();
+        loop {
+            let wrapped = self.push_row(self.next, &mut text);
+            self.next += 1;
+            if !wrapped || self.next >= self.total {
+                break;
+            }
+        }
+        text.truncate(text.trim_end_matches(' ').len());
+        Some(LogicalLine {
+            start: u32::try_from(start).unwrap_or(u32::MAX),
+            rows: u32::try_from(self.next - start).unwrap_or(u32::MAX),
+            text,
+        })
+    }
 }

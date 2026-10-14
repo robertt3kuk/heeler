@@ -12,7 +12,8 @@
 //! the terminal view's key handler, key encoding, `TerminalHandle::input`. Keys are scheduled
 //! at `start + n * interval` (no drift); the schedule starts `start_delay_ms` after the first
 //! terminal painted text. With `HEELER_TRACE_LATENCY=1` the run is framed by `bench_start` /
-//! `bench_done` trace events. Without the variable this module does nothing.
+//! `bench_done` trace events, both carrying the refresh interval of the window's display
+//! (`refresh_interval_us`). Without the variable this module does nothing.
 
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,20 @@ use serde::Deserialize;
 use crate::workbench::Workbench;
 
 const POLL: Duration = Duration::from_millis(20);
+
+/// `"refresh_interval_us":…` for a trace event: the refresh interval of the display the window
+/// is on, as the platform reports it (the maximum rate on variable refresh rate displays;
+/// `null` when unknown). B4b is judged against it (ADR 0011).
+fn display_members(cx: &mut gpui::AsyncWindowContext) -> String {
+    let interval = cx
+        .update(|window, cx| window.refresh_interval(cx))
+        .ok()
+        .flatten();
+    match interval {
+        Some(interval) => format!(r#""refresh_interval_us":{}"#, interval.as_micros()),
+        None => r#""refresh_interval_us":null"#.to_owned(),
+    }
+}
 
 /// The key script.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -109,7 +124,11 @@ pub fn run(script: Script, window: &mut Window, cx: &mut Context<Workbench>) {
         let active = cx
             .update(|window, _| window.is_window_active())
             .unwrap_or(false);
-        trace::event_with("bench_start", &format!(r#""window_active":{active}"#));
+        let display = display_members(cx);
+        trace::event_with(
+            "bench_start",
+            &format!(r#""window_active":{active},{display}"#),
+        );
         let interval = Duration::from_millis(script.interval_ms);
         let started = Instant::now();
         for (n, key) in script.keys.iter().enumerate() {
@@ -130,7 +149,8 @@ pub fn run(script: Script, window: &mut Window, cx: &mut Context<Workbench>) {
                 return;
             }
         }
-        trace::event("bench_done");
+        let display = display_members(cx);
+        trace::event_with("bench_done", &display);
     })
     .detach();
 }

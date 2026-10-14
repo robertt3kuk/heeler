@@ -1,0 +1,59 @@
+# 0013. Compact scrollback: hot window in the engine, cold store for older rows
+
+- Status: accepted (amends ADR 0004 § scrollback)
+- Date: 2026-10-14
+- Milestone: M2 (M2.7)
+
+## Context
+ADR 0004 keeps the whole scrollback in `alacritty_terminal`'s grid with `scrolling_history = scrollback_lines`. The grid stores every cell, blank or not, in 24 bytes, so a 10 000-line history costs `10 000 × cols × 24 B` (19.2 MB at 80 columns, 48 MB at 200). `docs/perf.md` § B2 measured 254.6 MB for 10 sessions against the 120 MB budget, and the desktop attaching at a wider pane reflows the whole history, adding more. The same rows as styled runs are ~0.9 MB per session.
+
+Prior art (ideas only; Warp's code is AGPL-3.0 and is not used): Warp keeps the region the cursor can reach in a mutable cell grid and moves rows that scrolled out of reach into `FlatStorage` — one packed UTF-8 byte buffer, a row index (row → byte offset) and styling as interval maps keyed on byte offsets, only where the style changes — so resizing rebuilds only the row index ([blog](https://www.warp.dev/blog/block-model-behind-warps-agentic-development-environment)).
+
+Facts about the engine that shape the design (alacritty_terminal 0.26.0, read from its source):
+- `Grid::update_history(n)` and `Grid::truncate()` are public; shrinking history drops the **oldest** rows, newest rows keep their indices.
+- History rows are only touched by scrolling (new rows enter, the oldest is recycled at the cap), by `Term::resize` (reflow), by `ED 3` (`ESC[3J`, only when history is non-empty) and by `RIS` (`ESC c`).
+- The alternate screen is a second grid with no history; `Term::history_size()` reports the active grid's.
+- Bytes inside a DEC 2026 synchronized batch are withheld by the parser and executed later in one call, so a byte-stream scan cannot tell *when* the engine executed a `ESC[3J`.
+- `Cell::flags` is a `u16` bitflag whose bit 15 is unused; no engine logic looks at unknown bits.
+
+## Options
+| Option | Pros | Cons |
+|---|---|---|
+| Keep everything in the grid, lower `scrollback_lines` | Zero work | Changes the product (10k lines is the budget's premise) |
+| Fork / patch `alacritty_terminal` to a compact grid | Exact, single store | Fork maintenance; engine types are pinned `=0.26.0` on purpose |
+| Own engine | Full control | Rewrites the parser/grid ADR 0004 chose to buy |
+| **Hot window in the engine + cold store in our crate** | Engine untouched; rows out of reach cost ~10–30× less; resize touches ~256 rows | Cold rows do not reflow; extra spill/consistency logic |
+
+## Decision
+**Layout.** The engine keeps the viewport plus a hot window of at most `HOT_MARGIN = 256` history rows. Rows older than that live in a per-terminal `ScrollbackStore` (`crates/terminal/src/scrollback.rs`). `Emulator` is the only owner of both; nothing outside the crate sees the split. `history()`, `history_while()` and `history_len()` read across hot + cold transparently with today's semantics: newest-first indexing (`from_line` 0 is the row directly above the viewport), `history_len` = hot + cold rows, 0 on the alternate screen.
+
+**Exact bound.** Total retained history is `scrollback_lines` exactly: the engine's own cap stays `scrollback_lines` (so it can never lose a row the reference grid would have kept, however much one parser call scrolls), and after every parser call the cold store is trimmed to `scrollback_lines − hot_len`, evicting oldest-first. Retained rows equal the newest `min(scrolled, scrollback_lines)` rows, exactly as with a full grid.
+
+**Spilling, after every slice of a feed.** `Emulator::feed` hands the parser slices of at most 2 KiB and settles after each: the oldest `hot_len − HOT_MARGIN` engine rows are converted to cold rows and dropped from the grid (`update_history(keep)`, then `update_history(scrollback_lines)` to restore the engine's cap). Conversion is the same code that builds protocol `Row`s (`render::RowScratch`), written once and consumed by two sinks, so cold rows are identical to what a direct conversion gives, and trailing default cells are counted, not converted. Slicing bounds the grid's transient size to the hot window plus what 2 KiB can scroll (≤ 2 048 lines); that matters because **the process's resident size does not come back**: macOS keeps freed small allocations resident (`ri_resident_size` stayed at its high-water mark after freeing 500 MB of 4.8 KB blocks, and `malloc_zone_pressure_relief` released nothing in the same test), so the bench's RSS budgets are decided by the peak, not by what is live at idle.
+
+*Rejected: spilling only after output pauses.* Built and benchmarked: converting nothing during a flood is much cheaper (the rows that scroll off unread are never converted), but the engine then grows to its full cap during every burst and RSS stays there: B2 218.9 MB, B2w 538.2 MB (10 sessions printing at once), i.e. no better than before. Eager spilling gives B2 39.8 MB, B2w 84.6 MB (`docs/perf.md`). The price of eager spilling is one conversion per scrolled row; in release the mixed 200 MB flood example runs at 138 MB/s instead of 154 MB/s, but in an unoptimized build converting 10 M one-character rows (`yes`) took 101 s instead of 9.6 s and failed the daemon's flood test. Hence the workspace builds `alacritty_terminal`, `vte` and `heeler-terminal` with `opt-level = 3` in the dev profile (the same test then runs in 4.9 s); the cell scan skips the trailing default cells of a row.
+
+**Cold row format.** Chunks of up to 512 rows (`VecDeque<Chunk>`): one packed UTF-8 `text` buffer; a row index (`text_end`, `span_end`, trailing-blank count, flags `wrapped` / `continuation` = logical-line start flag); and style spans `(byte offset within the row, style id)` emitted only where the style changes from the previous run (rows in the default style carry no spans). Styles (fg, bg, flags, underline colour, link id) are packed (20 bytes) and interned in a per-chunk table, so the table is freed with the chunk. No per-cell and no per-row heap allocation. Sealed chunks are `shrink_to_fit`ted; the open chunk grows amortized. Eviction advances a head counter and drops a chunk once all its rows are gone, so evicted rows release memory at chunk granularity (at most one chunk of dead rows is retained).
+
+**Resize.** `term.resize` reflows the viewport and the hot window only. Cold rows keep the width they had when they scrolled out; clients already render rows of any width (`Row` carries no width). After a resize the cold store is trimmed so the total stays ≤ `scrollback_lines`, and spilling runs again (narrowing can push the hot window past the margin; the surplus rows are spilled at their new width). A logical line that wraps across the cold/hot boundary is reflowed from its hot fragment only. Enlarging the screen by more rows than the hot window holds would pull cold rows into the viewport in a full grid; here the pull stops at the hot window and, if it empties the window, the cold store is dropped (see `ESC[3J` below for why a cold store without a hot row cannot be guarded).
+
+**`ESC[3J` and `ESC c` (RIS).** Both clear the engine's history; the cold store must be cleared in step, including when the engine ran them inside a synchronized batch long after the bytes were fed. The engine offers no event, so the oldest hot row carries a marker (cell 0, flag bit 15, ignored by the row conversion and by the engine). After every parser slice (`settle`), when the cold store is not empty and the primary screen is active, a missing marker on the oldest hot row (or an empty hot window) means the history was cleared (or fully recycled at the cap, in which case the cold store would be empty by the bound anyway): the cold store is cleared. Spilling and resize re-apply the marker; spilling always keeps at least one hot row. A resize that happens while the alternate screen is active reflows the hidden primary grid out of reach, so on return to the primary screen a missing marker with a non-empty hot window is taken as reflow, not as a clear (the combination "resize inside the alternate screen and `RIS` in the same session" can therefore leave stale cold rows; accepted; `resizing_inside_the_alternate_screen_keeps_the_history` covers the ordinary case, a plain `RIS` inside the alternate screen is covered by `a_reset_inside_the_alternate_screen_clears_the_history`). `ESC[3J` on the alternate screen affects only the alternate grid, as before.
+
+**Alternate screen.** No history is exposed while it is active (`history_len` = 0, cold rows hidden, not spilled from); the primary hot window and the cold store are untouched and reappear on return.
+
+**Links.** Cold rows store link ids. Ids are interned when a row is converted — at spill time for cold rows — so the table now also contains links of rows that scrolled out unread; it stays capped at 16 384 entries and ids stay stable for the terminal's lifetime. Wire types and the link table protocol are unchanged.
+
+**Logical lines.** `Emulator::logical_lines(scope)` iterates logical lines (rows joined along the `wrapped` flag) oldest-first across cold + hot (+ viewport), text only, with the oldest-first index of the first row and the row count. A wrapped row contributes the blank columns trimmed from its end, so line text equals the text a full-width join would give. This is the substrate for search and blocks (M10).
+
+**Benchmarks (`xtask bench`).** B2 keeps its definition (10 sessions × 10k lines at 80 columns, desktop attached) with the budget ≤ 120 MB; new **B2w** is the same load in 200-column terminals with ~190-column lines (no client) ≤ 150 MB. B4 is split as ADR 0011 says: **B4a** = key event handled → end of the paint of the frame that shows the echo (the point the frame is handed to the renderer), i.e. `key_to_sent + sent_to_echo + (echo_to_paint − echo_to_prepaint)` of the existing latency trace, p95 ≤ 2 ms; **B4b** = the whole trace latency, p95 ≤ the display's refresh interval + 2 ms. The interval comes from the platform: the desktop reports `Window::refresh_interval` (GPUI's cached `NSScreen.maximumFramesPerSecond` of the screen the window is on) in the `bench_start`/`bench_done` trace events; the run fails if it is missing or differs between the two (window moved), and the report records it (`b4_refresh_interval_ms`, `b4_refresh_hz`) and derives B4b's limit from it.
+
+**No protocol change.** DTOs, `terminal.history` paging and caps are unchanged; `docs/protocol.md` gets a note that history rows older than the hot window keep their original width after a resize.
+
+## Consequences
+- History cost drops from `24 · cols` bytes per row to the encoded size of the row (~40–150 B for typical output, independent of terminal width); B2 targets are ≤ 120 MB at 80 columns and (new) B2w ≤ 150 MB at 200 columns, measured by `xtask bench` (`docs/perf.md`).
+- After a resize, old rows keep their old width (a visible difference from a full-grid terminal; the hot window, which is what the user sees when scrolling a little, reflows).
+- One more consistency mechanism (the marker) to carry; it is tested against a full-history reference emulator with random streams (SGR, wide chars, combining marks, links, wraps, `ESC[3J`, `RIS`, alternate screen, synchronized batches, resize).
+- Revisit if: the engine gains a history-cleared event or a row-eviction hook (drop the marker), libghostty-vt's bound semantic becomes usable (ADR 0004 watch item), or cold rows must reflow (store the logical line and re-wrap on demand; the format already stores line-start flags and blank tails for that).
+
+## Evidence
+`docs/perf.md` (B2/B2w before/after, B4a/B4b), unit and property tests in `crates/terminal/src/{scrollback,equivalence,behavior}.rs` (random streams against a full-history reference emulator, bound, clearing, alternate screen, resize, logical lines).

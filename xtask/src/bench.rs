@@ -15,7 +15,7 @@ use heeler_client::{Client, ConnectOptions};
 use heeler_core::TerminalId;
 use heeler_protocol::messages::{
     ClientInfo, ClientKind, DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo,
-    SessionResult, SessionSpec, TerminalSpec,
+    SessionResult, SessionSpec, TerminalSize, TerminalSpec,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -26,6 +26,8 @@ use crate::seed;
 use crate::stats::{median, percentile};
 
 const MIB: f64 = 1024.0 * 1024.0;
+/// Metric holding the refresh interval of the window's display (ms), read from the platform.
+const REFRESH_INTERVAL_MS: &str = "b4_refresh_interval_ms";
 
 /// A budget from `docs/vision.md` and the metric that decides it.
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +38,9 @@ pub struct Budget {
     pub unit: &'static str,
     /// Passes when the median is at most this.
     pub limit: f64,
+    /// When set, `limit` is not fixed: it is the display refresh interval measured with the
+    /// run (median over runs of `b4_refresh_interval_ms`) plus this many milliseconds.
+    pub frame_margin_ms: Option<f64>,
 }
 
 pub const BUDGETS: &[Budget] = &[
@@ -45,13 +50,23 @@ pub const BUDGETS: &[Budget] = &[
         metric: "b1_desktop_rss_mb",
         unit: "MB",
         limit: 150.0,
+        frame_margin_ms: None,
     },
     Budget {
         id: "B2",
-        name: "Idle daemon RSS, 10 sessions x 10k lines",
+        name: "Idle daemon RSS, 10 sessions x 10k lines, 80 cols",
         metric: "b2_daemon_rss_mb",
         unit: "MB",
         limit: 120.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B2w",
+        name: "Idle daemon RSS, 10 sessions x 10k lines, 200 cols",
+        metric: "b2w_daemon_rss_mb",
+        unit: "MB",
+        limit: 150.0,
+        frame_margin_ms: None,
     },
     Budget {
         id: "B3",
@@ -59,13 +74,26 @@ pub const BUDGETS: &[Budget] = &[
         metric: "b3_idle_cpu_pct",
         unit: "%",
         limit: 0.5,
+        frame_margin_ms: None,
     },
     Budget {
-        id: "B4",
-        name: "Keystroke to glyph, p95 over 500 keys",
-        metric: "b4_key_p95_ms",
+        id: "B4a",
+        name: "Heeler path: key handled to echo frame submitted, p95",
+        metric: "b4a_key_p95_ms",
         unit: "ms",
-        limit: 16.0,
+        limit: 2.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B4b",
+        name: "Keystroke to glyph on screen, p95 (one frame + 2 ms)",
+        metric: "b4b_key_p95_ms",
+        unit: "ms",
+        // ADR 0011: one display frame plus 2 ms; the frame is the refresh interval the platform
+        // reported for the window's display, recorded per run as `b4_refresh_interval_ms`.
+        // Not a fixed number: see `frame_margin_ms`.
+        limit: 0.0,
+        frame_margin_ms: Some(2.0),
     },
     Budget {
         id: "B5",
@@ -73,6 +101,7 @@ pub const BUDGETS: &[Budget] = &[
         metric: "b5_key_p95_ms",
         unit: "ms",
         limit: 50.0,
+        frame_margin_ms: None,
     },
     Budget {
         id: "B5",
@@ -80,6 +109,7 @@ pub const BUDGETS: &[Budget] = &[
         metric: "b5_daemon_growth_mb",
         unit: "MB",
         limit: 50.0,
+        frame_margin_ms: None,
     },
     Budget {
         id: "B6",
@@ -87,6 +117,7 @@ pub const BUDGETS: &[Budget] = &[
         metric: "b6_cold_start_ms",
         unit: "ms",
         limit: 500.0,
+        frame_margin_ms: None,
     },
 ];
 
@@ -94,7 +125,9 @@ pub const BUDGETS: &[Budget] = &[
 enum Scenario {
     /// B1, B2, B3 in one run: 10 loaded sessions, 4 of them on screen, then idle.
     Idle,
-    /// B4.
+    /// B2w: 10 loaded sessions of 200 columns, no client.
+    IdleWide,
+    /// B4a, B4b.
     Typing,
     /// B5.
     Flood,
@@ -103,8 +136,9 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 4] = [
+    const ALL: [Scenario; 5] = [
         Scenario::Idle,
+        Scenario::IdleWide,
         Scenario::Typing,
         Scenario::Flood,
         Scenario::ColdStart,
@@ -113,7 +147,8 @@ impl Scenario {
     fn name(self) -> &'static str {
         match self {
             Scenario::Idle => "idle (B1,B2,B3)",
-            Scenario::Typing => "typing (B4)",
+            Scenario::IdleWide => "idle wide (B2w)",
+            Scenario::Typing => "typing (B4a,B4b)",
             Scenario::Flood => "flood (B5)",
             Scenario::ColdStart => "cold start (B6)",
         }
@@ -122,11 +157,19 @@ impl Scenario {
     fn budgets(self) -> &'static [&'static str] {
         match self {
             Scenario::Idle => &["B1", "B2", "B3"],
-            Scenario::Typing => &["B4"],
+            Scenario::IdleWide => &["B2w"],
+            Scenario::Typing => &["B4a", "B4b"],
             Scenario::Flood => &["B5"],
             Scenario::ColdStart => &["B6"],
         }
     }
+}
+
+/// Whether the `--only` entry `wanted` (any case) selects the budget `id`: exactly, or as the
+/// family prefix (`B4` selects `B4a` and `B4b`, `B2` selects `B2w`).
+fn selects(wanted: &str, id: &str) -> bool {
+    let (wanted, id) = (wanted.to_uppercase(), id.to_uppercase());
+    id == wanted || (wanted.len() >= 2 && id.len() == wanted.len() + 1 && id.starts_with(&wanted))
 }
 
 #[derive(Debug)]
@@ -146,14 +189,17 @@ type Metrics = BTreeMap<String, f64>;
 
 pub async fn run(options: Options) -> Result<()> {
     let root = workspace_root();
-    let wanted: Vec<String> = options.only.iter().map(|s| s.to_uppercase()).collect();
+    let wanted: Vec<String> = options.only.clone();
     for id in &wanted {
-        if !BUDGETS.iter().any(|b| b.id == id) {
-            bail!("unknown budget {id}; known: B1..B6");
+        if !BUDGETS.iter().any(|b| selects(id, b.id)) {
+            bail!("unknown budget {id}; known: B1, B2, B2w, B3, B4a, B4b, B5, B6");
         }
     }
     let selected = |s: &Scenario| {
-        wanted.is_empty() || s.budgets().iter().any(|b| wanted.iter().any(|w| w == b))
+        wanted.is_empty()
+            || s.budgets()
+                .iter()
+                .any(|b| wanted.iter().any(|w| selects(w, b)))
     };
     let scenarios: Vec<Scenario> = Scenario::ALL.into_iter().filter(selected).collect();
 
@@ -276,6 +322,8 @@ fn machine_info() -> Value {
 
 struct Row {
     budget: Budget,
+    /// The budget's limit, resolved for this report (B4b depends on the display).
+    limit: f64,
     values: Vec<f64>,
     median: f64,
     pass: bool,
@@ -288,7 +336,7 @@ impl Row {
             "name": self.budget.name,
             "metric": self.budget.metric,
             "unit": self.budget.unit,
-            "limit": self.budget.limit,
+            "limit": self.limit,
             "values": self.values,
             "median": self.median,
             "pass": self.pass,
@@ -297,19 +345,28 @@ impl Row {
 }
 
 fn summarize(results: &BTreeMap<&'static str, Vec<Metrics>>, wanted: &[String]) -> Vec<Row> {
+    let all = || results.values().flatten();
     BUDGETS
         .iter()
-        .filter(|b| wanted.is_empty() || wanted.iter().any(|w| w == b.id))
+        .filter(|b| wanted.is_empty() || wanted.iter().any(|w| selects(w, b.id)))
         .filter_map(|budget| {
-            let values: Vec<f64> = results
-                .values()
-                .flatten()
+            let values: Vec<f64> = all()
                 .filter_map(|m| m.get(budget.metric).copied())
                 .collect();
             let med = median(&values)?;
+            let limit = match budget.frame_margin_ms {
+                Some(margin) => {
+                    let frames: Vec<f64> = all()
+                        .filter_map(|m| m.get(REFRESH_INTERVAL_MS).copied())
+                        .collect();
+                    median(&frames)? + margin
+                }
+                None => budget.limit,
+            };
             Some(Row {
                 budget: *budget,
-                pass: med <= budget.limit,
+                limit,
+                pass: med <= limit,
                 median: med,
                 values,
             })
@@ -319,16 +376,16 @@ fn summarize(results: &BTreeMap<&'static str, Vec<Metrics>>, wanted: &[String]) 
 
 fn print_table(rows: &[Row]) {
     println!(
-        "{:<3} {:<46} {:>8} {:>10}  {:<28} result",
+        "{:<3} {:<54} {:>9} {:>10}  {:<28} result",
         "id", "metric", "budget", "median", "runs"
     );
     for row in rows {
         let runs: Vec<String> = row.values.iter().map(|v| format!("{v:.2}")).collect();
         println!(
-            "{:<3} {:<46} {:>8} {:>10}  {:<28} {}",
+            "{:<3} {:<54} {:>9} {:>10}  {:<28} {}",
             row.budget.id,
             row.budget.name,
-            format!("<= {} {}", row.budget.limit, row.budget.unit),
+            format!("<= {:.1} {}", row.limit, row.budget.unit),
             format!("{:.2} {}", row.median, row.budget.unit),
             runs.join(", "),
             if row.pass { "PASS" } else { "FAIL" },
@@ -418,12 +475,21 @@ impl<'a> Stack<'a> {
     }
 
     async fn create(&self, command: &[&str]) -> Result<SessionInfo> {
+        self.create_sized(command, None).await
+    }
+
+    async fn create_sized(
+        &self,
+        command: &[&str],
+        size: Option<TerminalSize>,
+    ) -> Result<SessionInfo> {
         let result: SessionResult = self
             .client
             .call(Request::SessionCreate(SessionCreate {
                 workspace_id: None,
                 spec: SessionSpec::Terminal(TerminalSpec {
                     command: command.iter().map(|s| (*s).to_owned()).collect(),
+                    size,
                     ..TerminalSpec::default()
                 }),
             }))
@@ -600,6 +666,20 @@ fn key_totals_ms(events: &[Value], window: Option<(u64, u64)>) -> Vec<f64> {
     key_stage_ms(events, "total_us", window)
 }
 
+/// Per keystroke, what Heeler itself spends: key handled to the end of the paint that shows the
+/// echo, minus the wait for the display tick in between (B4a, ADR 0011).
+fn key_heeler_ms(events: &[Value]) -> Vec<f64> {
+    events
+        .iter()
+        .filter(|e| is_event(e, "key"))
+        .filter_map(|e| {
+            let us = |field: &str| e[field].as_f64();
+            let paint = (us("echo_to_paint_us")? - us("echo_to_prepaint_us")?).max(0.0);
+            Some((us("key_to_sent_us")? + us("sent_to_echo_us")? + paint) / 1000.0)
+        })
+        .collect()
+}
+
 /// Median and p95 of each stage of the keystroke path.
 fn record_stages(
     metrics: &mut Metrics,
@@ -647,6 +727,7 @@ async fn run_scenario(
     let mut stack = Stack::start(bins).await?;
     let result = match scenario {
         Scenario::Idle => idle(&mut stack).await,
+        Scenario::IdleWide => idle_wide(&mut stack).await,
         Scenario::Typing => typing(&mut stack, key_interval_ms).await,
         Scenario::Flood => flood(&mut stack, key_interval_ms).await,
         Scenario::ColdStart => cold_start(&mut stack).await,
@@ -667,38 +748,68 @@ const CPU_WINDOW: Duration = Duration::from_secs(30);
 const LOADED_SESSIONS: usize = 10;
 const SHOWN_SESSIONS: usize = 4;
 
-async fn idle(stack: &mut Stack<'_>) -> Result<Metrics> {
-    let mut metrics = Metrics::new();
-    // 12 000 colored lines overflow the 10 000-line scrollback; the file marks "printed".
+/// Wide terminals for B2w: the history rows are as wide as the pane of a large window.
+const WIDE_SIZE: TerminalSize = TerminalSize {
+    cols: 200,
+    rows: 50,
+    pixel_width: 0,
+    pixel_height: 0,
+};
+/// Text after the line number: ~55 columns for B2 (80-column terminals), ~175 for B2w.
+const FILLER: &str = "the quick brown fox jumps over the lazy dog 0123456789";
+const WIDE_FILLER: &str = "the quick brown fox jumps over the lazy dog 0123456789 the quick brown fox jumps over the lazy dog 0123456789 the quick brown fox jumps over the lazy dog 0123456789";
+
+/// Starts `LOADED_SESSIONS` sessions that each print 12 000 coloured lines (the 10 000-line
+/// scrollback overflows), then idle in `cat`; returns once all printed and the daemon settled.
+async fn load_sessions(
+    stack: &Stack<'_>,
+    size: Option<TerminalSize>,
+    filler: &str,
+) -> Result<Vec<SessionInfo>> {
     let mut sessions = Vec::new();
+    let mut marks = Vec::new();
     for n in 0..LOADED_SESSIONS {
         let done = stack.path(&format!("done-{n}"));
         let script = format!(
-            "awk 'BEGIN{{for(i=1;i<=12000;i++) printf \"\\033[3%dmline %d\\033[0m the quick brown fox jumps over the lazy dog 0123456789\\n\", i%7+1, i}}'; \
+            "awk 'BEGIN{{for(i=1;i<=12000;i++) printf \"\\033[3%dmline %d\\033[0m {filler}\\n\", i%7+1, i}}'; \
              touch '{}'; exec cat",
             done.display()
         );
-        sessions.push((stack.create(&["sh", "-c", &script]).await?, done));
+        sessions.push(stack.create_sized(&["sh", "-c", &script], size).await?);
+        marks.push(done);
     }
     let deadline = Instant::now() + Duration::from_secs(120);
-    while sessions.iter().any(|(_, done)| !done.exists()) {
+    while marks.iter().any(|done| !done.exists()) {
         if Instant::now() > deadline {
             bail!("sessions did not finish printing");
         }
         sleep(Duration::from_millis(100)).await;
     }
     sleep(Duration::from_secs(2)).await;
+    Ok(sessions)
+}
+
+/// B2w: the same load in 200-column terminals, no client attached.
+async fn idle_wide(stack: &mut Stack<'_>) -> Result<Metrics> {
+    let _sessions = load_sessions(stack, Some(WIDE_SIZE), WIDE_FILLER).await?;
+    let mut metrics = Metrics::new();
+    metrics.insert(
+        "b2w_daemon_rss_mb".into(),
+        stack.daemon_usage()?.rss_bytes as f64 / MIB,
+    );
+    Ok(metrics)
+}
+
+async fn idle(stack: &mut Stack<'_>) -> Result<Metrics> {
+    let mut metrics = Metrics::new();
+    let sessions = load_sessions(stack, None, FILLER).await?;
     let detached = stack.daemon_usage()?;
     metrics.insert(
         "b2_daemon_rss_detached_mb".into(),
         detached.rss_bytes as f64 / MIB,
     );
 
-    let shown: Vec<&SessionInfo> = sessions
-        .iter()
-        .take(SHOWN_SESSIONS)
-        .map(|(s, _)| s)
-        .collect();
+    let shown: Vec<&SessionInfo> = sessions.iter().take(SHOWN_SESSIONS).collect();
     stack.launch_desktop(&shown, false, None)?;
     let started = Instant::now();
     while stack.clients().await? < 2 {
@@ -784,7 +895,8 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
     // The last echoes arrive after the last key was sent.
     sleep(Duration::from_secs(1)).await;
     stack.check_desktop()?;
-    let totals = key_totals_ms(&stack.trace(), None);
+    let events = stack.trace();
+    let totals = key_totals_ms(&events, None);
     if totals.len() < TYPING_KEYS * 95 / 100 {
         bail!(
             "only {} of {TYPING_KEYS} keystrokes were painted",
@@ -792,10 +904,35 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
         );
     }
     let mut metrics = Metrics::new();
-    record_latency(&mut metrics, "b4", &totals);
-    record_stages(&mut metrics, "b4", &stack.trace(), None);
-    metrics.insert("b4_window_active".into(), window_active(&stack.trace()));
+    // B4b: key handled to the end of the paint that shows the echo (as before, B4).
+    record_latency(&mut metrics, "b4b", &totals);
+    // B4a: the same without the wait for the display tick (`echo_to_prepaint`).
+    record_latency(&mut metrics, "b4a", &key_heeler_ms(&events));
+    record_stages(&mut metrics, "b4", &events, None);
+    metrics.insert("b4_window_active".into(), window_active(&events));
+    let interval_ms = display_refresh_interval_ms(&events)?;
+    metrics.insert(REFRESH_INTERVAL_MS.into(), interval_ms);
+    metrics.insert("b4_refresh_hz".into(), 1000.0 / interval_ms);
     Ok(metrics)
+}
+
+/// The refresh interval (ms) of the display the window was on, as GPUI reported it when the key
+/// script began and when it ended. Fails when the platform did not report one or the window
+/// moved to another display in between: B4b has no defined limit then.
+fn display_refresh_interval_ms(events: &[Value]) -> Result<f64> {
+    let at = |name: &str| {
+        events
+            .iter()
+            .find(|e| is_event(e, name))
+            .and_then(|e| e["refresh_interval_us"].as_u64())
+    };
+    let (Some(start), Some(done)) = (at("bench_start"), at("bench_done")) else {
+        bail!("the platform did not report the display's refresh interval");
+    };
+    if start != done {
+        bail!("the window moved between displays during the run ({start} us, then {done} us)");
+    }
+    Ok(start as f64 / 1000.0)
 }
 
 /// 1.0 when the desktop window was the active (key) window when the key script began. GPUI

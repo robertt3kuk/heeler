@@ -97,21 +97,25 @@ impl RenderTracker {
 
 /// Style identity of a run, everything except the text.
 #[derive(Clone, PartialEq, Eq)]
-struct Style {
-    fg: Color,
-    bg: Color,
-    flags: CellFlags,
-    underline_color: Option<Color>,
-    link: Option<u32>,
+pub(crate) struct Style {
+    pub(crate) fg: Color,
+    pub(crate) bg: Color,
+    pub(crate) flags: CellFlags,
+    pub(crate) underline_color: Option<Color>,
+    pub(crate) link: Option<u32>,
 }
 
 impl Style {
-    fn is_default(&self) -> bool {
-        self.fg == Color::Default
-            && self.bg == Color::Default
-            && self.flags.is_empty()
-            && self.underline_color.is_none()
-            && self.link.is_none()
+    pub(crate) const DEFAULT: Self = Self {
+        fg: Color::Default,
+        bg: Color::Default,
+        flags: CellFlags::empty(),
+        underline_color: None,
+        link: None,
+    };
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
     }
 }
 
@@ -166,63 +170,111 @@ fn cell_style(cell: &Cell, links: &mut LinkTable) -> Style {
     }
 }
 
-/// Converts one engine row of `cols` cells.
-pub(crate) fn convert_row(row: &GridRow<Cell>, cols: usize, links: &mut LinkTable) -> Row {
-    let mut runs: Vec<Run> = Vec::new();
-    let mut last_style: Option<Style> = None;
-    for col in 0..cols.min(row.len()) {
-        let cell = &row[Column(col)];
-        if cell
-            .flags
-            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-        {
-            continue;
-        }
-        let style = cell_style(cell, links);
-        if last_style.as_ref() != Some(&style) {
-            runs.push(Run {
-                text: String::new(),
-                fg: style.fg,
-                bg: style.bg,
-                flags: style.flags,
-                underline_color: style.underline_color,
-                link: style.link,
-            });
-            last_style = Some(style);
-        }
-        if let Some(run) = runs.last_mut() {
-            run.text.push(if cell.c == '\t' { ' ' } else { cell.c });
+/// One engine row converted to text plus style runs, in reusable buffers. Both the protocol
+/// [`Row`] (viewport, hot history) and the cold scrollback store are built from it, so the two
+/// can never disagree about what a row means.
+#[derive(Default)]
+pub(crate) struct RowScratch {
+    /// The row's characters (wide characters once, combining marks after their base).
+    pub(crate) text: String,
+    /// Runs in order: style and start byte offset in `text`; a run ends where the next starts.
+    pub(crate) runs: Vec<(Style, usize)>,
+    /// The row's last cell soft-wraps onto the next row.
+    pub(crate) wrapped: bool,
+    /// Blank default-style columns trimmed from the end of the row.
+    pub(crate) blank_tail: u16,
+}
+
+impl RowScratch {
+    /// Converts one engine row of `cols` cells, replacing the previous contents.
+    pub(crate) fn fill(&mut self, row: &GridRow<Cell>, cols: usize, links: &mut LinkTable) {
+        self.text.clear();
+        self.runs.clear();
+        // Raw attributes of the cell that opened the current run, valid only when that cell had
+        // no extra storage (hyperlink, underline colour, combining marks): the next plain cell
+        // with the same attributes continues the run without building a `Style`.
+        let mut open: Option<(EngineColor, EngineColor, Flags)> = None;
+        let width = cols.min(row.len());
+        let cells = &row[Column(0)..Column(width)];
+        // Cells after the last non-default one only add blanks that get trimmed below: count
+        // them instead of converting them (most rows are mostly blank, and a `yes` flood
+        // spills millions of rows).
+        let blank = Cell::default();
+        let used = cells
+            .iter()
+            .rposition(|cell| *cell != blank)
+            .map_or(0, |last| last + 1);
+        self.blank_tail = u16::try_from(width - used).unwrap_or(u16::MAX);
+        for cell in &cells[..used] {
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let plain = cell.extra.is_none();
+            if !(plain && open == Some((cell.fg, cell.bg, cell.flags))) {
+                let style = cell_style(cell, links);
+                if self.runs.last().map(|(last, _)| last) != Some(&style) {
+                    self.runs.push((style, self.text.len()));
+                }
+                open = plain.then_some((cell.fg, cell.bg, cell.flags));
+            }
+            self.text.push(if cell.c == '\t' { ' ' } else { cell.c });
             if let Some(extra) = cell.zerowidth() {
-                run.text.extend(extra);
+                self.text.extend(extra);
+            }
+        }
+        self.trim_trailing_blanks();
+        self.wrapped =
+            cols > 0 && row.len() >= cols && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+    }
+
+    fn trim_trailing_blanks(&mut self) {
+        while let Some((style, start)) = self.runs.last() {
+            if !style.is_default() {
+                break;
+            }
+            let start = *start;
+            let kept = start + self.text[start..].trim_end_matches(' ').len();
+            let removed = self.text.len() - kept;
+            self.blank_tail = self
+                .blank_tail
+                .saturating_add(u16::try_from(removed).unwrap_or(u16::MAX));
+            self.text.truncate(kept);
+            if kept == start {
+                self.runs.pop();
+            } else {
+                break;
             }
         }
     }
-    trim_trailing_blanks(&mut runs);
-    let wrapped =
-        cols > 0 && row.len() >= cols && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-    Row { runs, wrapped }
+
+    /// The protocol row.
+    pub(crate) fn to_row(&self) -> Row {
+        let mut runs = Vec::with_capacity(self.runs.len());
+        for (index, (style, start)) in self.runs.iter().enumerate() {
+            let end = self
+                .runs
+                .get(index + 1)
+                .map_or(self.text.len(), |(_, next)| *next);
+            runs.push(run_of(style, self.text[*start..end].to_owned()));
+        }
+        Row {
+            runs,
+            wrapped: self.wrapped,
+        }
+    }
 }
 
-fn trim_trailing_blanks(runs: &mut Vec<Run>) {
-    while let Some(run) = runs.last_mut() {
-        let default_style = Style {
-            fg: run.fg,
-            bg: run.bg,
-            flags: run.flags,
-            underline_color: run.underline_color,
-            link: run.link,
-        }
-        .is_default();
-        if !default_style {
-            break;
-        }
-        let kept = run.text.trim_end_matches(' ').len();
-        run.text.truncate(kept);
-        if run.text.is_empty() {
-            runs.pop();
-        } else {
-            break;
-        }
+pub(crate) fn run_of(style: &Style, text: String) -> Run {
+    Run {
+        text,
+        fg: style.fg,
+        bg: style.bg,
+        flags: style.flags,
+        underline_color: style.underline_color,
+        link: style.link,
     }
 }
 
