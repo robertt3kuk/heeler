@@ -873,7 +873,7 @@ fn new_terminal_starts_in_the_focused_workspace_root_or_home(cx: &mut TestAppCon
     });
     let first = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
     let info = daemon.session(first);
-    assert_eq!(info.cwd, std::env::home_dir());
+    assert_same_dir(info.cwd.as_deref(), &std::env::home_dir().unwrap());
     assert_ne!(info.workspace_id, ws.id);
 
     // From a session of `proj`: same workspace, in its root.
@@ -885,7 +885,7 @@ fn new_terminal_starts_in_the_focused_workspace_root_or_home(cx: &mut TestAppCon
     });
     let second = daemon.session(view.read_with(cx, |wb, _| wb.focused_session()).unwrap());
     assert_eq!(second.workspace_id, ws.id);
-    assert_eq!(second.cwd.as_deref(), Some(root.path()));
+    assert_same_dir(second.cwd.as_deref(), root.path());
 
     // New agent / chat stay disabled with hints.
     cx.simulate_keystrokes("cmd-shift-t");

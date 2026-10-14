@@ -22,13 +22,12 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Antigravity CLI `agy` 1.3.4 is installed but unusable (account not eligible); not part of the process.
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
-
+## Log
 ### 2026-10-14 night — M2-H, M3-A merged (local)
 - M2-H (`f558533`, `343d13e`): compact scrollback per ADR 0013 — engine keeps viewport + 256 rows, older rows in a packed cold store (text + row index + style spans), exact line bound, `ESC[3J`/RIS clear both via a marker, resize reflows the hot window only, `Emulator::logical_lines` for search/blocks. Bench: B2 254.6 → **40.1 MB**, B2w 538 → **84.6 MB**, B5 growth 13.6 → 2.3 MB; B4a 1.34 ms; B4b borderline (above). Dev profile builds `alacritty_terminal`/`vte`/`heeler-terminal` at opt-level 3 — this also fixed the flaky `ack_pacing…` test (20 MB `yes` flood was ~10× slower unoptimized).
 - M3-A (`0e44c24`): `heeler-storage` (SQLite writer actor, WAL, migrations with `VACUUM INTO` backups, schema v1), daemon write-through, restore on start (live sessions respawn with the same id in their last cwd; ended ones listed as `restored`), `daemon.toml` `restore_sessions`, `heeler daemon stop --stop-sessions --forget`, protocol 0.3 (`SessionInfo.restored`, `DaemonShutdown.forget`, capability `session.restore`). Secret-looking env vars are not persisted (ADR 0008). Orchestrator live check: `cd /tmp` in a session → daemon restart → same session id running in `/tmp`, exited one shows `exited (4), restored`. `just check` 652 tests green.
 - Rebase hygiene: a conflict marker slipped into an intermediate M2-H commit during rebase; fixed and squashed before merge (no marker in any commit on master). Implementer rules now forbid push/hard reset; M10-B told to check `git grep '^<<<<<<<'` after rebases.
-- Still open: `new_terminal_starts_in_the_focused_workspace_root_or_home` compares `/var/…` vs `/private/var/…` under the default `$TMPDIR` (flaky on this machine) — fix with canonical paths like the split test.
-## Log
+- Fixed: `new_terminal_starts_in_the_focused_workspace_root_or_home` compared `/var/…` vs `/private/var/…` under the default `$TMPDIR`; now compares canonical paths.
 
 ### 2026-10-14 — M2-F merged; default shell fix
 - M2-F (`5df8b29`): `xtask bench` (B1–B6, temp homes, SIGTERM teardown, fails on orphans/crashes), latency tracing (`HEELER_TRACE_LATENCY`), scripted key injection (`HEELER_BENCH_INPUT`), panic hook → `desktop.log` (`crash::log_dir` shared with daemon controls), cursor-blink timer only while focused (idle CPU 1.58 → 0.46 %), ack on paint (fast-typing p95 32.3 → 18.4 ms).
