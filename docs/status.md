@@ -4,8 +4,8 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: wave 2 running: M2-E1 (`../heeler-wt/M2-E1`, desktop integration: live sessions, panels, settings wiring + UI) and M2-E2 (`../heeler-wt/M2-E2`, `terminal.set_colors` in terminal/daemon/client). Wave 1 merged.
-- **Next action**: review/merge M2-E2 then M2-E1; visual check of the integrated app (omp in a pane, splits, panel moves, presets, overview previews, live settings); then M2-F (performance budgets + `docs/demos/M2.md`).
+- **Active slice**: M2-F (performance budgets + `docs/demos/M2.md`) — brief next. Waves 1–2 merged (`1f87334`).
+- **Next action**: write `docs/briefs/M2-F.md` (measure every `vision.md` budget with repeatable scripts: idle RSS/CPU desktop + daemon, keystroke→paint latency via in-app tracing, 200 MB flood with UI responsiveness, cold start; fix what misses), run it, then run the M2 demo myself with screenshots.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
@@ -23,6 +23,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
 
 ## Log
+### 2026-10-14 — M2 wave 2 merged
+- M2-E2 (`21659c0`): `terminal.set_colors` end to end; daemon advertises `terminal.colors`; client re-sends colors after re-attach.
+- M2-E1 (`ea4851e`, review fixes `48a326f`, `1f87334`): desktop integration — live sessions, shared terminal model, real sessions/overview/inspector panels, status items, settings hot reload + keymap + settings sheet, splits start terminals in the focused cwd, terminal padding token, one preset-switch path with exact stash/restore.
+- Orchestrator review with screenshots against a real daemon (omp, shell, failed session): found and got fixed — overview from settings not showing the board, blank overview previews for top-heavy screens, stashed tabs still visible in overview, missing terminal padding. Final check: split layout → overview (live previews of all three, only the board) → default (exact split back). `just check` 530 tests green.
+
 
 ### 2026-10-14 — M2 design + wave 1 merged; protocol 0.2
 - Design with the user: layout A + overview board + ⌘K, native chrome + own terminal themes, density setting, one session with Chat/Terminal switch, **everything movable and configurable** → `docs/design.md`, ADR 0010 (workbench: docks + pane tree + panel registry + presets; layered TOML settings; GPUI only in UI crates). Vision/M7: task placement main checkout or worktree.
