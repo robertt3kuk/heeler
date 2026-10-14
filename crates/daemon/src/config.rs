@@ -20,7 +20,7 @@
 //!
 //! [codex]                        # chat sessions (protocol 0.9)
 //! bin = "/Users/me/.local/bin/codex"   # default: `codex` on the daemon's PATH
-//! args = ["-c", 'model_reasoning_effort="low"']   # appended after `app-server`
+//! args = ["app-server", "-c", 'model_reasoning_effort="low"']   # default: ["app-server"]
 //! ```
 
 use std::io;
@@ -58,7 +58,8 @@ pub struct DaemonSettings {
 pub struct CodexSettings {
     /// The Codex executable; `None` looks for `codex` on `PATH`.
     pub bin: Option<PathBuf>,
-    /// Extra arguments after `app-server` (`-c key=value` overrides).
+    /// The arguments of the executable, replacing the default `["app-server"]` when not empty
+    /// (`["app-server", "-c", "key=value"]` adds overrides).
     pub args: Vec<String>,
 }
 
@@ -68,7 +69,9 @@ impl CodexSettings {
         if let Some(bin) = &self.bin {
             config.program.clone_from(bin);
         }
-        config.args.extend(self.args.iter().cloned());
+        if !self.args.is_empty() {
+            config.args.clone_from(&self.args);
+        }
         config
     }
 }
@@ -259,7 +262,7 @@ mod tests {
 
     #[test]
     fn codex_settings_name_the_binary_and_extra_arguments() {
-        let toml = "[codex]\nbin = \"/opt/codex\"\nargs = [\"-c\", \"model_reasoning_effort=\\\"low\\\"\"]\n";
+        let toml = "[codex]\nbin = \"/opt/codex\"\nargs = [\"app-server\", \"-c\", \"model_reasoning_effort=\\\"low\\\"\"]\n";
         let config = DaemonSettings::parse(toml, None).unwrap().codex.to_config();
         assert_eq!(config.program, PathBuf::from("/opt/codex"));
         assert_eq!(

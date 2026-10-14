@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.8
+# Heeler IPC Protocol — v0.9
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`. 0.7 — render DTOs carry `viewport_top` (absolute line of viewport row 0). 0.8 — session history index (capability `history.search`): `history.search`, `history.status`, `history.set_enabled`, `history.clear`, `history.rebuild`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`. 0.7 — render DTOs carry `viewport_top` (absolute line of viewport row 0). 0.8 — session history index (capability `history.search`): `history.search`, `history.status`, `history.set_enabled`, `history.clear`, `history.rebuild`. 0.9 — agent chat sessions (capability `chat.codex`): `chat.create`, `.send`, `.interrupt`, `.history`, `.models`, `approval.list`, `approval.respond`, events `chat.event`, `approval.required`, `approval.resolved`; `SessionInfo.chat`.
 
 ## Frames
 
@@ -67,10 +67,13 @@ Milestone tag = when the method lands.
 | `history.set_enabled` | command | `{enabled}` → status; starts or stops indexing and records `[history] enabled` in `daemon.toml` | M17 |
 | `history.clear` / `history.rebuild` | command | → `{}`; clear deletes the index file and starts an empty one (works while disabled), rebuild reads every transcript again in the background (`invalid_state` while disabled) | M17 |
 | `terminal.tap_output` | command | raw byte subscription (lossy, gap markers) | M7 |
-| `chat.send` | command | session id, content blocks | M4 |
-| `chat.cancel` | command | session id, turn id | M4 |
-| `conversation.read` | query | session id, range → turns/items | M4 |
-| `approval.decide` | command | approval id, option id (must be one offered) | M4 |
+| `chat.create` | command | `{workspace_id?, cwd, agent: "codex", model?, approval_policy?: untrusted\|on-request\|never, sandbox?: read-only\|workspace-write\|danger-full-access, title?}` → `{session}` once the agent is ready (state `idle`); `bad_request` (unknown agent, `cwd` not an existing absolute directory), `provider_error` (Codex missing, unsupported version, unknown model); capability `chat.codex` | M4 |
+| `chat.send` | command | `{session_id, text}` → `{turn_id}`; the turn's events follow as `chat.event`; `invalid_state` while a turn runs or the session is not live | M4 |
+| `chat.interrupt` | command | `{session_id}` → `{}`; `invalid_state` without a turn | M4 |
+| `chat.history` | query | `{session_id, before_seq?, limit? ≤ 1000 (200)}` → `{events, has_more, last_seq}`; the journal, oldest first, events marked `replay` | M4 |
+| `chat.models` | query | `{agent}` → `{agent, models: [{id, display_name, description, is_default, hidden, default_reasoning_effort?, reasoning_efforts}]}` from the agent's own catalog | M4 |
+| `approval.list` | query | `{session_id?}` → `{approvals: [ApprovalInfo]}` oldest first | M4 |
+| `approval.respond` | command | `{approval_id, option_id}` → `{}`; `option_id` must be an offered option (`option_not_offered`); `not_found` once answered or expired | M4 |
 | `provider.list` / `.configure` / `.set_credential` / `.models` | cmd/query | provider config; secret write-only | M5 |
 | `notification.ack` | command | intent id, action | M6 |
 | `task.create` / `.list` / `.update` | cmd/query | task graph ops | M7 |
@@ -85,11 +88,9 @@ Milestone tag = when the method lands.
 | `session.exited` | session id, exit code/signal | M1 |
 | `terminal.bell` / `terminal.title` / `terminal.notification` | from OSC sniffer | M1 |
 | `terminal.block` | `{terminal_id, block}`: a block started, changed state or was truncated (capability `terminal.blocks`) | M10 |
-| `chat.delta` | session, turn, item, text/blocks | M4 |
-| `agent.item` | `AgentEvent` (tool call, diff, plan, usage, …) | M4 |
-| `agent.state_changed` | attention state | M4 |
-| `turn.completed` | session, turn, status, usage | M4 |
-| `approval.required` / `approval.resolved` | approval with offered options / decision | M4 |
+| `chat.event` | `{session_id, event: AgentEvent}`: every event of a chat session as it happens, `seq` increasing per session (capability `chat.codex`) | M4 |
+| `approval.required` | `{approval: ApprovalInfo}` with the options the agent offered | M4 |
+| `approval.resolved` | `{approval_id, session_id, outcome: selected\|expired, option_id?}` | M4 |
 | `notification.intent` | id, kind, title, body, actions, target | M6 |
 | `task.updated` / `task.completed` | task | M7 |
 
@@ -185,6 +186,17 @@ Code: `crates/index` (index), `crates/daemon/src/history.rs` (requests, Heeler f
 - `session_key` is the agent's own session id (`claude`: file name; `codex`: `session_meta.id`; `omp`: `session.id`, a sub-agent's hits carry its parent's id) or the Heeler session id. `resume_argv` (`claude --resume <id>`, `codex resume <id>`, `omp --resume=<id>`) passes the `agent.report` resume validation or is absent; `heeler` hits have none.
 - `project` matches sessions whose cwd is that directory or inside it. `since_ms`/`until_ms` compare the row's timestamp (rows without one carry their file's mtime).
 - Indexing is opt-in. While disabled, `history.status` says `enabled: false` with no sources, `history.search`/`rebuild` answer `invalid_state`, and no transcript file is read.
+
+## Agent chat and approvals (protocol 0.9, capability `chat.codex`)
+
+Code: `crates/core/src/agent.rs` (the event model), `crates/agents` (adapter), `crates/daemon/src/chat.rs` (sessions, approvals, journal), `crates/protocol/src/chat.rs` (DTOs). How it works and how to re-record the test transcripts: `docs/agents.md`.
+
+- A chat session is an ordinary session of kind `harness` with `SessionInfo.chat = {agent, model, approval_policy, sandbox, turn_active, pending_approvals}` and no terminal. State: `starting` → `idle`; `running` during a turn; `waiting_approval` while any approval is pending; `failed` (reason) when the agent cannot start or exits on its own; `stopped` after `session.stop`. `session.restart` starts the agent again and resumes the conversation.
+- `AgentEvent` is one flat JSON object: `{session_id, seq, ts_ms, delivery: live|replay, turn_id?, item_id?, provider: {thread_id?, turn_id?, item_id?, request_id?}, type, …kind fields…, payload?}`. `type` is one of `turn_started`, `message_start|delta|end`, `reasoning_start|delta|end`, `tool_start|update|end`, `command_output`, `file_diff`, `permission_requested|resolved`, `plan`, `usage`, `turn_completed|failed|cancelled`, `resume_locator`, `notice`, `opaque`. Usage numbers a provider did not report are absent, never `0`. `payload` is the provider's own message for the kinds where it adds information (tool items, permission requests, `opaque`). A client that meets a `type` it does not know ignores that event.
+- Local ids (`turn_id`, `item_id`, `approval_id`) are ULIDs the daemon assigns; the provider's are in `provider`. `seq` is strictly increasing per session across daemon restarts. Streaming events (`message_delta`, `reasoning_delta`, `command_output`) consume a `seq` and are delivered live only; the journal (`chat.history`) holds everything else, so its `seq` has gaps and the `*_end` events carry the complete text.
+- Following a session: subscribe (`events.subscribe`), then page `chat.history`; apply a live `chat.event` only when its `seq` is greater than the history's `last_seq` (the CLI's `chat attach` does this). `chat.event`s travel on the daemon-wide event stream like every other event (replayed after a reconnect while they are in the ring, see ADR 0002).
+- Approvals: `permission_requested` lists the provider's offered `options` (`id` = the provider's own name for the decision, `label`, `kind` allow_once|allow_always|reject_once|reject_always|cancel|other); a request that offers none beyond the schema's defaults gets Codex's four (`accept`, `acceptForSession`, `decline`, `cancel`). `approval.respond` accepts only an `option_id` that was offered. Pending approvals live in the daemon, survive client disconnects, and end as `approval.resolved`: `selected` (with the option) or `expired` when the turn ends, the agent withdraws the request, the agent exits, or the daemon restarts. Every request and its outcome (who answered: the client kind) is stored in the `approvals` table.
+- A message of the provider Heeler has no model for becomes an `opaque` event with its method and payload; a request of the provider Heeler cannot serve (user-input questions, MCP elicitations) is declined towards the provider and noted as a `notice`.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.
