@@ -61,15 +61,15 @@ Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `de
 - [x] M2.4 Settings engine: layered TOML (defaults < user < workspace < runtime), typed namespaces with schemas, hot reload, keymap file, theme + density tokens (merged `ecf304b`); wiring in M2-E1
 - [x] M2.5 Panels and wiring: `Connection` in the desktop, shared terminal model per session (one attachment, many views, ack after first paint), terminal items with reconnect/ended states, sessions panel (search, needs-you, grouping, configurable rows), overview board (live previews, attention sort, exact layout stash/restore from every path), inspector (info; approvals/changes M4/M7), status items per preset, session lifecycle actions (⌘T, ⌘D/⌘⇧D start a terminal in the focused cwd, rename/restart/stop), settings namespaces with hot reload, `keymap.toml`, generated settings sheet (⌘,), terminal padding token (merged `1f87334`)
 - [x] M2.6 Performance pass: `xtask bench` B1–B6, `docs/perf.md`, crash fix + panic hook (merged `5df8b29`); B4 redefined by ADR 0011
-- [ ] M2.7 Compact scrollback store (Warp-style flat storage for rows out of cursor reach; ADR 0013 amending ADR 0004) to meet B2; bench reports B4a/B4b per ADR 0011
+- [x] M2.7 Compact scrollback store (Warp-style flat storage for rows out of cursor reach; ADR 0013 amending ADR 0004) to meet B2; bench reports B4a/B4b per ADR 0011
 - [ ] M2.8 M2 demo (`docs/demos/M2.md`) with screenshots
 - [x] M2.9 Empty workspaces hidden: the sessions panel already lists only workspaces that have sessions (`panels/sessions.rs` skips empty groups); a setting `show_empty_workspaces` and "always show the active workspace" arrive with the workspace switcher in M12
 
 ## M3 — Persistence and restore
 Exit demo: kill `heelerd`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
-- [ ] M3.1 `storage` actor, migrations, schema for workspaces/sessions/layouts
-- [ ] M3.2 Restore pipeline per ADR 0009 step 1
-- [ ] M3.3 Agent resume references (integration env/hooks report session IDs)
+- [x] M3.1 `storage` actor, migrations, schema for workspaces/sessions (layouts stay in the desktop state file per ADR 0010)
+- [x] M3.2 Restore pipeline per ADR 0009 step 1
+- [x] M3.3 Agent resume references: `agent.report` (protocol 0.4), `heeler agent report`, `heeler integration install codex|claude|omp`
 
 ## M4 — Harness chat (Codex)
 Exit demo: open a Codex chat session, stream reply, see tool calls and diffs, approve a command from the UI, approval enforced in daemon; same conversation visible from CLI.
