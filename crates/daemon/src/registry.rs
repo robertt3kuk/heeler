@@ -736,17 +736,11 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// argv[0]'s basename, or the shell's name when the spec runs the login shell.
+/// argv[0]'s basename, or the login shell's name when the spec runs the default shell.
 fn default_title(spec: &TerminalSpec) -> String {
     let program = match spec.command.first() {
         Some(program) => program.clone(),
-        None => spec
-            .env
-            .get("SHELL")
-            .cloned()
-            .or_else(|| std::env::var("SHELL").ok())
-            .filter(|shell| !shell.is_empty())
-            .unwrap_or_else(|| "/bin/zsh".to_owned()),
+        None => heeler_terminal::default_shell(&spec.env),
     };
     Path::new(&program)
         .file_name()

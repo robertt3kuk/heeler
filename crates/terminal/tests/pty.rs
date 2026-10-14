@@ -364,6 +364,55 @@ async fn default_argv_starts_the_login_shell() {
     timeout(LIMIT, term.wait_exit()).await.expect("exit");
 }
 
+/// The account's login shell (what `chsh` / `dscl … UserShell` report) wins over the daemon's
+/// own `$SHELL`: a daemon started from a zsh-based tool must still give a fish user fish.
+#[test]
+fn default_shell_is_the_account_login_shell_not_the_daemons_shell() {
+    let output = std::process::Command::new("/usr/bin/dscl")
+        .args([".", "-read"])
+        .arg(format!(
+            "/Users/{}",
+            std::env::var("USER").expect("USER is set")
+        ))
+        .arg("UserShell")
+        .output()
+        .expect("run dscl");
+    let account_shell = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .strip_prefix("UserShell:")
+        .expect("dscl prints UserShell")
+        .trim()
+        .to_owned();
+
+    assert_eq!(
+        heeler_terminal::default_shell(&BTreeMap::new()),
+        account_shell
+    );
+    let explicit = BTreeMap::from([("SHELL".to_owned(), "/bin/sh".to_owned())]);
+    assert_eq!(heeler_terminal::default_shell(&explicit), "/bin/sh");
+}
+
+#[tokio::test]
+async fn the_login_shell_child_sees_itself_as_shell() {
+    let mut cfg = config(&[]);
+    cfg.env.insert("SHELL".to_owned(), "/bin/sh".to_owned());
+    cfg.env.insert("ENV".to_owned(), String::new());
+    let term = Terminal::spawn(cfg).expect("spawn default shell");
+    term.write_input(b"echo \"shell=$SHELL\"\r").expect("write");
+    let deadline = Instant::now() + LIMIT;
+    let mut tracker = RenderTracker::default();
+    loop {
+        let shown = text(&term.snapshot(&mut tracker));
+        if shown.contains("shell=/bin/sh") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no SHELL echo in:\n{shown}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    term.terminate(Duration::from_secs(1)).expect("terminate");
+    timeout(LIMIT, term.wait_exit()).await.expect("exit");
+}
+
 #[test]
 fn handles_are_send_sync_and_cheap_to_clone() {
     fn assert_send_sync<T: Send + Sync + Clone>() {}

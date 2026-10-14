@@ -91,6 +91,12 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 ## M9 — Extensibility and remote
 - Plugin manifests + event hooks; live daemon upgrade handoff (ADR 0009 step 2); remote transport (TLS over Tailscale/SSH) and mobile/web client feasibility.
 
+## Backlog (agreed, not yet scheduled)
+
+- **B-1 Session environment like a real terminal emulator.** New sessions get a fresh login environment instead of inheriting `heelerd`'s environment (which depends on whoever started the daemon: CLI, desktop, launchd): start from the user's launchd environment (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`/`LC_*`, `PATH` via `path_helper`), then the login shell builds the rest (`-l`). Configurable in settings and applied at session start: `terminal.shell` (override the account login shell), `terminal.env` (extra variables), `terminal.env_inherit = "login" | "daemon"`, with workspace overrides (`<repo>/.heeler/settings.toml`). Clients pass the resolved shell/env in `session.create` (`TerminalSpec.command`/`env` already exist); daemon-managed `HEELER_*` still win. Already done: the default shell is the account's login shell (`getpwuid`), not the daemon's `$SHELL`.
+- **B-2 Compact scrollback store** (perf budget B2 miss, `docs/perf.md`): small hot window in the engine + compact cold store (~90 B/row); needs an ADR amending ADR 0004.
+- **B-3 Keystroke latency budget definition** (perf budget B4: 18.0 ms p95, bounded by display-link cadence at the pinned GPUI): ADR to redefine as "next display frame + ≤ 2 ms", or an on-demand present path in GPUI's macOS layer.
+
 ## Risk register
 
 | ID | Risk | Likelihood | Impact | Mitigation | Owner milestone |

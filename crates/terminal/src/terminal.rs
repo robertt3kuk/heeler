@@ -48,7 +48,7 @@ static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
 pub struct TerminalConfig {
-    /// Program and arguments; empty = `$SHELL -l` (falling back to `/bin/zsh`).
+    /// Program and arguments; empty = the user's login shell with `-l` ([`default_shell`]).
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     /// Applied on top of the inherited environment; `TERM`, `COLORTERM` and `TERM_PROGRAM`
@@ -228,23 +228,36 @@ impl std::fmt::Debug for Terminal {
     }
 }
 
+/// The shell a terminal runs when no command is given, in order: an explicit `SHELL` in the
+/// session's environment, the user's login shell from the account database (independent of
+/// whoever started the daemon), the daemon's own `$SHELL`, then `/bin/zsh`.
+pub fn default_shell(env: &BTreeMap<String, String>) -> String {
+    env.get("SHELL")
+        .filter(|shell| !shell.is_empty())
+        .cloned()
+        .or_else(crate::sys::login_shell)
+        .or_else(|| {
+            std::env::var("SHELL")
+                .ok()
+                .filter(|shell| !shell.is_empty())
+        })
+        .unwrap_or_else(|| "/bin/zsh".to_owned())
+}
+
 fn command(cfg: &TerminalConfig) -> CommandBuilder {
-    let argv: Vec<String> = if cfg.argv.is_empty() {
-        let shell = cfg
-            .env
-            .get("SHELL")
-            .cloned()
-            .or_else(|| std::env::var("SHELL").ok())
-            .filter(|shell| !shell.is_empty())
-            .unwrap_or_else(|| "/bin/zsh".to_owned());
-        vec![shell, "-l".to_owned()]
-    } else {
-        cfg.argv.clone()
+    let login_shell = cfg.argv.is_empty().then(|| default_shell(&cfg.env));
+    let argv: Vec<String> = match &login_shell {
+        Some(shell) => vec![shell.clone(), "-l".to_owned()],
+        None => cfg.argv.clone(),
     };
     // `CommandBuilder` starts from the daemon's own environment.
     let mut cmd = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
     for (key, value) in &cfg.env {
         cmd.env(key, value);
+    }
+    // A login shell sees itself as `$SHELL`, like Terminal.app and Ghostty set it.
+    if let Some(shell) = &login_shell {
+        cmd.env("SHELL", shell);
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

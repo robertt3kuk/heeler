@@ -1292,7 +1292,7 @@ fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppCon
                 .is_some_and(|s| s != origin.id)
     });
     let right = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
-    assert_eq!(daemon.session(right).cwd.as_deref(), Some(dir.path()));
+    assert_same_dir(daemon.session(right).cwd.as_deref(), dir.path());
     assert_eq!(state_of(&view, cx).active_pane().unwrap().items.len(), 1);
 
     // ⌘⇧D from that one splits again, from its directory.
@@ -1305,7 +1305,7 @@ fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppCon
             .is_some_and(|s| s != origin.id && s != right)
     });
     let below = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
-    assert_eq!(daemon.session(below).cwd.as_deref(), Some(dir.path()));
+    assert_same_dir(daemon.session(below).cwd.as_deref(), dir.path());
 
     // From a panel (not a terminal): the workspace root, else $HOME.
     cx.dispatch_action(actions::OpenPanel("sessions".into()));
@@ -1398,4 +1398,17 @@ fn every_overview_card_shows_its_session_even_unfocused_or_ended(cx: &mut TestAp
     assert_eq!(state_of(&view, cx).panes().len(), 3);
     wait_screen(&view, cx, omp.id, "omp-screen");
     wait_screen(&view, cx, failing.id, "boom");
+}
+
+/// The new pane inherits the session's cwd, which follows OSC 7 from the user's login shell;
+/// shells like fish report the resolved path (`/private/var/…` for `/var/…` on macOS).
+fn assert_same_dir(actual: Option<&std::path::Path>, expected: &std::path::Path) {
+    let actual = actual.expect("session has a cwd");
+    assert_eq!(
+        std::fs::canonicalize(actual).unwrap(),
+        std::fs::canonicalize(expected).unwrap(),
+        "{} is not {}",
+        actual.display(),
+        expected.display()
+    );
 }

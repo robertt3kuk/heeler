@@ -17,4 +17,4 @@ pub use emulator::{DefaultColors, Emulator};
 pub use error::TerminalError;
 pub use render::RenderTracker;
 pub use sniffer::{PromptMark, TerminalMeta};
-pub use terminal::{ExitStatus, Terminal, TerminalConfig};
+pub use terminal::{ExitStatus, Terminal, TerminalConfig, default_shell};
