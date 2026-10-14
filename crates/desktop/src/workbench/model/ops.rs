@@ -129,6 +129,38 @@ impl WorkbenchState {
         Ok(index)
     }
 
+    /// The first tab (in tree order) showing exactly `item`, as `(pane, index)`.
+    pub fn find_item(&self, item: &ItemRef) -> Option<(PaneId, usize)> {
+        self.center.panes().into_iter().find_map(|pane| {
+            pane.items
+                .iter()
+                .position(|i| i == item)
+                .map(|index| (pane.id, index))
+        })
+    }
+
+    /// Replace the first tab showing `old` with `new`, keeping its place, activation and focus.
+    /// Returns whether `old` was found. Panels are never replaced (they must stay unique).
+    pub fn replace_item(&mut self, old: &ItemRef, new: ItemRef) -> bool {
+        if old.as_panel().is_some() || new.as_panel().is_some() {
+            return false;
+        }
+        let Some((pane, index)) = self.find_item(old) else {
+            return false;
+        };
+        match self
+            .center
+            .pane_mut(pane)
+            .and_then(|p| p.items.get_mut(index))
+        {
+            Some(slot) => {
+                *slot = new;
+                true
+            }
+            None => false,
+        }
+    }
+
     // ---- splitting & moving ------------------------------------------------------------
 
     /// Split `pane` at `edge`; the new pane holds `item` and takes focus.

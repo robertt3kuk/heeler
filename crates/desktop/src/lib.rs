@@ -1,5 +1,8 @@
-//! Heeler desktop: workbench shell (docks, pane tree, panels, palette, presets).
+//! Heeler desktop: workbench shell (docks, pane tree, panels, palette, presets) wired to the
+//! daemon connection, the settings store and the terminal view.
 
 pub mod app;
+pub mod sessions;
+pub mod settings;
 pub mod theme;
 pub mod workbench;

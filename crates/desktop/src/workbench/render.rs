@@ -2,14 +2,15 @@
 
 use super::actions::{self, palette};
 use super::model::{
-    Axis, DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource, LayoutPreset, Pane,
-    PaneId, PaneTree, PanelDest,
+    Axis, Direction, DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource,
+    LayoutPreset, Pane, PaneId, PaneTree, PanelDest,
 };
-use super::registry::StatusContext;
+use super::registry::{StatusContext, StatusData};
+use super::terminals::session_of_item;
 use super::view::{
     ContextMenu, DragPreview, DraggedItem, Region, Resizing, Workbench, preset_label, steps,
 };
-use crate::theme::Density;
+use crate::theme::{Density, DensityExt as _};
 use gpui::{
     Action, AnyElement, Bounds, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
@@ -58,14 +59,15 @@ fn id(text: impl Into<SharedString>) -> ElementId {
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_appearance(window, cx);
-        let title = format!("{} — Heeler", self.active_title());
+        let title = format!("{} — Heeler", self.active_title(cx));
         if title != self.last_title {
             window.set_window_title(&title);
             self.last_title = title;
         }
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         self.regions.borrow_mut().clear();
+        self.rendered_terminals.clear();
 
         let left = self.render_dock(DockPosition::Left, window, cx);
         let right = self.render_dock(DockPosition::Right, window, cx);
@@ -73,9 +75,12 @@ impl Render for Workbench {
         let center = self.render_center(window, cx);
         let titlebar = self.render_titlebar(window, cx);
         let status = self.render_status_bar(window, cx);
+        self.rescue_orphaned_focus(window, cx);
         let edge_targets = self.render_hidden_dock_targets(cx);
         let palette = self.render_palette(window, cx);
         let menu = self.render_context_menu(cx);
+        let modal = self.render_modal(cx);
+        let sheet = self.render_settings_sheet(cx);
 
         let root = div()
             .id("workbench")
@@ -132,6 +137,8 @@ impl Render for Workbench {
         .children(edge_targets)
         .children(palette)
         .children(menu)
+        .children(sheet)
+        .children(modal)
     }
 }
 
@@ -166,14 +173,18 @@ impl Workbench {
                 this.mutate(cx, |s| s.toggle_zoom())
             }),
         )
-        .on_action(cx.listener(|this, _: &actions::NewTab, _, cx| this.new_tab(cx)))
         .on_action(cx.listener(|this, _: &actions::ResetLayout, _, cx| this.reset_layout(cx)))
         .on_action(cx.listener(|this, _: &actions::TogglePalette, window, cx| {
             this.toggle_palette(window, cx);
         }))
-        .on_action(cx.listener(|this, _: &actions::OpenSettings, _, cx| {
-            this.set_notice("Settings arrive with the settings slice (M2.4/M2.5)", cx);
+        .on_action(cx.listener(|this, _: &actions::OpenSettings, window, cx| {
+            this.open_settings(None, window, cx);
         }))
+        .on_action(
+            cx.listener(|this, a: &actions::OpenSettingsFor, window, cx| {
+                this.open_settings(Some(&a.0), window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::About, _, cx| {
             this.set_notice(concat!("Heeler desktop ", env!("CARGO_PKG_VERSION")), cx);
         }))
@@ -202,24 +213,230 @@ impl Workbench {
             cx.listener(|this, a: &actions::ApplyPreset, _, cx| this.apply_preset_named(&a.0, cx)),
         )
         .on_action(cx.listener(|this, a: &actions::OpenPanel, _, cx| this.open_panel(&a.0, cx)))
-        .on_action(cx.listener(|this, a: &actions::FocusNeighbor, _, cx| {
-            let dir = a.0;
+        .on_action(cx.listener(|this, _: &actions::FocusNeighborLeft, _, cx| {
             this.mutate(cx, |s| {
-                s.focus_neighbor(dir);
+                s.focus_neighbor(Direction::Left);
             });
         }))
-        .on_action(cx.listener(move |this, a: &actions::ResizeFocused, _, cx| {
-            let dir = a.0;
+        .on_action(cx.listener(|this, _: &actions::FocusNeighborRight, _, cx| {
             this.mutate(cx, |s| {
-                s.resize_focused(dir, dock_step, split_step);
+                s.focus_neighbor(Direction::Right);
             });
         }))
-        .on_action(cx.listener(|this, a: &actions::ActivateTab, _, cx| {
-            let n = a.0;
+        .on_action(cx.listener(|this, _: &actions::FocusNeighborUp, _, cx| {
             this.mutate(cx, |s| {
-                s.select_tab(n);
+                s.focus_neighbor(Direction::Up);
             });
         }))
+        .on_action(cx.listener(|this, _: &actions::FocusNeighborDown, _, cx| {
+            this.mutate(cx, |s| {
+                s.focus_neighbor(Direction::Down);
+            });
+        }))
+        .on_action(cx.listener(move |this, _: &actions::ResizeLeft, _, cx| {
+            this.mutate(cx, |s| {
+                s.resize_focused(Direction::Left, dock_step, split_step);
+            });
+        }))
+        .on_action(cx.listener(move |this, _: &actions::ResizeRight, _, cx| {
+            this.mutate(cx, |s| {
+                s.resize_focused(Direction::Right, dock_step, split_step);
+            });
+        }))
+        .on_action(cx.listener(move |this, _: &actions::ResizeUp, _, cx| {
+            this.mutate(cx, |s| {
+                s.resize_focused(Direction::Up, dock_step, split_step);
+            });
+        }))
+        .on_action(cx.listener(move |this, _: &actions::ResizeDown, _, cx| {
+            this.mutate(cx, |s| {
+                s.resize_focused(Direction::Down, dock_step, split_step);
+            });
+        }))
+        .on_action(cx.listener(|this, _: &actions::ActivateTab1, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(0);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber1, window, cx| {
+                this.apply_preset_number(1, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab2, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(1);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber2, window, cx| {
+                this.apply_preset_number(2, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab3, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(2);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber3, window, cx| {
+                this.apply_preset_number(3, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab4, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(3);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber4, window, cx| {
+                this.apply_preset_number(4, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab5, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(4);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber5, window, cx| {
+                this.apply_preset_number(5, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab6, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(5);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber6, window, cx| {
+                this.apply_preset_number(6, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab7, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(6);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber7, window, cx| {
+                this.apply_preset_number(7, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab8, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(7);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber8, window, cx| {
+                this.apply_preset_number(8, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateTab9, _, cx| {
+            this.mutate(cx, |s| {
+                s.select_tab(8);
+            });
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ApplyPresetNumber9, window, cx| {
+                this.apply_preset_number(9, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::NewTerminal, window, cx| {
+            this.new_terminal(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::NewAgent, _, cx| {
+            this.set_notice("Agents arrive with M4", cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::NewChat, _, cx| {
+            this.set_notice("Chats arrive with M5", cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::StopSession, window, cx| {
+            if let Some(session) = this.focused_session() {
+                this.stop_session(session, window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &actions::RenameSession, window, cx| {
+            if let Some(session) = this.focused_session() {
+                this.rename_session(session, window, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::RestartSession, window, cx| {
+                if let Some(session) = this.focused_session() {
+                    this.restart_session(session, window, cx);
+                }
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::CopySessionId, _, cx| {
+            if let Some(session) = this.focused_session() {
+                this.copy_session_id(session, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::JumpToNextAttention, window, cx| {
+                this.jump_to_next_attention(window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::SaveLayoutAsPreset, window, cx| {
+                this.save_layout_as_preset(window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::OpenSession, window, cx| {
+            if let Ok(id) = a.0.parse() {
+                this.open_session(id, window, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::OpenSessionInSplit, window, cx| {
+                if let Ok(id) = a.0.session.parse() {
+                    this.open_session_in_split(id, a.0.edge, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::OpenSessionFromOverview, window, cx| {
+                if let Ok(id) = a.0.parse() {
+                    this.open_session_from_overview(id, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::StopSessionById, window, cx| {
+                if let Ok(id) = a.0.parse() {
+                    this.stop_session(id, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::RenameSessionById, window, cx| {
+                if let Ok(id) = a.0.parse() {
+                    this.rename_session(id, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::RestartSessionById, window, cx| {
+                if let Ok(id) = a.0.parse() {
+                    this.restart_session(id, window, cx);
+                }
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::CopySessionIdOf, _, cx| {
+            if let Ok(id) = a.0.parse() {
+                this.copy_session_id(id, cx);
+            }
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ShowSessionMenu, window, cx| {
+                if let Ok(id) = a.0.session.parse() {
+                    let entries = this.session_menu(id);
+                    this.open_menu(a.0.position, entries, window, cx);
+                }
+            }),
+        )
         .on_action(cx.listener(|this, a: &actions::MoveActivePanel, _, cx| {
             this.move_focused_panel(a.0, cx);
         }))
@@ -238,7 +455,7 @@ impl Workbench {
 
     fn render_titlebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         let left_visible = self.state.docks.left.visible;
         let overview_active = self.state.preset == LayoutPreset::OVERVIEW;
         let overview_hint =
@@ -319,7 +536,7 @@ impl Workbench {
                     .truncate()
                     .text_size(px(tokens.font_size))
                     .text_color(theme.muted)
-                    .child(self.active_title()),
+                    .child(self.active_title(cx)),
             )
             .child(preset_button)
             .child(overview_button)
@@ -340,7 +557,7 @@ impl Workbench {
             return None;
         }
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         let is_left = pos == DockPosition::Left;
         let hover = theme.hover;
         let accent = theme.accent;
@@ -351,9 +568,12 @@ impl Workbench {
             .enumerate()
             .map(|(index, panel)| {
                 let active = dock.active.as_ref() == Some(panel);
-                let (icon, title) = self.item_icon_and_title(&ItemRef::Panel {
-                    panel: panel.clone(),
-                });
+                let (icon, title) = self.item_icon_and_title(
+                    &ItemRef::Panel {
+                        panel: panel.clone(),
+                    },
+                    cx,
+                );
                 let source = ItemSource::Dock {
                     pos,
                     panel: panel.clone(),
@@ -575,7 +795,7 @@ impl Workbench {
             return Vec::new();
         }
         let theme = self.theme;
-        let status_h = self.density.tokens().status_bar;
+        let status_h = self.density.ui().status_bar;
         let accent = theme.accent;
         DockPosition::ALL
             .into_iter()
@@ -751,7 +971,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         let accent = theme.accent;
         let pane_id = pane.id;
         let multiple = self.state.panes().len() > 1;
@@ -826,7 +1046,7 @@ impl Workbench {
             );
 
         let content = match pane.active_item() {
-            Some(item) => self.render_item(item, window, cx),
+            Some(item) => self.render_item(pane_id, item, window, cx),
             None => div()
                 .size_full()
                 .flex()
@@ -946,10 +1166,17 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         let accent = theme.accent;
         let hover = theme.hover;
-        let (icon, title) = self.item_icon_and_title(item);
+        let (icon, title) = self.item_icon_and_title(item, cx);
+        let attention = session_of_item(item).and_then(|id| {
+            let store = self.sessions.read(cx);
+            store
+                .session(id)
+                .map(|info| store.presentation(info))
+                .filter(|p| p.needs_you)
+        });
         let dragged = DraggedItem {
             source: ItemSource::Pane {
                 pane: pane_id,
@@ -994,7 +1221,7 @@ impl Workbench {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    let entries = this.tab_menu(pane_id, index);
+                    let entries = this.tab_session_menu(pane_id, index);
                     this.open_menu(event.position, entries, window, cx);
                 }),
             )
@@ -1017,6 +1244,13 @@ impl Workbench {
             }))
             .child(icon)
             .child(title)
+            .children(attention.map(|p| {
+                div()
+                    .flex_none()
+                    .size(px(7.0))
+                    .rounded_full()
+                    .bg(super::panels::tone_color(&theme, p.tone))
+            }))
             .child(
                 div()
                     .id(id(format!("tab-close-{pane_id}-{index}")))
@@ -1040,45 +1274,42 @@ impl Workbench {
 
     fn render_item(
         &mut self,
+        pane: PaneId,
         item: &ItemRef,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         match item {
             ItemRef::Panel { panel } => match self.panel_view(panel, window, cx) {
                 Some(view) => div().size_full().child(view).into_any_element(),
                 None => self.placeholder_body(format!("Panel `{panel}` is not registered"), cx),
             },
-            ItemRef::Placeholder { title } => {
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(tokens.spacing))
-                    .child(
-                        div()
-                            .text_size(px(tokens.font_size + 4.0))
-                            .child(title.clone()),
-                    )
-                    .child(div().text_color(theme.muted).child(
-                        "Placeholder pane — real terminals and chats arrive with M2.3 / M2.5.",
-                    ))
-                    .into_any_element()
-            }
-            ItemRef::Terminal { session } => {
-                self.placeholder_body(format!("Terminal session {session}"), cx)
-            }
+            ItemRef::Placeholder { title } => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(tokens.spacing))
+                .child(
+                    div()
+                        .text_size(px(tokens.font_size + 4.0))
+                        .child(title.clone()),
+                )
+                .child(div().text_color(theme.muted).child(
+                    "Open a session from the sessions panel, or press ⌘T for a new terminal.",
+                ))
+                .into_any_element(),
+            ItemRef::Terminal { session } => self.render_terminal_item(pane, session, window, cx),
             ItemRef::Chat { session } => {
-                self.placeholder_body(format!("Chat session {session}"), cx)
+                self.placeholder_body(format!("Chat session {session} (arrives with M5)"), cx)
             }
         }
     }
 
-    fn placeholder_body(&self, text: String, _cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn placeholder_body(&self, text: String, _cx: &mut Context<Self>) -> AnyElement {
         div()
             .size_full()
             .flex()
@@ -1091,22 +1322,40 @@ impl Workbench {
 
     // ---- status bar --------------------------------------------------------------------------
 
-    fn render_status_bar(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_status_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
+        let data = {
+            let store = self.sessions.read(cx);
+            StatusData {
+                connection: store.connection_state(),
+                epoch: store.state().epoch.map(|e| e.to_string()),
+                sessions: store.sessions().len(),
+                needs_you: store.needs_you().len(),
+                terminal_theme: heeler_settings::themes::resolve(
+                    &self.terminal_settings.theme,
+                    super::view::system_appearance(self.appearance),
+                )
+                .name
+                .clone(),
+            }
+        };
         let ctx = StatusContext {
             theme: &theme,
             density: self.density,
             palette_hint: key_hint(window, &actions::TogglePalette).unwrap_or_else(|| "⌘K".into()),
+            attention_hint: key_hint(window, &actions::JumpToNextAttention).unwrap_or_default(),
+            data: &data,
         };
+        let status_bar = self.status_bar();
         let render_side = |ids: &[String]| -> Vec<AnyElement> {
             ids.iter()
                 .filter_map(|item| self.status_items.get(item))
                 .map(|spec| (spec.render)(&ctx))
                 .collect()
         };
-        let left = render_side(&self.status_bar.left);
-        let right = render_side(&self.status_bar.right);
+        let left = render_side(&status_bar.left);
+        let right = render_side(&status_bar.right);
         div()
             .id("status-bar")
             .flex()
@@ -1152,7 +1401,7 @@ impl Workbench {
     ) -> Option<AnyElement> {
         let palette = self.palette.clone()?;
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         const VISIBLE_ROWS: usize = 12;
         let start = palette.selected.saturating_sub(VISIBLE_ROWS - 1);
         let rows: Vec<AnyElement> = palette
@@ -1164,18 +1413,7 @@ impl Workbench {
             .filter_map(|(row, command_index)| {
                 let command = self.commands.get(*command_index)?;
                 let selected = row == palette.selected;
-                let hint = key_hint(window, &*command.action)
-                    .or_else(|| {
-                        command.binding.as_ref().map(|b| {
-                            b.keystrokes()
-                                .iter()
-                                .map(|k| k.to_string())
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                                .into()
-                        })
-                    })
-                    .unwrap_or_default();
+                let hint = key_hint(window, &*command.hint).unwrap_or_default();
                 let hover = theme.hover;
                 Some(
                     div()
@@ -1286,7 +1524,7 @@ impl Workbench {
     fn render_context_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ContextMenu { position, entries } = self.context_menu.clone()?;
         let theme = self.theme;
-        let tokens = self.density.tokens();
+        let tokens = self.density.ui();
         let hover = theme.hover;
         let rows: Vec<AnyElement> = entries
             .into_iter()

@@ -2,6 +2,9 @@
 //! GPUI tests: actions mutate the workbench, the palette filters and runs commands, and layout
 //! state survives a restart through `desktop-state.json` (driven with a temp `HEELER_HOME`).
 
+mod common;
+
+use common::{offline_connection, open_with};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use heeler_desktop::theme::Density;
 use heeler_desktop::workbench::actions::{self, palette};
@@ -9,17 +12,26 @@ use heeler_desktop::workbench::model::{
     DockPosition, FocusTarget, ItemRef, PanelId, WorkbenchState,
 };
 use heeler_desktop::workbench::persistence::{STATE_FILE, state_path_from};
-use heeler_desktop::workbench::{Region, SAVE_DEBOUNCE, Workbench, WorkbenchOptions};
+use heeler_desktop::workbench::{Region, SAVE_DEBOUNCE, Workbench};
 use std::path::{Path, PathBuf};
 
+/// A workbench without a daemon: layout behavior only. `state_path` `None` disables persistence.
 fn open(
     cx: &mut TestAppContext,
     state_path: Option<PathBuf>,
 ) -> (Entity<Workbench>, &mut VisualTestContext) {
-    let options = WorkbenchOptions::builtin(state_path);
-    let commands = actions::commands(&options.presets, &options.panels);
-    cx.update(|cx| cx.bind_keys(actions::default_keymap(&commands)));
-    cx.add_window_view(|window, cx| Workbench::new(options, window, cx))
+    let (connection, settings, _) = offline_connection();
+    open_with(cx, settings, connection, state_path)
+}
+
+/// Adds a placeholder tab to the focused pane (layouts the UI has no gesture for).
+fn new_tab(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    view.update(cx, |wb, cx| {
+        wb.edit_layout(cx, |s| {
+            let pane = s.active_pane_id();
+            s.add_item(pane, ItemRef::placeholder("New tab")).unwrap();
+        });
+    });
 }
 
 fn state(view: &Entity<Workbench>, cx: &VisualTestContext) -> WorkbenchState {
@@ -131,7 +143,7 @@ fn presets_and_overview_toggle(cx: &mut TestAppContext) {
 #[gpui::test]
 fn closing_the_last_item_leaves_an_empty_pane(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
     assert_eq!(state(&view, cx).active_pane().unwrap().items.len(), 2);
     cx.simulate_keystrokes("cmd-w");
     cx.simulate_keystrokes("cmd-w");
@@ -160,8 +172,8 @@ fn focus_neighbor_and_tab_selection(cx: &mut TestAppContext) {
     let before = state(&view, cx).focus;
     cx.simulate_keystrokes("cmd-alt-left");
     assert_ne!(state(&view, cx).focus, before);
-    cx.dispatch_action(actions::NewTab);
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
+    new_tab(&view, cx);
     cx.simulate_keystrokes("cmd-1");
     assert_eq!(state(&view, cx).active_pane().unwrap().active, 0);
     cx.simulate_keystrokes("cmd-3");
@@ -254,12 +266,11 @@ fn palette_opens_filters_navigates_and_runs(cx: &mut TestAppContext) {
 fn palette_hints_come_from_the_keymap(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
     cx.simulate_keystrokes("cmd-k");
-    let (split, toggle) = view.read_with(cx, |wb, _| {
-        let find = |title: &str| {
-            wb.commands()
-                .iter()
-                .find(|c| c.title.as_ref() == title)
-                .and_then(|c| c.binding.as_ref())
+    // Hints come from the live keymap (defaults + keymap.toml), shown in the palette rows.
+    let hint = |cx: &mut VisualTestContext, action: &dyn gpui::Action| {
+        cx.update(|window, _| {
+            window
+                .highest_precedence_binding_for_action(action)
                 .map(|b| {
                     b.keystrokes()
                         .iter()
@@ -267,9 +278,10 @@ fn palette_hints_come_from_the_keymap(cx: &mut TestAppContext) {
                         .collect::<Vec<_>>()
                         .join(" ")
                 })
-        };
-        (find("Layout: Split Right"), find("View: Toggle Overview"))
-    });
+        })
+    };
+    let split = hint(cx, &actions::SplitRight);
+    let toggle = hint(cx, &actions::ToggleOverview);
     assert_eq!(split.as_deref(), Some("⌘D"));
     assert_eq!(toggle.as_deref(), Some("⌘⇧O"));
     cx.dispatch_action(palette::Dismiss);
@@ -599,8 +611,8 @@ fn dragging_a_dock_edge_resizes_the_dock(cx: &mut TestAppContext) {
 #[gpui::test]
 fn clicking_tabs_activates_and_close_button_closes(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.dispatch_action(actions::NewTab);
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
+    new_tab(&view, cx);
     let pane = state(&view, cx).first_pane_id();
     assert_eq!(state(&view, cx).pane(pane).unwrap().active, 2);
 
@@ -663,10 +675,8 @@ fn dragging_a_tab_onto_another_tab_strip_moves_it(cx: &mut TestAppContext) {
     let s = state(&view, cx);
     let ids: Vec<_> = s.panes().iter().map(|p| p.id).collect();
     // Pane 0 holds "Welcome"; add a second tab, then drag it into pane 1's content.
-    cx.dispatch_action(actions::FocusNeighbor(
-        heeler_desktop::workbench::model::Direction::Left,
-    ));
-    cx.dispatch_action(actions::NewTab);
+    cx.dispatch_action(actions::FocusNeighborLeft);
+    new_tab(&view, cx);
     assert_eq!(state(&view, cx).pane(ids[0]).unwrap().items.len(), 2);
 
     let tab = bounds(&view, cx, Region::Tab(ids[0], 1));
@@ -683,7 +693,7 @@ fn dragging_a_tab_onto_another_tab_strip_moves_it(cx: &mut TestAppContext) {
 #[gpui::test]
 fn dragging_a_tab_onto_a_pane_edge_splits_it(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
     let pane = state(&view, cx).first_pane_id();
     let tab = bounds(&view, cx, Region::Tab(pane, 1));
     let target = bounds(&view, cx, Region::Pane(pane));
@@ -742,7 +752,7 @@ fn dragging_a_panel_tab_to_a_pane_and_to_another_dock(cx: &mut TestAppContext) {
 #[gpui::test]
 fn plain_tabs_cannot_be_dropped_into_docks(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
     let pane = state(&view, cx).first_pane_id();
     let before = state(&view, cx);
     let tab = bounds(&view, cx, Region::Tab(pane, 1));
@@ -805,7 +815,7 @@ fn right_click_menus_list_the_documented_entries(cx: &mut TestAppContext) {
 
     // "Close" on the center tab menu.
     let pane = state(&view, cx).first_pane_id();
-    cx.dispatch_action(actions::NewTab);
+    new_tab(&view, cx);
     let tab = bounds(&view, cx, Region::Tab(pane, 1));
     let p = center_of(tab);
     cx.simulate_mouse_down(p, MouseButton::Right, Modifiers::none());
@@ -841,7 +851,8 @@ fn title_bar_preset_menu_marks_the_current_preset(cx: &mut TestAppContext) {
         vec![
             ("Default".into(), true),
             ("Focus".into(), false),
-            ("Overview".into(), false)
+            ("Overview".into(), false),
+            ("Save Layout as Preset…".into(), false)
         ]
     );
     view.update_in(cx, |wb, window, cx| wb.run_menu_entry(1, window, cx));

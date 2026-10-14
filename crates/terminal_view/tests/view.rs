@@ -312,7 +312,7 @@ fn snapshot_content_reaches_the_model(cx: &mut TestAppContext) {
     apply(&view, cx, render);
     draw(cx);
     view.read_with(cx, |v, _| {
-        assert_eq!(v.title(), Some("zsh"));
+        assert_eq!(v.title().as_deref(), Some("zsh"));
         assert_eq!(v.model().history_len(), 3);
         assert_eq!(v.model().viewport().len(), 2);
     });
@@ -934,4 +934,107 @@ fn unfocused_cursor_is_hollow_and_blink_toggles(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let second = view.read_with(cx, |v, _| v.cursor_blink_visible());
     assert_ne!(first, second, "a focused blinking cursor toggles");
+}
+
+/// A window root that shows an interactive view and a preview of one shared terminal.
+struct Pair {
+    main: Entity<TerminalView>,
+    preview: Entity<TerminalView>,
+}
+
+impl gpui::Render for Pair {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _, div};
+        div()
+            .flex()
+            .size_full()
+            .child(div().w(px(400.0)).h_full().child(self.main.clone()))
+            .child(div().w(px(200.0)).h(px(100.0)).child(self.preview.clone()))
+    }
+}
+
+#[gpui::test]
+fn two_views_share_one_model_and_one_ack(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    use heeler_terminal_view::{SharedTerminal, ViewMode};
+    let recorder = Rc::new(Recorder::default());
+    let backend: Rc<dyn TerminalBackend> = recorder.clone();
+    let (pair, cx) = cx.add_window_view(|window, cx| {
+        let shared = cx.new(|_| SharedTerminal::new());
+        let main = cx.new(|cx| {
+            TerminalView::with_shared(
+                shared.clone(),
+                backend.clone(),
+                TerminalViewSettings::default(),
+                ViewMode::Interactive,
+                window,
+                cx,
+            )
+        });
+        let preview = cx.new(|cx| {
+            TerminalView::with_shared(
+                shared,
+                backend.clone(),
+                TerminalViewSettings {
+                    font_size: 6.0,
+                    ..TerminalViewSettings::default()
+                },
+                ViewMode::Preview,
+                window,
+                cx,
+            )
+        });
+        Pair { main, preview }
+    });
+    draw(cx);
+    let (main, preview) = pair.read_with(cx, |p, _| (p.main.clone(), p.preview.clone()));
+    let resizes = |calls: Vec<Call>| {
+        calls
+            .into_iter()
+            .filter(|c| matches!(c, Call::Resize(_)))
+            .count()
+    };
+    assert_eq!(
+        resizes(recorder.take()),
+        1,
+        "only the interactive view sizes the terminal"
+    );
+
+    apply(
+        &main,
+        cx,
+        snapshot(3, &["one", "two", "three"], Modes::default(), 0),
+    );
+    draw(cx);
+    // Both views draw the one model.
+    for view in [&main, &preview] {
+        view.read_with(cx, |v, _| {
+            assert_eq!(v.model().viewport().len(), 3);
+            assert_eq!(v.model().frame(), 3);
+        });
+    }
+    let acks: Vec<_> = recorder
+        .take()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Ack(_)))
+        .collect();
+    assert_eq!(
+        acks,
+        [Call::Ack(3)],
+        "one ack, although two views painted the frame"
+    );
+
+    // The preview (6 px font, 3.6 × 7.2 px cells, 100 px high: 13 rows) shows all three rows
+    // and never takes input.
+    assert_eq!(
+        preview.read_with(cx, |v, _| v.grid_size()).map(|g| g.1),
+        Some(13)
+    );
+    cx.update(|window, cx| window.focus(&preview.focus_handle(cx), cx));
+    cx.simulate_input("x");
+    assert!(recorder.inputs().is_empty(), "previews ignore typing");
 }

@@ -1,0 +1,389 @@
+//! [`SessionsStore`]: the desktop's view of the daemon's sessions, as a GPUI entity.
+//!
+//! Bridges the [`Connection`]'s `state()` watch and `notices()` broadcast (Tokio types that
+//! work on any executor) onto GPUI's executor, tracks attention, hands out one
+//! [`TerminalSession`] per terminal, and runs the session lifecycle commands.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use gpui::{Context, Entity, Task, WeakEntity};
+use heeler_client::{Connection, ConnectionState, Notice, StoreState};
+use heeler_core::{SessionId, TerminalId, WorkspaceId};
+use heeler_protocol::messages::{
+    Request, SessionCreate, SessionInfo, SessionRef, SessionRename, SessionResult, SessionSpec,
+    TerminalSpec, WorkspaceInfo,
+};
+use heeler_terminal_view::DefaultColors;
+use tokio::sync::broadcast::error::RecvError;
+
+use super::attention::{AttentionTracker, Presentation, Unread, present};
+use super::terminal::TerminalSession;
+
+/// Notifications that arrive this soon after (re)connecting are replays of what happened before
+/// the desktop was there; they must not flag attention.
+pub const REPLAY_WINDOW: Duration = Duration::from_millis(400);
+
+pub struct SessionsStore {
+    connection: Connection,
+    state: Arc<StoreState>,
+    attention: AttentionTracker,
+    focused: Option<SessionId>,
+    terminals: HashMap<SessionId, WeakEntity<TerminalSession>>,
+    /// Sessions this desktop created or changed whose events have not reached `state` yet.
+    recent: HashMap<SessionId, SessionInfo>,
+    colors: Option<DefaultColors>,
+    connected_since: Option<Instant>,
+    _tasks: Vec<Task<()>>,
+}
+
+impl std::fmt::Debug for SessionsStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionsStore")
+            .field("connection", &self.state.connection)
+            .field("sessions", &self.state.sessions.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionsStore {
+    pub fn new(connection: Connection, cx: &mut Context<Self>) -> Self {
+        let mut state = connection.state();
+        let mut notices = connection.notices();
+        let state_task = cx.spawn(async move |this, cx| {
+            loop {
+                let latest = state.borrow_and_update().clone();
+                if this
+                    .update(cx, |this, cx| this.apply_state(latest, cx))
+                    .is_err()
+                {
+                    break;
+                }
+                if state.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        let notice_task = cx.spawn(async move |this, cx| {
+            loop {
+                match notices.recv().await {
+                    Ok(notice) => {
+                        if this
+                            .update(cx, |this, cx| this.apply_notice(&notice, cx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(missed)) => {
+                        tracing::debug!("missed {missed} daemon notices");
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        Self {
+            connection,
+            state: Arc::new(StoreState {
+                connection: ConnectionState::Connecting,
+                epoch: None,
+                workspaces: Vec::new(),
+                sessions: Vec::new(),
+            }),
+            attention: AttentionTracker::new(),
+            focused: None,
+            terminals: HashMap::new(),
+            recent: HashMap::new(),
+            colors: None,
+            connected_since: None,
+            _tasks: vec![state_task, notice_task],
+        }
+    }
+
+    fn apply_state(&mut self, latest: Arc<StoreState>, cx: &mut Context<Self>) {
+        let was_connected = self.state.connection == ConnectionState::Connected;
+        let connected = latest.connection == ConnectionState::Connected;
+        if connected && !was_connected {
+            self.connected_since = Some(Instant::now());
+        } else if !connected {
+            // Notices that arrive while (re)connecting replay what happened meanwhile.
+            self.connected_since = None;
+        }
+        self.state = latest;
+        if connected {
+            self.attention
+                .observe(self.state.epoch, &self.state.sessions);
+            let known: Vec<SessionId> = self.state.sessions.iter().map(|s| s.id).collect();
+            self.recent.retain(|id, _| !known.contains(id));
+        }
+        // Tell every attached terminal what the daemon now says about its session. While
+        // disconnected the last known state stays (a reconnect resyncs it).
+        if connected {
+            let live: Vec<(SessionId, WeakEntity<TerminalSession>)> = self
+                .terminals
+                .iter()
+                .map(|(id, t)| (*id, t.clone()))
+                .collect();
+            for (id, terminal) in live {
+                let info = self.session(id).cloned();
+                match terminal.upgrade() {
+                    Some(terminal) => {
+                        terminal.update(cx, |terminal, cx| terminal.update_info(info, cx));
+                    }
+                    None => {
+                        self.terminals.remove(&id);
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_notice(&mut self, notice: &Notice, cx: &mut Context<Self>) {
+        match notice {
+            Notice::TerminalNotification { terminal, .. } => {
+                // Right after (re)connecting the daemon replays what was missed; that is history,
+                // not news. Before the connection is seen as up there is nothing to attribute.
+                let replay = self
+                    .connected_since
+                    .is_none_or(|since| since.elapsed() < REPLAY_WINDOW);
+                if replay {
+                    return;
+                }
+                if let Some(session) = self.session_of(*terminal) {
+                    self.attention.notified(session);
+                    cx.notify();
+                }
+            }
+            // Exits are read off the session state; bells are not attention in M2.
+            Notice::SessionExited { .. } | Notice::Bell { .. } | Notice::DaemonRestarted { .. } => {
+            }
+        }
+    }
+
+    // ---- read access -----------------------------------------------------------------------
+
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    pub fn state(&self) -> &StoreState {
+        &self.state
+    }
+
+    pub fn connection_state(&self) -> ConnectionState {
+        self.state.connection
+    }
+
+    /// Whether the first synchronisation with the daemon has completed.
+    pub fn synced(&self) -> bool {
+        self.state.epoch.is_some()
+    }
+
+    pub fn sessions(&self) -> &[SessionInfo] {
+        &self.state.sessions
+    }
+
+    pub fn workspaces(&self) -> &[WorkspaceInfo] {
+        &self.state.workspaces
+    }
+
+    pub fn session(&self, id: SessionId) -> Option<&SessionInfo> {
+        self.state
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .or_else(|| self.recent.get(&id))
+    }
+
+    pub fn workspace(&self, id: WorkspaceId) -> Option<&WorkspaceInfo> {
+        self.state.workspaces.iter().find(|w| w.id == id)
+    }
+
+    pub fn session_of(&self, terminal: TerminalId) -> Option<SessionId> {
+        self.state
+            .sessions
+            .iter()
+            .find(|s| s.terminal_id == Some(terminal))
+            .map(|s| s.id)
+    }
+
+    pub fn unread(&self, id: SessionId) -> Option<Unread> {
+        self.attention.unread(id)
+    }
+
+    pub fn presentation(&self, info: &SessionInfo) -> Presentation {
+        present(info, self.attention.unread(info.id))
+    }
+
+    /// Sessions that need the user, in daemon order.
+    pub fn needs_you(&self) -> Vec<SessionId> {
+        self.state
+            .sessions
+            .iter()
+            .filter(|s| self.presentation(s).needs_you)
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// The session after `current` that needs the user (wrapping).
+    pub fn next_needing_attention(&self, current: Option<SessionId>) -> Option<SessionId> {
+        let needing = self.needs_you();
+        let order: Vec<SessionId> = self.state.sessions.iter().map(|s| s.id).collect();
+        let start = current
+            .and_then(|c| order.iter().position(|id| *id == c))
+            .map_or(0, |i| i + 1);
+        (0..order.len())
+            .map(|offset| order[(start + offset) % order.len()])
+            .find(|id| needing.contains(id))
+    }
+
+    pub fn focused(&self) -> Option<SessionId> {
+        self.focused
+    }
+
+    // ---- attention -------------------------------------------------------------------------
+
+    /// The session shown in the focused item changed (`None`: no session has focus).
+    pub fn set_focused(&mut self, session: Option<SessionId>, cx: &mut Context<Self>) {
+        if self.focused != session {
+            self.focused = session;
+            cx.notify();
+        }
+    }
+
+    /// The user looked at `session`.
+    pub fn mark_read(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        if self.attention.mark_read(session) {
+            cx.notify();
+        }
+    }
+
+    // ---- terminals -------------------------------------------------------------------------
+
+    /// The shared attachment of `session`'s terminal: attached on first use, detached when the
+    /// last holder drops it. `None` when the session is unknown or has no terminal.
+    pub fn terminal_session(
+        &mut self,
+        session: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalSession>> {
+        if let Some(existing) = self.terminals.get(&session).and_then(WeakEntity::upgrade) {
+            return Some(existing);
+        }
+        let info = self.session(session)?.clone();
+        let terminal = TerminalSession::attach(info, self.connection.clone(), self.colors, cx)?;
+        self.terminals.insert(session, terminal.downgrade());
+        Some(terminal)
+    }
+
+    /// The attachment of `session`'s terminal if some view holds it right now; never attaches.
+    pub fn attached(&self, session: SessionId) -> Option<Entity<TerminalSession>> {
+        self.terminals.get(&session).and_then(WeakEntity::upgrade)
+    }
+
+    /// Number of terminals attached right now.
+    pub fn attached_count(&self) -> usize {
+        self.terminals
+            .values()
+            .filter(|t| t.upgrade().is_some())
+            .count()
+    }
+
+    /// Tell every attached terminal the colors the terminal theme draws with, so OSC 10/11/12
+    /// replies match what the user sees; terminals attached later get them on attach.
+    pub fn set_terminal_colors(&mut self, colors: DefaultColors, cx: &mut Context<Self>) {
+        if self.colors == Some(colors) {
+            return;
+        }
+        self.colors = Some(colors);
+        for terminal in self.terminals.values().filter_map(WeakEntity::upgrade) {
+            terminal.update(cx, |terminal, _| terminal.set_colors(colors));
+        }
+    }
+
+    // ---- lifecycle commands ----------------------------------------------------------------
+
+    /// Starts a login shell in `workspace` (the daemon's default when `None`) at `cwd`.
+    pub fn create_terminal(
+        &mut self,
+        workspace: Option<WorkspaceId>,
+        cwd: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        let request = Request::SessionCreate(SessionCreate {
+            workspace_id: workspace,
+            spec: SessionSpec::Terminal(TerminalSpec {
+                cwd,
+                ..TerminalSpec::default()
+            }),
+        });
+        self.run(request, cx)
+    }
+
+    pub fn stop(
+        &mut self,
+        session: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        self.run(
+            Request::SessionStop(SessionRef {
+                session_id: session,
+            }),
+            cx,
+        )
+    }
+
+    pub fn restart(
+        &mut self,
+        session: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        self.run(
+            Request::SessionRestart(SessionRef {
+                session_id: session,
+            }),
+            cx,
+        )
+    }
+
+    pub fn rename(
+        &mut self,
+        session: SessionId,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        self.run(
+            Request::SessionRename(SessionRename {
+                session_id: session,
+                title,
+            }),
+            cx,
+        )
+    }
+
+    fn run(
+        &mut self,
+        request: Request,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let result = connection
+                .call::<SessionResult>(request)
+                .await
+                .map_err(|e| e.to_string())?;
+            let info = result.session;
+            let remembered = info.clone();
+            this.update(cx, |this, _| {
+                if !this.state.sessions.iter().any(|s| s.id == remembered.id) {
+                    this.recent.insert(remembered.id, remembered);
+                }
+            })
+            .ok();
+            Ok(info)
+        })
+    }
+}

@@ -17,7 +17,7 @@ use crate::shape::{
     text_columns,
 };
 use crate::theme::Theme;
-use crate::view::{Layout, TerminalView};
+use crate::view::{Layout, TerminalView, ViewMode};
 
 pub(crate) struct TerminalElement {
     view: Entity<TerminalView>,
@@ -144,14 +144,17 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus_handle = self.view.read(cx).focus_handle(cx);
-        window.handle_input(
-            &focus_handle,
-            ElementInputHandler::new(bounds, self.view.clone()),
-            cx,
-        );
-        window.set_cursor_style(state.cursor_style, &state.hitbox);
-        register_mouse_listeners(&self.view, bounds, window);
+        let interactive = self.view.read(cx).mode == ViewMode::Interactive;
+        if interactive {
+            let focus_handle = self.view.read(cx).focus_handle(cx);
+            window.handle_input(
+                &focus_handle,
+                ElementInputHandler::new(bounds, self.view.clone()),
+                cx,
+            );
+            window.set_cursor_style(state.cursor_style, &state.hitbox);
+            register_mouse_listeners(&self.view, bounds, window);
+        }
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_grid(bounds, state, window, cx);
@@ -159,7 +162,8 @@ impl Element for TerminalElement {
 
         // Ack only what has been painted: the next frame callback runs after this frame was
         // presented, so a flood is paced by the display.
-        if let Some(frame) = self.view.update(cx, |view, _| view.take_ack()) {
+        let shared = self.view.read(cx).shared().clone();
+        if let Some(frame) = shared.update(cx, |shared, _| shared.take_ack()) {
             let view = self.view.clone();
             window.on_next_frame(move |_, cx| view.read(cx).send_ack(frame));
         }
@@ -180,16 +184,17 @@ fn prepare(
     let text_system = window.text_system().clone();
     let text_system = &*text_system;
     let hover_link = view.hover_link();
-    let span = view.selection.and_then(|s| s.span(&view.model));
+    let span = view.selection.and_then(|s| s.span(&view.model.get()));
     let fingerprint = view.theme.fingerprint();
-    let model_cols = view.model.cols();
+    let model_ref = view.model.clone();
+    let model = model_ref.get();
+    let model_cols = model.cols();
 
     view.rows.begin_frame();
     let mut rows = Vec::with_capacity(usize::from(grid_rows));
     for r in 0..grid_rows {
         let line = view.line_for_row(r);
-        let shaped = view
-            .model
+        let shaped = model
             .row_at(line)
             .filter(|row| !row.runs.is_empty())
             .map(|row| {
@@ -214,7 +219,7 @@ fn prepare(
     let cursor = prepare_cursor(view, focused, &font, grid_rows, text_system);
 
     let marked = view.marked_for_paint().and_then(|text| {
-        let cursor = view.model.cursor();
+        let cursor = view.model.get().cursor();
         if cursor.row >= grid_rows {
             return None;
         }
@@ -229,7 +234,7 @@ fn prepare(
 
     let cursor_style = if view.hover_link().is_some() && view.cmd_held {
         CursorStyle::PointingHand
-    } else if view.model.modes().mouse != heeler_protocol::render::MouseMode::None {
+    } else if view.model.get().modes().mouse != heeler_protocol::render::MouseMode::None {
         CursorStyle::Arrow
     } else {
         CursorStyle::IBeam
@@ -266,11 +271,12 @@ fn prepare_cursor(
     grid_rows: u16,
     text_system: &WindowTextSystem,
 ) -> Option<CursorPaint> {
-    let cursor = view.model.cursor();
-    if view.scroll_offset != 0
+    let cursor = view.model.get().cursor();
+    if view.mode == ViewMode::Preview
+        || view.scroll_offset != 0
         || !cursor.visible
         || cursor.row >= grid_rows
-        || cursor.col >= view.model.cols().max(1)
+        || cursor.col >= view.model.get().cols().max(1)
     {
         return None;
     }
@@ -283,7 +289,8 @@ fn prepare_cursor(
     if focused && blinks && !view.blink_on {
         return None;
     }
-    let row = view.model.row_at(view.line_for_row(cursor.row));
+    let model = view.model.get();
+    let row = model.row_at(view.line_for_row(cursor.row));
     let cell = row.and_then(|row| {
         row_cells(row)
             .into_iter()

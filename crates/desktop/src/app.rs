@@ -8,10 +8,14 @@ use gpui::{
     App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType, TitlebarOptions,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
+use heeler_client::{ConnectOptions, Connection};
+use heeler_protocol::messages::{ClientInfo, ClientKind};
+use heeler_settings::{SettingsPaths, SettingsStore};
+use std::path::{Path, PathBuf};
 
-/// Install the default keymap, global actions, and the menu bar.
-pub fn init(cx: &mut App, presets: &[LayoutPreset], commands: &[actions::Command]) {
-    cx.bind_keys(actions::default_keymap(commands));
+/// Install the global actions and the menu bar. Key bindings come from the workbench (defaults
+/// plus `keymap.toml`), which rebinds them live.
+pub fn init(cx: &mut App, presets: &[LayoutPreset]) {
     cx.on_action(|_: &actions::Quit, cx| cx.quit());
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
@@ -40,12 +44,25 @@ pub fn menus(presets: &[LayoutPreset]) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Quit Heeler", actions::Quit),
         ]),
+        Menu::new("Session").items([
+            MenuItem::action("New Terminal", actions::NewTerminal),
+            MenuItem::action("New Agent", actions::NewAgent),
+            MenuItem::action("New Chat", actions::NewChat),
+            MenuItem::separator(),
+            MenuItem::action("Rename…", actions::RenameSession),
+            MenuItem::action("Restart", actions::RestartSession),
+            MenuItem::action("Stop…", actions::StopSession),
+            MenuItem::action("Copy Session ID", actions::CopySessionId),
+            MenuItem::separator(),
+            MenuItem::action("Jump to Next That Needs You", actions::JumpToNextAttention),
+        ]),
         Menu::new("View").items([
             MenuItem::action("Toggle Left Dock", actions::ToggleLeftDock),
             MenuItem::action("Toggle Right Dock", actions::ToggleRightDock),
             MenuItem::action("Toggle Bottom Dock", actions::ToggleBottomDock),
             MenuItem::separator(),
             MenuItem::submenu(Menu::new("Layout Preset").items(preset_items)),
+            MenuItem::action("Save Layout as Preset…", actions::SaveLayoutAsPreset),
             MenuItem::action("Overview", actions::ToggleOverview),
             MenuItem::action("Toggle Zoom Pane", actions::ToggleZoom),
             MenuItem::separator(),
@@ -94,6 +111,41 @@ pub fn open_workbench(
     Ok(handle)
 }
 
+/// `heelerd` next to the running binary (`target/debug`, an app bundle), else the name for a
+/// `PATH` lookup.
+pub fn heelerd_path() -> PathBuf {
+    heelerd_beside(std::env::current_exe().ok().as_deref())
+}
+
+fn heelerd_beside(exe: Option<&Path>) -> PathBuf {
+    exe.and_then(Path::parent)
+        .map(|dir| dir.join("heelerd"))
+        .filter(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from("heelerd"))
+}
+
+/// Connection options of the desktop: the standard socket (`HEELER_SOCKET` / `HEELER_HOME`
+/// respected) with `heelerd` autostarted when nothing listens.
+pub fn connect_options() -> ConnectOptions {
+    ConnectOptions {
+        socket: None,
+        autostart: Some(heelerd_path()),
+        client: ClientInfo {
+            kind: ClientKind::Desktop,
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+    }
+}
+
+/// The settings store over `settings.toml` / `keymap.toml` in the Heeler home.
+pub fn settings_store() -> SettingsStore {
+    let paths = SettingsPaths::from_env().unwrap_or_else(|err| {
+        tracing::warn!("{err}; settings are kept in the temp directory");
+        SettingsPaths::in_dir(std::env::temp_dir().join("heeler"))
+    });
+    SettingsStore::new(paths)
+}
+
 /// Binary entry point: `HEELER_HOME=/tmp/x heeler-desktop`.
 pub fn run() {
     tracing_subscriber::fmt()
@@ -103,12 +155,29 @@ pub fn run() {
         )
         .init();
     gpui_platform::application().run(|cx: &mut App| {
-        let options = WorkbenchOptions::builtin(persistence::default_state_path());
-        let commands = actions::commands(&options.presets, &options.panels);
-        init(cx, &options.presets, &commands);
+        let settings = settings_store();
+        let connection = Connection::start(connect_options());
+        let options =
+            WorkbenchOptions::builtin(settings, connection, persistence::default_state_path());
+        init(cx, &LayoutPreset::builtin());
         if let Err(err) = open_workbench(cx, options) {
             tracing::error!("cannot open the workbench window: {err:#}");
             cx.quit();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heelerd_is_found_beside_the_binary_else_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("heeler-desktop");
+        assert_eq!(heelerd_beside(Some(&exe)), PathBuf::from("heelerd"));
+        std::fs::write(dir.path().join("heelerd"), "").unwrap();
+        assert_eq!(heelerd_beside(Some(&exe)), dir.path().join("heelerd"));
+        assert_eq!(heelerd_beside(None), PathBuf::from("heelerd"));
+    }
 }

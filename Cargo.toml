@@ -13,7 +13,9 @@ heeler-client = { path = "crates/client" }
 heeler-core = { path = "crates/core" }
 heeler-daemon = { path = "crates/daemon" }
 heeler-protocol = { path = "crates/protocol" }
+heeler-settings = { path = "crates/settings" }
 heeler-terminal = { path = "crates/terminal" }
+heeler-terminal-view = { path = "crates/terminal_view" }
 
 anyhow = "1.0.104"
 bitflags = { version = "2.13.2", features = ["serde"] }

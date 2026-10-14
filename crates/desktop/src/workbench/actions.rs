@@ -1,11 +1,14 @@
 //! Named workbench actions, the command table behind the ⌘K palette, and the default keymap.
 //!
-//! One list feeds three consumers (ADR 0010): the palette, the menus, and the keymap. Wave 2
-//! replaces [`default_keymap`] with `keymap.toml`; action names stay stable.
+//! One list feeds three consumers (ADR 0010): the palette, the menus, and the keymap. Every
+//! action that has a key by default is parameterless so `keymap.toml` can name it
+//! (`workbench::SplitDown`); actions with data (`ApplyPreset(name)`, `OpenSession(id)`, …) are
+//! reachable from the palette, menus and panels.
 
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::registry::PanelRegistry;
-use gpui::{Action, KeyBinding, SharedString, actions};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
+use heeler_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
 actions!(
     workbench,
@@ -19,7 +22,15 @@ actions!(
         ClosePaneItem,
         ToggleZoom,
         TogglePalette,
-        NewTab,
+        NewTerminal,
+        NewAgent,
+        NewChat,
+        StopSession,
+        RenameSession,
+        RestartSession,
+        CopySessionId,
+        JumpToNextAttention,
+        SaveLayoutAsPreset,
         ResetLayout,
         OpenSettings,
         About,
@@ -30,6 +41,32 @@ actions!(
         SetDensityCompact,
         SetDensityComfortable,
         OpenActivePanelAsTab,
+        FocusNeighborLeft,
+        FocusNeighborRight,
+        FocusNeighborUp,
+        FocusNeighborDown,
+        ResizeLeft,
+        ResizeRight,
+        ResizeUp,
+        ResizeDown,
+        ActivateTab1,
+        ActivateTab2,
+        ActivateTab3,
+        ActivateTab4,
+        ActivateTab5,
+        ActivateTab6,
+        ActivateTab7,
+        ActivateTab8,
+        ActivateTab9,
+        ApplyPresetNumber1,
+        ApplyPresetNumber2,
+        ApplyPresetNumber3,
+        ApplyPresetNumber4,
+        ApplyPresetNumber5,
+        ApplyPresetNumber6,
+        ApplyPresetNumber7,
+        ApplyPresetNumber8,
+        ApplyPresetNumber9,
     ]
 );
 
@@ -37,6 +74,18 @@ actions!(
 pub mod palette {
     use gpui::actions;
     actions!(palette, [SelectNext, SelectPrev, Confirm, Dismiss]);
+}
+
+/// Actions of the prompt/confirm dialog (`Modal` key context).
+pub mod modal {
+    use gpui::actions;
+    actions!(modal, [Confirm, Cancel]);
+}
+
+/// Actions of the settings sheet (`SettingsSheet` key context).
+pub mod sheet {
+    use gpui::actions;
+    actions!(settings_sheet, [Dismiss]);
 }
 
 macro_rules! data_actions {
@@ -50,26 +99,51 @@ macro_rules! data_actions {
     };
 }
 
+/// A session to open next to the focused pane.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SessionSplit {
+    pub session: String,
+    pub edge: Edge,
+}
+
+/// Where to open the context menu of a session.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SessionMenuAt {
+    pub session: String,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 data_actions! {
     /// Apply the named layout preset (`default`, `focus`, `overview`, …).
     ApplyPreset(String);
     /// Reveal the panel with this id, opening it in its default dock if it is closed.
     OpenPanel(String);
-    FocusNeighbor(Direction);
-    ResizeFocused(Direction);
-    /// Activate the n-th (0-based) tab of the active pane.
-    ActivateTab(usize);
     /// Move the focused panel (dock tab or panel tab) to a dock or into the center.
     MoveActivePanel(PanelDest);
     /// Move the active tab into a new split at this edge of its pane.
     MoveActiveTabToSplit(Edge);
+    /// Open (or focus the tab of) the session with this id.
+    OpenSession(String);
+    /// Open the session in a new split of the focused pane.
+    OpenSessionInSplit(SessionSplit);
+    StopSessionById(String);
+    RenameSessionById(String);
+    RestartSessionById(String);
+    CopySessionIdOf(String);
+    /// Show the session's context menu (Open in split, Rename, Restart, Stop, Copy id).
+    ShowSessionMenu(SessionMenuAt);
+    /// Leave the overview (restoring the layout it replaced) and focus this session.
+    OpenSessionFromOverview(String);
+    /// Open the settings sheet at a namespace (`terminal`, `panels.sessions`, …).
+    OpenSettingsFor(String);
 }
 
-/// A palette entry: human title, the action it runs, and its default key (if any).
+/// A palette entry: human title, the action it runs, and the action whose key binding is shown
+/// as its hint.
 pub struct Command {
     pub title: SharedString,
     pub action: Box<dyn Action>,
-    pub binding: Option<KeyBinding>,
+    pub hint: Box<dyn Action>,
 }
 
 impl std::fmt::Debug for Command {
@@ -81,14 +155,10 @@ impl std::fmt::Debug for Command {
     }
 }
 
-fn command<A: Action + Clone>(
-    title: impl Into<SharedString>,
-    action: A,
-    keys: Option<&str>,
-) -> Command {
+fn command<A: Action + Clone>(title: impl Into<SharedString>, action: A) -> Command {
     Command {
         title: title.into(),
-        binding: keys.map(|k| KeyBinding::new(k, action.clone(), None)),
+        hint: Box::new(action.clone()),
         action: Box::new(action),
     }
 }
@@ -102,15 +172,6 @@ fn dir_name(dir: Direction) -> &'static str {
     }
 }
 
-fn dir_key(dir: Direction) -> &'static str {
-    match dir {
-        Direction::Left => "left",
-        Direction::Right => "right",
-        Direction::Up => "up",
-        Direction::Down => "down",
-    }
-}
-
 fn edge_name(edge: Edge) -> &'static str {
     match edge {
         Edge::Left => "Left",
@@ -120,37 +181,73 @@ fn edge_name(edge: Edge) -> &'static str {
     }
 }
 
+/// The parameterless action for focusing the neighbor in `dir`.
+pub fn focus_neighbor_action(dir: Direction) -> Box<dyn Action> {
+    match dir {
+        Direction::Left => Box::new(FocusNeighborLeft),
+        Direction::Right => Box::new(FocusNeighborRight),
+        Direction::Up => Box::new(FocusNeighborUp),
+        Direction::Down => Box::new(FocusNeighborDown),
+    }
+}
+
+/// The parameterless action for resizing towards `dir`.
+pub fn resize_action(dir: Direction) -> Box<dyn Action> {
+    match dir {
+        Direction::Left => Box::new(ResizeLeft),
+        Direction::Right => Box::new(ResizeRight),
+        Direction::Up => Box::new(ResizeUp),
+        Direction::Down => Box::new(ResizeDown),
+    }
+}
+
+/// The parameterless action selecting the `n`-th (1-based) preset.
+pub fn preset_number_action(n: usize) -> Option<Box<dyn Action>> {
+    Some(match n {
+        1 => Box::new(ApplyPresetNumber1),
+        2 => Box::new(ApplyPresetNumber2),
+        3 => Box::new(ApplyPresetNumber3),
+        4 => Box::new(ApplyPresetNumber4),
+        5 => Box::new(ApplyPresetNumber5),
+        6 => Box::new(ApplyPresetNumber6),
+        7 => Box::new(ApplyPresetNumber7),
+        8 => Box::new(ApplyPresetNumber8),
+        9 => Box::new(ApplyPresetNumber9),
+        _ => return None,
+    })
+}
+
 /// Every palette command. Order is the order shown for an empty query.
 pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command> {
     let mut out = vec![
-        command("Layout: Split Right", SplitRight, Some("cmd-d")),
-        command("Layout: Split Down", SplitDown, Some("cmd-shift-d")),
-        command(
-            "Layout: Toggle Zoom Pane",
-            ToggleZoom,
-            Some("cmd-shift-enter"),
-        ),
-        command("Layout: Reset Layout", ResetLayout, None),
-        command("Tab: New Tab", NewTab, Some("cmd-t")),
-        command("Tab: Close", ClosePaneItem, Some("cmd-w")),
-        command("Tab: Open Panel as Tab", OpenActivePanelAsTab, None),
-        command("View: Toggle Left Dock", ToggleLeftDock, Some("cmd-b")),
-        command(
-            "View: Toggle Right Dock",
-            ToggleRightDock,
-            Some("cmd-alt-b"),
-        ),
-        command("View: Toggle Bottom Dock", ToggleBottomDock, Some("cmd-j")),
-        command("View: Toggle Overview", ToggleOverview, Some("cmd-shift-o")),
-        command("View: Density Compact", SetDensityCompact, None),
-        command("View: Density Comfortable", SetDensityComfortable, None),
-        command("View: Toggle Density", ToggleDensity, None),
-        command("App: Command Palette", TogglePalette, Some("cmd-k")),
-        command("App: Settings…", OpenSettings, Some("cmd-,")),
-        command("App: About Heeler", About, None),
-        command("Window: Minimize", MinimizeWindow, Some("cmd-m")),
-        command("Window: Zoom", ZoomWindow, None),
-        command("App: Quit Heeler", Quit, Some("cmd-q")),
+        command("Session: New Terminal", NewTerminal),
+        command("Session: New Agent (arrives with M4)", NewAgent),
+        command("Session: New Chat (arrives with M5)", NewChat),
+        command("Session: Rename…", RenameSession),
+        command("Session: Restart", RestartSession),
+        command("Session: Stop…", StopSession),
+        command("Session: Copy Session ID", CopySessionId),
+        command("Session: Jump to Next That Needs You", JumpToNextAttention),
+        command("Layout: Split Right", SplitRight),
+        command("Layout: Split Down", SplitDown),
+        command("Layout: Toggle Zoom Pane", ToggleZoom),
+        command("Layout: Reset Layout", ResetLayout),
+        command("Layout: Save Layout as Preset…", SaveLayoutAsPreset),
+        command("Tab: Close (Detach)", ClosePaneItem),
+        command("Tab: Open Panel as Tab", OpenActivePanelAsTab),
+        command("View: Toggle Left Dock", ToggleLeftDock),
+        command("View: Toggle Right Dock", ToggleRightDock),
+        command("View: Toggle Bottom Dock", ToggleBottomDock),
+        command("View: Toggle Overview", ToggleOverview),
+        command("View: Density Compact", SetDensityCompact),
+        command("View: Density Comfortable", SetDensityComfortable),
+        command("View: Toggle Density", ToggleDensity),
+        command("App: Command Palette", TogglePalette),
+        command("App: Settings…", OpenSettings),
+        command("App: About Heeler", About),
+        command("Window: Minimize", MinimizeWindow),
+        command("Window: Zoom", ZoomWindow),
+        command("App: Quit Heeler", Quit),
     ];
     for dir in [
         Direction::Left,
@@ -158,11 +255,11 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         Direction::Up,
         Direction::Down,
     ] {
-        out.push(command(
-            format!("Focus: Neighbor {}", dir_name(dir)),
-            FocusNeighbor(dir),
-            Some(&format!("cmd-alt-{}", dir_key(dir))),
-        ));
+        out.push(Command {
+            title: format!("Focus: Neighbor {}", dir_name(dir)).into(),
+            action: focus_neighbor_action(dir),
+            hint: focus_neighbor_action(dir),
+        });
     }
     for dir in [
         Direction::Left,
@@ -170,63 +267,195 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         Direction::Up,
         Direction::Down,
     ] {
-        out.push(command(
-            format!("Layout: Resize {}", dir_name(dir)),
-            ResizeFocused(dir),
-            Some(&format!("ctrl-cmd-{}", dir_key(dir))),
-        ));
+        out.push(Command {
+            title: format!("Layout: Resize {}", dir_name(dir)).into(),
+            action: resize_action(dir),
+            hint: resize_action(dir),
+        });
     }
     for edge in [Edge::Right, Edge::Bottom, Edge::Left, Edge::Top] {
         out.push(command(
             format!("Layout: Move Tab to New Split {}", edge_name(edge)),
             MoveActiveTabToSplit(edge),
-            None,
         ));
     }
     for pos in DockPosition::ALL {
         out.push(command(
             format!("Panel: Move to {} Dock", pos.label()),
             MoveActivePanel(PanelDest::Dock(pos)),
-            None,
         ));
     }
     for (i, preset) in presets.iter().enumerate() {
-        // ⌘⇧1…9 switch presets by position; overview additionally has its own toggle.
-        let keys = (i < 9).then(|| format!("cmd-shift-{}", i + 1));
-        out.push(command(
-            format!("Layout: Apply Preset {}", preset.name),
-            ApplyPreset(preset.name.clone()),
-            keys.as_deref(),
-        ));
+        let apply = ApplyPreset(preset.name.clone());
+        let title = format!("Layout: Apply Preset {}", preset.name);
+        match preset_number_action(i + 1) {
+            // ⌘⇧1…9 switch presets by position.
+            Some(number) => out.push(Command {
+                title: title.into(),
+                action: Box::new(apply),
+                hint: number,
+            }),
+            None => out.push(command(title, apply)),
+        }
     }
     for spec in panels.iter() {
         out.push(command(
             format!("Panel: Open {}", spec.title),
             OpenPanel(spec.id.to_string()),
-            None,
         ));
     }
     out
 }
 
-/// Default key bindings: every command's key, ⌘1…⌘9 tab selection, and the palette-local keys.
-pub fn default_keymap(commands: &[Command]) -> Vec<KeyBinding> {
-    let mut bindings: Vec<KeyBinding> = commands.iter().filter_map(|c| c.binding.clone()).collect();
-    for n in 1..=9usize {
-        bindings.push(KeyBinding::new(
-            &format!("cmd-{n}"),
-            ActivateTab(n - 1),
-            None,
-        ));
+fn bind<A: Action>(keys: &str, context: Option<&str>) -> BindingSpec {
+    match BindingSpec::new(keys, A::name_for_type(), context) {
+        Ok(spec) => spec,
+        // The defaults are literals; a typo is a bug caught by `default_bindings_parse`.
+        Err(err) => {
+            tracing::error!("invalid default key `{keys}`: {err}");
+            BindingSpec {
+                keys: Vec::new(),
+                action: A::name_for_type().to_owned(),
+                context: context.map(str::to_owned),
+            }
+        }
     }
-    bindings.extend([
-        KeyBinding::new("down", palette::SelectNext, Some("Palette")),
-        KeyBinding::new("ctrl-n", palette::SelectNext, Some("Palette")),
-        KeyBinding::new("up", palette::SelectPrev, Some("Palette")),
-        KeyBinding::new("ctrl-p", palette::SelectPrev, Some("Palette")),
-        KeyBinding::new("enter", palette::Confirm, Some("Palette")),
-        KeyBinding::new("escape", palette::Dismiss, Some("Palette")),
-        KeyBinding::new("escape", palette::Dismiss, Some("ContextMenu")),
-    ]);
-    bindings
+}
+
+/// The key bindings Heeler ships with; `keymap.toml` is merged on top.
+pub fn default_bindings() -> Vec<BindingSpec> {
+    let mut out = vec![
+        bind::<TogglePalette>("cmd-k", None),
+        bind::<OpenSettings>("cmd-,", None),
+        bind::<NewTerminal>("cmd-t", None),
+        bind::<NewAgent>("cmd-shift-t", None),
+        bind::<NewChat>("cmd-alt-t", None),
+        bind::<JumpToNextAttention>("cmd-shift-j", None),
+        bind::<SplitRight>("cmd-d", None),
+        bind::<SplitDown>("cmd-shift-d", None),
+        bind::<ClosePaneItem>("cmd-w", None),
+        bind::<StopSession>("cmd-shift-w", None),
+        bind::<ToggleZoom>("cmd-shift-enter", None),
+        bind::<ToggleLeftDock>("cmd-b", None),
+        bind::<ToggleRightDock>("cmd-alt-b", None),
+        bind::<ToggleBottomDock>("cmd-j", None),
+        bind::<ToggleOverview>("cmd-shift-o", None),
+        bind::<MinimizeWindow>("cmd-m", None),
+        bind::<Quit>("cmd-q", None),
+        bind::<FocusNeighborLeft>("cmd-alt-left", None),
+        bind::<FocusNeighborRight>("cmd-alt-right", None),
+        bind::<FocusNeighborUp>("cmd-alt-up", None),
+        bind::<FocusNeighborDown>("cmd-alt-down", None),
+        bind::<ResizeLeft>("ctrl-cmd-left", None),
+        bind::<ResizeRight>("ctrl-cmd-right", None),
+        bind::<ResizeUp>("ctrl-cmd-up", None),
+        bind::<ResizeDown>("ctrl-cmd-down", None),
+        bind::<heeler_terminal_view::Copy>("cmd-c", Some(heeler_terminal_view::KEY_CONTEXT)),
+        bind::<heeler_terminal_view::Paste>("cmd-v", Some(heeler_terminal_view::KEY_CONTEXT)),
+        bind::<palette::SelectNext>("down", Some("Palette")),
+        bind::<palette::SelectNext>("ctrl-n", Some("Palette")),
+        bind::<palette::SelectPrev>("up", Some("Palette")),
+        bind::<palette::SelectPrev>("ctrl-p", Some("Palette")),
+        bind::<palette::Confirm>("enter", Some("Palette")),
+        bind::<palette::Dismiss>("escape", Some("Palette")),
+        bind::<palette::Dismiss>("escape", Some("ContextMenu")),
+        bind::<modal::Confirm>("enter", Some("Modal")),
+        bind::<modal::Cancel>("escape", Some("Modal")),
+        bind::<sheet::Dismiss>("escape", Some("SettingsSheet")),
+    ];
+    let tabs: [&str; 9] = [
+        ActivateTab1::name_for_type(),
+        ActivateTab2::name_for_type(),
+        ActivateTab3::name_for_type(),
+        ActivateTab4::name_for_type(),
+        ActivateTab5::name_for_type(),
+        ActivateTab6::name_for_type(),
+        ActivateTab7::name_for_type(),
+        ActivateTab8::name_for_type(),
+        ActivateTab9::name_for_type(),
+    ];
+    let presets: [&str; 9] = [
+        ApplyPresetNumber1::name_for_type(),
+        ApplyPresetNumber2::name_for_type(),
+        ApplyPresetNumber3::name_for_type(),
+        ApplyPresetNumber4::name_for_type(),
+        ApplyPresetNumber5::name_for_type(),
+        ApplyPresetNumber6::name_for_type(),
+        ApplyPresetNumber7::name_for_type(),
+        ApplyPresetNumber8::name_for_type(),
+        ApplyPresetNumber9::name_for_type(),
+    ];
+    for n in 1..=9usize {
+        for (keys, action) in [
+            (format!("cmd-{n}"), tabs[n - 1]),
+            (format!("cmd-shift-{n}"), presets[n - 1]),
+        ] {
+            match BindingSpec::new(&keys, action, None) {
+                Ok(spec) => out.push(spec),
+                Err(err) => tracing::error!("invalid default key `{keys}`: {err}"),
+            }
+        }
+    }
+    out
+}
+
+/// Replace every key binding of the app with `load.bindings`. Bindings naming an unknown action
+/// or an unparsable context are skipped with a warning.
+pub fn apply_keymap(cx: &mut App, load: &KeymapLoad) {
+    let mut bindings = Vec::with_capacity(load.bindings.len());
+    for spec in &load.bindings {
+        if spec.keys.is_empty() {
+            continue;
+        }
+        let action = match cx.build_action(&spec.action, None) {
+            Ok(action) => action,
+            Err(err) => {
+                tracing::warn!("keymap: action `{}` cannot be bound: {err}", spec.action);
+                continue;
+            }
+        };
+        let predicate = match spec
+            .context
+            .as_deref()
+            .map(KeyBindingContextPredicate::parse)
+        {
+            None => None,
+            Some(Ok(predicate)) => Some(predicate.into()),
+            Some(Err(err)) => {
+                tracing::warn!(
+                    "keymap: context `{}` of `{}` is invalid: {err}",
+                    spec.context.as_deref().unwrap_or_default(),
+                    spec.action
+                );
+                continue;
+            }
+        };
+        match KeyBinding::load(
+            &format_keys(&spec.keys),
+            action,
+            predicate,
+            false,
+            None,
+            cx.keyboard_mapper().as_ref(),
+        ) {
+            Ok(binding) => bindings.push(binding),
+            Err(err) => tracing::warn!("keymap: `{}`: {err}", format_keys(&spec.keys)),
+        }
+    }
+    cx.clear_key_bindings();
+    cx.bind_keys(bindings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_bindings_parse_and_do_not_collide() {
+        let defaults = default_bindings();
+        assert!(defaults.iter().all(|b| !b.keys.is_empty()));
+        let load = heeler_settings::keymap::load_str(&defaults, "", None).unwrap();
+        assert!(load.diagnostics.is_empty(), "{:?}", load.diagnostics);
+        assert_eq!(load.bindings.len(), defaults.len());
+    }
 }

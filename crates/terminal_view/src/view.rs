@@ -1,18 +1,20 @@
 //! The terminal view entity: state, input handling, IME, selection, scrollback viewing.
 
+use std::cell::Ref;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyBinding, KeyDownEvent, ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Size,
-    Styled, Subscription, Task, UTF16Selection, Window, actions, div, point, px, rgba,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ModifiersChangedEvent,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollDelta, ScrollWheelEvent, Size, Styled, Subscription, Task, UTF16Selection, Window,
+    actions, div, point, px, rgba,
 };
 use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::{CursorShape, MouseMode, Row, TerminalRender};
+use heeler_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
 
 use crate::TerminalBackend;
 use crate::convert;
@@ -26,6 +28,7 @@ use crate::paste::paste_bytes;
 use crate::selection::{Point as GridPoint, Selection, SelectionKind, selected_text};
 use crate::settings::{CursorStyle, TerminalViewSettings};
 use crate::shape::{RowCache, hsla};
+use crate::shared::{ModelRef, SharedEvent, SharedTerminal};
 use crate::theme::{DefaultColors, Theme};
 
 actions!(
@@ -100,11 +103,24 @@ struct Marked {
     selected: Range<usize>,
 }
 
+/// How a view relates to its terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Takes focus and input, reports its size to the terminal.
+    Interactive,
+    /// A read-only miniature (overview card): never resizes the terminal, ignores keys and
+    /// mouse, and shows the newest rows that fit.
+    Preview,
+}
+
 pub struct TerminalView {
     pub(crate) backend: Rc<dyn TerminalBackend>,
     pub(crate) settings: TerminalViewSettings,
-    pub(crate) model: TerminalModel,
+    shared: Entity<SharedTerminal>,
+    pub(crate) model: ModelRef,
+    pub(crate) mode: ViewMode,
     pub(crate) theme: Theme,
+    /// Mirror of the shared status (no context needed to read it).
     pub(crate) status: ViewStatus,
     focus_handle: FocusHandle,
 
@@ -130,8 +146,6 @@ pub struct TerminalView {
     wanted_size: Option<TerminalSize>,
     resize_task: Option<Task<()>>,
 
-    /// Newest frame painted-or-not-yet that still has to be acked.
-    pub(crate) ack_due: Option<u64>,
     pub(crate) blink_on: bool,
     pub(crate) rows: RowCache,
 
@@ -142,8 +156,9 @@ pub struct TerminalView {
 impl std::fmt::Debug for TerminalView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TerminalView")
-            .field("model", &self.model)
+            .field("model", &*self.model.get())
             .field("status", &self.status)
+            .field("mode", &self.mode)
             .field("scroll_offset", &self.scroll_offset)
             .finish_non_exhaustive()
     }
@@ -158,42 +173,76 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
+    /// A view with a terminal model of its own: for owners that have one view per terminal.
     pub fn new(
         backend: Rc<dyn TerminalBackend>,
         settings: TerminalViewSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let shared = cx.new(|_| SharedTerminal::new());
+        Self::with_shared(shared, backend, settings, ViewMode::Interactive, window, cx)
+    }
+
+    /// A view that draws `shared`; any number of views can draw one terminal. `backend` carries
+    /// the acks and history requests (and, for [`ViewMode::Interactive`], input and resizes).
+    pub fn with_shared(
+        shared: Entity<SharedTerminal>,
+        backend: Rc<dyn TerminalBackend>,
+        settings: TerminalViewSettings,
+        mode: ViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
-        backend.set_default_colors(DefaultColors::from(&settings.palette));
-        let theme = Theme::new(settings.palette);
-        let subscriptions = vec![
-            cx.on_focus_in(&focus_handle, window, |this, _window, cx| {
-                this.focus_changed(true, cx);
-            }),
-            cx.on_focus_out(&focus_handle, window, |this, _event, _window, cx| {
-                this.focus_changed(false, cx);
-            }),
-            cx.observe_window_activation(window, |this, _window, cx| {
-                this.blink_on = true;
-                cx.notify();
-            }),
-        ];
-        let blink = cx.spawn_in(window, async move |this, cx| {
-            loop {
-                cx.background_executor().timer(BLINK_INTERVAL).await;
-                let alive = this.update_in(cx, |view, window, cx| view.blink_tick(window, cx));
-                if alive.is_err() {
-                    break;
+        let interactive = mode == ViewMode::Interactive;
+        if interactive {
+            backend.set_default_colors(DefaultColors::from(&settings.palette));
+        }
+        let mut theme = Theme::new(settings.palette);
+        let (model, status) = {
+            let shared = shared.read(cx);
+            (shared.model_ref(), shared.status().clone())
+        };
+        if model.get().is_ready() {
+            theme.set_overrides(model.get().palette());
+        }
+        let mut subscriptions = vec![cx.subscribe(&shared, Self::on_shared_event)];
+        if interactive {
+            subscriptions.extend([
+                cx.on_focus_in(&focus_handle, window, |this, _window, cx| {
+                    this.focus_changed(true, cx);
+                }),
+                cx.on_focus_out(&focus_handle, window, |this, _event, _window, cx| {
+                    this.focus_changed(false, cx);
+                }),
+                cx.observe_window_activation(window, |this, _window, cx| {
+                    this.blink_on = true;
+                    cx.notify();
+                }),
+            ]);
+        }
+        let blink = if interactive {
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(BLINK_INTERVAL).await;
+                    let alive = this.update_in(cx, |view, window, cx| view.blink_tick(window, cx));
+                    if alive.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+        } else {
+            Task::ready(())
+        };
         Self {
             backend,
             settings,
-            model: TerminalModel::new(),
+            shared,
+            model,
+            mode,
             theme,
-            status: ViewStatus::Live,
+            status,
             focus_handle,
             scroll_offset: 0,
             scroll_accum: 0.0,
@@ -210,7 +259,6 @@ impl TerminalView {
             reported_size: None,
             wanted_size: None,
             resize_task: None,
-            ack_due: None,
             blink_on: true,
             rows: RowCache::default(),
             _subscriptions: subscriptions,
@@ -220,61 +268,130 @@ impl TerminalView {
 
     // ---- owner API -------------------------------------------------------------------------
 
-    /// Applies a snapshot or frame from the daemon. The frame is acked once it has been painted.
+    /// The terminal this view draws.
+    pub fn shared(&self) -> &Entity<SharedTerminal> {
+        &self.shared
+    }
+
+    /// Applies a snapshot or frame from the daemon to the shared model. The frame is acked once a
+    /// view has painted it.
     pub fn apply_render(&mut self, render: TerminalRender, cx: &mut Context<Self>) {
-        let frame = match &render {
-            TerminalRender::Snapshot(s) => s.frame,
-            TerminalRender::Frame(f) => f.frame,
-        };
-        // Even a frame that could not be applied is acked, or the daemon would wait for it.
-        self.ack_due = Some(frame);
-        let Some(applied) = self.model.apply(render) else {
-            cx.notify();
+        self.shared
+            .update(cx, |shared, cx| shared.apply_render(render, cx));
+    }
+
+    /// Delivers a `terminal.history` answer for a [`TerminalBackend::request_history`] call:
+    /// `from_line` 0 is the line directly above the viewport, `rows` are newest first.
+    pub fn apply_history(&mut self, from_line: u32, rows: Vec<Row>, cx: &mut Context<Self>) {
+        self.shared
+            .update(cx, |shared, cx| shared.apply_history(from_line, rows, cx));
+    }
+
+    /// Sets the status every view of this terminal shows.
+    pub fn set_status(&mut self, status: ViewStatus, cx: &mut Context<Self>) {
+        self.shared
+            .update(cx, |shared, cx| shared.set_status(status, cx));
+    }
+
+    pub fn update_settings(&mut self, settings: TerminalViewSettings, cx: &mut Context<Self>) {
+        if settings == self.settings {
             return;
-        };
-        if applied.snapshot {
-            self.theme.set_overrides(self.model.palette());
         }
-        self.after_apply(&applied, cx);
-        if applied.title_changed {
-            cx.emit(TerminalViewEvent::TitleChanged(
-                self.model.title().map(str::to_owned),
-            ));
+        if settings.palette != self.settings.palette {
+            self.theme.set_base(settings.palette);
+            if self.mode == ViewMode::Interactive {
+                self.backend
+                    .set_default_colors(DefaultColors::from(&settings.palette));
+            }
         }
+        self.settings = settings;
         self.blink_on = true;
         cx.notify();
     }
 
-    fn after_apply(&mut self, applied: &Applied, cx: &mut Context<Self>) {
+    fn on_shared_event(
+        &mut self,
+        _shared: Entity<SharedTerminal>,
+        event: &SharedEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SharedEvent::Applied(applied) => {
+                if applied.snapshot {
+                    self.theme.set_overrides(self.model.get().palette());
+                }
+                self.after_apply(applied);
+                if applied.title_changed {
+                    cx.emit(TerminalViewEvent::TitleChanged(
+                        self.model.get().title().map(str::to_owned),
+                    ));
+                }
+                self.blink_on = true;
+            }
+            SharedEvent::History { from_line, empty } => {
+                self.history_in_flight.remove(from_line);
+                if *empty {
+                    self.history_end =
+                        Some(self.history_end.map_or(*from_line, |e| e.min(*from_line)));
+                }
+                // A short page leaves lines missing: ask for the rest.
+                self.ensure_history();
+            }
+            SharedEvent::Status => {
+                let status = self.shared.read(cx).status().clone();
+                if status == self.status {
+                    return;
+                }
+                if status == ViewStatus::Live {
+                    // Requests that were in flight when the connection dropped never answer.
+                    self.history_in_flight.clear();
+                    // The new connection has not seen our size.
+                    self.reported_size = None;
+                    self.wanted_size = None;
+                }
+                self.status = status;
+                self.reporting = None;
+                self.selecting = false;
+            }
+            SharedEvent::Reset => {
+                self.reset_history_view();
+                self.theme.set_overrides(&Palette::default());
+            }
+        }
+        cx.notify();
+    }
+
+    fn after_apply(&mut self, applied: &Applied) {
         if applied.history_reset {
             self.reset_history_view();
         } else if applied.history_grew > 0 && self.scroll_offset > 0 {
             // Stay on the same lines while output scrolls into history.
             self.scroll_offset =
-                (self.scroll_offset + applied.history_grew).min(self.model.history_len());
+                (self.scroll_offset + applied.history_grew).min(self.model.get().history_len());
         }
-        self.scroll_offset = self.scroll_offset.min(self.model.history_len());
+        self.scroll_offset = self.scroll_offset.min(self.model.get().history_len());
         if applied.snapshot && applied.resized {
             self.selection = None;
             self.selecting = false;
         } else if !applied.snapshot && applied.history_grew == 0 {
             // Output rewrote lines under the selection: it no longer describes this text.
-            let touched = self
-                .selection
-                .and_then(|s| s.span(&self.model))
-                .is_some_and(|span| {
-                    applied.dirty.iter().any(|row| {
-                        let line = self.model.viewport_line(*row);
-                        span.start.line <= line && line <= span.end.line
+            let touched = {
+                let model = self.model.get();
+                self.selection
+                    .and_then(|s| s.span(&model))
+                    .is_some_and(|span| {
+                        applied.dirty.iter().any(|row| {
+                            let line = model.viewport_line(*row);
+                            span.start.line <= line && line <= span.end.line
+                        })
                     })
-                });
+            };
             if touched {
                 self.selection = None;
                 self.selecting = false;
             }
         }
         self.ensure_history();
-        let _ = cx;
     }
 
     fn reset_history_view(&mut self) {
@@ -286,63 +403,23 @@ impl TerminalView {
         self.selecting = false;
     }
 
-    /// Delivers a `terminal.history` answer for a [`TerminalBackend::request_history`] call:
-    /// `from_line` 0 is the line directly above the viewport, `rows` are newest first.
-    pub fn apply_history(&mut self, from_line: u32, rows: Vec<Row>, cx: &mut Context<Self>) {
-        self.history_in_flight.remove(&from_line);
-        if rows.is_empty() {
-            self.history_end = Some(self.history_end.map_or(from_line, |e| e.min(from_line)));
-        } else {
-            self.model.apply_history(from_line, rows);
-        }
-        // A short page leaves lines missing: ask for the rest.
-        self.ensure_history();
-        cx.notify();
-    }
-
-    pub fn set_status(&mut self, status: ViewStatus, cx: &mut Context<Self>) {
-        if status == self.status {
-            return;
-        }
-        if status == ViewStatus::Live {
-            // Requests that were in flight when the connection dropped never answer.
-            self.history_in_flight.clear();
-            // The new connection has not seen our size.
-            self.reported_size = None;
-            self.wanted_size = None;
-        }
-        self.status = status;
-        self.reporting = None;
-        self.selecting = false;
-        cx.notify();
-    }
-
-    pub fn update_settings(&mut self, settings: TerminalViewSettings, cx: &mut Context<Self>) {
-        if settings == self.settings {
-            return;
-        }
-        if settings.palette != self.settings.palette {
-            self.theme.set_base(settings.palette);
-            self.backend
-                .set_default_colors(DefaultColors::from(&settings.palette));
-        }
-        self.settings = settings;
-        self.blink_on = true;
-        cx.notify();
-    }
-
     // ---- accessors -------------------------------------------------------------------------
 
-    pub fn model(&self) -> &TerminalModel {
-        &self.model
+    /// The shared model. Do not hold the borrow across calls that apply renders.
+    pub fn model(&self) -> Ref<'_, TerminalModel> {
+        self.model.get()
     }
 
     pub fn status(&self) -> &ViewStatus {
         &self.status
     }
 
-    pub fn title(&self) -> Option<&str> {
-        self.model.title()
+    pub fn mode(&self) -> ViewMode {
+        self.mode
+    }
+
+    pub fn title(&self) -> Option<String> {
+        self.model.get().title().map(str::to_owned)
     }
 
     /// Columns and rows that fit the last laid-out bounds.
@@ -371,15 +448,16 @@ impl TerminalView {
 
     /// The selected text, if anything is selected.
     pub fn selection_text(&self) -> Option<String> {
-        let span = self.selection?.span(&self.model)?;
-        let text = selected_text(&self.model, span);
+        let model = self.model.get();
+        let span = self.selection?.span(&model)?;
+        let text = selected_text(&model, span);
         (!text.is_empty()).then_some(text)
     }
 
     // ---- internals shared with the element ----------------------------------------------------
 
     pub(crate) fn accepts_input(&self) -> bool {
-        self.status == ViewStatus::Live
+        self.mode == ViewMode::Interactive && self.status == ViewStatus::Live
     }
 
     pub(crate) fn has_focus(&self, window: &Window) -> bool {
@@ -388,13 +466,25 @@ impl TerminalView {
 
     /// Absolute line shown in grid row `row`.
     pub(crate) fn line_for_row(&self, row: u16) -> i64 {
-        self.model.viewport_line(0) + i64::from(row) - i64::from(self.scroll_offset)
+        self.model.get().viewport_line(0) + i64::from(row + self.row_offset())
+            - i64::from(self.scroll_offset)
+    }
+
+    /// Rows of the screen above the first one shown: a preview too short for the whole screen
+    /// shows the newest rows.
+    pub(crate) fn row_offset(&self) -> u16 {
+        match (self.mode, self.layout) {
+            (ViewMode::Preview, Some(layout)) => {
+                self.model.get().screen_rows().saturating_sub(layout.rows)
+            }
+            _ => 0,
+        }
     }
 
     /// Cursor shape and whether it blinks: an application's explicit choice wins over the
     /// user's preference, which applies while the application keeps the default steady block.
     pub(crate) fn cursor_appearance(&self) -> (CursorShape, bool) {
-        let cursor = self.model.cursor();
+        let cursor = self.model.get().cursor();
         let app_default = cursor.shape == CursorShape::Block && !cursor.blinking;
         if app_default {
             let shape = match self.settings.cursor.style {
@@ -409,7 +499,8 @@ impl TerminalView {
     }
 
     pub(crate) fn link_at(&self, row: u16, col: u16) -> Option<u32> {
-        let row = self.model.row_at(self.line_for_row(row))?;
+        let model = self.model.get();
+        let row = model.row_at(self.line_for_row(row))?;
         row_cells(row)
             .iter()
             .find(|c| c.col <= col && col < c.end())
@@ -425,11 +516,6 @@ impl TerminalView {
         self.marked.as_ref().map(|m| m.text.as_str())
     }
 
-    /// Takes the frame to ack; the element schedules the ack for the next frame.
-    pub(crate) fn take_ack(&mut self) -> Option<u64> {
-        self.ack_due.take()
-    }
-
     pub(crate) fn send_ack(&self, frame: u64) {
         self.backend.ack(frame);
     }
@@ -438,6 +524,9 @@ impl TerminalView {
     /// debounced afterwards.
     pub(crate) fn update_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
         self.layout = Some(layout);
+        if self.mode == ViewMode::Preview {
+            return;
+        }
         let pixels = |v: Pixels| {
             (f32::from(v) * layout.scale)
                 .round()
@@ -482,7 +571,7 @@ impl TerminalView {
 
     fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
         self.blink_on = true;
-        if self.model.modes().focus_events && self.accepts_input() {
+        if self.model.get().modes().focus_events && self.accepts_input() {
             self.backend.input(if focused {
                 b"\x1b[I".to_vec()
             } else {
@@ -506,7 +595,7 @@ impl TerminalView {
     // ---- keyboard --------------------------------------------------------------------------
 
     fn key_options(&self) -> KeyOptions {
-        let modes = self.model.modes();
+        let modes = self.model.get().modes();
         KeyOptions {
             app_cursor: modes.app_cursor,
             app_keypad: modes.app_keypad,
@@ -553,9 +642,13 @@ impl TerminalView {
         if !self.accepts_input() {
             return;
         }
-        if m.shift && !m.control && !m.alt && !self.model.modes().alt_screen {
-            let page =
-                i32::from(self.layout.map_or(self.model.screen_rows(), |l| l.rows)).max(2) - 1;
+        if m.shift && !m.control && !m.alt && !self.model.get().modes().alt_screen {
+            let page = i32::from(
+                self.layout
+                    .map_or(self.model.get().screen_rows(), |l| l.rows),
+            )
+            .max(2)
+                - 1;
             let handled = match ks.key.as_str() {
                 "pageup" => Some(page),
                 "pagedown" => Some(-page),
@@ -596,7 +689,7 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        let bytes = paste_bytes(&text, self.model.modes().bracketed_paste);
+        let bytes = paste_bytes(&text, self.model.get().modes().bracketed_paste);
         self.send_input(bytes, cx);
     }
 
@@ -604,7 +697,7 @@ impl TerminalView {
 
     /// Scrolls the viewport by `lines` (positive = towards older output).
     pub fn scroll_lines(&mut self, lines: i32, cx: &mut Context<Self>) {
-        let max = i64::from(self.model.history_len());
+        let max = i64::from(self.model.get().history_len());
         let new = (i64::from(self.scroll_offset) + i64::from(lines)).clamp(0, max);
         let new = u32::try_from(new).unwrap_or(0);
         if new != self.scroll_offset {
@@ -627,10 +720,14 @@ impl TerminalView {
         if self.scroll_offset == 0 {
             return;
         }
-        let rows = u32::from(self.layout.map_or(self.model.screen_rows(), |l| l.rows)).max(1);
+        let rows = u32::from(
+            self.layout
+                .map_or(self.model.get().screen_rows(), |l| l.rows),
+        )
+        .max(1);
         let hi = self.scroll_offset - 1;
         let lo = self.scroll_offset.saturating_sub(rows);
-        let Some(missing) = self.model.first_missing_history(lo, hi - lo + 1) else {
+        let Some(missing) = self.model.get().first_missing_history(lo, hi - lo + 1) else {
             return;
         };
         if self.history_end.is_some_and(|end| missing >= end)
@@ -644,7 +741,7 @@ impl TerminalView {
     // ---- mouse -----------------------------------------------------------------------------
 
     fn report_mouse(&mut self, action: MouseAction, mods: Mods, row: u16, col: u16) -> bool {
-        let modes = self.model.modes();
+        let modes = self.model.get().modes();
         let event = MouseEvent {
             action,
             mods,
@@ -661,7 +758,7 @@ impl TerminalView {
     }
 
     fn captures_mouse(&self, mods: gpui::Modifiers) -> bool {
-        self.model.modes().mouse != MouseMode::None && !mods.shift && self.accepts_input()
+        self.model.get().modes().mouse != MouseMode::None && !mods.shift && self.accepts_input()
     }
 
     pub(crate) fn mouse_down(
@@ -676,10 +773,10 @@ impl TerminalView {
         if event.button == gpui::MouseButton::Left
             && event.modifiers.platform
             && let Some(id) = self.link_at(row, col)
-            && let Some(uri) = self.model.link(id)
+            && let Some(uri) = self.model.get().link(id).map(str::to_owned)
             && OPENABLE_SCHEMES.iter().any(|s| uri.starts_with(s))
         {
-            cx.open_url(uri);
+            cx.open_url(&uri);
             return;
         }
         if self.captures_mouse(event.modifiers) {
@@ -707,7 +804,7 @@ impl TerminalView {
             line: self.line_for_row(row),
             col,
         };
-        self.selection = Some(Selection::new(kind, at, &self.model));
+        self.selection = Some(Selection::new(kind, at, &self.model.get()));
         self.selecting = true;
         cx.notify();
     }
@@ -759,7 +856,7 @@ impl TerminalView {
         }
         if inside
             && event.pressed_button.is_none()
-            && self.model.modes().mouse == MouseMode::Motion
+            && self.model.get().modes().mouse == MouseMode::Motion
             && self.captures_mouse(event.modifiers)
             && self.last_motion_cell != Some((row, col))
         {
@@ -785,7 +882,11 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
-        if self.selection.and_then(|s| s.span(&self.model)).is_none() {
+        if self
+            .selection
+            .and_then(|s| s.span(&self.model.get()))
+            .is_none()
+        {
             self.selection = None;
         } else if self.settings.copy_on_select {
             self.copy(cx);
@@ -813,7 +914,7 @@ impl TerminalView {
         self.scroll_accum -= lines;
         let count = lines.abs() as usize;
         let up = lines > 0.0;
-        let modes = self.model.modes();
+        let modes = self.model.get().modes();
         let (row, col) = layout.cell_at(event.position);
 
         if self.captures_mouse(event.modifiers) && self.scroll_offset == 0 {
@@ -964,7 +1065,7 @@ impl gpui::EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let layout = self.layout?;
-        let cursor = self.model.cursor();
+        let cursor = self.model.get().cursor();
         // Columns the marked text covers before the requested range starts.
         let skipped = self.marked.as_ref().map_or(0, |m| {
             let bytes = byte_range(&m.text, &range_utf16);
@@ -997,6 +1098,16 @@ impl gpui::EntityInputHandler for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = hsla(self.theme.background());
+        if self.mode == ViewMode::Preview {
+            return div()
+                .id("heeler-terminal-preview")
+                .relative()
+                .size_full()
+                .overflow_hidden()
+                .bg(background)
+                .child(TerminalElement::new(cx.entity()))
+                .into_any_element();
+        }
         let banner = match &self.status {
             ViewStatus::Live => None,
             ViewStatus::Reconnecting => Some("Reconnecting…".to_owned()),
@@ -1017,20 +1128,22 @@ impl Render for TerminalView {
             .bg(background)
             .child(TerminalElement::new(cx.entity()));
         match banner {
-            None => root,
-            Some(text) => root.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .px(px(10.))
-                    .py(px(4.))
-                    .bg(rgba(0x000000b3))
-                    .text_color(hsla(self.theme.foreground()))
-                    .text_size(px(12.))
-                    .child(text),
-            ),
+            None => root.into_any_element(),
+            Some(text) => root
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .px(px(10.))
+                        .py(px(4.))
+                        .bg(rgba(0x000000b3))
+                        .text_color(hsla(self.theme.foreground()))
+                        .text_size(px(12.))
+                        .child(text),
+                )
+                .into_any_element(),
         }
     }
 }

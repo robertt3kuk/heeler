@@ -17,15 +17,18 @@ pub mod paste;
 pub mod selection;
 mod settings;
 mod shape;
+mod shared;
 pub mod theme;
 mod view;
 
 pub use heeler_protocol::messages::TerminalSize;
 pub use heeler_protocol::render::{Row, TerminalRender};
 pub use settings::{CursorSettings, CursorStyle, OptionAsMeta, TerminalViewSettings};
+pub use shared::{SharedEvent, SharedTerminal};
 pub use theme::{DefaultColors, Rgb, TerminalPalette};
 pub use view::{
-    Copy, KEY_CONTEXT, Paste, TerminalView, TerminalViewEvent, ViewStatus, bind_default_keys,
+    Copy, KEY_CONTEXT, Paste, TerminalView, TerminalViewEvent, ViewMode, ViewStatus,
+    bind_default_keys,
 };
 
 /// What the owner of a [`TerminalView`] provides. Called on the UI thread; implementations hand

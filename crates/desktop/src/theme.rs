@@ -1,16 +1,11 @@
 //! Density tokens (design.md § Visual system) and the chrome palette.
 
 use gpui::{Hsla, Rgba, WindowAppearance, hsla, rgb};
+use heeler_settings::ChromeMode;
 
-/// `compact` (default) or `comfortable`. Wave 2 binds this to `appearance.density`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Density {
-    #[default]
-    Compact,
-    Comfortable,
-}
+pub use heeler_settings::Density;
 
-/// Sizes in logical pixels, straight from the density token table.
+/// Sizes in logical pixels: the settings crate's density token table plus the UI font sizes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     pub sidebar_row: f32,
@@ -25,40 +20,40 @@ pub struct Tokens {
     pub section_font_size: f32,
 }
 
-impl Density {
-    pub fn tokens(self) -> Tokens {
-        match self {
-            Density::Compact => Tokens {
-                sidebar_row: 24.0,
-                tab_height: 28.0,
-                pane_header: 28.0,
-                status_bar: 22.0,
-                spacing: 4.0,
-                radius: 6.0,
-                font_size: 12.0,
-                section_font_size: 10.0,
+/// Desktop-side additions to [`Density`] (which lives in `heeler-settings`).
+pub trait DensityExt: Sized {
+    /// Layout tokens and font sizes for this density.
+    fn ui(self) -> Tokens;
+    fn label(self) -> &'static str;
+    fn toggled(self) -> Self;
+}
+
+impl DensityExt for Density {
+    fn ui(self) -> Tokens {
+        let t = self.tokens();
+        Tokens {
+            sidebar_row: t.sidebar_row,
+            tab_height: t.tab_height,
+            pane_header: t.pane_header,
+            status_bar: t.status_bar,
+            spacing: t.spacing,
+            radius: t.radius,
+            font_size: match self {
+                Density::Compact => 12.0,
+                Density::Comfortable => 13.0,
             },
-            Density::Comfortable => Tokens {
-                sidebar_row: 30.0,
-                tab_height: 32.0,
-                pane_header: 34.0,
-                status_bar: 26.0,
-                spacing: 6.0,
-                radius: 8.0,
-                font_size: 13.0,
-                section_font_size: 10.0,
-            },
+            section_font_size: 10.0,
         }
     }
 
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Density::Compact => "Compact",
             Density::Comfortable => "Comfortable",
         }
     }
 
-    pub fn toggled(self) -> Self {
+    fn toggled(self) -> Self {
         match self {
             Density::Compact => Density::Comfortable,
             Density::Comfortable => Density::Compact,
@@ -98,6 +93,8 @@ pub struct Theme {
     pub muted: Hsla,
     pub accent: Hsla,
     pub warning: Hsla,
+    pub success: Hsla,
+    pub error: Hsla,
     pub hover: Hsla,
     pub active_tab: Hsla,
     pub overlay: Hsla,
@@ -105,6 +102,15 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// The chrome theme for the configured mode; `system` follows the window appearance.
+    pub fn for_chrome(chrome: ChromeMode, appearance: WindowAppearance) -> Self {
+        match chrome {
+            ChromeMode::System => Self::for_appearance(appearance),
+            ChromeMode::Light => Self::light(),
+            ChromeMode::Dark => Self::dark(),
+        }
+    }
+
     pub fn for_appearance(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
@@ -124,6 +130,8 @@ impl Theme {
             muted: rgb(0xaaaaaf).into(),
             accent,
             warning: rgb(0xff9f0a).into(),
+            success: rgb(0x30d158).into(),
+            error: rgb(0xff453a).into(),
             hover: hsla(0.0, 0.0, 1.0, 0.07),
             active_tab: hsla(0.0, 0.0, 1.0, 0.10),
             overlay: rgb(0x2a2a2c).into(),
@@ -143,6 +151,8 @@ impl Theme {
             muted: rgb(0x55555a).into(),
             accent,
             warning: rgb(0xff9500).into(),
+            success: rgb(0x248a3d).into(),
+            error: rgb(0xd70015).into(),
             hover: hsla(0.0, 0.0, 0.0, 0.06),
             active_tab: hsla(0.0, 0.0, 0.0, 0.08),
             overlay: rgb(0xf5f5f7).into(),
@@ -236,7 +246,7 @@ mod tests {
 
     #[test]
     fn tokens_match_design_table() {
-        let c = Density::Compact.tokens();
+        let c = Density::Compact.ui();
         assert_eq!(
             (
                 c.sidebar_row,
@@ -248,7 +258,7 @@ mod tests {
             ),
             (24.0, 28.0, 28.0, 22.0, 4.0, 6.0)
         );
-        let m = Density::Comfortable.tokens();
+        let m = Density::Comfortable.ui();
         assert_eq!(
             (
                 m.sidebar_row,

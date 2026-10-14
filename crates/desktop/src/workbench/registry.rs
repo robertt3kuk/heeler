@@ -1,12 +1,28 @@
 //! Panel and status-item registries (ADR 0010: every UI feature is a registered component).
 
 use super::model::{DockPosition, PanelId};
+use crate::sessions::SessionsStore;
 use crate::theme::{Density, Theme};
-use gpui::{AnyElement, AnyView, App, SharedString, Window};
+use gpui::{AnyElement, AnyView, App, Entity, SharedString, Window};
+use heeler_client::ConnectionState;
+use heeler_settings::SettingsStore;
 use std::rc::Rc;
 
+/// What panels need from the app: the live sessions and the settings.
+#[derive(Clone)]
+pub struct PanelEnv {
+    pub sessions: Entity<SessionsStore>,
+    pub settings: SettingsStore,
+}
+
+impl std::fmt::Debug for PanelEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PanelEnv").finish_non_exhaustive()
+    }
+}
+
 /// Builds the view of a panel. Called once per workbench; the view is cached and re-rendered.
-pub type PanelFactory = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
+pub type PanelFactory = Rc<dyn Fn(&PanelEnv, &mut Window, &mut App) -> AnyView>;
 
 #[derive(Clone)]
 pub struct PanelSpec {
@@ -76,6 +92,22 @@ pub struct StatusContext<'a> {
     pub density: Density,
     /// Key hint of the palette action ("⌘K"), from the live keymap.
     pub palette_hint: SharedString,
+    /// Key hint of the "jump to next that needs you" action.
+    pub attention_hint: SharedString,
+    pub data: &'a StatusData,
+}
+
+/// Live numbers the status items show.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusData {
+    pub connection: ConnectionState,
+    /// Epoch of the daemon the state describes, for the connection tooltip.
+    pub epoch: Option<String>,
+    pub sessions: usize,
+    /// Sessions that need the user.
+    pub needs_you: usize,
+    /// Name of the terminal theme in effect.
+    pub terminal_theme: String,
 }
 
 pub type StatusRender = Rc<dyn Fn(&StatusContext<'_>) -> AnyElement>;
@@ -133,8 +165,12 @@ pub struct StatusBarLayout {
 impl Default for StatusBarLayout {
     fn default() -> Self {
         Self {
-            left: vec!["connection".to_owned()],
-            right: vec!["density".to_owned(), "palette_hint".to_owned()],
+            left: ["connection", "sessions", "attention"]
+                .map(str::to_owned)
+                .to_vec(),
+            right: ["density", "theme", "palette_hint"]
+                .map(str::to_owned)
+                .to_vec(),
         }
     }
 }

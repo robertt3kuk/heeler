@@ -1,7 +1,9 @@
-//! `Workbench`: the GPUI entity owning the layout model, registries, and transient UI state
-//! (palette, context menu, resize drags). Rendering lives in `render.rs`.
+//! `Workbench`: the GPUI entity owning the layout model, registries, settings wiring, and
+//! transient UI state (palette, context menu, modal, settings sheet, resize drags). Rendering
+//! lives in `render.rs`; session and settings behavior in sibling modules.
 
 use super::actions::{self, Command};
+use super::modal::Modal;
 use super::model::{
     DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource, LayoutPreset, PaneId,
     PanelDest, PanelId, WorkbenchState,
@@ -9,18 +11,27 @@ use super::model::{
 use super::palette::PaletteState;
 use super::panels::{builtin_panels, builtin_status_items};
 use super::persistence;
-use super::registry::{PanelRegistry, StatusBarLayout, StatusItemRegistry};
-use super::style::UiStyle;
-use crate::theme::{Density, Theme};
+use super::registry::{PanelEnv, PanelRegistry, StatusItemRegistry};
+use super::settings_sheet::SettingsSheet;
+use super::style::{TerminalStyle, UiStyle};
+use super::terminals::TerminalItem;
+use crate::sessions::{SessionsStore, TerminalSession};
+use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
+use crate::theme::{Density, DensityExt as _, Theme};
 use gpui::Window;
 use gpui::{
-    AnyView, App, Bounds, Context, FocusHandle, Focusable, IntoElement, Pixels, Point, Render,
-    SharedString, Subscription, Task, WindowAppearance, div, prelude::*, px,
+    AnyView, App, Bounds, Context, Entity, FocusHandle, Focusable, IntoElement, Pixels, Point,
+    Render, SharedString, Subscription, Task, WindowAppearance, div, prelude::*, px,
 };
+use heeler_client::Connection;
+use heeler_core::SessionId;
+use heeler_settings::{ChromeMode, SettingsStore, SystemAppearance, WatchGuard};
+use heeler_terminal_view::DefaultColors;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Wait this long after the last layout change before writing `desktop-state.json`.
@@ -30,31 +41,33 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
 const DOCK_STEP: f32 = 24.0;
 const SPLIT_STEP: f32 = 0.05;
 
-/// Everything configurable when building a workbench.
+/// Everything needed to build a workbench.
 #[derive(Debug)]
 pub struct WorkbenchOptions {
+    pub settings: SettingsStore,
+    pub connection: Connection,
     pub panels: PanelRegistry,
     pub status_items: StatusItemRegistry,
-    pub status_bar: StatusBarLayout,
-    pub presets: Vec<LayoutPreset>,
     /// Where layout state is restored from and saved to; `None` disables persistence.
     pub state_path: Option<PathBuf>,
-    /// Skip loading and start from this state (tests, wave-2 seeding).
+    /// Skip loading and start from this state (tests).
     pub initial_state: Option<WorkbenchState>,
-    pub density: Density,
 }
 
 impl WorkbenchOptions {
-    /// Built-in placeholder panels, status items, and presets.
-    pub fn builtin(state_path: Option<PathBuf>) -> Self {
+    /// Built-in panels and status items over `settings` and `connection`.
+    pub fn builtin(
+        settings: SettingsStore,
+        connection: Connection,
+        state_path: Option<PathBuf>,
+    ) -> Self {
         Self {
+            settings,
+            connection,
             panels: builtin_panels(),
             status_items: builtin_status_items(),
-            status_bar: StatusBarLayout::default(),
-            presets: LayoutPreset::builtin(),
             state_path,
             initial_state: None,
-            density: Density::default(),
         }
     }
 }
@@ -94,12 +107,12 @@ impl Render for DragPreview {
         div()
             .px(px(10.0))
             .py(px(4.0))
-            .rounded(px(self.style.density.tokens().radius))
+            .rounded(px(self.style.density.ui().radius))
             .bg(theme.overlay)
             .border_1()
             .border_color(theme.accent)
             .text_color(theme.fg)
-            .text_size(px(self.style.density.tokens().font_size))
+            .text_size(px(self.style.density.ui().font_size))
             .shadow_md()
             .child(self.label.clone())
     }
@@ -137,21 +150,45 @@ pub(crate) struct ContextMenu {
     pub entries: Vec<MenuEntry>,
 }
 
+pub(crate) fn system_appearance(appearance: WindowAppearance) -> SystemAppearance {
+    match appearance {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
+        WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
+    }
+}
+
 pub struct Workbench {
     pub(crate) state: WorkbenchState,
     pub(crate) panels: PanelRegistry,
     pub(crate) status_items: StatusItemRegistry,
-    pub(crate) status_bar: StatusBarLayout,
+    pub(crate) preset_defs: Vec<PresetDef>,
     pub(crate) presets: Vec<LayoutPreset>,
     pub(crate) commands: Rc<Vec<Command>>,
     pub(crate) density: Density,
+    pub(crate) chrome: ChromeMode,
     pub(crate) appearance: WindowAppearance,
     pub(crate) theme: Theme,
+    pub(crate) settings: SettingsStore,
+    pub(crate) layout_seen: Arc<LayoutSettings>,
+    pub(crate) terminal_settings: Arc<TerminalSettings>,
+    pub(crate) terminal_style: heeler_terminal_view::TerminalViewSettings,
+    pub(crate) sessions: Entity<SessionsStore>,
+    pub(crate) env: PanelEnv,
+    pub(crate) terminals: HashMap<(PaneId, SessionId), TerminalItem>,
+    pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
+    pub(crate) window_active: bool,
+    pub(crate) rendered_terminals: std::collections::HashSet<(PaneId, SessionId)>,
+    pub(crate) pruned: Vec<Entity<heeler_terminal_view::TerminalView>>,
+    pub(crate) workspace_root: Option<PathBuf>,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) palette_focus: FocusHandle,
     pub(crate) menu_focus: FocusHandle,
+    pub(crate) modal_focus: FocusHandle,
+    pub(crate) sheet_focus: FocusHandle,
     pub(crate) palette: Option<PaletteState>,
     pub(crate) context_menu: Option<ContextMenu>,
+    pub(crate) modal: Option<Modal>,
+    pub(crate) sheet: Option<SettingsSheet>,
     pub(crate) resizing: Option<Resizing>,
     pub(crate) panel_views: HashMap<PanelId, AnyView>,
     pub(crate) notice: Option<SharedString>,
@@ -160,6 +197,8 @@ pub struct Workbench {
     state_path: Option<PathBuf>,
     last_saved: Option<String>,
     save_task: Option<Task<()>>,
+    _watch: Option<WatchGuard>,
+    _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -181,21 +220,57 @@ impl Focusable for Workbench {
 
 impl Workbench {
     pub fn new(options: WorkbenchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = match (options.initial_state, &options.state_path) {
+        let settings = options.settings;
+        crate::settings::register_all(&settings);
+        let appearance_settings = settings.get::<AppearanceSettings>();
+        let layout_settings = settings.get::<LayoutSettings>();
+        let terminal_settings = settings.get::<TerminalSettings>();
+        let preset_defs = layout_settings.preset_defs();
+        let presets: Vec<LayoutPreset> = preset_defs.iter().map(|d| d.layout.clone()).collect();
+
+        let fresh = options.initial_state.is_none()
+            && options
+                .state_path
+                .as_ref()
+                .is_none_or(|path| !path.exists());
+        let mut state = match (options.initial_state, &options.state_path) {
             (Some(state), _) => state,
             (None, Some(path)) => persistence::load_state(path),
             (None, None) => WorkbenchState::default(),
         };
-        let appearance = window.appearance();
-        let theme = Theme::for_appearance(appearance);
+        if fresh
+            && layout_settings.preset != LayoutPreset::DEFAULT
+            && let Some(def) = preset_defs
+                .iter()
+                .find(|d| d.layout.name == layout_settings.preset)
+        {
+            state.apply_preset(&def.layout);
+        }
+
+        let window_appearance = window.appearance();
+        let theme = Theme::for_chrome(appearance_settings.chrome, window_appearance);
+        let terminal_style = terminal_settings.view_settings(system_appearance(window_appearance));
         cx.set_global(UiStyle {
             theme,
-            density: options.density,
+            density: appearance_settings.density,
         });
-        let commands = Rc::new(actions::commands(&options.presets, &options.panels));
+        cx.set_global(TerminalStyle(terminal_style.clone()));
+
+        let sessions = cx.new(|cx| SessionsStore::new(options.connection, cx));
+        sessions.update(cx, |store, cx| {
+            store.set_terminal_colors(DefaultColors::from(&terminal_style.palette), cx);
+        });
+        let env = PanelEnv {
+            sessions: sessions.clone(),
+            settings: settings.clone(),
+        };
+
+        let commands = Rc::new(actions::commands(&presets, &options.panels));
         let focus_handle = cx.focus_handle();
         let palette_focus = cx.focus_handle();
         let menu_focus = cx.focus_handle();
+        let modal_focus = cx.focus_handle();
+        let sheet_focus = cx.focus_handle();
         window.focus(&focus_handle, cx);
         // Closing the window drops this entity before the quit hooks run: write pending
         // changes now instead of waiting for the debounce.
@@ -205,15 +280,42 @@ impl Workbench {
             true
         });
 
+        let watch = match settings.start_watching() {
+            Ok(guard) => Some(guard),
+            Err(err) => {
+                tracing::warn!("settings hot reload is off: {err}");
+                None
+            }
+        };
+        let mut changes = settings.changes();
+        let settings_task = cx.spawn_in(window, async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                let changed = changes.borrow_and_update().clone();
+                let alive = this.update_in(cx, |this, window, cx| {
+                    this.on_settings_changed(&changed, window, cx);
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
+
         let subscriptions = vec![
             cx.observe_window_appearance(window, |_, _, cx| cx.notify()),
             cx.on_app_quit(|this, _| {
                 this.flush_save();
                 async {}
             }),
+            cx.observe_in(&sessions, window, |this, _, window, cx| {
+                this.on_sessions_changed(window, cx);
+            }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.window_active = window.is_window_active();
+                this.sync_session_focus(cx);
+            }),
         ];
 
-        Self {
+        let mut this = Self {
             last_saved: options
                 .state_path
                 .as_ref()
@@ -221,17 +323,34 @@ impl Workbench {
             state,
             panels: options.panels,
             status_items: options.status_items,
-            status_bar: options.status_bar,
-            presets: options.presets,
+            preset_defs,
+            presets,
             commands,
-            density: options.density,
-            appearance,
+            density: appearance_settings.density,
+            chrome: appearance_settings.chrome,
+            appearance: window_appearance,
             theme,
+            settings,
+            layout_seen: layout_settings,
+            terminal_settings,
+            terminal_style,
+            sessions,
+            env,
+            terminals: HashMap::new(),
+            held: HashMap::new(),
+            window_active: window.is_window_active(),
+            rendered_terminals: std::collections::HashSet::new(),
+            pruned: Vec::new(),
+            workspace_root: None,
             focus_handle,
             palette_focus,
             menu_focus,
+            modal_focus,
+            sheet_focus,
             palette: None,
             context_menu: None,
+            modal: None,
+            sheet: None,
             resizing: None,
             panel_views: HashMap::new(),
             notice: None,
@@ -239,8 +358,13 @@ impl Workbench {
             regions: Rc::default(),
             state_path: options.state_path,
             save_task: None,
+            _watch: watch,
+            _tasks: vec![settings_task],
             _subscriptions: subscriptions,
-        }
+        };
+        this.rebind_keys(cx);
+        this.sync_session_focus(cx);
+        this
     }
 
     // ---- read access (tests, wave 2) -------------------------------------------------------
@@ -288,18 +412,61 @@ impl Workbench {
         &self.panels
     }
 
+    /// The sessions store entity (tests, inspection).
+    pub fn sessions(&self) -> &Entity<SessionsStore> {
+        &self.sessions
+    }
+
+    /// The settings store the workbench runs on.
+    pub fn settings_store(&self) -> &SettingsStore {
+        &self.settings
+    }
+
+    /// The cached view of panel `id` as its concrete type, once it has been drawn.
+    pub fn panel<T: Render>(&self, id: &str) -> Option<Entity<T>> {
+        self.panel_views
+            .get(&PanelId::new(id))
+            .and_then(|view| view.clone().downcast::<T>().ok())
+    }
+
+    /// The terminal view settings currently in effect.
+    pub fn terminal_view_settings(&self) -> &heeler_terminal_view::TerminalViewSettings {
+        &self.terminal_style
+    }
+
+    /// Edits the layout model directly (then re-renders and saves). For embedding code and
+    /// tests that need layouts the UI has no gesture for.
+    pub fn edit_layout(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut WorkbenchState),
+    ) {
+        self.mutate(cx, change);
+    }
+
     /// Title shown in the title bar and window title for what has focus.
-    pub fn active_title(&self) -> String {
+    pub fn active_title(&self, cx: &App) -> String {
         match self.state.active_item() {
-            Some(item) => self.item_title(&item).to_string(),
+            Some(item) => self.item_title(&item, cx).to_string(),
             None => "Heeler".to_owned(),
         }
     }
 
-    pub fn item_icon_and_title(&self, item: &ItemRef) -> (SharedString, SharedString) {
+    pub fn item_icon_and_title(&self, item: &ItemRef, cx: &App) -> (SharedString, SharedString) {
         match item {
-            ItemRef::Terminal { session } => ("❯".into(), session.clone().into()),
-            ItemRef::Chat { session } => ("✦".into(), session.clone().into()),
+            ItemRef::Terminal { session } | ItemRef::Chat { session } => {
+                let info = session
+                    .parse::<SessionId>()
+                    .ok()
+                    .and_then(|id| self.sessions.read(cx).session(id).cloned());
+                match info {
+                    Some(info) => (
+                        crate::workbench::panels::kind_icon(info.kind).into(),
+                        info.title.into(),
+                    ),
+                    None => ("❯".into(), "Terminal".into()),
+                }
+            }
             ItemRef::Panel { panel } => (
                 self.panels
                     .get(panel)
@@ -311,8 +478,8 @@ impl Workbench {
         }
     }
 
-    pub fn item_title(&self, item: &ItemRef) -> SharedString {
-        self.item_icon_and_title(item).1
+    pub fn item_title(&self, item: &ItemRef, cx: &App) -> SharedString {
+        self.item_icon_and_title(item, cx).1
     }
 
     // ---- state mutation ---------------------------------------------------------------------
@@ -346,6 +513,8 @@ impl Workbench {
 
     fn after_change(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
+        self.attach_open_items(cx);
+        self.sync_session_focus(cx);
         cx.notify();
         self.schedule_save(cx);
     }
@@ -389,24 +558,38 @@ impl Workbench {
         let appearance = window.appearance();
         if appearance != self.appearance {
             self.appearance = appearance;
-            self.theme = Theme::for_appearance(appearance);
+            self.theme = Theme::for_chrome(self.chrome, appearance);
             self.publish_style(cx);
+            // `terminal.theme = "auto"` follows the system appearance.
+            self.refresh_terminal_style(cx);
         }
     }
 
-    fn publish_style(&self, cx: &mut Context<Self>) {
+    pub(crate) fn publish_style(&self, cx: &mut Context<Self>) {
         cx.set_global(UiStyle {
             theme: self.theme,
             density: self.density,
         });
     }
 
+    /// Switches density and writes it back to `appearance.density` in the user's settings.
     pub fn set_density(&mut self, density: Density, cx: &mut Context<Self>) {
-        if self.density != density {
-            self.density = density;
-            self.publish_style(cx);
-            cx.notify();
+        if self.density == density {
+            return;
         }
+        self.density = density;
+        self.publish_style(cx);
+        let value = match density {
+            Density::Compact => "compact",
+            Density::Comfortable => "comfortable",
+        };
+        if let Err(err) = self
+            .settings
+            .write_user("appearance.density", toml::Value::String(value.to_owned()))
+        {
+            tracing::warn!("cannot save the density: {err}");
+        }
+        cx.notify();
     }
 
     // ---- panels ------------------------------------------------------------------------------
@@ -420,17 +603,13 @@ impl Workbench {
         if let Some(view) = self.panel_views.get(id) {
             return Some(view.clone());
         }
-        let spec = self.panels.get(id)?;
-        let view = (spec.factory)(window, cx);
+        let factory = self.panels.get(id)?.factory.clone();
+        let view = factory(&self.env, window, cx);
         self.panel_views.insert(id.clone(), view.clone());
         Some(view)
     }
 
     // ---- action handlers ---------------------------------------------------------------------
-
-    pub(crate) fn focus_root(&self, window: &mut Window, cx: &mut App) {
-        window.focus(&self.focus_handle, cx);
-    }
 
     pub(crate) fn split_active(&mut self, edge: Edge, cx: &mut Context<Self>) {
         let pane = self.state.active_pane_id();
@@ -439,9 +618,20 @@ impl Workbench {
         });
     }
 
-    pub(crate) fn new_tab(&mut self, cx: &mut Context<Self>) {
-        let pane = self.state.active_pane_id();
-        self.try_mutate(cx, |s| s.add_item(pane, ItemRef::placeholder("New tab")));
+    /// ⌘⇧1…9: the `n`-th preset (1-based).
+    pub(crate) fn apply_preset_number(
+        &mut self,
+        n: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(name) = n
+            .checked_sub(1)
+            .and_then(|i| self.presets.get(i))
+            .map(|p| p.name.clone())
+        {
+            self.apply_preset_named(&name, cx);
+        }
     }
 
     pub(crate) fn apply_preset_named(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -767,7 +957,8 @@ impl Workbench {
 
     /// Menu of layout presets (title bar "Layout" switcher).
     pub(crate) fn preset_menu(&self) -> Vec<MenuEntry> {
-        self.presets
+        let mut entries: Vec<MenuEntry> = self
+            .presets
             .iter()
             .map(|preset| {
                 let name = preset.name.clone();
@@ -777,7 +968,14 @@ impl Workbench {
                 e.checked = self.state.preset == preset.name;
                 e
             })
-            .collect()
+            .collect();
+        entries.push(Self::entry(
+            "Save Layout as Preset…",
+            |this, window, cx| {
+                this.save_layout_as_preset(window, cx);
+            },
+        ));
+        entries
     }
 
     // ---- resize drags ------------------------------------------------------------------------

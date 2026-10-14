@@ -1,0 +1,528 @@
+//! The desktop's settings namespaces (design.md § Settings): `terminal`, `layout`,
+//! `panels.sessions`, `panels.inspector`, `panels.overview`. `appearance` lives in
+//! `heeler-settings`.
+//!
+//! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
+//! rounding noise (`1.2`, not `1.2000000476837158`).
+
+use std::collections::BTreeMap;
+
+pub use heeler_settings::AppearanceSettings;
+use heeler_settings::themes::{self, SystemAppearance};
+use heeler_settings::{Setting, SettingsStore};
+use heeler_terminal_view::{
+    CursorSettings, CursorStyle, OptionAsMeta, Rgb, TerminalPalette, TerminalViewSettings,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::workbench::StatusBarLayout;
+use crate::workbench::model::{CenterLayout, Dock, Docks, LayoutPreset, PanelId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyleSetting {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+/// `terminal.cursor`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct CursorConfig {
+    /// `block`, `bar` or `underline`; applications that ask for a shape win.
+    pub style: CursorStyleSetting,
+    /// Whether the cursor blinks while the terminal has focus.
+    pub blink: bool,
+}
+
+impl Default for CursorConfig {
+    fn default() -> Self {
+        Self {
+            style: CursorStyleSetting::Block,
+            blink: true,
+        }
+    }
+}
+
+/// Which Option key acts as Meta. GPUI cannot tell the two keys apart, so every value except
+/// `none` makes both act as Meta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OptionAsMetaSetting {
+    None,
+    #[default]
+    Left,
+    Right,
+    Both,
+}
+
+/// The `terminal` namespace: font, theme and behavior of every terminal view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// Font family of terminal text (monospace).
+    pub font_family: String,
+    /// Font size in points.
+    pub font_size: f64,
+    /// Line height as a multiple of the font size.
+    pub line_height: f64,
+    /// `auto` (follows the system appearance), `heeler-dark`, `heeler-light`.
+    pub theme: String,
+    pub cursor: CursorConfig,
+    pub option_as_meta: OptionAsMetaSetting,
+    /// Copy the selection to the clipboard when the mouse is released.
+    pub copy_on_select: bool,
+    /// Jump back to the live screen when typing while scrolled into history.
+    pub scroll_to_bottom_on_input: bool,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            font_family: "Menlo".to_owned(),
+            font_size: 13.0,
+            line_height: 1.2,
+            theme: themes::AUTO.to_owned(),
+            cursor: CursorConfig::default(),
+            option_as_meta: OptionAsMetaSetting::Left,
+            copy_on_select: false,
+            scroll_to_bottom_on_input: true,
+        }
+    }
+}
+
+impl Setting for TerminalSettings {
+    const NAMESPACE: &'static str = "terminal";
+    const WORKSPACE_OVERRIDABLE: bool = true;
+}
+
+fn rgb(c: themes::Rgb) -> Rgb {
+    Rgb(c.r, c.g, c.b)
+}
+
+impl TerminalSettings {
+    /// The view configuration for this namespace with the theme resolved against `system`.
+    pub fn view_settings(&self, system: SystemAppearance) -> TerminalViewSettings {
+        let theme = themes::resolve(&self.theme, system);
+        let mut ansi = [Rgb(0, 0, 0); 16];
+        for (slot, color) in ansi.iter_mut().zip(theme.ansi) {
+            *slot = rgb(color);
+        }
+        TerminalViewSettings {
+            font_family: self.font_family.clone(),
+            font_size: self.font_size.clamp(4.0, 72.0) as f32,
+            line_height: self.line_height.clamp(0.8, 3.0) as f32,
+            palette: TerminalPalette {
+                ansi,
+                foreground: rgb(theme.foreground),
+                background: rgb(theme.background),
+                cursor: rgb(theme.cursor),
+                selection: rgb(theme.selection),
+            },
+            cursor: CursorSettings {
+                style: match self.cursor.style {
+                    CursorStyleSetting::Block => CursorStyle::Block,
+                    CursorStyleSetting::Bar => CursorStyle::Bar,
+                    CursorStyleSetting::Underline => CursorStyle::Underline,
+                },
+                blink: self.cursor.blink,
+            },
+            option_as_meta: match self.option_as_meta {
+                OptionAsMetaSetting::None => OptionAsMeta::None,
+                OptionAsMetaSetting::Left => OptionAsMeta::Left,
+                OptionAsMetaSetting::Right => OptionAsMeta::Right,
+                OptionAsMetaSetting::Both => OptionAsMeta::Both,
+            },
+            copy_on_select: self.copy_on_select,
+            scroll_to_bottom_on_input: self.scroll_to_bottom_on_input,
+        }
+    }
+}
+
+/// `layout.presets.<name>.left` and friends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct DockSetting {
+    /// Panel ids stacked in the dock, e.g. `["sessions"]`.
+    pub panels: Vec<String>,
+    /// Width (left/right) or height (bottom) in pixels.
+    pub size: f64,
+    pub visible: bool,
+}
+
+impl Default for DockSetting {
+    fn default() -> Self {
+        Self {
+            panels: Vec::new(),
+            size: 240.0,
+            visible: false,
+        }
+    }
+}
+
+impl DockSetting {
+    fn from_dock(dock: &Dock) -> Self {
+        Self {
+            panels: dock.panels.iter().map(|p| p.to_string()).collect(),
+            size: f64::from(dock.size),
+            visible: dock.visible,
+        }
+    }
+
+    fn to_dock(&self) -> Dock {
+        let panels: Vec<&str> = self.panels.iter().map(String::as_str).collect();
+        Dock::new(&panels, self.size as f32, self.visible)
+    }
+}
+
+/// Status items per side, by id (`connection`, `sessions`, `attention`, `density`, `theme`,
+/// `palette_hint`); unknown ids are skipped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct StatusBarSetting {
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+}
+
+impl Default for StatusBarSetting {
+    fn default() -> Self {
+        let layout = StatusBarLayout::default();
+        Self {
+            left: layout.left,
+            right: layout.right,
+        }
+    }
+}
+
+/// One entry of `layout.presets`: docks and status bar. The center keeps the current panes.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct PresetSetting {
+    pub left: DockSetting,
+    pub right: DockSetting,
+    pub bottom: DockSetting,
+    pub status_bar: StatusBarSetting,
+}
+
+/// The `layout` namespace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct LayoutSettings {
+    /// Preset applied on a fresh start and whenever this value changes.
+    pub preset: String,
+    /// User presets by name; `default`, `focus` and `overview` always exist and can be
+    /// overridden here. Edit `settings.toml` to change these.
+    pub presets: BTreeMap<String, PresetSetting>,
+}
+
+impl Default for LayoutSettings {
+    fn default() -> Self {
+        Self {
+            preset: LayoutPreset::DEFAULT.to_owned(),
+            presets: BTreeMap::new(),
+        }
+    }
+}
+
+impl Setting for LayoutSettings {
+    const NAMESPACE: &'static str = "layout";
+}
+
+/// A layout preset plus the status bar it shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetDef {
+    pub layout: LayoutPreset,
+    pub status_bar: StatusBarLayout,
+}
+
+impl LayoutSettings {
+    /// Built-in presets followed by user presets; a user preset named like a built-in replaces
+    /// its docks and status bar (the built-in's center behavior stays).
+    pub fn preset_defs(&self) -> Vec<PresetDef> {
+        let mut defs: Vec<PresetDef> = LayoutPreset::builtin()
+            .into_iter()
+            .map(|layout| PresetDef {
+                layout,
+                status_bar: StatusBarLayout::default(),
+            })
+            .collect();
+        for (name, setting) in &self.presets {
+            let docks = Docks {
+                left: setting.left.to_dock(),
+                right: setting.right.to_dock(),
+                bottom: setting.bottom.to_dock(),
+            };
+            let status_bar = StatusBarLayout {
+                left: setting.status_bar.left.clone(),
+                right: setting.status_bar.right.clone(),
+            };
+            match defs.iter_mut().find(|d| d.layout.name == *name) {
+                Some(existing) => {
+                    existing.layout.docks = docks;
+                    existing.status_bar = status_bar;
+                }
+                None => defs.push(PresetDef {
+                    layout: LayoutPreset {
+                        name: name.clone(),
+                        docks,
+                        center: CenterLayout::Keep,
+                        zoom_active: false,
+                    },
+                    status_bar,
+                }),
+            }
+        }
+        defs
+    }
+
+    /// The setting that reproduces `layout` and `status_bar` (for "Save layout as preset…").
+    pub fn preset_from(docks: &Docks, status_bar: &StatusBarLayout) -> PresetSetting {
+        PresetSetting {
+            left: DockSetting::from_dock(&docks.left),
+            right: DockSetting::from_dock(&docks.right),
+            bottom: DockSetting::from_dock(&docks.bottom),
+            status_bar: StatusBarSetting {
+                left: status_bar.left.clone(),
+                right: status_bar.right.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBy {
+    #[default]
+    Workspace,
+    State,
+    None,
+}
+
+/// The `panels.sessions` namespace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SessionsPanelSettings {
+    /// `workspace`, `state` or `none`.
+    pub group_by: GroupBy,
+    /// Show the "Needs you" section on top.
+    pub needs_you: bool,
+    /// Fields of a row, in order: `state`, `kind`, `title`, `placement`, `age`.
+    pub row: Vec<String>,
+}
+
+impl Default for SessionsPanelSettings {
+    fn default() -> Self {
+        Self {
+            group_by: GroupBy::Workspace,
+            needs_you: true,
+            row: ["state", "kind", "title", "placement", "age"]
+                .map(str::to_owned)
+                .to_vec(),
+        }
+    }
+}
+
+impl Setting for SessionsPanelSettings {
+    const NAMESPACE: &'static str = "panels.sessions";
+}
+
+/// The `panels.inspector` namespace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct InspectorPanelSettings {
+    /// Tabs shown, in order: `approvals`, `changes`, `info`.
+    pub tabs: Vec<String>,
+    /// Reveal the inspector when an approval arrives (applies from M4).
+    pub reveal_on_approval: bool,
+}
+
+impl Default for InspectorPanelSettings {
+    fn default() -> Self {
+        Self {
+            tabs: ["approvals", "changes", "info"].map(str::to_owned).to_vec(),
+            reveal_on_approval: true,
+        }
+    }
+}
+
+impl Setting for InspectorPanelSettings {
+    const NAMESPACE: &'static str = "panels.inspector";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CardSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl CardSize {
+    /// Card width and terminal preview height in pixels.
+    pub fn dimensions(self) -> (f32, f32) {
+        match self {
+            CardSize::Small => (220.0, 110.0),
+            CardSize::Medium => (300.0, 160.0),
+            CardSize::Large => (420.0, 240.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PreviewMode {
+    /// Attach every running session and draw its terminal live.
+    #[default]
+    Live,
+    /// Draw only terminals that are attached anyway (open in a pane); never attach for a card.
+    Static,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    /// Sessions that need you first.
+    #[default]
+    Attention,
+    /// Newest first.
+    Recent,
+    Name,
+}
+
+/// The `panels.overview` namespace.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct OverviewPanelSettings {
+    /// `small`, `medium` or `large`.
+    pub card_size: CardSize,
+    /// `live`, `static` or `off`.
+    pub preview: PreviewMode,
+    /// `attention`, `recent` or `name`.
+    pub sort: SortOrder,
+}
+
+impl Setting for OverviewPanelSettings {
+    const NAMESPACE: &'static str = "panels.overview";
+}
+
+/// Registers every namespace the desktop owns (plus `appearance`) so the schema and diagnostics
+/// know them from the start.
+pub fn register_all(store: &SettingsStore) {
+    store.register::<AppearanceSettings>();
+    store.register::<TerminalSettings>();
+    store.register::<LayoutSettings>();
+    store.register::<SessionsPanelSettings>();
+    store.register::<InspectorPanelSettings>();
+    store.register::<OverviewPanelSettings>();
+}
+
+/// Panels use this for `PanelId` lookups without importing the model.
+pub fn panel_ids(names: &[String]) -> Vec<PanelId> {
+    names.iter().map(|n| PanelId::new(n.as_str())).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_are_always_present_and_user_presets_extend_them() {
+        let mut layout = LayoutSettings::default();
+        let names: Vec<_> = layout
+            .preset_defs()
+            .into_iter()
+            .map(|d| d.layout.name)
+            .collect();
+        assert_eq!(names, ["default", "focus", "overview"]);
+
+        layout.presets.insert(
+            "wide".into(),
+            PresetSetting {
+                left: DockSetting {
+                    panels: vec!["sessions".into()],
+                    size: 300.0,
+                    visible: true,
+                },
+                ..PresetSetting::default()
+            },
+        );
+        layout.presets.insert(
+            "overview".into(),
+            PresetSetting {
+                right: DockSetting {
+                    panels: vec!["inspector".into()],
+                    size: 280.0,
+                    visible: true,
+                },
+                ..PresetSetting::default()
+            },
+        );
+        let defs = layout.preset_defs();
+        assert_eq!(defs.len(), 4);
+        let overview = defs.iter().find(|d| d.layout.name == "overview").unwrap();
+        assert!(
+            matches!(&overview.layout.center, CenterLayout::Items(_)),
+            "the overview keeps its center behavior"
+        );
+        assert!(
+            !overview.layout.docks.left.visible,
+            "docks come from the user preset"
+        );
+        assert_eq!(overview.layout.docks.right.size, 280.0);
+        let wide = defs.iter().find(|d| d.layout.name == "wide").unwrap();
+        assert_eq!(wide.layout.docks.left.size, 300.0);
+    }
+
+    #[test]
+    fn terminal_settings_resolve_the_theme_and_clamp_numbers() {
+        let settings = TerminalSettings {
+            font_size: 500.0,
+            theme: "auto".into(),
+            ..TerminalSettings::default()
+        };
+        let dark = settings.view_settings(SystemAppearance::Dark);
+        let light = settings.view_settings(SystemAppearance::Light);
+        assert_eq!(dark.palette.background, Rgb(0x1e, 0x1e, 0x1e));
+        assert_eq!(light.palette.background, Rgb(0xff, 0xff, 0xff));
+        assert_eq!(dark.font_size, 72.0);
+        let pinned = TerminalSettings {
+            theme: "heeler-light".into(),
+            ..TerminalSettings::default()
+        };
+        assert_eq!(
+            pinned.view_settings(SystemAppearance::Dark).palette,
+            light.palette
+        );
+    }
+
+    #[test]
+    fn defaults_round_trip_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(heeler_settings::SettingsPaths::in_dir(dir.path()));
+        register_all(&store);
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        assert_eq!(
+            *store.get::<TerminalSettings>(),
+            TerminalSettings::default()
+        );
+        let schema = store.schema();
+        for ns in [
+            "appearance",
+            "terminal",
+            "layout",
+            "panels.sessions",
+            "panels.inspector",
+            "panels.overview",
+        ] {
+            assert!(
+                schema["namespaces"][ns].is_object(),
+                "{ns} missing from the schema"
+            );
+        }
+    }
+}
