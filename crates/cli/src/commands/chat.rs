@@ -1,0 +1,334 @@
+//! `heeler chat new|send|log|attach|interrupt|models`, `heeler approvals`, `heeler approve`.
+
+use std::io::Write as _;
+
+use heeler_client::Client;
+use heeler_core::{AgentEvent, ApprovalId, SessionKind};
+use heeler_protocol::chat::{ApprovalInfo, ApprovalList, ChatCreate, ChatHistory};
+use heeler_protocol::messages::{Empty, Event, Request, SessionInfo, SessionResult, Subscribed};
+use serde_json::json;
+use tokio::sync::broadcast::error::RecvError;
+
+use super::{Ctx, print_line};
+use crate::args::{ApproveArgs, ChatCommand, ChatNewArgs, ChatSendArgs, TargetArgs};
+use heeler_cli::chat_render::ChatPrinter;
+use crate::error::CliError;
+
+/// Shortest approval id prefix accepted.
+const MIN_PREFIX: usize = 4;
+/// Events of the journal shown first by `attach`.
+const ATTACH_BACKLOG: u32 = 40;
+
+impl Ctx {
+    pub(super) async fn chat(&self, command: ChatCommand) -> Result<(), CliError> {
+        match command {
+            ChatCommand::New(args) => self.chat_new(args).await,
+            ChatCommand::Send(args) => self.chat_send(args).await,
+            ChatCommand::Log(TargetArgs { target }) => self.chat_log(&target).await,
+            ChatCommand::Attach(TargetArgs { target }) => self.chat_attach(&target).await,
+            ChatCommand::Interrupt(TargetArgs { target }) => self.chat_interrupt(&target).await,
+            ChatCommand::Models => self.chat_models().await,
+        }
+    }
+
+    /// The session a chat command targets, which must be a chat session.
+    async fn resolve_chat(&self, client: &Client, target: &str) -> Result<SessionInfo, CliError> {
+        let session = self.resolve(client, target).await?;
+        if session.kind != SessionKind::Harness {
+            return Err(CliError::Failed(format!(
+                "session {} is a terminal session; `heeler chat new` starts a chat session",
+                session.id
+            )));
+        }
+        Ok(session)
+    }
+
+    async fn chat_new(&self, args: ChatNewArgs) -> Result<(), CliError> {
+        // The daemon resolves paths from its own working directory, not ours.
+        let cwd = match args.cwd {
+            Some(path) => std::path::absolute(path)?,
+            None => std::env::current_dir()?,
+        };
+        let client = self.connect().await?;
+        let workspace = match super::workspaces::workspace_target(args.workspace) {
+            Some((target, _)) => Some(self.resolve_workspace_id(&client, &target).await?),
+            None => None,
+        };
+        let session = client
+            .chat_create(ChatCreate {
+                workspace_id: workspace,
+                cwd,
+                agent: "codex".to_owned(),
+                model: args.model,
+                approval_policy: args.approval_policy,
+                sandbox: args.sandbox,
+                title: args.title,
+            })
+            .await
+            .map_err(|e| self.fail(e))?;
+        let result = SessionResult { session };
+        self.print(&result, || {
+            let session = &result.session;
+            match &session.chat {
+                Some(chat) => format!(
+                    "session {} {} {} (approvals: {}, sandbox: {})",
+                    session.id, chat.agent, chat.model, chat.approval_policy, chat.sandbox
+                ),
+                None => format!("session {}", session.id),
+            }
+        })
+    }
+
+    async fn chat_send(&self, args: ChatSendArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let session = self.resolve_chat(&client, &args.target).await?;
+        // Subscribed before sending, so no event of the turn is missed.
+        let mut events = client.events();
+        if args.wait {
+            let _: Subscribed = self
+                .call(&client, Request::EventsSubscribe(Empty {}))
+                .await?;
+        }
+        let sent = client
+            .chat_send(session.id, args.text)
+            .await
+            .map_err(|e| self.fail(e))?;
+        if !args.wait {
+            return self.print(
+                &json!({"session_id": session.id, "turn_id": sent.turn_id}),
+                || format!("sent to {} (turn {})", session.id, sent.turn_id),
+            );
+        }
+        let mut printer = ChatPrinter::without_user_messages();
+        loop {
+            match events.recv().await {
+                Ok((_, Event::ChatEvent { session_id, event }))
+                    if session_id == session.id
+                        && event.turn_id.is_none_or(|turn| turn == sent.turn_id) =>
+                {
+                    self.show(&mut printer, &event)?;
+                    if event.kind.ends_turn() {
+                        return match event.kind {
+                            heeler_core::AgentEventKind::TurnCompleted { .. } => Ok(()),
+                            // The line saying why is already printed.
+                            _ => Err(CliError::Reported),
+                        };
+                    }
+                }
+                Ok((_, Event::SessionUpdated { session: updated }))
+                    if updated.id == session.id && !updated.state.is_live() =>
+                {
+                    return Err(CliError::Failed(format!(
+                        "the session ended before the turn did ({})",
+                        super::sessions::state_text(&updated.state)
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) => return Err(self.stream_error(error)),
+            }
+        }
+    }
+
+    /// Prints one event: its text, or its JSON line with `--json`.
+    fn show(&self, printer: &mut ChatPrinter, event: &AgentEvent) -> Result<(), CliError> {
+        if self.json {
+            return print_line(&serde_json::to_string(event).map_err(super::io_error)?);
+        }
+        let text = printer.render(event);
+        if !text.is_empty() {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(text.as_bytes())?;
+            stdout.flush()?;
+        }
+        Ok(())
+    }
+
+    fn stream_error(&self, error: RecvError) -> CliError {
+        match error {
+            RecvError::Lagged(missed) => CliError::Failed(format!(
+                "fell behind the event stream by {missed} events; `heeler chat log` has the rest"
+            )),
+            RecvError::Closed => self.fail(heeler_client::ClientError::Disconnected),
+        }
+    }
+
+    async fn chat_log(&self, target: &str) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let session = self.resolve_chat(&client, target).await?;
+        let history: ChatHistory = client
+            .chat_history_all(session.id)
+            .await
+            .map_err(|e| self.fail(e))?;
+        if self.json {
+            return print_line(&serde_json::to_string(&history).map_err(super::io_error)?);
+        }
+        let mut printer = ChatPrinter::new();
+        for event in &history.events {
+            self.show(&mut printer, event)?;
+        }
+        Ok(())
+    }
+
+    async fn chat_attach(&self, target: &str) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let session = self.resolve_chat(&client, target).await?;
+        let mut events = client.events();
+        let _: Subscribed = self
+            .call(&client, Request::EventsSubscribe(Empty {}))
+            .await?;
+        // History after the subscription: what happens in between arrives live and is
+        // recognised by its seq.
+        let history = client
+            .chat_history(session.id, None, ATTACH_BACKLOG)
+            .await
+            .map_err(|e| self.fail(e))?;
+        let mut printer = ChatPrinter::new();
+        for event in &history.events {
+            self.show(&mut printer, event)?;
+        }
+        let current = self.resolve_chat(&client, &session.id.to_string()).await?;
+        if !current.state.is_live() {
+            return self.ended(&current);
+        }
+        loop {
+            match events.recv().await {
+                Ok((_, Event::ChatEvent { session_id, event }))
+                    if session_id == session.id && event.seq > history.last_seq =>
+                {
+                    self.show(&mut printer, &event)?;
+                }
+                Ok((_, Event::SessionUpdated { session: updated }))
+                    if updated.id == session.id && !updated.state.is_live() =>
+                {
+                    return self.ended(&updated);
+                }
+                Ok(_) => {}
+                Err(error) => return Err(self.stream_error(error)),
+            }
+        }
+    }
+
+    fn ended(&self, session: &SessionInfo) -> Result<(), CliError> {
+        if self.json {
+            return Ok(());
+        }
+        print_line(&format!(
+            "session {} {}",
+            session.id,
+            super::sessions::state_text(&session.state)
+        ))
+    }
+
+    async fn chat_interrupt(&self, target: &str) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let session = self.resolve_chat(&client, target).await?;
+        client
+            .chat_interrupt(session.id)
+            .await
+            .map_err(|e| self.fail(e))?;
+        self.print(&json!({"session_id": session.id}), || {
+            format!("interrupted {}", session.id)
+        })
+    }
+
+    async fn chat_models(&self) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let models = client.chat_models("codex").await.map_err(|e| self.fail(e))?;
+        self.print(&models, || {
+            let mut out = String::new();
+            for model in models.models.iter().filter(|m| !m.hidden) {
+                let marker = if model.is_default { " (default)" } else { "" };
+                out.push_str(&format!("{}{marker}\t{}\n", model.id, model.display_name));
+            }
+            out.trim_end().to_owned()
+        })
+    }
+
+    pub(super) async fn approvals(&self) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let approvals = client.approvals(None).await.map_err(|e| self.fail(e))?;
+        let list = ApprovalList { approvals };
+        self.print(&list, || approval_table(&list.approvals))
+    }
+
+    pub(super) async fn approve(&self, args: ApproveArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let pending = client.approvals(None).await.map_err(|e| self.fail(e))?;
+        let approval = resolve_approval(&pending, &args.approval)?.id;
+        client
+            .approve(approval, args.option.clone())
+            .await
+            .map_err(|e| self.fail(e))?;
+        self.print(
+            &json!({"approval_id": approval, "option_id": args.option}),
+            || format!("approved {approval}: {}", args.option),
+        )
+    }
+}
+
+/// One pending approval: exact id, or a unique prefix of at least [`MIN_PREFIX`] characters.
+fn resolve_approval<'a>(
+    pending: &'a [ApprovalInfo],
+    target: &str,
+) -> Result<&'a ApprovalInfo, CliError> {
+    if let Ok(id) = target.parse::<ApprovalId>()
+        && let Some(found) = pending.iter().find(|a| a.id == id)
+    {
+        return Ok(found);
+    }
+    let prefix = target.to_ascii_uppercase();
+    let matches: Vec<&ApprovalInfo> = if target.len() >= MIN_PREFIX {
+        pending
+            .iter()
+            .filter(|a| a.id.to_string().starts_with(&prefix))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => Err(CliError::Failed(format!(
+            "no pending approval matches `{target}`; `heeler approvals` lists them"
+        ))),
+        many => {
+            let mut message = format!("`{target}` matches {} approvals; use a longer id:", many.len());
+            for approval in many {
+                message.push_str(&format!("\n  {}  {}", approval.id, approval.title));
+            }
+            Err(CliError::Usage(message))
+        }
+    }
+}
+
+fn approval_table(approvals: &[ApprovalInfo]) -> String {
+    if approvals.is_empty() {
+        return "no pending approvals".to_owned();
+    }
+    let rows: Vec<[String; 4]> = approvals
+        .iter()
+        .map(|a| {
+            let title = a.title.lines().next().unwrap_or("").to_owned();
+            let options: Vec<&str> = a.options.iter().map(|o| o.id.as_str()).collect();
+            [a.id.to_string(), a.session_id.to_string(), title, options.join(" ")]
+        })
+        .collect();
+    let header = ["ID", "SESSION", "REQUEST", "OPTIONS"].map(str::to_owned);
+    let mut widths = [0; 3];
+    for row in std::iter::once(&header).chain(&rows) {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    std::iter::once(&header)
+        .chain(&rows)
+        .map(|row| {
+            let mut line = String::new();
+            for (cell, width) in row.iter().zip(widths) {
+                line.push_str(&format!("{cell:<width$}  "));
+            }
+            line.push_str(&row[3]);
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

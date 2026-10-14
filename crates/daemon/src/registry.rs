@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::{Instant, sleep_until};
 
+use heeler_agents::{CodexConfig, ExitInfo, Started};
 use heeler_core::{SessionEvent, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_protocol::chat::{ChatCreate, ChatInfo};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReport, AgentReportRequest, CreatedBy, Event,
@@ -33,6 +35,7 @@ use tracing::{debug, error, warn};
 
 use crate::agent;
 use crate::bus::{EventBus, PublishError};
+use crate::chat::{AGENT_CODEX, ChatManager, ChatSpec};
 use crate::config::RestoreMode;
 use crate::projects::{self, Folder};
 use crate::restore::{self, Stored};
@@ -100,6 +103,53 @@ enum Command {
     TerminalExited(TerminalId, ExitStatus),
     AgentReport(AgentReportRequest, Reply<AgentApplied>),
     AgentRelease(AgentReleaseRequest, Reply<AgentApplied>),
+    /// `chat.create` with a canonical `cwd`; answered once the agent is up (or failed).
+    CreateChat(ChatCreate, Reply<SessionInfo>),
+    /// From the task that started a chat agent.
+    ChatStarted {
+        session: SessionId,
+        outcome: Result<Started, ErrorBody>,
+        reply: Option<Reply<SessionInfo>>,
+    },
+    /// From a chat session's pump: a turn started or ended (`turn`), and how many approvals
+    /// are pending now.
+    ChatState {
+        session: SessionId,
+        turn: Option<bool>,
+        pending: u32,
+    },
+    /// From a chat session's pump: the agent process is gone.
+    ChatExited { session: SessionId, exit: ExitInfo },
+    /// Whether the session is a chat session, and live.
+    ChatTarget(SessionId, Reply<bool>),
+}
+
+/// How a chat session's pump reaches the registry.
+#[derive(Debug, Clone)]
+pub(crate) struct ChatNotifier {
+    tx: mpsc::WeakSender<Command>,
+}
+
+impl ChatNotifier {
+    async fn send(&self, command: Command) {
+        if let Some(tx) = self.tx.upgrade() {
+            // A closed mailbox means the daemon is going down.
+            let _ = tx.send(command).await;
+        }
+    }
+
+    pub(crate) async fn state(&self, session: SessionId, turn: Option<bool>, pending: u32) {
+        self.send(Command::ChatState {
+            session,
+            turn,
+            pending,
+        })
+        .await;
+    }
+
+    pub(crate) async fn exited(&self, session: SessionId, exit: ExitInfo) {
+        self.send(Command::ChatExited { session, exit }).await;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +162,7 @@ pub struct SessionCounts {
 #[derive(Debug, Clone)]
 pub struct RegistryHandle {
     tx: mpsc::Sender<Command>,
+    chats: Arc<ChatManager>,
 }
 
 impl RegistryHandle {
@@ -231,6 +282,23 @@ impl RegistryHandle {
     pub async fn release_agent(&self, req: AgentReleaseRequest) -> Result<AgentApplied, ErrorBody> {
         self.ask(|r| Command::AgentRelease(req, r)).await
     }
+
+    /// The chat sessions' runtime: sending, interrupting, approvals, history.
+    pub fn chats(&self) -> &Arc<ChatManager> {
+        &self.chats
+    }
+
+    /// Opens an agent conversation as a session; returns once the agent is ready (state
+    /// `idle`) or fails with `provider_error` when it could not start.
+    pub async fn create_chat(&self, mut req: ChatCreate) -> Result<SessionInfo, ErrorBody> {
+        req.cwd = canonical_dir(req.cwd).await?;
+        self.ask(|r| Command::CreateChat(req, r)).await
+    }
+
+    /// Whether `id` is a chat session (else an error), and whether it is live.
+    pub async fn chat_target(&self, id: SessionId) -> Result<bool, ErrorBody> {
+        self.ask(|r| Command::ChatTarget(id, r)).await
+    }
 }
 
 /// One terminal session and the daemon-side state around it.
@@ -261,6 +329,8 @@ struct SessionEntry {
     dirty: bool,
     /// Highest `seq` accepted per reporting source (`agent.report` / `agent.release`).
     agent_seqs: BTreeMap<String, u64>,
+    /// What an agent chat session is (`kind` harness); such a session has no terminal.
+    chat: Option<ChatSpec>,
 }
 
 impl SessionEntry {
@@ -275,7 +345,7 @@ impl SessionEntry {
     }
 
     /// Signals the process once; the exit arrives later through the watcher.
-    fn request_stop(&mut self) {
+    fn request_stop(&mut self, chats: &ChatManager) {
         if self.stopping {
             return;
         }
@@ -284,6 +354,9 @@ impl SessionEntry {
             && let Err(error) = entry.terminal().terminate(STOP_GRACE)
         {
             warn!(session = %self.info.id, %error, "could not signal the terminal");
+        }
+        if self.chat.is_some() {
+            chats.stop(self.info.id);
         }
     }
 
@@ -357,6 +430,7 @@ struct SessionRegistry {
     activity_interval: Duration,
     sessions: Vec<SessionEntry>,
     stop_all_waiters: Vec<Reply<()>>,
+    chats: Arc<ChatManager>,
     storage: Storage,
     /// When sessions with unwritten title/cwd changes are written next.
     flush_at: Option<Instant>,
@@ -379,6 +453,8 @@ pub struct RegistryConfig {
     pub home_folder: PathBuf,
     /// Shortest time between two `last_active_ms` updates of one workspace.
     pub activity_interval: Duration,
+    /// How to start `codex app-server` for chat sessions.
+    pub codex: CodexConfig,
 }
 
 /// Starts the actor from the stored state. It stops when every [`RegistryHandle`] is dropped.
@@ -393,6 +469,12 @@ pub fn spawn(
     stored: Stored,
 ) -> RegistryHandle {
     let (tx, rx) = mpsc::channel(MAILBOX_CAPACITY);
+    let chats = ChatManager::new(
+        bus.clone(),
+        config.storage.clone(),
+        ChatNotifier { tx: tx.downgrade() },
+        config.codex,
+    );
     let (workspaces, home, next_position) =
         restored_workspaces(&stored, &config.storage, &config.home_folder);
     let mut registry = SessionRegistry {
@@ -409,13 +491,14 @@ pub fn spawn(
         activity_interval: config.activity_interval,
         sessions: Vec::new(),
         stop_all_waiters: Vec::new(),
+        chats: chats.clone(),
         storage: config.storage,
         flush_at: None,
         activity_flush_at: None,
     };
     registry.restore_sessions(stored.sessions, config.restore);
     tokio::spawn(registry.run(rx));
-    RegistryHandle { tx }
+    RegistryHandle { tx, chats }
 }
 
 /// The stored workspaces, Home among them (created and stored when missing, bound to
@@ -555,9 +638,32 @@ async fn resolve_folder(path: PathBuf) -> Result<Folder, ErrorBody> {
         })?
 }
 
+/// The canonical form of an existing directory, resolved on the blocking pool.
+async fn canonical_dir(path: PathBuf) -> Result<PathBuf, ErrorBody> {
+    if !path.is_absolute() {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!("`{}` is not an absolute path", path.display()),
+        ));
+    }
+    let shown = path.display().to_string();
+    tokio::task::spawn_blocking(move || std::fs::canonicalize(&path).ok().filter(|p| p.is_dir()))
+        .await
+        .map_err(|error| {
+            error!(%error, "resolving a directory failed");
+            ErrorBody::new(ErrorCode::Internal, "could not resolve the directory")
+        })?
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!("`{shown}` is not an existing directory"),
+            )
+        })
+}
+
 /// Storage failures never take request handling down: the in-memory state stays authoritative
 /// and the next write may succeed.
-fn log_write(result: Result<(), StorageError>, what: &str) {
+pub(crate) fn log_write(result: Result<(), StorageError>, what: &str) {
     match result {
         Ok(()) => {}
         // The writer is closed once the daemon has finished shutting down; nothing is lost then.
@@ -665,6 +771,21 @@ impl SessionRegistry {
                 }
                 Command::AgentRelease(req, reply) => {
                     let _ = reply.send(self.release_agent(req));
+                }
+                Command::CreateChat(req, reply) => self.create_chat(req, reply),
+                Command::ChatStarted {
+                    session,
+                    outcome,
+                    reply,
+                } => self.on_chat_started(session, outcome, reply),
+                Command::ChatState {
+                    session,
+                    turn,
+                    pending,
+                } => self.on_chat_state(session, turn, pending),
+                Command::ChatExited { session, exit } => self.on_chat_exited(session, &exit),
+                Command::ChatTarget(id, reply) => {
+                    let _ = reply.send(self.chat_target(id));
                 }
             }
         }
@@ -1205,6 +1326,7 @@ impl SessionRegistry {
             agent: None,
             created_at_ms: now_ms(),
             restored: false,
+            chat: None,
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -1224,6 +1346,7 @@ impl SessionRegistry {
             keep_live: None,
             dirty: false,
             agent_seqs: BTreeMap::new(),
+            chat: None,
         });
         let index = self.sessions.len() - 1;
         // A new session is activity; the workspace announcement that follows the session's
@@ -1321,7 +1444,7 @@ impl SessionRegistry {
             )));
             return;
         }
-        session.request_stop();
+        session.request_stop(&self.chats);
         session.stop_waiters.push(reply);
     }
 
@@ -1333,6 +1456,9 @@ impl SessionRegistry {
                 ErrorCode::InvalidState,
                 format!("session {id} is still running; stop it first"),
             ));
+        }
+        if session.chat.is_some() {
+            return Ok(self.restart_chat(index));
         }
         session.advance(SessionEvent::Restart);
         if let Some(old) = session.terminal.take() {
@@ -1499,7 +1625,7 @@ impl SessionRegistry {
             if !session.stopping && !forget {
                 session.keep_live = Some(session.info.state.clone());
             }
-            session.request_stop();
+            session.request_stop(&self.chats);
         }
         self.flush_dirty();
         self.stop_all_waiters.push(reply);
@@ -1622,6 +1748,409 @@ impl SessionRegistry {
         self.settle_stop_all();
     }
 
+    // Chat sessions ---------------------------------------------------------------------------
+
+    fn chat_target(&self, id: SessionId) -> Result<bool, ErrorBody> {
+        let session = &self.sessions[self.session_index(id)?];
+        if session.chat.is_none() {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!("session {id} is not a chat session"),
+            ));
+        }
+        Ok(session.info.state.is_live())
+    }
+
+    fn create_chat(&mut self, req: ChatCreate, reply: Reply<SessionInfo>) {
+        match self.begin_chat(req) {
+            Ok(index) => self.spawn_chat_start(index, Some(reply)),
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+
+    /// Adds the session (state `starting`) and stores it; the agent is started by the caller.
+    fn begin_chat(&mut self, req: ChatCreate) -> Result<usize, ErrorBody> {
+        if req.agent != AGENT_CODEX {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!("unsupported agent `{}` (supported: {AGENT_CODEX})", req.agent),
+            ));
+        }
+        let workspace_id = match req.workspace_id {
+            Some(id) => {
+                self.index_of(id)?;
+                id
+            }
+            None => self
+                .workspace_containing(&req.cwd)
+                .map_or(self.home, |index| self.workspaces[index].info.id),
+        };
+        let spec = ChatSpec {
+            agent: req.agent,
+            model: req.model.filter(|m| !m.trim().is_empty()),
+            approval_policy: req.approval_policy.unwrap_or_default(),
+            sandbox: req.sandbox.unwrap_or_default(),
+            thread_id: None,
+        };
+        let folder = req
+            .cwd
+            .file_name()
+            .map_or_else(|| "chat".to_owned(), |n| n.to_string_lossy().into_owned());
+        let default_title = format!("{} · {folder}", spec.agent);
+        let chosen = req
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned);
+        let info = SessionInfo {
+            id: SessionId::new(),
+            workspace_id,
+            kind: SessionKind::Harness,
+            title: chosen.clone().unwrap_or_else(|| default_title.clone()),
+            state: SessionState::Starting,
+            command: vec![spec.agent.clone()],
+            cwd: Some(req.cwd.clone()),
+            terminal_id: None,
+            agent: None,
+            created_at_ms: now_ms(),
+            restored: false,
+            chat: Some(chat_info(&spec)),
+        };
+        self.publish(&Event::SessionUpdated {
+            session: info.clone(),
+        })?;
+        self.sessions.push(SessionEntry {
+            info,
+            spec: TerminalSpec {
+                command: vec![spec.agent.clone()],
+                cwd: Some(req.cwd),
+                ..TerminalSpec::default()
+            },
+            default_title,
+            title_locked: chosen.is_some(),
+            osc_title: None,
+            terminal: None,
+            stopping: false,
+            stop_waiters: Vec::new(),
+            ended_at_ms: None,
+            resume_ref_json: None,
+            restore_argv: None,
+            keep_live: None,
+            dirty: false,
+            agent_seqs: BTreeMap::new(),
+            chat: Some(spec),
+        });
+        let index = self.sessions.len() - 1;
+        let workspace = self.sessions[index].info.workspace_id;
+        self.touch_workspace(workspace);
+        // Stored before the agent runs: the journal's rows refer to this one.
+        self.persist_session(index);
+        self.sync_workspace(workspace);
+        Ok(index)
+    }
+
+    /// Starts the agent of a `Starting` chat session on a task; the outcome comes back as
+    /// `ChatStarted`.
+    fn spawn_chat_start(&mut self, index: usize, reply: Option<Reply<SessionInfo>>) {
+        let session = &self.sessions[index];
+        let Some(spec) = session.chat.clone() else {
+            return;
+        };
+        let id = session.info.id;
+        let cwd = session.info.cwd.clone().unwrap_or_default();
+        let chats = self.chats.clone();
+        let mailbox = self.mailbox.clone();
+        tokio::spawn(async move {
+            let outcome = chats.start(id, cwd, &spec).await;
+            let command = Command::ChatStarted {
+                session: id,
+                outcome,
+                reply,
+            };
+            match mailbox.upgrade() {
+                Some(tx) => {
+                    // A closed mailbox means the daemon is going down.
+                    let _ = tx.send(command).await;
+                }
+                None => {
+                    // Nobody left to adopt the agent.
+                    chats.stop(id);
+                }
+            }
+        });
+    }
+
+    fn on_chat_started(
+        &mut self,
+        id: SessionId,
+        outcome: Result<Started, ErrorBody>,
+        reply: Option<Reply<SessionInfo>>,
+    ) {
+        let respond = |reply: Option<Reply<SessionInfo>>, result: Result<SessionInfo, ErrorBody>| {
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        };
+        let Ok(index) = self.session_index(id) else {
+            // The workspace was closed meanwhile; there is nothing to attach the agent to.
+            self.chats.stop(id);
+            respond(
+                reply,
+                Err(ErrorBody::new(ErrorCode::NotFound, format!("session {id} not found"))),
+            );
+            return;
+        };
+        let session = &mut self.sessions[index];
+        match outcome {
+            Ok(started) => {
+                if let Some(spec) = &mut session.chat {
+                    spec.thread_id = Some(started.thread_id);
+                    spec.model = Some(started.model.clone());
+                }
+                if let Some(chat) = &mut session.info.chat {
+                    chat.model = started.model;
+                }
+                session.advance(SessionEvent::Ready);
+                if session.stopping {
+                    // A stop arrived while the agent was starting; it goes down right away
+                    // and the exit finishes the session.
+                    self.chats.stop(id);
+                    respond(
+                        reply,
+                        Err(ErrorBody::new(
+                            ErrorCode::InvalidState,
+                            "the session was stopped while it started",
+                        )),
+                    );
+                } else {
+                    self.sync_chat_state(index);
+                    respond(reply, Ok(self.sessions[index].info.clone()));
+                }
+                self.emit_session(index);
+                self.persist_session(index);
+            }
+            Err(error) => {
+                warn!(session = %id, message = %error.message, "chat agent failed to start");
+                let stopping = session.stopping;
+                session.advance(if stopping {
+                    SessionEvent::StopCompleted
+                } else {
+                    SessionEvent::Failed {
+                        reason: error.message.clone(),
+                    }
+                });
+                session.stopping = false;
+                let waiters = std::mem::take(&mut session.stop_waiters);
+                let info = session.info.clone();
+                self.emit_session(index);
+                self.persist_session(index);
+                respond(reply, Err(error));
+                for waiter in waiters {
+                    let _ = waiter.send(Ok(info.clone()));
+                }
+                self.settle_stop_all();
+            }
+        }
+    }
+
+    /// Records what the pump reports and moves the session's state to match.
+    fn on_chat_state(&mut self, id: SessionId, turn: Option<bool>, pending: u32) {
+        let Ok(index) = self.session_index(id) else {
+            return;
+        };
+        let before = self.sessions[index].info.clone();
+        if let Some(chat) = &mut self.sessions[index].info.chat {
+            if let Some(active) = turn {
+                chat.turn_active = active;
+            }
+            chat.pending_approvals = pending;
+        }
+        self.sync_chat_state(index);
+        if self.sessions[index].info != before {
+            self.emit_session(index);
+            self.persist_session(index);
+        }
+    }
+
+    /// Moves a live chat session to the state its turn and approval counts call for:
+    /// `waiting_approval` while anything is pending, else `running` during a turn, else `idle`.
+    /// A session still starting keeps its state until it is ready.
+    fn sync_chat_state(&mut self, index: usize) {
+        let session = &mut self.sessions[index];
+        let Some(chat) = &session.info.chat else {
+            return;
+        };
+        let target = if chat.pending_approvals > 0 {
+            SessionState::WaitingApproval
+        } else if chat.turn_active {
+            SessionState::Running
+        } else {
+            SessionState::Idle
+        };
+        // At most three steps separate any two of the states.
+        for _ in 0..3 {
+            let event = match (&session.info.state, &target) {
+                (SessionState::Idle, SessionState::Running | SessionState::WaitingApproval) => {
+                    SessionEvent::TurnStarted
+                }
+                (SessionState::Running, SessionState::WaitingApproval) => {
+                    SessionEvent::ApprovalRequested
+                }
+                (SessionState::WaitingApproval, SessionState::Running | SessionState::Idle) => {
+                    SessionEvent::ApprovalResolved
+                }
+                (SessionState::Running, SessionState::Idle) => SessionEvent::TurnFinished,
+                _ => return,
+            };
+            session.advance(event);
+        }
+    }
+
+    fn on_chat_exited(&mut self, id: SessionId, exit: &ExitInfo) {
+        let Ok(index) = self.session_index(id) else {
+            return;
+        };
+        let session = &mut self.sessions[index];
+        if !session.info.state.is_live() {
+            return;
+        }
+        session.advance(if session.stopping {
+            SessionEvent::StopCompleted
+        } else if exit.code == Some(0) && exit.signal.is_none() {
+            SessionEvent::ProcessExited {
+                code: exit.code,
+                signal: exit.signal,
+            }
+        } else {
+            SessionEvent::Failed {
+                reason: exit_reason(exit),
+            }
+        });
+        if let Some(chat) = &mut session.info.chat {
+            chat.turn_active = false;
+            chat.pending_approvals = 0;
+        }
+        session.stopping = false;
+        let info = session.info.clone();
+        let waiters = std::mem::take(&mut session.stop_waiters);
+        self.emit_session(index);
+        self.persist_session(index);
+        self.emit(&Event::SessionExited {
+            session_id: id,
+            code: exit.code,
+            signal: exit.signal,
+        });
+        for waiter in waiters {
+            let _ = waiter.send(Ok(info.clone()));
+        }
+        self.settle_stop_all();
+    }
+
+    /// A stopped or failed chat session comes back: the agent resumes the stored conversation.
+    fn restart_chat(&mut self, index: usize) -> SessionInfo {
+        let session = &mut self.sessions[index];
+        session.advance(SessionEvent::Restart);
+        session.stopping = false;
+        session.keep_live = None;
+        session.info.restored = false;
+        if let Some(chat) = &mut session.info.chat {
+            chat.turn_active = false;
+            chat.pending_approvals = 0;
+        }
+        self.emit_session(index);
+        self.persist_session(index);
+        self.spawn_chat_start(index, None);
+        self.sessions[index].info.clone()
+    }
+
+    /// Rebuilds a stored chat session. A live one is started again (the agent resumes its
+    /// conversation, the journal keeps the history) unless `mode` says to list it as stopped.
+    fn restore_chat(&mut self, row: SessionRow, mode: RestoreMode) -> ChatRestore {
+        let was_live = row.state.is_live();
+        let (spec, unusable) = match serde_json::from_str::<ChatSpec>(&row.spec_json) {
+            Ok(spec) => (spec, None),
+            Err(error) => {
+                warn!(session = %row.id, %error, "stored chat spec is unreadable");
+                (
+                    ChatSpec {
+                        agent: AGENT_CODEX.to_owned(),
+                        model: None,
+                        approval_policy: Default::default(),
+                        sandbox: Default::default(),
+                        thread_id: None,
+                    },
+                    Some(format!("stored spec unreadable: {error}")),
+                )
+            }
+        };
+        let mut state = row.state.clone();
+        let mut ended_at_ms = row.ended_at_ms;
+        let mut action = ChatRestoreKind::Keep;
+        if was_live {
+            ended_at_ms = Some(now_ms());
+            match (unusable, mode) {
+                (Some(reason), _) => {
+                    state = SessionState::Failed { reason };
+                    action = ChatRestoreKind::Rewrite;
+                }
+                (None, RestoreMode::Stopped) => {
+                    state = SessionState::Stopped;
+                    action = ChatRestoreKind::Rewrite;
+                }
+                (None, RestoreMode::Respawn) => {
+                    state = SessionState::Starting;
+                    ended_at_ms = None;
+                    action = ChatRestoreKind::Start;
+                }
+            }
+        }
+        let default_title = format!("{} · chat", spec.agent);
+        self.sessions.push(SessionEntry {
+            info: SessionInfo {
+                id: row.id,
+                workspace_id: row.workspace_id,
+                kind: SessionKind::Harness,
+                title: row.title,
+                state,
+                command: vec![spec.agent.clone()],
+                cwd: row.cwd.clone(),
+                terminal_id: None,
+                agent: None,
+                created_at_ms: row.created_at_ms,
+                // The journal has the whole conversation: nothing is gone.
+                restored: false,
+                chat: Some(chat_info(&spec)),
+            },
+            spec: TerminalSpec {
+                command: vec![spec.agent.clone()],
+                cwd: row.cwd,
+                ..TerminalSpec::default()
+            },
+            default_title,
+            title_locked: row.title_locked,
+            osc_title: None,
+            terminal: None,
+            stopping: false,
+            stop_waiters: Vec::new(),
+            ended_at_ms,
+            resume_ref_json: None,
+            restore_argv: None,
+            keep_live: None,
+            dirty: false,
+            agent_seqs: BTreeMap::new(),
+            chat: Some(spec),
+        });
+        let index = self.sessions.len() - 1;
+        match action {
+            ChatRestoreKind::Start => ChatRestore::Start(index),
+            ChatRestoreKind::Rewrite => ChatRestore::Rewrite(index),
+            ChatRestoreKind::Keep => ChatRestore::Keep,
+        }
+    }
+
     // Storage ---------------------------------------------------------------------------------
 
     /// Rebuilds the sessions from their rows. Live ones are spawned again (`Respawn`) or listed
@@ -1629,6 +2158,7 @@ impl SessionRegistry {
     fn restore_sessions(&mut self, rows: Vec<SessionRow>, mode: RestoreMode) {
         let mut respawn = Vec::new();
         let mut rewrite = Vec::new();
+        let mut chat_starts = Vec::new();
         for row in rows {
             if !self
                 .workspaces
@@ -1636,6 +2166,14 @@ impl SessionRegistry {
                 .any(|w| w.info.id == row.workspace_id)
             {
                 warn!(session = %row.id, "stored session has no workspace; skipping it");
+                continue;
+            }
+            if row.kind == SessionKind::Harness {
+                match self.restore_chat(row, mode) {
+                    ChatRestore::Start(index) => chat_starts.push(index),
+                    ChatRestore::Rewrite(index) => rewrite.push(index),
+                    ChatRestore::Keep => {}
+                }
                 continue;
             }
             let was_live = row.state.is_live();
@@ -1702,6 +2240,7 @@ impl SessionRegistry {
                     created_at_ms: row.created_at_ms,
                     agent: None,
                     restored,
+                    chat: None,
                 },
                 spec,
                 default_title,
@@ -1717,6 +2256,7 @@ impl SessionRegistry {
                 keep_live: None,
                 dirty: false,
                 agent_seqs: BTreeMap::new(),
+                chat: None,
             });
             let index = self.sessions.len() - 1;
             match action {
@@ -1732,6 +2272,9 @@ impl SessionRegistry {
         for index in respawn {
             self.start_terminal(index);
         }
+        for index in chat_starts {
+            self.spawn_chat_start(index, None);
+        }
         for index in rewrite {
             self.persist_session(index);
         }
@@ -1745,13 +2288,17 @@ impl SessionRegistry {
             None => (session.info.state.clone(), session.ended_at_ms),
         };
         let spec = restore::persistable_spec(&session.spec);
+        let spec_json = match &session.chat {
+            Some(chat) => serde_json::to_string(chat),
+            None => serde_json::to_string(&spec),
+        };
         SessionRow {
             id: session.info.id,
             workspace_id: session.info.workspace_id,
             kind: session.info.kind,
             title: session.info.title.clone(),
             title_locked: session.title_locked,
-            spec_json: serde_json::to_string(&spec).unwrap_or_else(|error| {
+            spec_json: spec_json.unwrap_or_else(|error| {
                 error!(session = %session.info.id, %error, "could not encode a session spec");
                 "{}".to_owned()
             }),
@@ -1927,6 +2474,48 @@ pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+enum ChatRestoreKind {
+    Keep,
+    Rewrite,
+    Start,
+}
+
+/// What [`SessionRegistry::restore_chat`] left to do for the session it added.
+enum ChatRestore {
+    /// Nothing: the session is shown as it was.
+    Keep,
+    /// Its state changed; write it.
+    Rewrite(usize),
+    /// Start its agent again.
+    Start(usize),
+}
+
+fn chat_info(spec: &ChatSpec) -> ChatInfo {
+    ChatInfo {
+        agent: spec.agent.clone(),
+        model: spec.model.clone().unwrap_or_default(),
+        approval_policy: spec.approval_policy,
+        sandbox: spec.sandbox,
+        turn_active: false,
+        pending_approvals: 0,
+    }
+}
+
+/// Why a chat agent that ended on its own is a failure.
+fn exit_reason(exit: &ExitInfo) -> String {
+    let how = match (exit.code, exit.signal) {
+        (_, Some(signal)) => format!("killed by signal {signal}"),
+        (Some(code), None) => format!("exited with code {code}"),
+        (None, None) => "exited".to_owned(),
+    };
+    let tail = exit.stderr_tail.trim();
+    if tail.is_empty() {
+        format!("the agent {how}")
+    } else {
+        format!("the agent {how}: {tail}")
+    }
 }
 
 /// argv[0]'s basename, or the login shell's name when the spec runs the default shell.

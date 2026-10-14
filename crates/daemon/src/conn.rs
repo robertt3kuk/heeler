@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{ClientInfo, Hello, Request, Welcome};
+use heeler_protocol::messages::{ClientInfo, ClientKind, Hello, Request, Welcome};
 use heeler_protocol::{
     ControlMessage, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION, ProtocolError,
 };
@@ -36,6 +36,7 @@ pub const CAPABILITIES: &[&str] = &[
     "terminal.blocks",
     "workspace.projects",
     "history.search",
+    "chat.codex",
 ];
 
 /// How long a closing connection may take to flush already queued messages.
@@ -70,6 +71,11 @@ pub struct ConnHandle {
 impl ConnHandle {
     pub fn id(&self) -> ConnId {
         self.id
+    }
+
+    /// What kind of client this is, once it has said hello.
+    pub fn client_kind(&self) -> Option<ClientKind> {
+        self.client.get().map(|client| client.kind)
     }
 
     /// Queues without waiting. Returns `false` if the message was not queued: the connection is

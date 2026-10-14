@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use heeler_core::WorkspaceId;
+use heeler_core::{ApprovalPolicy, SandboxMode, WorkspaceId};
 
 /// Exit codes: 0 ok, 1 remote or other error, 2 usage (including an ambiguous session target),
 /// 3 heelerd unreachable or lost. `attach` killed by SIGTERM/SIGHUP exits 143/129.
@@ -63,6 +63,80 @@ pub enum Command {
     /// Manage the session history index (opt-in, local)
     #[command(subcommand)]
     Index(IndexCommand),
+    /// Chat with a coding agent (Codex) through the daemon
+    #[command(subcommand)]
+    Chat(ChatCommand),
+    /// List the permission requests of agent chats that wait for an answer
+    Approvals,
+    /// Answer a permission request with one of the options it offers (see `heeler approvals`)
+    Approve(ApproveArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChatCommand {
+    /// Start a chat session with the agent in a directory; prints its id
+    New(ChatNewArgs),
+    /// Send a message to a chat session
+    Send(ChatSendArgs),
+    /// Print a chat session's history from the daemon's journal
+    Log(TargetArgs),
+    /// Follow a chat session live: its recent history, then new events as they happen
+    Attach(TargetArgs),
+    /// Stop the turn in progress
+    Interrupt(TargetArgs),
+    /// List the models the agent offers
+    Models,
+}
+
+#[derive(Debug, Args)]
+pub struct ChatNewArgs {
+    /// Workspace to create the session in: id, unique id prefix, or exact name (default:
+    /// $HEELER_WORKSPACE, else the workspace containing the directory, else Home)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+    /// Directory the agent works in (default: the current directory)
+    #[arg(long, value_name = "PATH")]
+    pub cwd: Option<PathBuf>,
+    /// Model from `heeler chat models` (default: the agent catalog's default)
+    #[arg(long)]
+    pub model: Option<String>,
+    /// When the agent asks before acting: untrusted, on-request (default), never
+    #[arg(long, value_name = "POLICY", value_parser = parse_policy)]
+    pub approval_policy: Option<ApprovalPolicy>,
+    /// What the agent may touch: read-only, workspace-write (default), danger-full-access
+    #[arg(long, value_name = "MODE", value_parser = parse_sandbox)]
+    pub sandbox: Option<SandboxMode>,
+    /// Session title (default: `codex · <directory>`)
+    #[arg(long)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ChatSendArgs {
+    #[arg(help = TARGET_HELP)]
+    pub target: String,
+    /// The message
+    pub text: String,
+    /// Stay until the turn ends, printing the reply as it streams (and any approval request);
+    /// exits 1 when the turn fails or is cancelled
+    #[arg(long)]
+    pub wait: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ApproveArgs {
+    /// Approval id or unique id prefix (at least 4 characters)
+    pub approval: String,
+    /// One of the options the request offers (`accept`, `cancel`, ...)
+    pub option: String,
+}
+
+fn parse_policy(text: &str) -> Result<ApprovalPolicy, String> {
+    text.parse()
+}
+
+fn parse_sandbox(text: &str) -> Result<SandboxMode, String> {
+    text.parse()
 }
 
 #[derive(Debug, Subcommand)]

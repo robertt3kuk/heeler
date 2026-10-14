@@ -9,7 +9,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::error::{Result, StorageError};
-use crate::rows::{CreatedBy, EpochRecord, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow};
+use crate::rows::{
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
+    RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+};
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
 
@@ -59,6 +62,12 @@ pub enum Write {
     },
     /// Appends to the epoch history, keeping the newest [`EPOCH_HISTORY_KEPT`].
     RecordEpoch(EpochRecord),
+    /// Adds one event to a chat journal (an existing `(session, seq)` is left alone).
+    AppendChatItem(Box<ChatItemRow>),
+    /// Inserts a chat turn or replaces its status, end time and error.
+    UpsertChatTurn(ChatTurnRow),
+    /// Inserts an approval or replaces how it ended.
+    UpsertApproval(Box<ApprovalRow>),
     /// Crash-injection points for the tests.
     #[cfg(test)]
     Fault(Fault),
@@ -149,6 +158,9 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         }
         Write::SetMeta { key, value } => set_meta(conn, key, value)?,
         Write::RecordEpoch(record) => record_epoch(conn, *record)?,
+        Write::AppendChatItem(row) => append_chat_item(conn, row)?,
+        Write::UpsertChatTurn(row) => upsert_chat_turn(conn, row)?,
+        Write::UpsertApproval(row) => upsert_approval(conn, row)?,
         #[cfg(test)]
         Write::Fault(Fault::Panic) => panic!("injected writer panic"),
         #[cfg(test)]
@@ -419,4 +431,212 @@ fn to_text<T: Serialize>(value: &T, what: &'static str) -> Result<String> {
 
 fn from_text<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
     serde_json::from_value(serde_json::Value::String(text.to_owned()))
+}
+
+// Chat journal ---------------------------------------------------------------------------------
+
+fn append_chat_item(conn: &Connection, row: &ChatItemRow) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO chat_items (session_id, seq, ts_ms, turn_id, item_id, kind, event_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            row.session_id.to_string(),
+            ms(row.seq),
+            ms(row.ts_ms),
+            row.turn_id,
+            row.item_id,
+            row.kind,
+            row.event_json
+        ],
+    )
+    .map_err(StorageError::sqlite("journaling a chat event"))?;
+    Ok(())
+}
+
+/// Up to `limit` events with `seq < before` (all when `None`), newest window first picked, then
+/// returned oldest first.
+pub fn chat_items(
+    conn: &Connection,
+    session: SessionId,
+    before: Option<u64>,
+    limit: u32,
+) -> Result<Vec<ChatItemRow>> {
+    let context = "reading a chat journal";
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, ts_ms, turn_id, item_id, kind, event_json FROM chat_items \
+             WHERE session_id = ?1 AND seq < ?2 ORDER BY seq DESC LIMIT ?3",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let before = before.map_or(i64::MAX, ms);
+    let rows = stmt
+        .query_map(params![session.to_string(), before, i64::from(limit)], |row| {
+            Ok(ChatItemRow {
+                session_id: session,
+                seq: unms(row.get(0)?),
+                ts_ms: unms(row.get(1)?),
+                turn_id: row.get(2)?,
+                item_id: row.get(3)?,
+                kind: row.get(4)?,
+                event_json: row.get(5)?,
+            })
+        })
+        .map_err(StorageError::sqlite(context))?;
+    let mut items = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(StorageError::sqlite(context))?;
+    items.reverse();
+    Ok(items)
+}
+
+/// The highest journaled `seq` of the session (0 for an empty journal).
+pub fn chat_last_seq(conn: &Connection, session: SessionId) -> Result<u64> {
+    let last: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(seq) FROM chat_items WHERE session_id = ?1",
+            [session.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(StorageError::sqlite("reading the last chat seq"))?;
+    Ok(last.map_or(0, unms))
+}
+
+fn upsert_chat_turn(conn: &Connection, row: &ChatTurnRow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO chat_turns (session_id, turn_id, provider_turn_id, status, started_at_ms, \
+             ended_at_ms, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT (session_id, turn_id) DO UPDATE SET \
+             provider_turn_id = COALESCE(excluded.provider_turn_id, provider_turn_id), \
+             status = excluded.status, ended_at_ms = excluded.ended_at_ms, error = excluded.error",
+        params![
+            row.session_id.to_string(),
+            row.turn_id,
+            row.provider_turn_id,
+            to_text(&row.status, "turn status")?,
+            ms(row.started_at_ms),
+            row.ended_at_ms.map(ms),
+            row.error
+        ],
+    )
+    .map_err(StorageError::sqlite("writing a chat turn"))?;
+    Ok(())
+}
+
+pub fn chat_turns(conn: &Connection, session: SessionId) -> Result<Vec<ChatTurnRow>> {
+    let context = "reading chat turns";
+    let mut stmt = conn
+        .prepare(
+            "SELECT turn_id, provider_turn_id, status, started_at_ms, ended_at_ms, error \
+             FROM chat_turns WHERE session_id = ?1 ORDER BY started_at_ms, turn_id",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([session.to_string()], |row| {
+            let status: String = row.get(2)?;
+            Ok((
+                ChatTurnRow {
+                    session_id: session,
+                    turn_id: row.get(0)?,
+                    provider_turn_id: row.get(1)?,
+                    status: ChatTurnStatus::Running,
+                    started_at_ms: unms(row.get(3)?),
+                    ended_at_ms: row.get::<_, Option<i64>>(4)?.map(unms),
+                    error: row.get(5)?,
+                },
+                status,
+            ))
+        })
+        .map_err(StorageError::sqlite(context))?;
+    let mut turns = Vec::new();
+    for row in rows {
+        let (mut turn, status) = row.map_err(StorageError::sqlite(context))?;
+        turn.status = from_text::<ChatTurnStatus>(&status)
+            .map_err(|e| StorageError::corrupt(format!("chat_turns.status of {}", turn.turn_id), e))?;
+        turns.push(turn);
+    }
+    Ok(turns)
+}
+
+fn upsert_approval(conn: &Connection, row: &ApprovalRow) -> Result<()> {
+    let outcome = row
+        .outcome
+        .as_ref()
+        .map(|o| to_text(o, "approval outcome"))
+        .transpose()?;
+    conn.execute(
+        "INSERT INTO approvals (id, session_id, turn_id, kind, title, options_json, \
+             requested_at_ms, resolved_at_ms, outcome, option_id, decided_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+         ON CONFLICT (id) DO UPDATE SET resolved_at_ms = excluded.resolved_at_ms, \
+             outcome = excluded.outcome, option_id = excluded.option_id, \
+             decided_by = excluded.decided_by",
+        params![
+            row.id.to_string(),
+            row.session_id.to_string(),
+            row.turn_id,
+            row.kind,
+            row.title,
+            row.options_json,
+            ms(row.requested_at_ms),
+            row.resolved_at_ms.map(ms),
+            outcome,
+            row.option_id,
+            row.decided_by
+        ],
+    )
+    .map_err(StorageError::sqlite("writing an approval"))?;
+    Ok(())
+}
+
+/// Approvals of one session (or of all, when `None`), oldest first; `only_open` keeps those
+/// not resolved yet.
+pub fn approvals(
+    conn: &Connection,
+    session: Option<SessionId>,
+    only_open: bool,
+) -> Result<Vec<ApprovalRow>> {
+    let context = "reading approvals";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, turn_id, kind, title, options_json, requested_at_ms, \
+                 resolved_at_ms, outcome, option_id, decided_by FROM approvals \
+             WHERE (?1 IS NULL OR session_id = ?1) AND (?2 = 0 OR resolved_at_ms IS NULL) \
+             ORDER BY requested_at_ms, id",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map(params![session.map(|s| s.to_string()), only_open], |row| {
+            Ok(approval_from(row))
+        })
+        .map_err(StorageError::sqlite(context))?;
+    collect(rows, context)
+}
+
+fn approval_from(row: &Row<'_>) -> Result<ApprovalRow> {
+    let id: String = row.get(0).map_err(read_err)?;
+    let session: String = row.get(1).map_err(read_err)?;
+    let at = |column: &str| format!("approvals.{column} of {id}");
+    let outcome: Option<String> = row.get(8).map_err(read_err)?;
+    Ok(ApprovalRow {
+        id: id
+            .parse()
+            .map_err(|e| StorageError::corrupt("approvals.id", e))?,
+        session_id: session
+            .parse()
+            .map_err(|e| StorageError::corrupt(at("session_id"), e))?,
+        turn_id: row.get(2).map_err(read_err)?,
+        kind: row.get(3).map_err(read_err)?,
+        title: row.get(4).map_err(read_err)?,
+        options_json: row.get(5).map_err(read_err)?,
+        requested_at_ms: unms(row.get(6).map_err(read_err)?),
+        resolved_at_ms: row.get::<_, Option<i64>>(7).map_err(read_err)?.map(unms),
+        outcome: outcome
+            .map(|text| {
+                from_text::<ApprovalOutcome>(&text)
+                    .map_err(|e| StorageError::corrupt(at("outcome"), e))
+            })
+            .transpose()?,
+        option_id: row.get(9).map_err(read_err)?,
+        decided_by: row.get(10).map_err(read_err)?,
+    })
 }

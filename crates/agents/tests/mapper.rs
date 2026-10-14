@@ -87,6 +87,36 @@ fn turn_endings_map_to_completed_failed_and_cancelled() {
 }
 
 #[test]
+fn backend_errors_are_summarised_and_kept_verbatim() {
+    let mut m = mapper();
+    let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The model is not supported."}}"#;
+    let failed = only(notify(
+        &mut m,
+        "turn/completed",
+        json!({"turn": {"id": "t1", "status": "failed", "error": {"message": raw}}}),
+    ));
+    assert_eq!(
+        failed.kind,
+        AgentEventKind::TurnFailed {
+            message: "The model is not supported.".into(),
+            details: Some(raw.into())
+        }
+    );
+    let notice = only(notify(
+        &mut m,
+        "error",
+        json!({"turnId": "t1", "error": {"message": raw}, "willRetry": false}),
+    ));
+    assert_eq!(
+        notice.kind,
+        AgentEventKind::Notice {
+            level: NoticeLevel::Error,
+            message: "The model is not supported.".into()
+        }
+    );
+}
+
+#[test]
 fn messages_stream_and_end_with_the_whole_text() {
     let mut m = mapper();
     let start = only(item(

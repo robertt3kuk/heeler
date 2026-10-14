@@ -11,9 +11,10 @@ use tempfile::TempDir;
 use crate::migrate::Migration;
 use crate::sql::Fault;
 use crate::{
-    CreatedBy, RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow,
-    Write, migrate,
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy,
+    RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow, Write, migrate,
 };
+use heeler_core::ApprovalId;
 
 fn db(dir: &TempDir) -> PathBuf {
     dir.path().join("heeler.db")
@@ -95,7 +96,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -145,7 +146,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -386,7 +387,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -743,4 +744,183 @@ fn crash_child() {
     storage.batch(batch_around(Fault::Abort, ws)).unwrap();
     // The writer aborts the process while the batch transaction is open.
     std::thread::sleep(std::time::Duration::from_secs(30));
+}
+
+// Chat journal -----------------------------------------------------------------------------------
+
+fn chat_item(session: SessionId, seq: u64, kind: &str) -> ChatItemRow {
+    ChatItemRow {
+        session_id: session,
+        seq,
+        ts_ms: 10_000 + seq,
+        turn_id: Some("turn-1".to_owned()),
+        item_id: None,
+        kind: kind.to_owned(),
+        event_json: format!(r#"{{"type":"{kind}","seq":{seq}}}"#),
+    }
+}
+
+fn chat_session(storage: &Storage) -> SessionId {
+    let ws = workspace("chat", 0);
+    let mut row = session(ws.id, "codex");
+    row.kind = SessionKind::Harness;
+    storage.workspaces().insert(ws).unwrap();
+    let id = row.id;
+    storage.sessions().upsert(row).unwrap();
+    id
+}
+
+#[test]
+fn the_chat_journal_pages_backwards_and_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let storage = Storage::open(db(&dir)).unwrap();
+        id = chat_session(&storage);
+        assert_eq!(storage.chat().last_seq(id).unwrap(), 0);
+        // seq has gaps where streaming deltas were.
+        for seq in [1, 2, 5, 6, 9] {
+            storage.chat().append(chat_item(id, seq, "message_end")).unwrap();
+        }
+        // A repeated seq is ignored, not an error and not an overwrite.
+        let mut again = chat_item(id, 5, "other");
+        again.event_json = "{}".to_owned();
+        storage.chat().append(again).unwrap();
+        storage.close();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.chat().last_seq(id).unwrap(), 9);
+    let seqs = |before, limit| -> Vec<u64> {
+        storage
+            .chat()
+            .items(id, before, limit)
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect()
+    };
+    assert_eq!(seqs(None, 100), [1, 2, 5, 6, 9]);
+    assert_eq!(seqs(None, 2), [6, 9], "the newest window, oldest first");
+    assert_eq!(seqs(Some(6), 2), [2, 5]);
+    assert_eq!(seqs(Some(1), 10), Vec::<u64>::new());
+    let row = &storage.chat().items(id, Some(6), 1).unwrap()[0];
+    assert_eq!((row.kind.as_str(), row.turn_id.as_deref()), ("message_end", Some("turn-1")));
+    assert!(row.event_json.contains("\"seq\":5"), "the first write won: {}", row.event_json);
+    storage.close();
+}
+
+#[test]
+fn chat_turns_are_updated_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    let mut turn = ChatTurnRow {
+        session_id: id,
+        turn_id: "t1".to_owned(),
+        provider_turn_id: Some("p1".to_owned()),
+        status: ChatTurnStatus::Running,
+        started_at_ms: 100,
+        ended_at_ms: None,
+        error: None,
+    };
+    storage.chat().upsert_turn(turn.clone()).unwrap();
+    turn.status = ChatTurnStatus::Failed;
+    turn.ended_at_ms = Some(150);
+    turn.error = Some("boom".to_owned());
+    turn.provider_turn_id = None;
+    storage.chat().upsert_turn(turn.clone()).unwrap();
+    let turns = storage.chat().turns(id).unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].status, ChatTurnStatus::Failed);
+    assert_eq!(turns[0].error.as_deref(), Some("boom"));
+    assert_eq!(turns[0].provider_turn_id.as_deref(), Some("p1"), "a known provider id is kept");
+    storage.close();
+}
+
+#[test]
+fn approvals_record_the_request_and_the_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    let open = ApprovalRow {
+        id: ApprovalId::new(),
+        session_id: id,
+        turn_id: Some("t1".to_owned()),
+        kind: "command".to_owned(),
+        title: "touch hi.txt".to_owned(),
+        options_json: r#"[{"id":"accept"}]"#.to_owned(),
+        requested_at_ms: 200,
+        resolved_at_ms: None,
+        outcome: None,
+        option_id: None,
+        decided_by: None,
+    };
+    let mut decided = open.clone();
+    decided.id = ApprovalId::new();
+    decided.requested_at_ms = 100;
+    storage.approvals().upsert(open.clone()).unwrap();
+    storage.approvals().upsert(decided.clone()).unwrap();
+    assert_eq!(storage.approvals().unresolved().unwrap().len(), 2);
+
+    decided.resolved_at_ms = Some(300);
+    decided.outcome = Some(ApprovalOutcome::Selected);
+    decided.option_id = Some("accept".to_owned());
+    decided.decided_by = Some("cli".to_owned());
+    storage.approvals().upsert(decided.clone()).unwrap();
+
+    assert_eq!(storage.approvals().unresolved().unwrap(), [open.clone()]);
+    assert_eq!(
+        storage.approvals().list(Some(id)).unwrap(),
+        [decided, open],
+        "oldest request first, decision recorded"
+    );
+    assert!(storage.approvals().list(Some(SessionId::new())).unwrap().is_empty());
+    storage.close();
+}
+
+#[test]
+fn deleting_a_session_deletes_its_journal_and_approvals() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    storage.chat().append(chat_item(id, 1, "turn_started")).unwrap();
+    storage
+        .approvals()
+        .upsert(ApprovalRow {
+            id: ApprovalId::new(),
+            session_id: id,
+            turn_id: None,
+            kind: "command".to_owned(),
+            title: "x".to_owned(),
+            options_json: "[]".to_owned(),
+            requested_at_ms: 1,
+            resolved_at_ms: None,
+            outcome: None,
+            option_id: None,
+            decided_by: None,
+        })
+        .unwrap();
+    storage.sessions().delete(id).unwrap();
+    assert!(storage.chat().items(id, None, 10).unwrap().is_empty());
+    assert!(storage.approvals().list(None).unwrap().is_empty());
+    storage.close();
+}
+
+#[test]
+fn migrating_v2_adds_the_chat_tables_and_keeps_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        storage.close();
+    }
+    assert!(!table_exists(&db(&dir), "chat_items"));
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    storage.close();
+    for table in ["chat_items", "chat_turns", "approvals"] {
+        assert!(table_exists(&db(&dir), table), "{table}");
+    }
+    integrity_ok(&db(&dir));
 }

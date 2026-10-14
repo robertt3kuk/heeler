@@ -17,6 +17,10 @@
 //!
 //! [history.roots]                # override where transcripts live (default: the agents' own dirs)
 //! claude = "/path/to/claude/projects"
+//!
+//! [codex]                        # chat sessions (protocol 0.9)
+//! bin = "/Users/me/.local/bin/codex"   # default: `codex` on the daemon's PATH
+//! args = ["-c", 'model_reasoning_effort="low"']   # appended after `app-server`
 //! ```
 
 use std::io;
@@ -45,6 +49,28 @@ pub struct DaemonSettings {
     /// ([`Paths::default_home_folder`](crate::Paths)).
     pub home_folder: Option<PathBuf>,
     pub history: HistorySettings,
+    pub codex: CodexSettings,
+}
+
+/// `[codex]` of `daemon.toml`: how chat sessions start `codex app-server`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct CodexSettings {
+    /// The Codex executable; `None` looks for `codex` on `PATH`.
+    pub bin: Option<PathBuf>,
+    /// Extra arguments after `app-server` (`-c key=value` overrides).
+    pub args: Vec<String>,
+}
+
+impl CodexSettings {
+    pub fn to_config(&self) -> heeler_agents::CodexConfig {
+        let mut config = heeler_agents::CodexConfig::default();
+        if let Some(bin) = &self.bin {
+            config.program.clone_from(bin);
+        }
+        config.args.extend(self.args.iter().cloned());
+        config
+    }
 }
 
 /// Which source directories the history index reads; `None` = the agent's default location.
@@ -95,6 +121,8 @@ struct File {
     workspaces: WorkspacesTable,
     #[serde(default)]
     history: HistorySettings,
+    #[serde(default)]
+    codex: CodexSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -141,6 +169,7 @@ impl DaemonSettings {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
             history: file.history,
+            codex: file.codex,
         })
     }
 }
@@ -220,6 +249,24 @@ pub fn set_history_enabled(path: &Path, enabled: bool) -> Result<(), DaemonError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_defaults_to_codex_on_path_with_app_server() {
+        let config = DaemonSettings::parse("", None).unwrap().codex.to_config();
+        assert_eq!(config.program, PathBuf::from("codex"));
+        assert_eq!(config.args, ["app-server"]);
+    }
+
+    #[test]
+    fn codex_settings_name_the_binary_and_extra_arguments() {
+        let toml = "[codex]\nbin = \"/opt/codex\"\nargs = [\"-c\", \"model_reasoning_effort=\\\"low\\\"\"]\n";
+        let config = DaemonSettings::parse(toml, None).unwrap().codex.to_config();
+        assert_eq!(config.program, PathBuf::from("/opt/codex"));
+        assert_eq!(
+            config.args,
+            ["app-server", "-c", "model_reasoning_effort=\"low\""]
+        );
+    }
 
     #[test]
     fn defaults_to_respawn() {

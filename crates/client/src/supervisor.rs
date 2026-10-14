@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use heeler_core::{Epoch, Seq, SessionId, TerminalId};
 use heeler_protocol::ErrorCode;
+use heeler_protocol::chat::{ApprovalList, ApprovalListRequest};
 use heeler_protocol::messages::{
     Empty, Event, Request, ResumeOutcome, ResumePoint, SessionInfo, SessionSnapshot, Subscribed,
     TerminalAck, TerminalAttach, TerminalAttached, TerminalColors, TerminalRef, TerminalResize,
@@ -517,6 +518,14 @@ impl Supervisor {
                 }
             }
             let snapshot: SessionSnapshot = client.call(Request::SessionSnapshot(Empty {})).await?;
+            let approvals = if client.supports_chat() {
+                let listed: ApprovalList = client
+                    .call(Request::ApprovalList(ApprovalListRequest::default()))
+                    .await?;
+                Some(listed.approvals)
+            } else {
+                None
+            };
             match drain(events) {
                 Drain::Events(batch) => {
                     if old_epoch.is_some() {
@@ -524,6 +533,9 @@ impl Supervisor {
                     }
                     let seq = snapshot.seq;
                     let mut effects = self.state.install_snapshot(snapshot);
+                    if let Some(approvals) = approvals {
+                        self.state.install_approvals(approvals);
+                    }
                     self.applied = seq;
                     effects.extend(self.fold(batch));
                     if old_epoch.is_some() {

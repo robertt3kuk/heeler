@@ -17,6 +17,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 bytes.workspace = true
 futures.workspace = true
+heeler-agents.workspace = true
 heeler-core.workspace = true
 heeler-index.workspace = true
 heeler-protocol.workspace = true

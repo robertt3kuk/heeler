@@ -7,12 +7,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
-use heeler_core::{Epoch, Seq, TerminalId};
+use heeler_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
+use heeler_protocol::chat::{
+    ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
+    ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, HISTORY_MAX_LIMIT,
+};
 use heeler_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
 use heeler_protocol::messages::{
-    ClientInfo, Event, Hello, Request, ResumePoint, Welcome, decode_result,
+    ClientInfo, Empty, Event, Hello, Request, ResumePoint, SessionInfo, SessionRef, SessionResult,
+    Welcome, decode_result,
 };
 use heeler_protocol::render::TerminalRender;
 use heeler_protocol::{
@@ -36,6 +41,8 @@ pub(crate) const COLORS_CAPABILITY: &str = "terminal.colors";
 pub(crate) const BLOCKS_CAPABILITY: &str = "terminal.blocks";
 /// Capability for the `history.*` requests (protocol 0.8).
 pub(crate) const HISTORY_CAPABILITY: &str = "history.search";
+/// Capability for the `chat.*` and `approval.*` requests (protocol 0.9).
+pub(crate) const CHAT_CAPABILITY: &str = "chat.codex";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -44,6 +51,7 @@ const CAPABILITIES: &[&str] = &[
     "agent.report",
     BLOCKS_CAPABILITY,
     HISTORY_CAPABILITY,
+    CHAT_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
@@ -229,6 +237,109 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == HISTORY_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `chat.codex` (agent chat sessions and
+    /// approvals; protocol 0.9).
+    pub fn supports_chat(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == CHAT_CAPABILITY)
+    }
+
+    /// Opens an agent conversation as a new session; resolves once the agent is ready.
+    pub async fn chat_create(&self, req: ChatCreate) -> Result<SessionInfo, ClientError> {
+        let result: SessionResult = self.call(Request::ChatCreate(req)).await?;
+        Ok(result.session)
+    }
+
+    /// Sends the user's message; the turn's events follow as `chat.event` ([`events`](Self::events)).
+    pub async fn chat_send(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+    ) -> Result<ChatSent, ClientError> {
+        self.call(Request::ChatSend(ChatSend {
+            session_id,
+            text: text.into(),
+        }))
+        .await
+    }
+
+    /// Stops the turn in progress.
+    pub async fn chat_interrupt(&self, session_id: SessionId) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::ChatInterrupt(SessionRef { session_id }))
+            .await
+            .map(|_| ())
+    }
+
+    /// One page of a chat's journal, oldest first (see [`ChatHistoryRequest`]).
+    pub async fn chat_history(
+        &self,
+        session_id: SessionId,
+        before_seq: Option<u64>,
+        limit: u32,
+    ) -> Result<ChatHistory, ClientError> {
+        self.call(Request::ChatHistory(ChatHistoryRequest {
+            session_id,
+            before_seq,
+            limit,
+        }))
+        .await
+    }
+
+    /// The whole journal of a chat, oldest first, fetched page by page.
+    pub async fn chat_history_all(
+        &self,
+        session_id: SessionId,
+    ) -> Result<ChatHistory, ClientError> {
+        let mut all = self.chat_history(session_id, None, HISTORY_MAX_LIMIT).await?;
+        while all.has_more {
+            let Some(first) = all.events.first().map(|e| e.seq) else {
+                break;
+            };
+            let mut page = self
+                .chat_history(session_id, Some(first), HISTORY_MAX_LIMIT)
+                .await?;
+            all.has_more = page.has_more;
+            page.events.append(&mut all.events);
+            all.events = page.events;
+        }
+        Ok(all)
+    }
+
+    /// The models an agent offers.
+    pub async fn chat_models(&self, agent: &str) -> Result<ChatModels, ClientError> {
+        self.call(Request::ChatModels(ChatModelsRequest {
+            agent: agent.to_owned(),
+        }))
+        .await
+    }
+
+    /// Permission requests waiting for an answer (of one session, or of all).
+    pub async fn approvals(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<Vec<ApprovalInfo>, ClientError> {
+        let list: ApprovalList = self
+            .call(Request::ApprovalList(ApprovalListRequest { session_id }))
+            .await?;
+        Ok(list.approvals)
+    }
+
+    /// Answers a permission request with one of the options it offered.
+    pub async fn approve(
+        &self,
+        approval_id: ApprovalId,
+        option_id: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::ApprovalRespond(ApprovalRespond {
+            approval_id,
+            option_id: option_id.into(),
+        }))
+        .await
+        .map(|_| ())
     }
 
     /// One page of the terminal's blocks, newest first: at most `limit` (the daemon caps it),

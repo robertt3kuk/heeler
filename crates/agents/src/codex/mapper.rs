@@ -4,7 +4,7 @@
 //! It keeps the correlation state the unified model needs: provider turn/item ids ↔ local ids,
 //! and the server requests (approvals) that are waiting for an answer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use heeler_core::agent::{
     FileChange, FileChangeKind, MAX_OUTPUT_BYTES, MAX_PAYLOAD_BYTES, MessageRole, NoticeLevel,
@@ -24,6 +24,9 @@ use super::wire::{
     TokenBreakdown, TokenUsageNotification, TurnDiffNotification, TurnNotification,
     TurnPlanNotification, UserMessageItem, WarningNotification, WebSearchItem,
 };
+
+/// Turns whose local ids are remembered.
+const KNOWN_TURNS: usize = 32;
 
 /// JSON-RPC "method not found".
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -77,6 +80,8 @@ pub struct Mapper {
     turns: HashMap<String, TurnId>,
     /// Provider item id → (provider turn id, local id); dropped when the turn ends.
     items: HashMap<String, (String, ItemId)>,
+    /// Provider turn ids in the order they were first seen, oldest first (bounds `turns`).
+    turn_order: VecDeque<String>,
     /// By the JSON text of the request id.
     pending: HashMap<String, PendingRequest>,
 }
@@ -94,16 +99,27 @@ impl Mapper {
             thread_id,
             turns: HashMap::new(),
             items: HashMap::new(),
+            turn_order: VecDeque::new(),
             pending: HashMap::new(),
         }
     }
 
     /// The local id of a provider turn (created on first sight).
     pub fn turn_id(&mut self, provider_turn: &str) -> TurnId {
-        *self
-            .turns
-            .entry(provider_turn.to_owned())
-            .or_insert_with(TurnId::new)
+        if let Some(known) = self.turns.get(provider_turn) {
+            return *known;
+        }
+        // A turn's id outlives its end: the reply to `turn/start` can be handled after the
+        // turn's notifications, and must agree with them.
+        if self.turn_order.len() == KNOWN_TURNS
+            && let Some(oldest) = self.turn_order.pop_front()
+        {
+            self.turns.remove(&oldest);
+        }
+        let id = TurnId::new();
+        self.turns.insert(provider_turn.to_owned(), id);
+        self.turn_order.push_back(provider_turn.to_owned());
+        id
     }
 
     fn item_id(&mut self, provider_turn: &str, provider_item: &str) -> ItemId {
@@ -276,7 +292,8 @@ impl Mapper {
                 } else {
                     (NoticeLevel::Error, "")
                 };
-                vec![m.notice(level, format!("{prefix}{}", n.error.message), &params)]
+                let message = error_message(&n.error.message);
+                vec![m.notice(level, format!("{prefix}{message}"), &params)]
             }),
             "warning" => self.with(&params, method, |m, n: WarningNotification| {
                 vec![m.notice(NoticeLevel::Warning, n.message, &params)]
@@ -361,12 +378,15 @@ impl Mapper {
             "interrupted" => Some(AgentEventKind::TurnCancelled),
             "failed" => {
                 let error = n.turn.error;
-                Some(AgentEventKind::TurnFailed {
-                    message: error
-                        .as_ref()
-                        .map_or_else(|| "the turn failed".to_owned(), |e| e.message.clone()),
-                    details: error.and_then(|e| e.additional_details),
-                })
+                let raw = error.as_ref().map(|e| e.message.clone());
+                let message = raw
+                    .as_deref()
+                    .map_or_else(|| "the turn failed".to_owned(), error_message);
+                // What the provider said verbatim, when the headline is a summary of it.
+                let details = error
+                    .and_then(|e| e.additional_details)
+                    .or_else(|| raw.filter(|raw| *raw != message));
+                Some(AgentEventKind::TurnFailed { message, details })
             }
             other => {
                 debug!(status = other, "turn/completed with an unexpected status");
@@ -378,7 +398,6 @@ impl Mapper {
         }
         // The turn's items are done; keep the maps from growing for the life of the session.
         self.items.retain(|_, (item_turn, _)| *item_turn != turn);
-        self.turns.remove(&turn);
         drafts
     }
 
@@ -1103,6 +1122,19 @@ fn file_change_title(changes: &[FileChange]) -> String {
         [one] => format!("edit {}", one.path),
         [first, rest @ ..] => format!("edit {} and {} more", first.path, rest.len()),
     }
+}
+
+/// The human sentence of a provider error: backend errors arrive as a JSON document
+/// (`{"type":"error","error":{"message":"..."}}`) in the message field.
+fn error_message(raw: &str) -> String {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|doc| {
+            doc.pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| raw.to_owned())
 }
 
 fn tool_status(status: &str) -> ToolStatus {

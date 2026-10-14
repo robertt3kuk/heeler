@@ -12,10 +12,12 @@
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 //! - [`history`]: the opt-in session history index (`heeler-index`) and the `history.*` requests.
+//! - [`chat`]: agent chat sessions: adapters, the approval engine, the journal.
 //! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
 
 pub mod agent;
 pub mod bus;
+pub mod chat;
 pub mod config;
 pub mod conn;
 pub mod daemon;

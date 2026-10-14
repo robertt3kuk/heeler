@@ -107,6 +107,39 @@ impl TestDaemon {
         }
     }
 
+    /// [`restart`](Self::restart) with `tweak` applied to the new daemon's config.
+    pub async fn restart_with(self, tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
+        let Self {
+            _dir,
+            paths,
+            daemon,
+        } = self;
+        daemon.shutdown();
+        timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
+        let mut config = DaemonConfig::new(paths.clone());
+        tweak(&mut config);
+        // Tests share one process: another test spawning a child at this very moment can hold
+        // a copy of the lock's descriptor until its `exec`, so the lock may be released a few
+        // milliseconds late.
+        let daemon = timeout(WAIT, async {
+            loop {
+                match heeler_daemon::start(config.clone()).await {
+                    Err(heeler_daemon::DaemonError::AlreadyRunning { .. }) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    other => return other.unwrap(),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        Self {
+            _dir,
+            paths,
+            daemon,
+        }
+    }
+
     /// Waits for a daemon that stopped itself (a `daemon.shutdown` request), then starts a new
     /// one on the same `HEELER_HOME`.
     pub async fn restart_after_shutdown_request(self) -> Self {

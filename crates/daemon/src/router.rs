@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use heeler_core::TerminalId;
+use heeler_protocol::chat::ChatSent;
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
 use heeler_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
@@ -167,6 +168,48 @@ impl Router {
                 self.history.rebuild().await?;
                 ok(&Empty {})
             }
+            Request::ChatCreate(req) => ok(&SessionResult {
+                session: self.registry.create_chat(req).await?,
+            }),
+            Request::ChatSend(req) => {
+                self.live_chat(req.session_id).await?;
+                let turn_id = self
+                    .registry
+                    .chats()
+                    .send(req.session_id, req.text)
+                    .await?;
+                ok(&ChatSent { turn_id })
+            }
+            Request::ChatInterrupt(req) => {
+                self.live_chat(req.session_id).await?;
+                self.registry.chats().interrupt(req.session_id).await?;
+                ok(&Empty {})
+            }
+            Request::ChatHistory(req) => {
+                self.registry.chat_target(req.session_id).await?;
+                ok(&self.registry.chats().history(req).await?)
+            }
+            Request::ChatModels(req) => ok(&self.registry.chats().models(&req.agent).await?),
+            Request::ApprovalList(req) => ok(&self.registry.chats().approval_list(req.session_id)),
+            Request::ApprovalRespond(req) => {
+                self.registry
+                    .chats()
+                    .respond(req.approval_id, req.option_id, conn.client_kind())
+                    .await?;
+                ok(&Empty {})
+            }
+        }
+    }
+
+    /// The session must be a chat session with a running agent.
+    async fn live_chat(&self, id: heeler_core::SessionId) -> Result<(), ErrorBody> {
+        if self.registry.chat_target(id).await? {
+            Ok(())
+        } else {
+            Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("chat session {id} is not running"),
+            ))
         }
     }
 

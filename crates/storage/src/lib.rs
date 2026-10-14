@@ -29,7 +29,10 @@ use tracing::{debug, error};
 
 pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
-pub use rows::{CreatedBy, EpochRecord, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow};
+pub use rows::{
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
+    RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+};
 pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
 /// Commands waiting for the writer before submitters wait their turn.
@@ -137,6 +140,14 @@ impl Storage {
 
     pub fn recent_projects(&self) -> RecentProjects<'_> {
         RecentProjects(self)
+    }
+
+    pub fn chat(&self) -> Chat<'_> {
+        Chat(self)
+    }
+
+    pub fn approvals(&self) -> Approvals<'_> {
+        Approvals(self)
     }
 
     pub fn app_meta(&self) -> AppMeta<'_> {
@@ -317,6 +328,63 @@ impl Sessions<'_> {
     pub fn list_in_workspace(&self, workspace: WorkspaceId) -> Result<Vec<SessionRow>> {
         self.0
             .read(move |conn| sql::list_sessions(conn, Some(workspace)))
+    }
+}
+
+/// The journal of chat sessions: events and turns. Removed with the session.
+#[derive(Debug, Clone, Copy)]
+pub struct Chat<'a>(&'a Storage);
+
+impl Chat<'_> {
+    /// Appends an event. The session's row must have been written before.
+    pub fn append(&self, row: ChatItemRow) -> Result<()> {
+        self.0.write(Write::AppendChatItem(Box::new(row)))
+    }
+
+    /// Up to `limit` events with `seq < before` (the newest of them), oldest first.
+    pub fn items(
+        &self,
+        session: SessionId,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<ChatItemRow>> {
+        self.0
+            .read(move |conn| sql::chat_items(conn, session, before, limit))
+    }
+
+    /// The highest journaled `seq`; 0 when nothing was journaled.
+    pub fn last_seq(&self, session: SessionId) -> Result<u64> {
+        self.0.read(move |conn| sql::chat_last_seq(conn, session))
+    }
+
+    pub fn upsert_turn(&self, row: ChatTurnRow) -> Result<()> {
+        self.0.write(Write::UpsertChatTurn(row))
+    }
+
+    /// Oldest first.
+    pub fn turns(&self, session: SessionId) -> Result<Vec<ChatTurnRow>> {
+        self.0.read(move |conn| sql::chat_turns(conn, session))
+    }
+}
+
+/// Permission requests and their outcomes (the audit trail).
+#[derive(Debug, Clone, Copy)]
+pub struct Approvals<'a>(&'a Storage);
+
+impl Approvals<'_> {
+    /// Records a request, or how an earlier recorded one ended.
+    pub fn upsert(&self, row: ApprovalRow) -> Result<()> {
+        self.0.write(Write::UpsertApproval(Box::new(row)))
+    }
+
+    /// Oldest first; `session` limits to one session.
+    pub fn list(&self, session: Option<SessionId>) -> Result<Vec<ApprovalRow>> {
+        self.0.read(move |conn| sql::approvals(conn, session, false))
+    }
+
+    /// Requests never resolved (what a crashed daemon left behind).
+    pub fn unresolved(&self) -> Result<Vec<ApprovalRow>> {
+        self.0.read(|conn| sql::approvals(conn, None, true))
     }
 }
 

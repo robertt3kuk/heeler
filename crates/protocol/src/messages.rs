@@ -3,13 +3,21 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_core::agent::PermissionOutcome;
+use heeler_core::{
+    AgentEvent, ApprovalId, Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId,
+    WorkspaceId,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
+use crate::chat::{
+    ApprovalInfo, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistoryRequest, ChatInfo,
+    ChatModelsRequest, ChatSend,
+};
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::history::{HistorySearch, HistorySetEnabled};
@@ -112,6 +120,27 @@ pub enum Request {
     /// Capability `history.search`: read every transcript again.
     #[serde(rename = "history.rebuild")]
     HistoryRebuild(Empty),
+    /// Capability `chat.codex` (protocol 0.9): open an agent conversation as a session.
+    #[serde(rename = "chat.create")]
+    ChatCreate(ChatCreate),
+    /// Capability `chat.codex`: send the user's message; answered with `ChatSent`.
+    #[serde(rename = "chat.send")]
+    ChatSend(ChatSend),
+    /// Capability `chat.codex`: stop the turn in progress.
+    #[serde(rename = "chat.interrupt")]
+    ChatInterrupt(SessionRef),
+    /// Capability `chat.codex`: the journal of a session; answered with `ChatHistory`.
+    #[serde(rename = "chat.history")]
+    ChatHistory(ChatHistoryRequest),
+    /// Capability `chat.codex`: the models an agent offers; answered with `ChatModels`.
+    #[serde(rename = "chat.models")]
+    ChatModels(ChatModelsRequest),
+    /// Capability `chat.codex`: permission requests waiting for an answer.
+    #[serde(rename = "approval.list")]
+    ApprovalList(ApprovalListRequest),
+    /// Capability `chat.codex`: answer a permission request with one of its options.
+    #[serde(rename = "approval.respond")]
+    ApprovalRespond(ApprovalRespond),
 }
 
 impl Request {
@@ -537,6 +566,9 @@ pub struct SessionInfo {
     /// ended sessions loaded from storage).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restored: bool,
+    /// Present for agent chat sessions (kind `harness`; capability `chat.codex`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatInfo>,
 }
 
 /// The latest report of a coding agent running in a session.
@@ -631,6 +663,25 @@ pub enum Event {
         terminal_id: TerminalId,
         block: Block,
     },
+    /// Capability `chat.codex` (protocol 0.9): one event of a chat session, streamed as it
+    /// happens. `event.seq` increases per session; deltas are streamed but not journaled.
+    #[serde(rename = "chat.event")]
+    ChatEvent {
+        session_id: SessionId,
+        event: Box<AgentEvent>,
+    },
+    /// Capability `chat.codex`: an agent asks for permission.
+    #[serde(rename = "approval.required")]
+    ApprovalRequired { approval: Box<ApprovalInfo> },
+    /// Capability `chat.codex`: a permission request is over (answered, or expired because
+    /// its turn ended or the agent went away).
+    #[serde(rename = "approval.resolved")]
+    ApprovalResolved {
+        approval_id: ApprovalId,
+        session_id: SessionId,
+        #[serde(flatten)]
+        outcome: PermissionOutcome,
+    },
 }
 
 impl Event {
@@ -658,6 +709,9 @@ impl Event {
         "terminal.title",
         "terminal.notification",
         "terminal.block",
+        "chat.event",
+        "approval.required",
+        "approval.resolved",
     ];
 }
 

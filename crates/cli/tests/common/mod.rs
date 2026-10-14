@@ -45,13 +45,19 @@ pub struct TestDaemon {
 
 impl TestDaemon {
     pub async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// [`start`](Self::start) with `tweak` applied to the daemon's config.
+    pub async fn start_with(tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
         // Sessions find this build of the CLI through `HEELER_BIN`, as in a real install.
-        let config = DaemonConfig {
+        let mut config = DaemonConfig {
             heeler_bin: Some(PathBuf::from(HEELER)),
             ..DaemonConfig::new(paths.clone())
         };
+        tweak(&mut config);
         let daemon = heeler_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
@@ -147,4 +153,15 @@ pub fn heelerd_dir() -> PathBuf {
         "heelerd not built: run `cargo build -p heeler-daemon --bin heelerd` (or `just test`)"
     );
     dir
+}
+
+/// The fake codex app server, next to the `heeler` test binary; `just test` builds the
+/// workspace binaries first.
+pub fn codex_fixture_bin() -> PathBuf {
+    let bin = Path::new(HEELER).parent().unwrap().join("heeler-codex-fixture");
+    assert!(
+        bin.is_file(),
+        "heeler-codex-fixture not built: run `cargo build -p heeler-agents --bins` (or `just test`)"
+    );
+    bin
 }

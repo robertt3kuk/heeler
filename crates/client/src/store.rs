@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use heeler_core::{Epoch, SessionId, TerminalId};
 use heeler_protocol::blocks::Block;
+use heeler_protocol::chat::ApprovalInfo;
 use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,9 @@ pub struct StoreState {
     pub workspaces: Vec<WorkspaceInfo>,
     /// Creation order (`created_at_ms`, then id).
     pub sessions: Vec<SessionInfo>,
+    /// Permission requests of agent chats waiting for an answer, oldest first (capability
+    /// `chat.codex`). The daemon keeps them across client disconnects.
+    pub approvals: Vec<ApprovalInfo>,
 }
 
 /// Transient events that are not part of [`StoreState`].
@@ -94,7 +98,18 @@ impl StoreState {
             epoch: None,
             workspaces: Vec::new(),
             sessions: Vec::new(),
+            approvals: Vec::new(),
         }
+    }
+
+    /// Replaces the pending approvals with what `approval.list` answered.
+    pub(crate) fn install_approvals(&mut self, mut approvals: Vec<ApprovalInfo>) {
+        approvals.sort_by(|a, b| {
+            a.requested_at_ms
+                .cmp(&b.requested_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        self.approvals = approvals;
     }
 
     /// Replaces workspaces and sessions with `snapshot` (the daemon's view at one seq).
@@ -118,6 +133,7 @@ impl StoreState {
     pub(crate) fn clear(&mut self) {
         self.workspaces.clear();
         self.sessions.clear();
+        self.approvals.clear();
     }
 
     /// Folds one event into the state. Events that only concern terminals' presentation (title)
@@ -144,6 +160,9 @@ impl StoreState {
                     }
                     keep
                 });
+                let sessions = &self.sessions;
+                self.approvals
+                    .retain(|a| sessions.iter().any(|s| s.id == a.session_id));
             }
             Event::SessionUpdated { session } => {
                 effects
@@ -187,6 +206,17 @@ impl StoreState {
                 });
             }
             Event::TerminalTitle { .. } => {}
+            Event::ApprovalRequired { approval } => {
+                if !self.approvals.iter().any(|a| a.id == approval.id) {
+                    self.approvals.push(*approval);
+                }
+            }
+            Event::ApprovalResolved { approval_id, .. } => {
+                self.approvals.retain(|a| a.id != approval_id);
+            }
+            // Chat events stream to whoever renders the chat (`Client::events`); they are not
+            // state of the sessions list.
+            Event::ChatEvent { .. } => {}
         }
         effects
     }
@@ -218,6 +248,7 @@ mod tests {
             created_at_ms,
             agent: None,
             restored: false,
+            chat: None,
         }
     }
 

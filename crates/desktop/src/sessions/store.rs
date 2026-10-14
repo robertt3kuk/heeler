@@ -100,6 +100,7 @@ impl SessionsStore {
                 epoch: None,
                 workspaces: Vec::new(),
                 sessions: Vec::new(),
+                approvals: Vec::new(),
             }),
             attention: AttentionTracker::new(),
             focused: None,

@@ -171,6 +171,12 @@ impl Ctx {
     pub(super) async fn history(&self, args: HistoryArgs) -> Result<(), CliError> {
         let client = self.connect().await?;
         let session = self.resolve(&client, &args.target).await?;
+        if session.kind == heeler_core::SessionKind::Harness {
+            return Err(CliError::Failed(format!(
+                "session {} is a chat session; `heeler chat log` prints its history",
+                session.id
+            )));
+        }
         let terminal = session
             .terminal_id
             .ok_or_else(|| CliError::Failed(format!("session {} has no terminal", session.id)))?;
@@ -291,6 +297,12 @@ fn with_source(error: CliError, target: &str, source: &str) -> CliError {
 
 /// The terminal of a session that can still take input and be attached live.
 pub(super) fn live_terminal(session: &SessionInfo) -> Result<TerminalId, CliError> {
+    if session.kind == heeler_core::SessionKind::Harness {
+        return Err(CliError::Failed(format!(
+            "session {} is a chat session; use `heeler chat send|attach|log`",
+            session.id
+        )));
+    }
     if !session.state.is_live() {
         return Err(CliError::Failed(format!(
             "session {} is {}; `heeler restart` starts it again, `heeler history` shows its output",
@@ -516,6 +528,7 @@ mod tests {
             created_at_ms: 0,
             agent: None,
             restored: false,
+            chat: None,
         }
     }
 

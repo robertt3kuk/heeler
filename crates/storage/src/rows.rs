@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use heeler_core::{Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
+use heeler_core::{ApprovalId, Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 /// What a workspace is for. The database holds at most one `Home`.
@@ -72,4 +72,63 @@ pub struct SessionRow {
 pub struct EpochRecord {
     pub epoch: Epoch,
     pub started_at_ms: u64,
+}
+
+/// One journaled event of a chat session. The event itself is JSON (the core `AgentEvent`) so
+/// this crate stays independent of the event model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatItemRow {
+    pub session_id: SessionId,
+    pub seq: u64,
+    pub ts_ms: u64,
+    pub turn_id: Option<String>,
+    pub item_id: Option<String>,
+    /// The event's `type`.
+    pub kind: String,
+    pub event_json: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTurnStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTurnRow {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub provider_turn_id: Option<String>,
+    pub status: ChatTurnStatus,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalOutcome {
+    Selected,
+    Expired,
+}
+
+/// A permission request and, once it is over, how it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalRow {
+    pub id: ApprovalId,
+    pub session_id: SessionId,
+    pub turn_id: Option<String>,
+    pub kind: String,
+    pub title: String,
+    /// The options the provider offered (JSON array).
+    pub options_json: String,
+    pub requested_at_ms: u64,
+    pub resolved_at_ms: Option<u64>,
+    pub outcome: Option<ApprovalOutcome>,
+    pub option_id: Option<String>,
+    /// Which client answered (`cli`, `desktop`, ...); absent for expiries.
+    pub decided_by: Option<String>,
 }

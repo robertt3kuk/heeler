@@ -6,6 +6,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_core::agent::{
+    FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption, PermissionOptionKind,
+    PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
+};
+use heeler_core::{
+    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
+    SandboxMode, TurnId,
+};
+use heeler_protocol::chat::*;
 use heeler_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
@@ -48,6 +57,7 @@ fn session_info() -> SessionInfo {
         created_at_ms: 1_791_894_164_332,
         agent: None,
         restored: false,
+        chat: None,
     }
 }
 
@@ -80,6 +90,80 @@ fn prompt_block() -> Block {
         finished_at_ms: None,
         cwd: Some("/repo".into()),
         state: BlockState::Prompt,
+    }
+}
+
+fn turn() -> TurnId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3TV".parse().unwrap()
+}
+fn item() -> ItemId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3JT".parse().unwrap()
+}
+fn approval() -> ApprovalId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3AP".parse().unwrap()
+}
+
+fn chat_info() -> ChatInfo {
+    ChatInfo {
+        agent: "codex".into(),
+        model: "gpt-6.1-sol".into(),
+        approval_policy: ApprovalPolicy::Untrusted,
+        sandbox: SandboxMode::ReadOnly,
+        turn_active: true,
+        pending_approvals: 1,
+    }
+}
+
+fn chat_session_info() -> SessionInfo {
+    SessionInfo {
+        kind: SessionKind::Harness,
+        title: "codex".into(),
+        state: SessionState::WaitingApproval,
+        command: vec!["codex".into()],
+        terminal_id: None,
+        chat: Some(chat_info()),
+        ..session_info()
+    }
+}
+
+/// A draft stamped as the daemon does.
+fn agent_event(seq: u64, kind: AgentEventKind) -> AgentEvent {
+    let mut draft = AgentEventDraft::new(kind);
+    draft.turn_id = Some(turn());
+    draft.item_id = Some(item());
+    draft.provider.thread_id = Some("thread-1".into());
+    draft.provider.turn_id = Some("turn-1".into());
+    draft.provider.item_id = Some("item-1".into());
+    draft.into_event(sid(), seq, 1_791_894_170_000 + seq)
+}
+
+fn permission_options() -> Vec<PermissionOption> {
+    vec![
+        PermissionOption {
+            id: "accept".into(),
+            label: "Allow once".into(),
+            kind: PermissionOptionKind::AllowOnce,
+            provider: Some(serde_json::json!("accept")),
+        },
+        PermissionOption {
+            id: "cancel".into(),
+            label: "Deny and stop the turn".into(),
+            kind: PermissionOptionKind::Cancel,
+            provider: Some(serde_json::json!("cancel")),
+        },
+    ]
+}
+
+fn approval_info() -> ApprovalInfo {
+    ApprovalInfo {
+        id: approval(),
+        session_id: sid(),
+        turn_id: Some(turn()),
+        kind: PermissionKind::Command,
+        title: "/bin/zsh -lc 'touch hi.txt'".into(),
+        detail: Some("in /repo".into()),
+        options: permission_options(),
+        requested_at_ms: 1_791_894_170_500,
     }
 }
 
@@ -415,6 +499,80 @@ fn requests() -> Vec<(&'static str, Request)> {
         ),
         ("history_clear", Request::HistoryClear(Empty {})),
         ("history_rebuild", Request::HistoryRebuild(Empty {})),
+        (
+            "chat_create",
+            Request::ChatCreate(ChatCreate {
+                workspace_id: Some(ws()),
+                cwd: "/repo".into(),
+                agent: "codex".into(),
+                model: Some("gpt-6.1-sol".into()),
+                approval_policy: Some(ApprovalPolicy::Untrusted),
+                sandbox: Some(SandboxMode::ReadOnly),
+                title: Some("fix the build".into()),
+            }),
+        ),
+        (
+            "chat_create_minimal",
+            Request::ChatCreate(ChatCreate {
+                workspace_id: None,
+                cwd: "/repo".into(),
+                agent: "codex".into(),
+                model: None,
+                approval_policy: None,
+                sandbox: None,
+                title: None,
+            }),
+        ),
+        (
+            "chat_send",
+            Request::ChatSend(ChatSend {
+                session_id: sid(),
+                text: "run the tests".into(),
+            }),
+        ),
+        (
+            "chat_interrupt",
+            Request::ChatInterrupt(SessionRef { session_id: sid() }),
+        ),
+        (
+            "chat_history",
+            Request::ChatHistory(ChatHistoryRequest {
+                session_id: sid(),
+                before_seq: Some(120),
+                limit: 50,
+            }),
+        ),
+        (
+            "chat_history_newest",
+            Request::ChatHistory(ChatHistoryRequest {
+                session_id: sid(),
+                before_seq: None,
+                limit: HISTORY_DEFAULT_LIMIT,
+            }),
+        ),
+        (
+            "chat_models",
+            Request::ChatModels(ChatModelsRequest {
+                agent: "codex".into(),
+            }),
+        ),
+        (
+            "approval_list",
+            Request::ApprovalList(ApprovalListRequest { session_id: None }),
+        ),
+        (
+            "approval_list_session",
+            Request::ApprovalList(ApprovalListRequest {
+                session_id: Some(sid()),
+            }),
+        ),
+        (
+            "approval_respond",
+            Request::ApprovalRespond(ApprovalRespond {
+                approval_id: approval(),
+                option_id: "accept".into(),
+            }),
+        ),
     ]
 }
 
@@ -505,6 +663,193 @@ fn events() -> Vec<(&'static str, Event)> {
             "workspace_updated_home",
             Event::WorkspaceUpdated {
                 workspace: home_info(),
+            },
+        ),
+        (
+            "session_updated_chat",
+            Event::SessionUpdated {
+                session: chat_session_info(),
+            },
+        ),
+        (
+            "chat_event_message_delta",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    41,
+                    AgentEventKind::MessageDelta { text: "Hel".into() },
+                )),
+            },
+        ),
+        (
+            "chat_event_message_end",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(
+                    agent_event(
+                        44,
+                        AgentEventKind::MessageEnd {
+                            role: MessageRole::Assistant,
+                            phase: Some("final_answer".into()),
+                            text: "Hello".into(),
+                        },
+                    )
+                    .replayed(),
+                ),
+            },
+        ),
+        (
+            "chat_event_tool_start",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    45,
+                    AgentEventKind::ToolStart {
+                        tool: ToolKind::Command,
+                        name: "shell".into(),
+                        title: "cargo test".into(),
+                        input: Some(serde_json::json!({"command": "cargo test", "cwd": "/repo"})),
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_tool_end",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    47,
+                    AgentEventKind::ToolEnd {
+                        tool: ToolKind::Command,
+                        status: ToolStatus::Completed,
+                        output: Some("ok\n".into()),
+                        truncated: false,
+                        exit_code: Some(0),
+                        duration_ms: Some(1250),
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_file_diff",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    48,
+                    AgentEventKind::FileDiff {
+                        changes: vec![FileChange {
+                            path: "/repo/hello.txt".into(),
+                            kind: FileChangeKind::Add,
+                            move_path: None,
+                            patch: Some("hi\n".into()),
+                            before: None,
+                            after: None,
+                        }],
+                        patch: None,
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_permission_requested",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    49,
+                    AgentEventKind::PermissionRequested {
+                        approval_id: approval(),
+                        kind: PermissionKind::Command,
+                        title: "touch hi.txt".into(),
+                        detail: None,
+                        options: permission_options(),
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_permission_resolved",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    50,
+                    AgentEventKind::PermissionResolved {
+                        approval_id: approval(),
+                        outcome: PermissionOutcome::Selected {
+                            option_id: "accept".into(),
+                        },
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_usage",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    51,
+                    AgentEventKind::Usage {
+                        total: Some(TokenCounts {
+                            total_tokens: Some(41_338),
+                            input_tokens: Some(41_285),
+                            output_tokens: Some(53),
+                            ..TokenCounts::default()
+                        }),
+                        last: None,
+                        context_window: Some(258_400),
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_opaque",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new({
+                    let mut event = agent_event(
+                        52,
+                        AgentEventKind::Opaque {
+                            method: "future/thing".into(),
+                        },
+                    );
+                    event.payload = Some(serde_json::json!({"x": 1}));
+                    event
+                }),
+            },
+        ),
+        (
+            "chat_event_turn_completed",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    53,
+                    AgentEventKind::TurnCompleted {
+                        duration_ms: Some(6784),
+                    },
+                )),
+            },
+        ),
+        (
+            "approval_required",
+            Event::ApprovalRequired {
+                approval: Box::new(approval_info()),
+            },
+        ),
+        (
+            "approval_resolved_selected",
+            Event::ApprovalResolved {
+                approval_id: approval(),
+                session_id: sid(),
+                outcome: PermissionOutcome::Selected {
+                    option_id: "accept".into(),
+                },
+            },
+        ),
+        (
+            "approval_resolved_expired",
+            Event::ApprovalResolved {
+                approval_id: approval(),
+                session_id: sid(),
+                outcome: PermissionOutcome::Expired,
             },
         ),
     ]
@@ -880,6 +1225,93 @@ fn responses_match_fixtures() {
             "error",
             ControlMessage::err(5, ErrorBody::new(ErrorCode::NotFound, "session not found")),
         ),
+        (
+            "error_option_not_offered",
+            ControlMessage::err(
+                6,
+                ErrorBody::new(
+                    ErrorCode::OptionNotOffered,
+                    "option `decline` was not offered; offered: accept, cancel",
+                ),
+            ),
+        ),
+        (
+            "chat_session_result",
+            ControlMessage::ok(
+                12,
+                &SessionResult {
+                    session: chat_session_info(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "chat_sent",
+            ControlMessage::ok(13, &ChatSent { turn_id: turn() }).unwrap(),
+        ),
+        (
+            "chat_history",
+            ControlMessage::ok(
+                14,
+                &ChatHistory {
+                    events: vec![
+                        agent_event(
+                            44,
+                            AgentEventKind::MessageEnd {
+                                role: MessageRole::User,
+                                phase: None,
+                                text: "run the tests".into(),
+                            },
+                        )
+                        .replayed(),
+                        agent_event(46, AgentEventKind::TurnCancelled).replayed(),
+                    ],
+                    has_more: true,
+                    last_seq: 60,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "chat_models",
+            ControlMessage::ok(
+                15,
+                &ChatModels {
+                    agent: "codex".into(),
+                    models: vec![
+                        ModelInfo {
+                            id: "gpt-6.1-sol".into(),
+                            display_name: "GPT-6.1-Sol".into(),
+                            description: "Latest workhorse model".into(),
+                            is_default: true,
+                            hidden: false,
+                            default_reasoning_effort: Some("low".into()),
+                            reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+                        },
+                        ModelInfo {
+                            id: "gpt-5.6-luna".into(),
+                            display_name: "GPT-5.6-Luna".into(),
+                            description: String::new(),
+                            is_default: false,
+                            hidden: false,
+                            default_reasoning_effort: None,
+                            reasoning_efforts: vec![],
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "approval_list",
+            ControlMessage::ok(
+                16,
+                &ApprovalList {
+                    approvals: vec![approval_info()],
+                },
+            )
+            .unwrap(),
+        ),
     ];
     for (name, message) in cases {
         let json = String::from_utf8(message.to_json().unwrap()).unwrap();
@@ -942,4 +1374,34 @@ fn workspaces_of_an_older_daemon_decode_with_defaults() {
             total_sessions: 0,
         }
     );
+}
+
+#[test]
+fn sessions_of_an_older_daemon_have_no_chat_info() {
+    let old = serde_json::json!({
+        "id": sid(), "workspace_id": ws(), "kind": "terminal", "title": "t",
+        "state": {"state": "running"}, "command": [], "cwd": null, "terminal_id": 1,
+        "created_at_ms": 1
+    });
+    let decoded: SessionInfo = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.chat, None);
+}
+
+#[test]
+fn history_requests_default_their_limit() {
+    let request: ChatHistoryRequest =
+        serde_json::from_value(serde_json::json!({"session_id": sid()})).unwrap();
+    assert_eq!(request.limit, HISTORY_DEFAULT_LIMIT);
+    assert_eq!(request.before_seq, None);
+}
+
+#[test]
+fn events_of_a_newer_agent_decode_as_opaque_kinds_only_when_known() {
+    // A `chat.event` whose kind this build does not know is a decode error for that event
+    // (the client ignores it), never a panic.
+    let data = serde_json::json!({
+        "session_id": sid(),
+        "event": {"session_id": sid(), "seq": 1, "ts_ms": 1, "type": "from_the_future"}
+    });
+    assert!(Event::decode("chat.event", data).is_err());
 }

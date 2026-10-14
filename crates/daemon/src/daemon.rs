@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
+use heeler_agents::CodexConfig;
 use heeler_core::Epoch;
 use heeler_storage::Storage;
 use tokio::net::UnixListener;
@@ -19,6 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::agent;
 use crate::bus::{EventBus, RingLimits};
+use crate::chat;
 use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
@@ -55,6 +57,8 @@ pub struct DaemonConfig {
     pub heeler_bin: Option<PathBuf>,
     /// Shortest time between two `last_active_ms` updates of one workspace.
     pub activity_interval: Duration,
+    /// How to start `codex app-server`; `None` follows `[codex]` of `daemon.toml`.
+    pub codex: Option<CodexConfig>,
 }
 
 impl DaemonConfig {
@@ -66,6 +70,7 @@ impl DaemonConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             heeler_bin: None,
             activity_interval: registry::ACTIVITY_INTERVAL,
+            codex: None,
         }
     }
 }
@@ -175,6 +180,9 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             restore: settings.restore_sessions,
             home_folder,
             activity_interval: config.activity_interval,
+            codex: config
+                .codex
+                .unwrap_or_else(|| settings.codex.to_config()),
         },
         stored,
     );
@@ -327,6 +335,8 @@ async fn open_storage(database: &Path) -> Result<(Storage, Stored), DaemonError>
     tokio::task::spawn_blocking(move || {
         let storage = Storage::open(&path)?;
         let stored = restore::load(&storage)?;
+        // Agents died with the previous daemon; whatever they asked can no longer be answered.
+        chat::expire_dangling_approvals(&storage)?;
         Ok((storage, stored))
     })
     .await?
