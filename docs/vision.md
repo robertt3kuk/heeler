@@ -41,13 +41,19 @@ Inspirations and what we take from each:
 - Native notifications with actions (approve/deny/open) routed back to the daemon.
 - Per-user launch agent (SMAppService) so agents run with the window closed; menu bar status; global shortcuts; Dock badge.
 
+### Editor (ADR 0012)
+- Code editor next to terminals and agent sessions: tree-sitter highlighting and structure, LSP on demand (diagnostics, completion, hover, go-to-definition, rename, format), Vim mode, one theme for chrome, terminal, and code.
+
+### Terminal blocks
+- Optional block view built on shell integration (OSC 133): command + output units with exit status and duration, jump between commands, copy/collapse a block, send a block to an agent as context. Toggle `terminal.blocks`.
+
 ### Extensibility
 - Versioned IPC protocol with published schema; CLI with `--json` everywhere.
 - ACP and MCP integration; provider adapters as crates behind traits.
 - Plugins (manifest actions + event hooks), later remote clients (TLS over Tailscale/SSH), mobile.
 
 ## Non-goals (until explicitly re-scoped)
-- Code editor / LSP host. We show diffs and open files in the user's editor.
+- Rich shell input editor (Warp-style) — dropped for now.
 - Embedded web browser.
 - Windows/Linux UI. The daemon stays portable (Unix-first); the desktop is macOS.
 - Hosting or reselling model access.

@@ -4,11 +4,11 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: none. M2-F merged (`5df8b29`): bench harness, crash fix, panic hook, `docs/perf.md`. Budgets: B1, B3, B5, B6 pass; **B2 (daemon RSS 254 MB vs 120 MB) and B4 (keystroke p95 18 ms vs 16 ms) miss** — roadmap backlog B-2/B-3.
-- **Next action**: decide B2/B4 with the user (fix vs ADR amendment); then `docs/demos/M2.md` + M2 demo with screenshots; close M2. Backlog B-1 (login environment for sessions + settings) noted.
+- **Active slice**: M2-H (`../heeler-wt/M2-H`): compact scrollback store (ADR 0013) for budget B2 + bench B4a/B4b split (ADR 0011).
+- **Next action**: review/merge M2-H; M2 demo with screenshots (M2.8); close M2; then M10 (shell integration + blocks). Plan changes 2026-10-14: B4 redefined (ADR 0011); embedded editor added as M11 (ADR 0012 proposed, blocked on the license question); terminal blocks as M10; rich shell input dropped; execution order in `roadmap.md`.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
-  1. Project license (affects porting components from Zed's GPL crates; ADR 0003).
+  1. **Project license — now on the critical path for M11**: Zed's `editor`/`language`/`lsp`/`vim` crates are GPL-3.0 (reusable only if Heeler is GPL-3.0); Warp is AGPL-3.0 (ideas only). Permissive license ⇒ own editor on tree-sitter/ropey/lsp-types (ADR 0012 option B).
   2. Distribution: notarized Developer ID vs ad-hoc only for personal use (affects ADR 0007, Keychain prompts).
   3. ~~Default detach key~~ → decided: `ctrl+\` then `d` (M1-C).
   4. Product name: "Heeler" is already used by an iOS console for herdr (heeler.bybee.dev) and by heeler.com (AppSec). Keep as codename or rename before any public release.

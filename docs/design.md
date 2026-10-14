@@ -205,7 +205,7 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 | corner radius | 6 px | 8 px |
 | terminal padding (all sides) | 6 px | 8 px |
 
-- **Terminal themes**: built-in `heeler-dark` (bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `heeler-light`; theme follows system appearance unless pinned. Later: import Ghostty theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees (M2.3).
+- **Themes**: one theme definition drives chrome, terminal palette, and (M11) syntax scopes; built-in `heeler-dark` (terminal bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `heeler-light`; follows system appearance unless pinned. Later: import Ghostty/Zed theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
 - **Motion**: ≤ 150 ms, ease-out; no motion on terminal content; respects Reduce Motion.
 
 ## Settings

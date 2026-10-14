@@ -1,19 +1,22 @@
 # Roadmap
 
-Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
+Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Milestone numbers are IDs, not order; the agreed **execution order** is: M2 (incl. M2.7) → M10 shell integration + blocks → M3 → M4 → M5 → M6 → M11 editor → M7 → M8 → M9. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
 
 ```mermaid
 flowchart LR
   M0[M0 Foundations] --> M1[M1 Daemon + CLI terminals]
   M1 --> M2[M2 GPUI terminal client]
+  M2 --> M10[M10 Shell integration + blocks]
   M1 --> M3[M3 Persistence + restore]
   M1 --> M4[M4 Harness chat: Codex]
   M2 --> M4
   M4 --> M5[M5 Direct model chat]
   M2 --> M6[M6 macOS integration]
   M4 --> M6
+  M2 --> M11[M11 Editor: tree-sitter, LSP, Vim]
   M3 --> M7[M7 Orchestration + worktrees]
   M6 --> M7
+  M11 --> M7
   M7 --> M8[M8 ACP/MCP + more harnesses]
   M8 --> M9[M9 Extensibility + remote]
 ```
@@ -50,7 +53,9 @@ Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `de
 - [x] M2.3 `terminal_view`: grid rendering on the cell grid, cursor, selection/copy/paste, scrollback viewing, IME + Russian layout, key (legacy + kitty 1/8) and mouse (SGR/legacy) encoding, resize from font metrics, ack after paint (merged `fa7babc`); theme colors to daemon via protocol 0.2 `terminal.set_colors` (M2-E2)
 - [x] M2.4 Settings engine: layered TOML (defaults < user < workspace < runtime), typed namespaces with schemas, hot reload, keymap file, theme + density tokens (merged `ecf304b`); wiring in M2-E1
 - [x] M2.5 Panels and wiring: `Connection` in the desktop, shared terminal model per session (one attachment, many views, ack after first paint), terminal items with reconnect/ended states, sessions panel (search, needs-you, grouping, configurable rows), overview board (live previews, attention sort, exact layout stash/restore from every path), inspector (info; approvals/changes M4/M7), status items per preset, session lifecycle actions (⌘T, ⌘D/⌘⇧D start a terminal in the focused cwd, rename/restart/stop), settings namespaces with hot reload, `keymap.toml`, generated settings sheet (⌘,), terminal padding token (merged `1f87334`)
-- [ ] M2.6 Performance pass against budgets + M2 demo
+- [x] M2.6 Performance pass: `xtask bench` B1–B6, `docs/perf.md`, crash fix + panic hook (merged `5df8b29`); B4 redefined by ADR 0011
+- [ ] M2.7 Compact scrollback store (Warp-style flat storage for rows out of cursor reach; ADR 0013 amending ADR 0004) to meet B2; bench reports B4a/B4b per ADR 0011
+- [ ] M2.8 M2 demo (`docs/demos/M2.md`) with screenshots
 
 ## M3 — Persistence and restore
 Exit demo: kill `heelerd`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
@@ -91,11 +96,22 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 ## M9 — Extensibility and remote
 - Plugin manifests + event hooks; live daemon upgrade handoff (ADR 0009 step 2); remote transport (TLS over Tailscale/SSH) and mobile/web client feasibility.
 
+## M10 — Shell integration + blocks
+Exit demo: in zsh, bash, and fish (no user config edits) commands become blocks with exit status and duration; jump between blocks, copy a block's output, collapse it, send it to an agent as context; `terminal.blocks = false` restores the plain terminal; TUIs and `heeler attach` unaffected.
+- Shell integration auto-injected per shell (zsh `ZDOTDIR` shim, bash `--rcfile` shim, fish `XDG_DATA_DIRS` vendor_conf.d), emitting OSC 133 A/B/C/D (+ exit code) and OSC 7; opt-out setting; works over nested shells where possible.
+- Daemon: block index per terminal (prompt/command/output line ranges in the compact store, exit code, start/end time), protocol events + `terminal.blocks` query.
+- Desktop: block overlay on the single grid (gutter, separators, status/duration chips, hover actions), keyboard navigation, block selection/copy, collapse, "send to agent" (wired in M4).
+- Design note: blocks are an overlay on one grid (not Warp's grid-per-block), so full-screen programs and CLI attach keep working unchanged.
+
+## M11 — Embedded editor (ADR 0012)
+Exit demo: open a file from the sessions panel/⌘P next to a terminal; tree-sitter highlighting with the shared theme; LSP diagnostics, completion, hover, go-to-definition, rename, format (rust-analyzer, typescript-language-server); Vim mode on/off; agent edits reload the buffer.
+- Depends on the license decision (ADR 0012 options A vs B).
+- Crates per ADR 0012: `buffer`, `syntax`, `lsp_client` (servers supervised by the daemon), `code_view` (GPUI); `ItemRef::File` in the workbench; one theme for chrome/terminal/syntax.
+
 ## Backlog (agreed, not yet scheduled)
 
 - **B-1 Session environment like a real terminal emulator.** New sessions get a fresh login environment instead of inheriting `heelerd`'s environment (which depends on whoever started the daemon: CLI, desktop, launchd): start from the user's launchd environment (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`/`LC_*`, `PATH` via `path_helper`), then the login shell builds the rest (`-l`). Configurable in settings and applied at session start: `terminal.shell` (override the account login shell), `terminal.env` (extra variables), `terminal.env_inherit = "login" | "daemon"`, with workspace overrides (`<repo>/.heeler/settings.toml`). Clients pass the resolved shell/env in `session.create` (`TerminalSpec.command`/`env` already exist); daemon-managed `HEELER_*` still win. Already done: the default shell is the account's login shell (`getpwuid`), not the daemon's `$SHELL`.
-- **B-2 Compact scrollback store** (perf budget B2 miss, `docs/perf.md`): small hot window in the engine + compact cold store (~90 B/row); needs an ADR amending ADR 0004.
-- **B-3 Keystroke latency budget definition** (perf budget B4: 18.0 ms p95, bounded by display-link cadence at the pinned GPUI): ADR to redefine as "next display frame + ≤ 2 ms", or an on-demand present path in GPUI's macOS layer.
+- **B-2** → scheduled as M2.7. **B-3** → resolved by ADR 0011.
 
 ## Risk register
 
