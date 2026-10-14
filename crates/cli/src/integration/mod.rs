@@ -37,12 +37,17 @@ const CODEX_EVENTS: &[&str] = &[
     "PostToolUse",
     "Stop",
 ];
-/// Events Claude Code reports through; subagents are counted, `SessionEnd` releases.
+/// Events Claude Code reports through; subagents are nodes of the agent tree (`SubagentStart` /
+/// `SubagentStop`, tool and permission hooks carrying an `agent_id`), `PostModelSwitch` updates
+/// the model, `SessionEnd` releases.
 const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
+    "PreToolUse",
     "PermissionRequest",
     "PostToolUse",
+    "PostToolUseFailure",
+    "PostModelSwitch",
     "Stop",
     "StopFailure",
     "SessionEnd",

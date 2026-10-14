@@ -117,7 +117,7 @@ fn kinds(messages: &[AdapterMessage]) -> Vec<&AgentEventKind> {
         .iter()
         .filter_map(|m| match m {
             AdapterMessage::Event(draft) => Some(&draft.kind),
-            AdapterMessage::Exited(_) => None,
+            AdapterMessage::Exited(_) | AdapterMessage::Node(_) => None,
         })
         .collect()
 }
@@ -147,7 +147,7 @@ fn requested(messages: &[AdapterMessage]) -> (ApprovalId, &AgentEventDraft) {
                 }
                 _ => None,
             },
-            AdapterMessage::Exited(_) => None,
+            AdapterMessage::Exited(_) | AdapterMessage::Node(_) => None,
         })
         .expect("a permission request")
 }
@@ -692,7 +692,7 @@ async fn unknown_messages_become_opaque_events_and_never_crash_the_adapter() {
                 AgentEventKind::Opaque { method } => Some((method.as_str(), d)),
                 _ => None,
             },
-            AdapterMessage::Exited(_) => None,
+            AdapterMessage::Exited(_) | AdapterMessage::Node(_) => None,
         })
         .collect();
     let methods: Vec<_> = opaque.iter().map(|(m, _)| *m).collect();

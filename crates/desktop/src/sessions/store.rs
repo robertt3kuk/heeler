@@ -101,6 +101,7 @@ impl SessionsStore {
                 workspaces: Vec::new(),
                 sessions: Vec::new(),
                 approvals: Vec::new(),
+                trees: Default::default(),
             }),
             attention: AttentionTracker::new(),
             focused: None,

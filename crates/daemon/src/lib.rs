@@ -14,6 +14,7 @@
 //! - [`history`]: the opt-in session history index (`heeler-index`) and the `history.*` requests.
 //! - [`chat`]: agent chat sessions: adapters, the approval engine, the journal.
 //! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
+//! - [`tree`]: the per-session agent observation tree: event coalescing, rollup, storage.
 
 pub mod agent;
 pub mod bus;
@@ -29,6 +30,7 @@ pub mod registry;
 pub mod restore;
 pub mod router;
 pub mod terminals;
+pub mod tree;
 
 pub use bus::RingLimits;
 pub use config::{DaemonSettings, HistorySettings, RestoreMode};

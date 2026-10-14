@@ -1,46 +1,85 @@
 //! Translation of Codex and Claude Code hook events (JSON on stdin) into agent reports
-//! (`heeler agent hook`). Pure apart from the subagent counter file, so it is tested directly.
+//! (`heeler agent hook`). Pure, so it is tested directly.
+//!
+//! Claude Code's subagents are nodes of the session's agent tree, keyed by the `agent_id` its
+//! hooks carry: `SubagentStart` makes one, tool and permission hooks that carry an `agent_id`
+//! update that node's activity and state, `SubagentStop` ends it. Hooks without an `agent_id`
+//! are about the main agent, which is the node `root`.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
-
+use heeler_core::{NodeKind, NodeOutcome};
 use serde_json::Value;
 
 use crate::args::{AgentStateArg, HookAgentArg};
 
 pub const CODEX_SOURCE: &str = "codex-hooks";
 pub const CLAUDE_SOURCE: &str = "claude-hooks";
+/// The node id of the main agent in reports of Claude Code's hooks.
+pub const CLAUDE_ROOT_NODE: &str = "root";
+
+/// The node of the agent tree a report is about.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PlanNode {
+    pub id: String,
+    pub kind: Option<NodeKind>,
+    pub name: Option<String>,
+    pub agent_type: Option<String>,
+    pub outcome: Option<NodeOutcome>,
+    pub model: Option<String>,
+    pub activity: Option<String>,
+    pub transcript_path: Option<String>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // built once per hook event
 pub enum Plan {
     Report {
         agent: &'static str,
         source: &'static str,
-        state: AgentStateArg,
+        /// `None`: only the node's model or activity changes.
+        state: Option<AgentStateArg>,
         message: Option<String>,
         agent_session_id: Option<String>,
         resume_argv: Vec<String>,
+        node: Option<PlanNode>,
     },
     Release {
         source: &'static str,
+        node: Option<String>,
     },
 }
 
 /// What the translation needs to know about where it runs.
 #[derive(Debug)]
 pub struct HookEnv<'a> {
-    /// `HEELER_SESSION_ID`; keys the subagent counter.
-    pub heeler_session: &'a str,
     /// `CODEX_THREAD_ID`: the conversation of the Codex that spawned this hook's process tree.
     pub codex_thread_id: Option<&'a str>,
-    /// Where the subagent counter lives.
-    pub state_dir: &'a Path,
 }
 
-/// The directory for per-session hook state.
-pub fn default_state_dir() -> PathBuf {
-    std::env::temp_dir().join("heeler-agent")
+fn text<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+/// `Tool: first line of what it does`, short enough for a table cell.
+fn tool_activity(input: &Value) -> Option<String> {
+    let tool = text(input, "tool_name")?;
+    let detail = [
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "url",
+        "description",
+    ]
+    .iter()
+    .find_map(|key| input.get("tool_input")?.get(*key)?.as_str())
+    .and_then(|detail| detail.lines().next());
+    Some(match detail {
+        Some(detail) => format!("{tool}: {detail}"),
+        None => tool.to_owned(),
+    })
 }
 
 /// The report (or release) one hook event stands for; `None` for events that say nothing about
@@ -67,45 +106,106 @@ pub fn plan(agent: HookAgentArg, input: &Value, env: &HookEnv<'_>) -> Option<Pla
         HookAgentArg::Codex => ("codex", CODEX_SOURCE, "codex", &["resume"]),
         HookAgentArg::Claude => ("claude", CLAUDE_SOURCE, "claude", &["--resume"]),
     };
-    let counter = SubagentCounter::new(env.state_dir, env.heeler_session);
+    // Claude Code only: hooks inside a subagent carry its id.
+    let agent_id = (agent == HookAgentArg::Claude)
+        .then(|| text(input, "agent_id").filter(|id| is_plain_id(id)))
+        .flatten();
+    let agent_type = text(input, "agent_type").map(str::to_owned);
+    let node_of = |activity: Option<String>| -> Option<PlanNode> {
+        (agent == HookAgentArg::Claude).then(|| match agent_id {
+            Some(id) => PlanNode {
+                id: id.to_owned(),
+                kind: Some(NodeKind::Sub),
+                name: agent_type.clone(),
+                agent_type: agent_type.clone(),
+                activity,
+                ..PlanNode::default()
+            },
+            None => PlanNode {
+                id: CLAUDE_ROOT_NODE.to_owned(),
+                kind: Some(NodeKind::Main),
+                agent_type: agent_type.clone(),
+                activity,
+                ..PlanNode::default()
+            },
+        })
+    };
+    let main_node = |model: Option<String>, activity: Option<String>| -> Option<PlanNode> {
+        (agent == HookAgentArg::Claude).then(|| PlanNode {
+            id: CLAUDE_ROOT_NODE.to_owned(),
+            kind: Some(NodeKind::Main),
+            agent_type: agent_type.clone(),
+            model,
+            activity,
+            ..PlanNode::default()
+        })
+    };
 
-    let (state, message) = match event {
-        "SessionStart" => {
-            counter.reset();
-            (AgentStateArg::Idle, None)
-        }
-        "Stop" | "StopFailure" => {
-            counter.reset();
-            (AgentStateArg::Idle, None)
-        }
+    let mut message = None;
+    let (state, node) = match event {
+        "SessionStart" => (
+            Some(AgentStateArg::Idle),
+            main_node(text(input, "model").map(str::to_owned), None),
+        ),
+        "Stop" | "StopFailure" => (Some(AgentStateArg::Idle), main_node(None, None)),
         "SessionEnd" => {
-            counter.reset();
-            return Some(Plan::Release { source });
+            return Some(Plan::Release {
+                source,
+                node: (agent == HookAgentArg::Claude).then(|| CLAUDE_ROOT_NODE.to_owned()),
+            });
         }
+        "UserPromptSubmit" => (Some(AgentStateArg::Working), main_node(None, None)),
         // PostToolUse ends a permission prompt as far as hooks can tell.
-        "UserPromptSubmit" | "PostToolUse" => (AgentStateArg::Working, counter.message()),
-        "SubagentStart" => {
-            counter.start();
-            (AgentStateArg::Working, counter.message())
-        }
-        "SubagentStop" => {
-            counter.stop();
-            (AgentStateArg::Working, counter.message())
-        }
+        "PostToolUse" | "PostToolUseFailure" => (Some(AgentStateArg::Working), node_of(None)),
+        "PreToolUse" => (Some(AgentStateArg::Working), node_of(tool_activity(input))),
         "PermissionRequest" => {
-            let tool = input
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .filter(|tool| !tool.is_empty());
-            let message = match tool {
+            let activity = match text(input, "tool_name") {
                 Some(tool) => format!("permission: {tool}"),
                 None => "permission requested".to_owned(),
             };
-            (AgentStateArg::Blocked, Some(message))
+            if agent_id.is_none() {
+                message = Some(activity.clone());
+            }
+            (Some(AgentStateArg::Blocked), node_of(Some(activity)))
         }
+        "SubagentStart" => {
+            let id = agent_id?;
+            (
+                Some(AgentStateArg::Working),
+                Some(PlanNode {
+                    id: id.to_owned(),
+                    kind: Some(NodeKind::Sub),
+                    name: agent_type.clone(),
+                    agent_type: agent_type.clone(),
+                    ..PlanNode::default()
+                }),
+            )
+        }
+        "SubagentStop" => {
+            let id = agent_id?;
+            (
+                Some(AgentStateArg::Idle),
+                Some(PlanNode {
+                    id: id.to_owned(),
+                    kind: Some(NodeKind::Sub),
+                    name: agent_type.clone(),
+                    agent_type: agent_type.clone(),
+                    outcome: Some(NodeOutcome::Completed),
+                    transcript_path: text(input, "agent_transcript_path").map(str::to_owned),
+                    ..PlanNode::default()
+                }),
+            )
+        }
+        "PostModelSwitch" if agent == HookAgentArg::Claude => (
+            None,
+            main_node(Some(text(input, "to_model")?.to_owned()), None),
+        ),
         _ => return None,
     };
+    // Only the main agent's hooks carry the conversation and how to resume it.
+    let about_main = agent_id.is_none();
     let resume_argv = session_id
+        .filter(|_| about_main && state.is_some())
         .map(|id| {
             let mut argv = vec![resume_program.to_owned()];
             argv.extend(resume_flag.iter().map(|flag| (*flag).to_owned()));
@@ -118,8 +218,9 @@ pub fn plan(agent: HookAgentArg, input: &Value, env: &HookEnv<'_>) -> Option<Pla
         source,
         state,
         message,
-        agent_session_id: session_id.map(str::to_owned),
+        agent_session_id: session_id.filter(|_| about_main).map(str::to_owned),
         resume_argv,
+        node,
     })
 }
 
@@ -133,90 +234,29 @@ fn is_plain_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
 }
 
-/// Running subagents of one session. Hooks of parallel subagents race, so the count is a file
-/// of `+` and `-` marks appended with single writes and counted when read.
-struct SubagentCounter {
-    file: PathBuf,
-}
-
-impl SubagentCounter {
-    fn new(dir: &Path, heeler_session: &str) -> Self {
-        let name: String = heeler_session
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect();
-        Self {
-            file: dir.join(format!("{name}.subagents")),
-        }
-    }
-
-    fn mark(&self, mark: u8) {
-        if let Some(dir) = self.file.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file)
-        {
-            let _ = file.write_all(&[mark]);
-        }
-    }
-
-    fn start(&self) {
-        self.mark(b'+');
-    }
-
-    /// A stop nobody started (the counter was reset meanwhile) is not recorded, so the count
-    /// never goes below zero for later starts.
-    fn stop(&self) {
-        if self.running() > 0 {
-            self.mark(b'-');
-        }
-    }
-
-    fn reset(&self) {
-        let _ = fs::remove_file(&self.file);
-    }
-
-    fn running(&self) -> usize {
-        let marks = fs::read(&self.file).unwrap_or_default();
-        let started = marks.iter().filter(|m| **m == b'+').count();
-        let stopped = marks.iter().filter(|m| **m == b'-').count();
-        started.saturating_sub(stopped)
-    }
-
-    /// `subagents: N` while any run.
-    fn message(&self) -> Option<String> {
-        match self.running() {
-            0 => None,
-            n => Some(format!("subagents: {n}")),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
 
-    fn env(dir: &Path) -> HookEnv<'_> {
+    fn env() -> HookEnv<'static> {
         HookEnv {
-            heeler_session: "01K7F3B5N2Q9W8E4R6T1Y0V3KM",
             codex_thread_id: None,
-            state_dir: dir,
         }
     }
 
-    fn report(plan: Option<Plan>) -> (AgentStateArg, Option<String>, Vec<String>) {
+    fn go(agent: HookAgentArg, input: Value) -> Option<Plan> {
+        plan(agent, &input, &env())
+    }
+
+    fn claude(input: Value) -> Option<Plan> {
+        go(HookAgentArg::Claude, input)
+    }
+
+    fn report(plan: Option<Plan>) -> (Option<AgentStateArg>, Option<PlanNode>) {
         match plan {
-            Some(Plan::Report {
-                state,
-                message,
-                resume_argv,
-                ..
-            }) => (state, message, resume_argv),
+            Some(Plan::Report { state, node, .. }) => (state, node),
             other => panic!("expected a report, got {other:?}"),
         }
     }
@@ -226,94 +266,184 @@ mod tests {
     }
 
     #[test]
-    fn claude_events_map_to_states_and_a_resume_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = env(dir.path());
+    fn main_agent_events_map_to_states_on_the_root_node_and_a_resume_command() {
         let event = |name: &str| json!({"hook_event_name": name, "session_id": "5f3e-1c"});
-        let go = |name: &str| plan(HookAgentArg::Claude, &event(name), &env);
-
-        let (state, message, resume) = report(go("SessionStart"));
-        assert_eq!((state, message), (AgentStateArg::Idle, None));
-        assert_eq!(resume, argv(&["claude", "--resume", "5f3e-1c"]));
-        assert_eq!(report(go("UserPromptSubmit")).0, AgentStateArg::Working);
-        assert_eq!(report(go("PostToolUse")).0, AgentStateArg::Working);
-        assert_eq!(report(go("Stop")).0, AgentStateArg::Idle);
-        assert_eq!(report(go("StopFailure")).0, AgentStateArg::Idle);
+        let Some(Plan::Report {
+            state,
+            resume_argv,
+            agent_session_id,
+            node,
+            ..
+        }) = claude(json!({
+            "hook_event_name": "SessionStart", "session_id": "5f3e-1c", "model": "claude-opus-5"
+        }))
+        else {
+            panic!("report");
+        };
+        assert_eq!(state, Some(AgentStateArg::Idle));
+        assert_eq!(resume_argv, argv(&["claude", "--resume", "5f3e-1c"]));
+        assert_eq!(agent_session_id.as_deref(), Some("5f3e-1c"));
+        let node = node.unwrap();
         assert_eq!(
-            go("SessionEnd"),
+            (node.id.as_str(), node.kind, node.model.as_deref()),
+            ("root", Some(NodeKind::Main), Some("claude-opus-5"))
+        );
+        assert_eq!(
+            report(claude(event("UserPromptSubmit"))).0,
+            Some(AgentStateArg::Working)
+        );
+        assert_eq!(
+            report(claude(event("PostToolUse"))).0,
+            Some(AgentStateArg::Working)
+        );
+        assert_eq!(report(claude(event("Stop"))).0, Some(AgentStateArg::Idle));
+        assert_eq!(
+            report(claude(event("StopFailure"))).0,
+            Some(AgentStateArg::Idle)
+        );
+        assert_eq!(
+            claude(event("SessionEnd")),
             Some(Plan::Release {
-                source: CLAUDE_SOURCE
+                source: CLAUDE_SOURCE,
+                node: Some("root".into())
             })
         );
-        assert_eq!(go("PreCompact"), None);
+        assert_eq!(claude(event("PreCompact")), None);
+        assert_eq!(claude(json!({"session_id": "x"})), None);
+    }
+
+    #[test]
+    fn a_permission_request_is_blocked_with_the_tool_name() {
+        let (state, node) = report(claude(json!({
+            "hook_event_name": "PermissionRequest", "session_id": "abc", "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf build"},
+        })));
+        assert_eq!(state, Some(AgentStateArg::Blocked));
+        assert_eq!(node.unwrap().activity.as_deref(), Some("permission: Bash"));
+    }
+
+    #[test]
+    fn subagents_are_nodes_keyed_by_agent_id() {
+        let (state, node) = report(claude(json!({
+            "hook_event_name": "SubagentStart", "session_id": "abc",
+            "agent_id": "agent-abc123", "agent_type": "Explore",
+        })));
+        assert_eq!(state, Some(AgentStateArg::Working));
+        let node = node.unwrap();
         assert_eq!(
-            plan(HookAgentArg::Claude, &json!({"session_id": "x"}), &env),
+            (
+                node.id.as_str(),
+                node.kind,
+                node.agent_type.as_deref(),
+                node.name.as_deref()
+            ),
+            (
+                "agent-abc123",
+                Some(NodeKind::Sub),
+                Some("Explore"),
+                Some("Explore")
+            )
+        );
+
+        // Tool and permission hooks inside it update that node, not the main agent.
+        let Some(Plan::Report {
+            state,
+            node,
+            message,
+            resume_argv,
+            agent_session_id,
+            ..
+        }) = claude(json!({
+            "hook_event_name": "PermissionRequest", "session_id": "abc",
+            "agent_id": "agent-abc123", "agent_type": "Explore", "tool_name": "Bash",
+        }))
+        else {
+            panic!("report");
+        };
+        assert_eq!(state, Some(AgentStateArg::Blocked));
+        assert_eq!(node.unwrap().id, "agent-abc123");
+        assert_eq!(message, None, "the session's message is the main agent's");
+        assert!(resume_argv.is_empty() && agent_session_id.is_none());
+
+        let (state, node) = report(claude(json!({
+            "hook_event_name": "PreToolUse", "session_id": "abc", "agent_id": "agent-abc123",
+            "tool_name": "Read", "tool_input": {"file_path": "/repo/src/lib.rs"},
+        })));
+        assert_eq!(state, Some(AgentStateArg::Working));
+        assert_eq!(
+            node.unwrap().activity.as_deref(),
+            Some("Read: /repo/src/lib.rs")
+        );
+
+        let (state, node) = report(claude(json!({
+            "hook_event_name": "SubagentStop", "session_id": "abc", "agent_id": "agent-abc123",
+            "agent_type": "Explore", "agent_transcript_path": "/t/subagents/agent-abc123.jsonl",
+        })));
+        assert_eq!(state, Some(AgentStateArg::Idle));
+        let node = node.unwrap();
+        assert_eq!(node.outcome, Some(NodeOutcome::Completed));
+        assert_eq!(
+            node.transcript_path.as_deref(),
+            Some("/t/subagents/agent-abc123.jsonl")
+        );
+
+        // A subagent event that cannot say which agent it is about says nothing.
+        assert_eq!(
+            claude(json!({"hook_event_name": "SubagentStop", "session_id": "abc"})),
             None
         );
     }
 
     #[test]
-    fn permission_requests_are_blocked_with_the_tool_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = env(dir.path());
-        let input = json!({
-            "hook_event_name": "PermissionRequest",
-            "session_id": "abc",
-            "tool_name": "Bash",
-            "tool_input": {"command": "rm -rf build"},
-        });
-        let (state, message, _) = report(plan(HookAgentArg::Claude, &input, &env));
-        assert_eq!(state, AgentStateArg::Blocked);
-        assert_eq!(message.as_deref(), Some("permission: Bash"));
-    }
-
-    #[test]
-    fn subagents_are_counted_in_the_message_until_the_turn_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = env(dir.path());
-        let go = |name: &str| {
-            report(plan(
-                HookAgentArg::Claude,
-                &json!({"hook_event_name": name, "session_id": "abc"}),
-                &env,
-            ))
-        };
-        assert_eq!(go("SubagentStart").1.as_deref(), Some("subagents: 1"));
-        assert_eq!(go("SubagentStart").1.as_deref(), Some("subagents: 2"));
-        assert_eq!(go("PostToolUse").1.as_deref(), Some("subagents: 2"));
-        assert_eq!(go("SubagentStop").1.as_deref(), Some("subagents: 1"));
-        assert_eq!(go("SubagentStop").1, None);
-        assert_eq!(go("SubagentStop").1, None, "never below zero");
-        assert_eq!(go("SubagentStart").1.as_deref(), Some("subagents: 1"));
-        assert_eq!(go("Stop").1, None);
+    fn a_model_switch_updates_the_model_and_leaves_the_state_alone() {
+        let (state, node) = report(claude(json!({
+            "hook_event_name": "PostModelSwitch", "session_id": "abc", "to_model": "claude-sonnet-5",
+        })));
+        assert_eq!(state, None);
+        let node = node.unwrap();
         assert_eq!(
-            go("UserPromptSubmit").1,
-            None,
-            "a finished turn forgets them"
+            (node.id.as_str(), node.model.as_deref()),
+            ("root", Some("claude-sonnet-5"))
+        );
+        let Some(Plan::Report { resume_argv, .. }) = claude(json!({
+            "hook_event_name": "PostModelSwitch", "session_id": "abc", "to_model": "m",
+        })) else {
+            panic!("report");
+        };
+        assert!(
+            resume_argv.is_empty(),
+            "a model change does not touch the resume command"
         );
     }
 
     #[test]
-    fn codex_resumes_with_its_own_command_and_ignores_foreign_threads() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = env(dir.path());
+    fn codex_reports_the_main_agent_only_and_ignores_foreign_threads() {
         let input = json!({"hook_event_name": "SessionStart", "session_id": "0198-abc"});
-        let (_, _, resume) = report(plan(HookAgentArg::Codex, &input, &env));
-        assert_eq!(resume, argv(&["codex", "resume", "0198-abc"]));
-
-        env.codex_thread_id = Some("0198-abc");
-        assert!(plan(HookAgentArg::Codex, &input, &env).is_some());
-        env.codex_thread_id = Some("some-other-thread");
-        assert_eq!(plan(HookAgentArg::Codex, &input, &env), None);
+        let Some(Plan::Report {
+            agent,
+            source,
+            node,
+            resume_argv,
+            ..
+        }) = go(HookAgentArg::Codex, input.clone())
+        else {
+            panic!("report");
+        };
+        assert_eq!((agent, source, node), ("codex", CODEX_SOURCE, None));
+        assert_eq!(resume_argv, argv(&["codex", "resume", "0198-abc"]));
+        let foreign = HookEnv {
+            codex_thread_id: Some("another-thread"),
+        };
+        assert_eq!(plan(HookAgentArg::Codex, &input, &foreign), None);
     }
 
     #[test]
-    fn odd_session_ids_never_cost_the_state_report() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = env(dir.path());
-        let input = json!({"hook_event_name": "Stop", "session_id": "it's"});
-        let (state, _, resume) = report(plan(HookAgentArg::Claude, &input, &env));
-        assert_eq!(state, AgentStateArg::Idle);
-        assert!(resume.is_empty());
+    fn ids_with_odd_characters_do_not_make_a_resume_command() {
+        let Some(Plan::Report { resume_argv, .. }) = claude(json!({
+            "hook_event_name": "SessionStart", "session_id": "it's;bad",
+        })) else {
+            panic!("report");
+        };
+        assert!(resume_argv.is_empty());
     }
 }

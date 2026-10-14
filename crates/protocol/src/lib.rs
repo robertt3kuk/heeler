@@ -6,6 +6,7 @@
 //! - [`frame`]: length-prefixed frames and the tokio codec.
 //! - [`control`]: JSON control envelope (requests, responses, events).
 //! - [`messages`]: typed request params, results, events, and DTOs.
+//! - [`tree`]: agent observation tree DTOs (protocol 0.10).
 //! - [`render`]: terminal render snapshot/frame DTOs carried in binary frames.
 
 pub mod blocks;
@@ -16,6 +17,7 @@ pub mod frame;
 pub mod history;
 pub mod messages;
 pub mod render;
+pub mod tree;
 
 pub use control::{ControlMessage, ErrorBody, ErrorCode};
 pub use error::ProtocolError;
@@ -25,7 +27,10 @@ pub use messages::{Event, Request};
 use serde::{Deserialize, Serialize};
 
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 9 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
+    major: 0,
+    minor: 10,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolVersion {

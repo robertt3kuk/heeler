@@ -20,6 +20,7 @@ use heeler_protocol::messages::{
     Welcome, decode_result,
 };
 use heeler_protocol::render::TerminalRender;
+use heeler_protocol::tree::{AgentTree, AgentTreeRequest};
 use heeler_protocol::{
     ControlMessage, ErrorBody, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
@@ -43,6 +44,8 @@ pub(crate) const BLOCKS_CAPABILITY: &str = "terminal.blocks";
 pub(crate) const HISTORY_CAPABILITY: &str = "history.search";
 /// Capability for the `chat.*` and `approval.*` requests (protocol 0.9).
 pub(crate) const CHAT_CAPABILITY: &str = "chat.codex";
+/// Capability for `agent.tree` and `agent.tree_updated` (protocol 0.10).
+pub(crate) const AGENT_TREE_CAPABILITY: &str = "agent.tree";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -52,6 +55,7 @@ const CAPABILITIES: &[&str] = &[
     BLOCKS_CAPABILITY,
     HISTORY_CAPABILITY,
     CHAT_CAPABILITY,
+    AGENT_TREE_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
@@ -246,6 +250,25 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == CHAT_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `agent.tree` (protocol 0.10).
+    pub fn supports_agent_tree(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == AGENT_TREE_CAPABILITY)
+    }
+
+    /// The observation trees (main agent and subagents) of one session, or of all that have one.
+    pub async fn agent_tree(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<Vec<heeler_core::AgentObservation>, ClientError> {
+        let tree: AgentTree = self
+            .call(Request::AgentTree(AgentTreeRequest { session_id }))
+            .await?;
+        Ok(tree.observations)
     }
 
     /// Opens an agent conversation as a new session; resolves once the agent is ready.

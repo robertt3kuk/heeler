@@ -146,6 +146,10 @@ impl Storage {
         Chat(self)
     }
 
+    pub fn agent_trees(&self) -> AgentTrees<'_> {
+        AgentTrees(self)
+    }
+
     pub fn approvals(&self) -> Approvals<'_> {
         Approvals(self)
     }
@@ -328,6 +332,32 @@ impl Sessions<'_> {
     pub fn list_in_workspace(&self, workspace: WorkspaceId) -> Result<Vec<SessionRow>> {
         self.0
             .read(move |conn| sql::list_sessions(conn, Some(workspace)))
+    }
+}
+
+/// The observation tree of agent sessions (JSON written by the daemon, `docs/integrations.md`).
+/// Removed with the session.
+#[derive(Debug, Clone, Copy)]
+pub struct AgentTrees<'a>(&'a Storage);
+
+impl AgentTrees<'_> {
+    /// Stores (or replaces) the tree of a session. The session's row must have been written
+    /// before.
+    pub fn upsert(&self, session: SessionId, tree_json: String, updated_at_ms: u64) -> Result<()> {
+        self.0.write(Write::UpsertAgentTree {
+            session_id: session,
+            tree_json,
+            updated_at_ms,
+        })
+    }
+
+    pub fn delete(&self, session: SessionId) -> Result<()> {
+        self.0.write(Write::DeleteAgentTree(session))
+    }
+
+    /// Every stored tree, by session id.
+    pub fn list(&self) -> Result<Vec<(SessionId, String)>> {
+        self.0.read(sql::list_agent_trees)
     }
 }
 

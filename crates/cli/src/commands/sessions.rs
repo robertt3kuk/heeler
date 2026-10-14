@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use heeler_client::Client;
 use heeler_core::{SessionId, SessionState, TerminalId};
 use heeler_protocol::messages::{
-    DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo, SessionList, SessionListFilter,
-    SessionRef, SessionRename, SessionResult, SessionSpec, TerminalAttach, TerminalAttached,
-    TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalSize, TerminalSpec,
+    AgentState, DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo, SessionList,
+    SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSpec, TerminalAttach,
+    TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalSize,
+    TerminalSpec,
 };
 use heeler_protocol::render::{Row, TerminalRender};
 use serde_json::Value;
@@ -435,13 +436,19 @@ pub(super) fn state_text(state: &SessionState) -> String {
 }
 
 /// The state column of `heeler ls`: ended sessions loaded from a previous daemon run say so,
-/// because their final screen is gone.
+/// because their final screen is gone; a session whose agent (or one of its subagents) waits
+/// for the user says `blocked`, naming the subagent.
 fn listed_state_text(session: &SessionInfo) -> String {
-    let state = state_text(&session.state);
+    let mut state = state_text(&session.state);
     if session.restored {
-        format!("{state}, restored")
-    } else {
-        state
+        state = format!("{state}, restored");
+    }
+    match session.agent.as_ref() {
+        Some(agent) if agent.state == AgentState::Blocked => match &agent.blocked_sub {
+            Some(sub) => format!("{state}, blocked (sub: {sub})"),
+            None => format!("{state}, blocked"),
+        },
+        _ => state,
     }
 }
 

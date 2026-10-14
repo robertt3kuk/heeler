@@ -8,7 +8,7 @@
 //! so request handling never waits for the disk), and [`spawn`] rebuilds the state from what was
 //! stored (ADR 0009 step 1): live sessions come back as new terminals with the same ids.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -16,16 +16,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::{Instant, sleep_until};
 
 use heeler_agents::{CodexConfig, ExitInfo, Started};
-use heeler_core::{SessionEvent, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_core::{
+    NodeOutcome, NodeUpdate, ObservationTree, Patch, SessionEvent, SessionId, SessionKind,
+    SessionState, TerminalId, WorkspaceId,
+};
 use heeler_protocol::chat::{ChatCreate, ChatInfo};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
-    AgentApplied, AgentReleaseRequest, AgentReport, AgentReportRequest, CreatedBy, Event,
+    AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, CreatedBy, Event,
     RECENT_PROJECTS_DEFAULT_LIMIT, RECENT_PROJECTS_MAX_LIMIT, RecentProject, RecentProjects,
     SessionCreate, SessionInfo, SessionList, SessionListFilter, SessionRename, SessionSnapshot,
     SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
     WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRename,
 };
+use heeler_protocol::tree::{AgentTree, NodeReport};
 use heeler_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use heeler_terminal::{
     ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
@@ -40,6 +44,7 @@ use crate::config::RestoreMode;
 use crate::projects::{self, Folder};
 use crate::restore::{self, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
+use crate::tree::{self, TreeState};
 
 /// Commands waiting in the mailbox before senders wait their turn.
 const MAILBOX_CAPACITY: usize = 256;
@@ -60,12 +65,16 @@ pub const ACTIVITY_NOTIFY_INTERVAL: Duration = Duration::from_secs(1);
 /// Title and cwd changes are coalesced: a session is written at most this often because of them.
 const DIRTY_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Reporting sources one session remembers a sequence number for.
-const MAX_AGENT_SOURCES: usize = 16;
-/// Longest accepted `source`, `agent`, or `agent_session_id`.
+/// Longest accepted `source`, `agent`, `agent_session_id`, node id, or parent id.
 const MAX_AGENT_FIELD_BYTES: usize = 256;
 /// Longer agent messages are cut to this many characters.
 const MAX_AGENT_MESSAGE_CHARS: usize = 512;
+/// Longer node names, types and models are cut to this many characters.
+const MAX_NODE_TEXT_CHARS: usize = 128;
+/// Longest accepted `usage.kind`.
+const MAX_USAGE_KIND_BYTES: usize = 64;
+/// A transcript path longer than this is not kept.
+const MAX_TRANSCRIPT_PATH_BYTES: usize = 1024;
 
 type Reply<T> = oneshot::Sender<Result<T, ErrorBody>>;
 
@@ -101,8 +110,9 @@ enum Command {
     /// From a terminal's watcher task.
     TerminalMeta(TerminalId, TerminalMeta),
     TerminalExited(TerminalId, ExitStatus),
-    AgentReport(AgentReportRequest, Reply<AgentApplied>),
+    AgentReport(Box<AgentReportRequest>, Reply<AgentApplied>),
     AgentRelease(AgentReleaseRequest, Reply<AgentApplied>),
+    AgentTree(Option<SessionId>, Reply<AgentTree>),
     /// `chat.create` with a canonical `cwd`; answered once the agent is up (or failed).
     CreateChat(ChatCreate, Reply<SessionInfo>),
     /// From the task that started a chat agent.
@@ -122,6 +132,11 @@ enum Command {
     ChatExited {
         session: SessionId,
         exit: ExitInfo,
+    },
+    /// From a chat session's pump: the adapter reports on an agent of the session's tree.
+    ChatNode {
+        session: SessionId,
+        update: Box<NodeUpdate>,
     },
     /// Whether the session is a chat session, and live.
     ChatTarget(SessionId, Reply<bool>),
@@ -152,6 +167,15 @@ impl ChatNotifier {
 
     pub(crate) async fn exited(&self, session: SessionId, exit: ExitInfo) {
         self.send(Command::ChatExited { session, exit }).await;
+    }
+
+    /// The adapter saw something about an agent of the session (the main one or a subagent).
+    pub(crate) async fn node(&self, session: SessionId, update: NodeUpdate) {
+        self.send(Command::ChatNode {
+            session,
+            update: Box::new(update),
+        })
+        .await;
     }
 }
 
@@ -278,12 +302,17 @@ impl RegistryHandle {
 
     /// A coding agent in the session reports its state and how to resume it.
     pub async fn report_agent(&self, req: AgentReportRequest) -> Result<AgentApplied, ErrorBody> {
-        self.ask(|r| Command::AgentReport(req, r)).await
+        self.ask(|r| Command::AgentReport(Box::new(req), r)).await
     }
 
     /// The agent behind `req.source` is gone.
     pub async fn release_agent(&self, req: AgentReleaseRequest) -> Result<AgentApplied, ErrorBody> {
         self.ask(|r| Command::AgentRelease(req, r)).await
+    }
+
+    /// The agent trees of one session, or of every session that has one.
+    pub async fn agent_tree(&self, session: Option<SessionId>) -> Result<AgentTree, ErrorBody> {
+        self.ask(|r| Command::AgentTree(session, r)).await
     }
 
     /// The chat sessions' runtime: sending, interrupting, approvals, history.
@@ -330,8 +359,13 @@ struct SessionEntry {
     keep_live: Option<SessionState>,
     /// Title or cwd changed since the last write.
     dirty: bool,
-    /// Highest `seq` accepted per reporting source (`agent.report` / `agent.release`).
-    agent_seqs: BTreeMap<String, u64>,
+    /// The main agent's last `message` and conversation id (what `SessionInfo.agent` carries
+    /// besides the state).
+    agent_message: Option<String>,
+    agent_session_id: Option<String>,
+    /// The agents of the session: the main agent and its subagents, with the sequence numbers
+    /// of their reporters (`agent.report` / `agent.release`).
+    tree: TreeState,
     /// What an agent chat session is (`kind` harness); such a session has no terminal.
     chat: Option<ChatSpec>,
 }
@@ -363,32 +397,14 @@ impl SessionEntry {
         }
     }
 
-    /// Records `seq` for `source` unless it does not exceed the last one seen.
-    fn accept_agent_seq(&mut self, source: &str, seq: u64) -> Result<bool, ErrorBody> {
-        if let Some(last) = self.agent_seqs.get_mut(source) {
-            if seq <= *last {
-                return Ok(false);
-            }
-            *last = seq;
-            return Ok(true);
-        }
-        if self.agent_seqs.len() >= MAX_AGENT_SOURCES {
-            return Err(ErrorBody::new(
-                ErrorCode::BadRequest,
-                format!("a session accepts at most {MAX_AGENT_SOURCES} reporting sources"),
-            ));
-        }
-        self.agent_seqs.insert(source.to_owned(), seq);
-        Ok(true)
-    }
-
-    /// Forgets the agent: its report and its resume reference. Returns what was dropped as
-    /// `(report, resume reference)`.
-    fn forget_agent(&mut self) -> (bool, bool) {
-        (
-            self.info.agent.take().is_some(),
-            self.resume_ref_json.take().is_some(),
-        )
+    /// The agent is gone — its process ended, or the shell prompts again — without having said
+    /// so: every node of its tree has lost contact, and its message, conversation id and
+    /// resume reference are forgotten. Returns whether a resume reference was dropped.
+    fn forget_agent(&mut self, now_ms: u64) -> bool {
+        self.tree.session_ended(now_ms);
+        self.agent_message = None;
+        self.agent_session_id = None;
+        self.resume_ref_json.take().is_some()
     }
 }
 
@@ -439,6 +455,8 @@ struct SessionRegistry {
     flush_at: Option<Instant>,
     /// When the earliest throttled workspace activity is applied.
     activity_flush_at: Option<Instant>,
+    /// When the earliest held-back `agent.tree_updated` may go out.
+    tree_flush_at: Option<Instant>,
 }
 
 /// What [`spawn`] needs besides the shared services.
@@ -498,8 +516,9 @@ pub fn spawn(
         storage: config.storage,
         flush_at: None,
         activity_flush_at: None,
+        tree_flush_at: None,
     };
-    registry.restore_sessions(stored.sessions, config.restore);
+    registry.restore_sessions(stored.sessions, config.restore, stored.agent_trees);
     tokio::spawn(registry.run(rx));
     RegistryHandle { tx, chats }
 }
@@ -678,7 +697,7 @@ pub(crate) fn log_write(result: Result<(), StorageError>, what: &str) {
 impl SessionRegistry {
     async fn run(mut self, mut mailbox: mpsc::Receiver<Command>) {
         loop {
-            let deadline = [self.flush_at, self.activity_flush_at]
+            let deadline = [self.flush_at, self.activity_flush_at, self.tree_flush_at]
                 .into_iter()
                 .flatten()
                 .min();
@@ -770,10 +789,13 @@ impl SessionRegistry {
                 Command::TerminalMeta(terminal, meta) => self.on_meta(terminal, meta),
                 Command::TerminalExited(terminal, status) => self.on_exited(terminal, &status),
                 Command::AgentReport(req, reply) => {
-                    let _ = reply.send(self.report_agent(req));
+                    let _ = reply.send(self.report_agent(*req));
                 }
                 Command::AgentRelease(req, reply) => {
                     let _ = reply.send(self.release_agent(req));
+                }
+                Command::AgentTree(session, reply) => {
+                    let _ = reply.send(self.agent_tree(session));
                 }
                 Command::CreateChat(req, reply) => self.create_chat(req, reply),
                 Command::ChatStarted {
@@ -787,6 +809,7 @@ impl SessionRegistry {
                     pending,
                 } => self.on_chat_state(session, turn, pending),
                 Command::ChatExited { session, exit } => self.on_chat_exited(session, &exit),
+                Command::ChatNode { session, update } => self.on_chat_node(session, *update),
                 Command::ChatTarget(id, reply) => {
                     let _ = reply.send(self.chat_target(id));
                 }
@@ -1244,6 +1267,9 @@ impl SessionRegistry {
         if self.activity_flush_at.is_some_and(|at| at <= now) {
             self.flush_activity();
         }
+        if self.tree_flush_at.is_some_and(|at| at <= now) {
+            self.flush_tree_events();
+        }
     }
 
     /// Announces the remembered activity of every workspace whose interval has passed and
@@ -1334,6 +1360,7 @@ impl SessionRegistry {
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
         })?;
+        let session_id = info.id;
         self.sessions.push(SessionEntry {
             info,
             spec,
@@ -1348,7 +1375,9 @@ impl SessionRegistry {
             restore_argv: None,
             keep_live: None,
             dirty: false,
-            agent_seqs: BTreeMap::new(),
+            agent_message: None,
+            agent_session_id: None,
+            tree: TreeState::new(session_id),
             chat: None,
         });
         let index = self.sessions.len() - 1;
@@ -1472,8 +1501,8 @@ impl SessionRegistry {
         session.keep_live = None;
         session.info.restored = false;
         // A new process is a new reporting epoch: nothing the old one said applies.
-        session.forget_agent();
-        session.agent_seqs.clear();
+        session.forget_agent(now_ms());
+        session.tree.reset_seqs();
         session.osc_title = None;
         session.info.terminal_id = None;
         // Restart where the program last said it was (OSC 7) when that directory still exists.
@@ -1515,6 +1544,9 @@ impl SessionRegistry {
         if let Some(id) = &req.agent_session_id {
             agent_field("agent_session_id", id)?;
         }
+        if let Some(node) = &req.node {
+            check_node_report(node)?;
+        }
         let resume = match &req.resume_argv {
             Some(argv) => {
                 agent::validate_resume_argv(argv)
@@ -1535,52 +1567,52 @@ impl SessionRegistry {
         };
 
         let session = &mut self.sessions[index];
+        let node_id = req.node.as_ref().map(|node| node.id.clone());
         // A hook can fire just as the process ends; there is nothing left to describe.
-        if !session.info.state.is_live() || !session.accept_agent_seq(&req.source, req.seq)? {
+        if !session.info.state.is_live()
+            || !session
+                .tree
+                .accept_seq(&req.source, node_id.as_deref(), req.seq)
+        {
             return Ok(AgentApplied { applied: false });
         }
         let message = req
             .message
-            .map(|message| {
-                message
-                    .chars()
-                    .take(MAX_AGENT_MESSAGE_CHARS)
-                    .collect::<String>()
-            })
+            .map(|message| clipped(&message, MAX_AGENT_MESSAGE_CHARS))
             .filter(|message| !message.is_empty());
-        // The conversation id sticks to the agent until it says otherwise.
-        let agent_session_id = req.agent_session_id.or_else(|| {
-            session
-                .info
-                .agent
-                .as_ref()
-                .filter(|old| old.agent == req.agent)
-                .and_then(|old| old.agent_session_id.clone())
-        });
-        let report = AgentReport {
-            source: req.source,
-            agent: req.agent,
-            state: req.state,
-            message,
-            agent_session_id,
-            updated_at_ms: now_ms(),
-        };
-        // Hooks repeat themselves (every tool call says "working"); only changes are events.
-        let changed = session.info.agent.as_ref().is_none_or(|old| {
-            let same = AgentReport {
-                updated_at_ms: report.updated_at_ms,
-                ..old.clone()
-            };
-            same != report
-        });
-        session.info.agent = Some(report);
-        let resume_changed = resume.is_some() && session.resume_ref_json != resume;
-        if resume_changed {
-            session.resume_ref_json = resume;
+        let same_agent = session
+            .tree
+            .tree()
+            .root()
+            .is_some_and(|root| root.agent == req.agent);
+        let now = now_ms();
+        session.tree.apply(
+            node_update(
+                &req.source,
+                &req.agent,
+                req.state,
+                req.node,
+                message.as_deref(),
+            ),
+            now,
+        );
+        // The message, conversation id and resume command belong to the main agent only.
+        let about_root = node_id
+            .as_deref()
+            .is_none_or(|id| session.tree.tree().root_id() == Some(id));
+        let mut resume_changed = false;
+        if about_root {
+            // The conversation id sticks to the agent until it says otherwise.
+            session.agent_session_id = req
+                .agent_session_id
+                .or_else(|| session.agent_session_id.take().filter(|_| same_agent));
+            session.agent_message = message;
+            resume_changed = resume.is_some() && session.resume_ref_json != resume;
+            if resume_changed {
+                session.resume_ref_json = resume;
+            }
         }
-        if changed {
-            self.emit_session(index);
-        }
+        self.tree_changed(index);
         if resume_changed {
             self.persist_session(index);
         }
@@ -1590,34 +1622,46 @@ impl SessionRegistry {
     fn release_agent(&mut self, req: AgentReleaseRequest) -> Result<AgentApplied, ErrorBody> {
         let index = self.session_index(req.session_id)?;
         agent_field("source", &req.source)?;
+        if let Some(node) = &req.node {
+            agent_field("node", node)?;
+        }
         let session = &mut self.sessions[index];
-        if !session.accept_agent_seq(&req.source, req.seq)? {
+        if !session
+            .tree
+            .accept_seq(&req.source, req.node.as_deref(), req.seq)
+        {
             return Ok(AgentApplied { applied: false });
         }
-        let report_released = session
-            .info
-            .agent
-            .as_ref()
-            .is_some_and(|report| report.source == req.source);
-        if report_released {
-            session.info.agent = None;
-        }
-        let resume_released = session
-            .resume_ref_json
+        let about_root = req
+            .node
             .as_deref()
-            .and_then(restore::resume_source)
-            .is_some_and(|source| source == req.source);
-        if resume_released {
-            session.resume_ref_json = None;
+            .is_none_or(|id| session.tree.tree().root_id() == Some(id));
+        let outcome = req.outcome.unwrap_or(NodeOutcome::Completed);
+        let node_released =
+            session
+                .tree
+                .release(&req.source, req.node.as_deref(), outcome, now_ms());
+        let mut resume_released = false;
+        if about_root {
+            resume_released = session
+                .resume_ref_json
+                .as_deref()
+                .and_then(restore::resume_source)
+                .is_some_and(|source| source == req.source);
+            if resume_released {
+                session.resume_ref_json = None;
+            }
+            if node_released {
+                session.agent_message = None;
+                session.agent_session_id = None;
+            }
         }
-        if report_released {
-            self.emit_session(index);
-        }
+        self.tree_changed(index);
         if resume_released {
             self.persist_session(index);
         }
         Ok(AgentApplied {
-            applied: report_released || resume_released,
+            applied: node_released || resume_released,
         })
     }
 
@@ -1698,11 +1742,9 @@ impl SessionRegistry {
             TerminalMeta::PromptMark(PromptMark::A) => {
                 // The shell is prompting again: whatever agent was running in the foreground is
                 // gone, even if it never got to say so.
-                let (reported, resumable) = self.sessions[index].forget_agent();
-                if reported {
-                    self.emit_session(index);
-                }
-                if reported || resumable {
+                let resumable = self.sessions[index].forget_agent(now_ms());
+                self.tree_changed(index);
+                if resumable {
                     self.persist_session(index);
                 }
             }
@@ -1727,19 +1769,26 @@ impl SessionRegistry {
         } else {
             SessionEvent::ProcessExited { code, signal }
         });
-        // The agent died with the process. A daemon shutdown keeps the resume reference: the
-        // next daemon starts it again.
-        let resume = session
-            .resume_ref_json
-            .take()
-            .filter(|_| session.keep_live.is_some());
-        session.forget_agent();
+        // The agent died with the process. A daemon shutdown keeps the resume reference and
+        // the tree as it was: the next daemon starts the agent again and marks the tree
+        // restored.
+        let keep = session.keep_live.is_some();
+        let resume = session.resume_ref_json.take().filter(|_| keep);
+        if keep {
+            session.agent_message = None;
+            session.agent_session_id = None;
+        } else {
+            session.forget_agent(now_ms());
+        }
         session.resume_ref_json = resume;
         session.stopping = false;
+        self.sync_agent_summary(index);
+        let session = &mut self.sessions[index];
         let info = session.info.clone();
         let waiters = std::mem::take(&mut session.stop_waiters);
         self.emit_session(index);
         self.persist_session(index);
+        self.tree_changed(index);
         self.emit(&Event::SessionExited {
             session_id: info.id,
             code,
@@ -1749,6 +1798,29 @@ impl SessionRegistry {
             let _ = waiter.send(Ok(info.clone()));
         }
         self.settle_stop_all();
+    }
+
+    // Agent trees -----------------------------------------------------------------------------
+
+    /// The trees of one session (unknown id: `not_found`) or of every session that has one.
+    /// Finished subtrees past their time are dropped first.
+    fn agent_tree(&mut self, session: Option<SessionId>) -> Result<AgentTree, ErrorBody> {
+        let indices: Vec<usize> = match session {
+            Some(id) => vec![self.session_index(id)?],
+            None => (0..self.sessions.len()).collect(),
+        };
+        let now = now_ms();
+        let mut observations = Vec::new();
+        for index in indices {
+            self.sessions[index].tree.prune(now);
+            if self.sessions[index].tree.event_due().is_some() {
+                self.tree_changed(index);
+            }
+            if let Some(observation) = self.sessions[index].tree.tree().observation() {
+                observations.push(observation);
+            }
+        }
+        Ok(AgentTree { observations })
     }
 
     // Chat sessions ---------------------------------------------------------------------------
@@ -1828,6 +1900,7 @@ impl SessionRegistry {
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
         })?;
+        let session_id = info.id;
         self.sessions.push(SessionEntry {
             info,
             spec: TerminalSpec {
@@ -1846,7 +1919,9 @@ impl SessionRegistry {
             restore_argv: None,
             keep_live: None,
             dirty: false,
-            agent_seqs: BTreeMap::new(),
+            agent_message: None,
+            agent_session_id: None,
+            tree: TreeState::new(session_id),
             chat: Some(spec),
         });
         let index = self.sessions.len() - 1;
@@ -1985,6 +2060,21 @@ impl SessionRegistry {
         }
     }
 
+    /// An update of the session's agent tree from its adapter (the main agent's thread and the
+    /// subagents' threads).
+    fn on_chat_node(&mut self, id: SessionId, update: NodeUpdate) {
+        let Ok(index) = self.session_index(id) else {
+            return;
+        };
+        let session = &mut self.sessions[index];
+        // The agent's last words can arrive after the session was stopped.
+        if !session.info.state.is_live() {
+            return;
+        }
+        session.tree.apply(update, now_ms());
+        self.tree_changed(index);
+    }
+
     /// Moves a live chat session to the state its turn and approval counts call for:
     /// `waiting_approval` while anything is pending, else `running` during a turn, else `idle`.
     /// A session still starting keeps its state until it is ready.
@@ -2044,10 +2134,17 @@ impl SessionRegistry {
             chat.pending_approvals = 0;
         }
         session.stopping = false;
+        // A daemon shutdown keeps the tree as it was: the next daemon marks it restored.
+        if session.keep_live.is_none() {
+            session.tree.session_ended(now_ms());
+        }
+        self.sync_agent_summary(index);
+        let session = &mut self.sessions[index];
         let info = session.info.clone();
         let waiters = std::mem::take(&mut session.stop_waiters);
         self.emit_session(index);
         self.persist_session(index);
+        self.tree_changed(index);
         self.emit(&Event::SessionExited {
             session_id: id,
             code: exit.code,
@@ -2150,7 +2247,9 @@ impl SessionRegistry {
             restore_argv: None,
             keep_live: None,
             dirty: false,
-            agent_seqs: BTreeMap::new(),
+            agent_message: None,
+            agent_session_id: None,
+            tree: TreeState::new(row.id),
             chat: Some(spec),
         });
         let index = self.sessions.len() - 1;
@@ -2165,7 +2264,12 @@ impl SessionRegistry {
 
     /// Rebuilds the sessions from their rows. Live ones are spawned again (`Respawn`) or listed
     /// as stopped; ended ones stay as they were, marked `restored` because their screen is gone.
-    fn restore_sessions(&mut self, rows: Vec<SessionRow>, mode: RestoreMode) {
+    fn restore_sessions(
+        &mut self,
+        rows: Vec<SessionRow>,
+        mode: RestoreMode,
+        trees: HashMap<SessionId, ObservationTree>,
+    ) {
         let mut respawn = Vec::new();
         let mut rewrite = Vec::new();
         let mut chat_starts = Vec::new();
@@ -2265,7 +2369,9 @@ impl SessionRegistry {
                 restore_argv,
                 keep_live: None,
                 dirty: false,
-                agent_seqs: BTreeMap::new(),
+                agent_message: None,
+                agent_session_id: None,
+                tree: TreeState::new(row.id),
                 chat: None,
             });
             let index = self.sessions.len() - 1;
@@ -2278,6 +2384,7 @@ impl SessionRegistry {
         // Before the respawns announce anything: the counts of a restored workspace are right
         // from the start.
         self.recount_sessions();
+        self.restore_trees(trees);
         // `start_terminal` stores the session itself once it is running.
         for index in respawn {
             self.start_terminal(index);
@@ -2287,6 +2394,28 @@ impl SessionRegistry {
         }
         for index in rewrite {
             self.persist_session(index);
+        }
+    }
+
+    /// Gives every session the tree stored for it, brought up to date: a session that comes
+    /// back may have its main agent running again (unknown until it says so), one that does
+    /// not has lost every agent. Finished subtrees past their time are dropped.
+    fn restore_trees(&mut self, mut trees: HashMap<SessionId, ObservationTree>) {
+        let now = now_ms();
+        for session in &mut self.sessions {
+            if let Some(tree) = trees.remove(&session.info.id) {
+                session.tree = TreeState::from_tree(tree);
+            }
+            if session.info.state.is_live() {
+                session.tree.restored(now);
+            } else {
+                session.tree.ended_silently(now);
+            }
+            session.tree.prune_silently(now);
+            if session.tree.is_dirty() {
+                self.flush_at
+                    .get_or_insert_with(|| Instant::now() + DIRTY_WRITE_INTERVAL);
+            }
         }
     }
 
@@ -2341,7 +2470,78 @@ impl SessionRegistry {
             if self.sessions[index].dirty {
                 self.persist_session(index);
             }
+            if self.sessions[index].tree.take_dirty() {
+                self.persist_tree(index);
+            }
         }
+    }
+
+    // Agent trees -----------------------------------------------------------------------------
+
+    /// Writes the session's tree now (or removes its row once the tree is empty).
+    fn persist_tree(&self, index: usize) {
+        let session = &self.sessions[index];
+        let id = session.info.id;
+        let result = match session.tree.stored() {
+            Some(json) => self.storage.agent_trees().upsert(id, json, now_ms()),
+            None => self.storage.agent_trees().delete(id),
+        };
+        log_write(result, "an agent tree");
+    }
+
+    /// Recomputes the session's `agent` summary from its tree. Returns whether clients would
+    /// see a difference (the timestamp aside).
+    fn sync_agent_summary(&mut self, index: usize) -> bool {
+        let session = &mut self.sessions[index];
+        let next = tree::summary(
+            session.info.state.is_live(),
+            session.tree.tree(),
+            session.agent_message.as_deref(),
+            session.agent_session_id.as_deref(),
+        );
+        let changed = !tree::same_summary(session.info.agent.as_ref(), next.as_ref());
+        session.info.agent = next;
+        changed
+    }
+
+    /// The agents of a session changed (its tree took a report, a release, an exit): the
+    /// summary older clients read is refreshed and announced when it differs, the tree's own
+    /// change is announced as far as the rate limit allows, and the stored copy is queued.
+    fn tree_changed(&mut self, index: usize) {
+        if self.sync_agent_summary(index) {
+            self.emit_session(index);
+        }
+        self.publish_tree_event(index, Instant::now());
+        if self.sessions[index].tree.is_dirty() {
+            self.flush_at
+                .get_or_insert_with(|| Instant::now() + DIRTY_WRITE_INTERVAL);
+        }
+        self.schedule_tree_events();
+    }
+
+    /// Announces what changed in the session's tree, unless the last announcement was too
+    /// recent (then the timer does it).
+    fn publish_tree_event(&mut self, index: usize, now: Instant) {
+        if let Some(event) = self.sessions[index].tree.take_event(now) {
+            self.emit(&event);
+        }
+    }
+
+    fn schedule_tree_events(&mut self) {
+        self.tree_flush_at = self
+            .sessions
+            .iter()
+            .filter_map(|s| s.tree.event_due())
+            .min();
+    }
+
+    /// The timer for held-back tree announcements went off.
+    fn flush_tree_events(&mut self) {
+        let now = Instant::now();
+        for index in 0..self.sessions.len() {
+            self.publish_tree_event(index, now);
+        }
+        self.schedule_tree_events();
     }
 
     // Events ----------------------------------------------------------------------------------
@@ -2467,6 +2667,69 @@ fn agent_field(name: &str, value: &str) -> Result<(), ErrorBody> {
         ));
     }
     Ok(())
+}
+
+/// The first `max` characters of `text`.
+fn clipped(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// What the daemon checks of the node of a report: ids are short identifiers, `usage` says what
+/// its numbers mean. Free text is clipped, not refused.
+fn check_node_report(node: &NodeReport) -> Result<(), ErrorBody> {
+    agent_field("node.id", &node.id)?;
+    if let Some(parent) = &node.parent {
+        agent_field("node.parent", parent)?;
+    }
+    if let Some(usage) = &node.usage
+        && (usage.kind.is_empty() || usage.kind.len() > MAX_USAGE_KIND_BYTES)
+    {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!("`node.usage.kind` must be 1 to {MAX_USAGE_KIND_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// The reducer's input for a report. A report with a state replaces what the node is doing
+/// (`activity`, else the report's `message`); one without only changes what it carries.
+fn node_update(
+    source: &str,
+    agent: &str,
+    state: Option<AgentState>,
+    node: Option<NodeReport>,
+    message: Option<&str>,
+) -> NodeUpdate {
+    let mut update = NodeUpdate {
+        source: source.to_owned(),
+        agent: agent.to_owned(),
+        state: state.map(tree::node_state),
+        ..NodeUpdate::default()
+    };
+    let mut text = message.map(str::to_owned);
+    if let Some(node) = node {
+        update.id = Some(node.id);
+        update.parent = node.parent;
+        update.kind = node.kind;
+        update.name = node.name.map(|name| clipped(&name, MAX_NODE_TEXT_CHARS));
+        update.agent_type = node
+            .agent_type
+            .map(|agent_type| clipped(&agent_type, MAX_NODE_TEXT_CHARS));
+        update.outcome = node.outcome;
+        update.model = node.model.map(|model| clipped(&model, MAX_NODE_TEXT_CHARS));
+        update.usage = node.usage;
+        update.transcript_path = node
+            .transcript_path
+            .filter(|path| !path.is_empty() && path.len() <= MAX_TRANSCRIPT_PATH_BYTES);
+        text = node.activity.or(text);
+    }
+    update.activity = match text {
+        Some(text) => Patch::Set(text),
+        None if state.is_some() => Patch::Clear,
+        None => Patch::Keep,
+    };
+    update
 }
 
 fn validated_name(name: String, what: &str) -> Result<String, ErrorBody> {

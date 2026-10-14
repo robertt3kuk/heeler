@@ -10,8 +10,9 @@ use heeler_core::agent::{
     PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
 };
 use heeler_core::{
-    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
-    SandboxMode, TurnId,
+    AgentEvent, AgentEventDraft, AgentEventKind, AgentNode, AgentObservation, ApprovalId,
+    ApprovalPolicy, ItemId, Liveness, ModelInfo, NodeKind, NodeOutcome, NodeState, SandboxMode,
+    TurnId, Usage,
 };
 use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_protocol::blocks::{
@@ -23,6 +24,7 @@ use heeler_protocol::control::ControlMessage;
 use heeler_protocol::history::*;
 use heeler_protocol::messages::*;
 use heeler_protocol::render::*;
+use heeler_protocol::tree::*;
 use heeler_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
 fn ws() -> WorkspaceId {
     "01K7F3B5N2Q9W8E4R6T1Y0V3JA".parse().unwrap()
@@ -201,6 +203,66 @@ fn home_info() -> WorkspaceInfo {
     }
 }
 
+fn main_node() -> AgentNode {
+    AgentNode {
+        node_id: "root".into(),
+        parent: None,
+        kind: NodeKind::Main,
+        source: "claude-hooks".into(),
+        agent: "claude".into(),
+        name: None,
+        agent_type: None,
+        state: NodeState::Blocked,
+        outcome: None,
+        liveness: Liveness::Alive,
+        model: Some("claude-opus-5".into()),
+        started_at_ms: Some(1_791_894_100_000),
+        ended_at_ms: None,
+        last_activity_ms: 1_791_894_170_000,
+        activity: Some("permission: Bash".into()),
+        transcript_path: None,
+        usage: None,
+    }
+}
+
+fn sub_node() -> AgentNode {
+    AgentNode {
+        node_id: "agent-abc123".into(),
+        parent: Some("root".into()),
+        kind: NodeKind::Sub,
+        source: "claude-hooks".into(),
+        agent: "claude".into(),
+        name: Some("Explore".into()),
+        agent_type: Some("Explore".into()),
+        state: NodeState::Idle,
+        outcome: Some(NodeOutcome::Completed),
+        liveness: Liveness::Gone,
+        model: Some("claude-sonnet-5".into()),
+        started_at_ms: Some(1_791_894_120_000),
+        ended_at_ms: Some(1_791_894_160_000),
+        last_activity_ms: 1_791_894_160_000,
+        activity: None,
+        transcript_path: Some("/h/.claude/projects/p/subagents/agent-abc123.jsonl".into()),
+        usage: Some(Usage {
+            kind: "claude.context".into(),
+            context_tokens: Some(48_210),
+            context_window: Some(200_000),
+            ..Usage::default()
+        }),
+    }
+}
+
+fn observation() -> AgentObservation {
+    AgentObservation {
+        session_id: sid(),
+        root: "root".into(),
+        nodes: [main_node(), sub_node()]
+            .into_iter()
+            .map(|n| (n.node_id.clone(), n))
+            .collect(),
+    }
+}
+
 fn requests() -> Vec<(&'static str, Request)> {
     vec![
         (
@@ -346,7 +408,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 session_id: sid(),
                 source: "claude-hooks".into(),
                 agent: "claude".into(),
-                state: AgentState::Blocked,
+                state: Some(AgentState::Blocked),
                 message: Some("Bash: rm -rf build".into()),
                 seq: 1_791_894_164_332_000_000,
                 agent_session_id: Some("5f3e1c1a-8d51-4a6e-9a0c-2b7a3c5d9e10".into()),
@@ -355,6 +417,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     "--resume".into(),
                     "5f3e1c1a-8d51-4a6e-9a0c-2b7a3c5d9e10".into(),
                 ]),
+                node: None,
             }),
         ),
         (
@@ -363,11 +426,12 @@ fn requests() -> Vec<(&'static str, Request)> {
                 session_id: sid(),
                 source: "omp-extension".into(),
                 agent: "omp".into(),
-                state: AgentState::Working,
+                state: Some(AgentState::Working),
                 message: None,
                 seq: 7,
                 agent_session_id: None,
                 resume_argv: None,
+                node: None,
             }),
         ),
         (
@@ -376,6 +440,8 @@ fn requests() -> Vec<(&'static str, Request)> {
                 session_id: sid(),
                 source: "claude-hooks".into(),
                 seq: 1_791_894_164_999_000_000,
+                node: None,
+                outcome: None,
             }),
         ),
         (
@@ -573,6 +639,82 @@ fn requests() -> Vec<(&'static str, Request)> {
                 option_id: "accept".into(),
             }),
         ),
+        (
+            "agent_report_node",
+            Request::AgentReport(AgentReportRequest {
+                session_id: sid(),
+                source: "claude-hooks".into(),
+                agent: "claude".into(),
+                state: Some(AgentState::Working),
+                message: None,
+                seq: 1_791_894_165_000_000_000,
+                agent_session_id: None,
+                resume_argv: None,
+                node: Some(NodeReport {
+                    id: "agent-abc123".into(),
+                    parent: Some("root".into()),
+                    kind: NodeKind::Sub,
+                    name: Some("Explore".into()),
+                    agent_type: Some("Explore".into()),
+                    outcome: None,
+                    model: Some("claude-sonnet-5".into()),
+                    activity: Some("Bash: cargo test".into()),
+                    transcript_path: None,
+                    usage: Some(Usage {
+                        kind: "claude.context".into(),
+                        context_tokens: Some(48_210),
+                        context_window: Some(200_000),
+                        cost_usd: Some(0.0412),
+                        ..Usage::default()
+                    }),
+                }),
+            }),
+        ),
+        (
+            "agent_report_node_minimal",
+            Request::AgentReport(AgentReportRequest {
+                session_id: sid(),
+                source: "omp-extension".into(),
+                agent: "omp".into(),
+                state: Some(AgentState::Idle),
+                message: None,
+                seq: 8,
+                agent_session_id: None,
+                resume_argv: None,
+                node: Some(NodeReport {
+                    id: "Main".into(),
+                    parent: None,
+                    kind: NodeKind::Main,
+                    name: None,
+                    agent_type: None,
+                    outcome: None,
+                    model: None,
+                    activity: None,
+                    transcript_path: None,
+                    usage: None,
+                }),
+            }),
+        ),
+        (
+            "agent_release_node",
+            Request::AgentRelease(AgentReleaseRequest {
+                session_id: sid(),
+                source: "claude-hooks".into(),
+                seq: 1_791_894_166_000_000_000,
+                node: Some("agent-abc123".into()),
+                outcome: Some(NodeOutcome::Completed),
+            }),
+        ),
+        (
+            "agent_tree",
+            Request::AgentTree(AgentTreeRequest { session_id: None }),
+        ),
+        (
+            "agent_tree_session",
+            Request::AgentTree(AgentTreeRequest {
+                session_id: Some(sid()),
+            }),
+        ),
     ]
 }
 
@@ -640,6 +782,7 @@ fn events() -> Vec<(&'static str, Event)> {
                         message: None,
                         agent_session_id: Some("0f4c7d52".into()),
                         updated_at_ms: 1_791_894_170_000,
+                        blocked_sub: None,
                     }),
                     ..session_info()
                 },
@@ -850,6 +993,31 @@ fn events() -> Vec<(&'static str, Event)> {
                 approval_id: approval(),
                 session_id: sid(),
                 outcome: PermissionOutcome::Expired,
+            },
+        ),
+        (
+            "agent_tree_updated",
+            Event::AgentTreeUpdated {
+                session_id: sid(),
+                nodes_changed: vec![sub_node(), main_node()],
+                nodes_removed: vec!["agent-old".into()],
+            },
+        ),
+        (
+            "session_updated_agent_blocked_sub",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    agent: Some(AgentReport {
+                        source: "claude-hooks".into(),
+                        agent: "claude".into(),
+                        state: AgentState::Blocked,
+                        message: None,
+                        agent_session_id: Some("5f3e1c1a".into()),
+                        updated_at_ms: 1_791_894_170_000,
+                        blocked_sub: Some("Explore".into()),
+                    }),
+                    ..session_info()
+                },
             },
         ),
     ]
@@ -1308,6 +1476,16 @@ fn responses_match_fixtures() {
                 16,
                 &ApprovalList {
                     approvals: vec![approval_info()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "agent_tree",
+            ControlMessage::ok(
+                17,
+                &AgentTree {
+                    observations: vec![observation()],
                 },
             )
             .unwrap(),

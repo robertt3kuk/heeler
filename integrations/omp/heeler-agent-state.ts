@@ -4,7 +4,9 @@
 //
 // Reports OMP's state (turn running, waiting for an approval or an answer, idle) and how to
 // resume the conversation (`omp --resume=<id>`) to the Heeler session OMP runs in, by calling
-// `heeler agent report`. Does nothing outside a Heeler session.
+// `heeler agent report`. Every agent is a node of the session's agent tree: OMP binds this
+// extension to the main session and to every subagent session, and `ctx.agent` (`kind`, `id`,
+// `parentId`, `name`) says which one an instance serves. Does nothing outside a Heeler session.
 // @ts-nocheck
 
 import { spawn } from "node:child_process";
@@ -21,6 +23,15 @@ interface HostContext {
   hasUI?: boolean;
   isIdle?: () => boolean;
   sessionManager?: { getSessionId?: () => unknown };
+  agent?: { kind?: string; id?: string; parentId?: string; name?: string };
+  model?: { id?: string; name?: string };
+}
+
+interface Identity {
+  kind: "main" | "sub";
+  id: string;
+  parentId?: string;
+  name?: string;
 }
 
 interface ApprovalEvent {
@@ -70,9 +81,14 @@ function heeler(args: string[]): void {
   );
 }
 
-let agentSessionId: string | undefined;
-
-function report(state: State, message?: string): void {
+function report(
+  who: Identity,
+  state: State,
+  message?: string,
+  model?: string,
+  agentSessionId?: string,
+  outcome?: string,
+): void {
   // `--name=value` so a value that starts with `-` is not taken for an option.
   const args = [
     "agent",
@@ -84,9 +100,16 @@ function report(state: State, message?: string): void {
     "--state",
     state,
     `--seq=${nextSeq()}`,
+    `--node=${who.id}`,
+    `--kind=${who.kind}`,
   ];
+  if (who.parentId) args.push(`--parent=${who.parentId}`);
+  if (who.name) args.push(`--name=${who.name}`);
+  if (model) args.push(`--model=${model}`);
+  if (outcome) args.push(`--outcome=${outcome}`);
   if (message) args.push(`--message=${message.slice(0, 200)}`);
-  if (agentSessionId) {
+  // Only the main agent's conversation can be resumed.
+  if (who.kind === "main" && agentSessionId) {
     args.push(`--agent-session-id=${agentSessionId}`, "--", "omp", `--resume=${agentSessionId}`);
   }
   heeler(args);
@@ -95,6 +118,9 @@ function report(state: State, message?: string): void {
 export default function (pi) {
   if (!ENABLED) return;
 
+  let identity: Identity | undefined;
+  let model: string | undefined;
+  let agentSessionId: string | undefined;
   let rootSession = false;
   let turnActive = false;
   let blockedCount = 0;
@@ -116,16 +142,36 @@ export default function (pi) {
     } else if (turnActive) {
       state = "working";
     }
-    const key = `${state}|${message ?? ""}`;
+    // A subagent whose agent loop is over has finished its task.
+    const outcome = identity?.kind === "sub" && state === "idle" ? "completed" : undefined;
+    const key = `${state}|${message ?? ""}|${model ?? ""}|${outcome ?? ""}`;
     if (!force && key === lastPublished) return;
     lastPublished = key;
-    report(state, message);
+    if (identity) report(identity, state, message, model, agentSessionId, outcome);
   }
 
-  // Only the interactive (root) session is the agent the user sees; subagents and print
-  // mode have no UI and must not overwrite its state.
+  // This instance serves either the interactive (main) session, which the user sees, or a
+  // subagent session (`ctx.agent.kind === "sub"`). Print mode has no UI and is neither.
   function adopt(ctx: HostContext | undefined): boolean {
+    const agent = ctx?.agent;
+    const safe = (value: unknown): value is string =>
+      typeof value === "string" && SAFE_ID.test(value);
+    const label = (value: unknown) =>
+      typeof value === "string" && value.length > 0 ? value.slice(0, 100) : undefined;
+    const known = ctx?.model?.id ?? ctx?.model?.name;
+    model = typeof known === "string" && known.length <= 128 ? known : model;
+    if (agent?.kind === "sub" && safe(agent.id)) {
+      identity = {
+        kind: "sub",
+        id: agent.id,
+        parentId: safe(agent.parentId) ? agent.parentId : undefined,
+        name: label(agent.name),
+      };
+      rootSession = true;
+      return true;
+    }
     if (ctx?.hasUI !== true) return false;
+    identity = { kind: "main", id: safe(agent?.id) ? agent.id : "Main", name: label(agent?.name) };
     rootSession = true;
     try {
       const id = ctx.sessionManager?.getSessionId?.();
@@ -172,7 +218,9 @@ export default function (pi) {
     publish();
   });
 
-  pi.on("agent_end", () => {
+  pi.on("agent_end", (event: { willContinue?: boolean }) => {
+    // The loop goes on (a retry, queued follow-up work): still working.
+    if (event?.willContinue === true) return;
     if (!rootSession || !turnActive) return;
     turnActive = false;
     clearIdleTimer();
@@ -209,5 +257,12 @@ export default function (pi) {
 
   pi.on("session_shutdown", () => {
     clearIdleTimer();
+    // A subagent's session closing ends its node, whatever state it was in.
+    if (identity?.kind === "sub") {
+      lastPublished = undefined;
+      turnActive = false;
+      blockedCount = 0;
+      publish(true);
+    }
   });
 }

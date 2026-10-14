@@ -413,11 +413,12 @@ async fn heeler_blocks_and_agent_reports_are_indexed() {
             session_id: session.id,
             source: "test".to_owned(),
             agent: "claude".to_owned(),
-            state: AgentState::Working,
+            state: Some(AgentState::Working),
             message: Some("untangling the pangolin refactor".to_owned()),
             seq: 1,
             agent_session_id: None,
             resume_argv: None,
+            node: None,
         }))
         .await
         .unwrap();

@@ -157,6 +157,7 @@ impl Router {
             }
             Request::AgentReport(req) => ok(&self.registry.report_agent(req).await?),
             Request::AgentRelease(req) => ok(&self.registry.release_agent(req).await?),
+            Request::AgentTree(req) => ok(&self.registry.agent_tree(req.session_id).await?),
             Request::HistorySearch(req) => ok(&self.history.search(req).await?),
             Request::HistoryStatus(_) => ok(&self.history.status().await?),
             Request::HistorySetEnabled(req) => ok(&self.history.set_enabled(req.enabled).await?),

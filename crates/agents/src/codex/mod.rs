@@ -7,6 +7,7 @@
 //! [`AgentAdapter::respond`] answers.
 
 mod mapper;
+mod nodes;
 mod wire;
 
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ use crate::error::AgentError;
 use crate::jsonrpc::{Incoming, Launch, Transport};
 
 pub use mapper::{AnswerError, Mapped, Mapper, Reply};
+pub use nodes::{NodeFeed, TREE_SOURCE};
 
 /// Codex versions this adapter is written against: `>=0.160, <0.170`.
 pub const SUPPORTED_VERSIONS: &str = ">=0.160, <0.170";
@@ -109,6 +111,7 @@ struct Shared {
     transport: Arc<Transport>,
     thread_id: String,
     mapper: Mutex<Mapper>,
+    nodes: Mutex<NodeFeed>,
     turn: Mutex<TurnTracker>,
 }
 
@@ -325,10 +328,13 @@ impl CodexAppServerAdapter {
         // The channel is empty, so this cannot wait.
         let locator = mapper.resume_locator(&started.model);
         let _ = events_tx.try_send(AdapterMessage::Event(Box::new(locator)));
+        let root = NodeFeed::new(started.thread_id.clone()).started(&started.model);
+        let _ = events_tx.try_send(AdapterMessage::Node(Box::new(root)));
         let shared = Arc::new(Shared {
             transport,
             thread_id: started.thread_id.clone(),
             mapper: Mutex::new(mapper),
+            nodes: Mutex::new(NodeFeed::new(started.thread_id.clone())),
             turn: Mutex::new(TurnTracker::default()),
         });
         tokio::spawn(pump(shared.clone(), incoming, exit, events_tx));
@@ -366,6 +372,17 @@ async fn pump(
         match message {
             Incoming::Notification { method, params } => {
                 track_turn(&shared, &method, &params);
+                let updates = lock(&shared.nodes).notification(&method, &params);
+                for update in updates {
+                    if events
+                        .send(AdapterMessage::Node(Box::new(update)))
+                        .await
+                        .is_err()
+                    {
+                        shared.transport.shutdown().await;
+                        return;
+                    }
+                }
                 let drafts = lock(&shared.mapper).notification(&method, params);
                 if !send(drafts).await {
                     shared.transport.shutdown().await;

@@ -223,8 +223,11 @@ async fn claude_install_keeps_settings_and_hooks_and_uninstall_restores_the_orig
     for event in [
         "SessionStart",
         "UserPromptSubmit",
+        "PreToolUse",
         "PermissionRequest",
         "PostToolUse",
+        "PostToolUseFailure",
+        "PostModelSwitch",
         "Stop",
         "StopFailure",
         "SessionEnd",
@@ -236,9 +239,19 @@ async fn claude_install_keeps_settings_and_hooks_and_uninstall_restores_the_orig
             "{event} not hooked: {events:?}"
         );
     }
+    // The user's own PreToolUse group stays first and untouched; ours follows, in the background.
     assert_eq!(
-        installed["hooks"]["PreToolUse"],
-        claude_settings()["hooks"]["PreToolUse"]
+        installed["hooks"]["PreToolUse"][0],
+        claude_settings()["hooks"]["PreToolUse"][0]
+    );
+    assert_eq!(
+        installed["hooks"]["PreToolUse"][1]["hooks"][0]["async"],
+        true
+    );
+    assert!(
+        installed["hooks"]["Stop"][1]["hooks"][0]
+            .get("async")
+            .is_none()
     );
     // The existing SessionStart group (with its matcher) and Stop hook come first, unchanged.
     assert_eq!(

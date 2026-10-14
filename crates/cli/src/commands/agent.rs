@@ -5,16 +5,19 @@
 use std::io::{IsTerminal as _, Read as _};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use heeler_core::SessionId;
+use heeler_core::{NodeKind, NodeOutcome, SessionId, Usage};
 use heeler_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Request,
 };
+use heeler_protocol::tree::NodeReport;
 use serde_json::Value;
 use tokio::time::timeout;
 
 use super::Ctx;
-use crate::args::{AgentCommand, AgentStateArg, HookAgentArg};
-use crate::hook::{self, HookEnv, Plan};
+use crate::args::{
+    AgentCommand, AgentReportArgs, AgentStateArg, HookAgentArg, NodeKindArg, OutcomeArg,
+};
+use crate::hook::{self, HookEnv, Plan, PlanNode};
 
 /// Everything — connecting included — must be over within this time.
 const BUDGET: Duration = Duration::from_millis(200);
@@ -34,29 +37,19 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
         return;
     };
     let request = match command {
-        AgentCommand::Report(args) => Request::AgentReport(AgentReportRequest {
-            session_id: session,
-            source: args.source.clone(),
-            agent: args.agent.clone(),
-            state: state(args.state),
-            message: args.message.clone(),
-            seq: args.seq.unwrap_or(default_seq),
-            agent_session_id: args.agent_session_id.clone(),
-            resume_argv: (!args.resume_argv.is_empty()).then(|| args.resume_argv.clone()),
-        }),
-        AgentCommand::Release(args) => Request::AgentRelease(AgentReleaseRequest {
+        AgentCommand::Report(args) => report_request(args, session, default_seq),
+        AgentCommand::Release(args) => Some(Request::AgentRelease(AgentReleaseRequest {
             session_id: session,
             source: args.source.clone(),
             seq: args.seq.unwrap_or(default_seq),
-        }),
+            node: args.node.clone(),
+            outcome: args.outcome.map(outcome),
+        })),
         AgentCommand::Hook(args) => {
-            let Some(input) = hook_input else { return };
-            let Some(request) = hook_request(args.agent, &input, session, default_seq) else {
-                return;
-            };
-            request
+            hook_input.and_then(|input| hook_request(args.agent, &input, session, default_seq))
         }
     };
+    let Some(request) = request else { return };
     // Nothing to do with the outcome: a hook cannot act on it, and must not be noisy about it.
     let _ = timeout(BUDGET, async {
         let client = ctx.connect().await.ok()?;
@@ -65,19 +58,50 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
     .await;
 }
 
+/// `heeler agent report`; `None` when `--usage-json` is not a usage object (the report is
+/// dropped rather than sent without the numbers it was meant to carry).
+fn report_request(args: &AgentReportArgs, session: SessionId, default_seq: u64) -> Option<Request> {
+    let usage = match &args.usage_json {
+        Some(json) => Some(serde_json::from_str::<Usage>(json).ok()?),
+        None => None,
+    };
+    let node = args.node.as_ref().map(|id| NodeReport {
+        id: id.clone(),
+        parent: args.parent.clone(),
+        kind: match args.kind {
+            NodeKindArg::Main => NodeKind::Main,
+            NodeKindArg::Sub => NodeKind::Sub,
+        },
+        name: args.name.clone(),
+        agent_type: args.agent_type.clone(),
+        outcome: args.outcome.map(outcome),
+        model: args.model.clone(),
+        activity: args.activity.clone(),
+        usage,
+        transcript_path: None,
+    });
+    Some(Request::AgentReport(AgentReportRequest {
+        session_id: session,
+        source: args.source.clone(),
+        agent: args.agent.clone(),
+        state: Some(state(args.state)),
+        message: args.message.clone(),
+        seq: args.seq.unwrap_or(default_seq),
+        agent_session_id: args.agent_session_id.clone(),
+        resume_argv: (!args.resume_argv.is_empty()).then(|| args.resume_argv.clone()),
+        node,
+    }))
+}
+
 fn hook_request(
     agent: HookAgentArg,
     input: &Value,
     session: SessionId,
     seq: u64,
 ) -> Option<Request> {
-    let state_dir = hook::default_state_dir();
-    let session_text = session.to_string();
     let codex_thread = std::env::var("CODEX_THREAD_ID").ok();
     let env = HookEnv {
-        heeler_session: &session_text,
         codex_thread_id: codex_thread.as_deref(),
-        state_dir: &state_dir,
     };
     Some(match hook::plan(agent, input, &env)? {
         Plan::Report {
@@ -87,22 +111,41 @@ fn hook_request(
             message,
             agent_session_id,
             resume_argv,
+            node,
         } => Request::AgentReport(AgentReportRequest {
             session_id: session,
             source: source.to_owned(),
             agent: agent.to_owned(),
-            state: state(report_state),
+            state: report_state.map(state),
             message,
             seq,
             agent_session_id,
             resume_argv: (!resume_argv.is_empty()).then_some(resume_argv),
+            node: node.map(node_report),
         }),
-        Plan::Release { source } => Request::AgentRelease(AgentReleaseRequest {
+        Plan::Release { source, node } => Request::AgentRelease(AgentReleaseRequest {
             session_id: session,
             source: source.to_owned(),
             seq,
+            node,
+            outcome: None,
         }),
     })
+}
+
+fn node_report(node: PlanNode) -> NodeReport {
+    NodeReport {
+        id: node.id,
+        parent: None,
+        kind: node.kind.unwrap_or(NodeKind::Main),
+        name: node.name,
+        agent_type: node.agent_type,
+        outcome: node.outcome,
+        model: node.model,
+        activity: node.activity,
+        usage: None,
+        transcript_path: node.transcript_path,
+    }
 }
 
 fn state(arg: AgentStateArg) -> AgentState {
@@ -110,6 +153,15 @@ fn state(arg: AgentStateArg) -> AgentState {
         AgentStateArg::Idle => AgentState::Idle,
         AgentStateArg::Working => AgentState::Working,
         AgentStateArg::Blocked => AgentState::Blocked,
+    }
+}
+
+fn outcome(arg: OutcomeArg) -> NodeOutcome {
+    match arg {
+        OutcomeArg::Completed => NodeOutcome::Completed,
+        OutcomeArg::Failed => NodeOutcome::Failed,
+        OutcomeArg::Interrupted => NodeOutcome::Interrupted,
+        OutcomeArg::Disconnected => NodeOutcome::Disconnected,
     }
 }
 

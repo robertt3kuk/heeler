@@ -28,6 +28,7 @@ use heeler_protocol::messages::{
     TerminalSetColors, TerminalSize,
 };
 use heeler_protocol::render::TerminalRender;
+use heeler_protocol::tree::{AgentTree, AgentTreeRequest};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -526,6 +527,15 @@ impl Supervisor {
             } else {
                 None
             };
+            let trees = if client.supports_agent_tree() {
+                Some(
+                    client
+                        .call::<AgentTree>(Request::AgentTree(AgentTreeRequest::default()))
+                        .await?,
+                )
+            } else {
+                None
+            };
             match drain(events) {
                 Drain::Events(batch) => {
                     if old_epoch.is_some() {
@@ -535,6 +545,9 @@ impl Supervisor {
                     let mut effects = self.state.install_snapshot(snapshot);
                     if let Some(approvals) = approvals {
                         self.state.install_approvals(approvals);
+                    }
+                    if let Some(trees) = trees {
+                        self.state.install_trees(trees.observations);
                     }
                     self.applied = seq;
                     effects.extend(self.fold(batch));

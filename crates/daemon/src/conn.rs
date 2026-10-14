@@ -37,6 +37,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.projects",
     "history.search",
     "chat.codex",
+    "agent.tree",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

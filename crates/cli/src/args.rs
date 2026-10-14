@@ -39,6 +39,8 @@ pub enum Command {
     New(NewArgs),
     /// List sessions
     Ls(LsArgs),
+    /// Show the agents and subagents the daemon observes, as a tree per session
+    Agents(AgentsArgs),
     /// Attach this terminal to a session; detach with ctrl+\ then d
     Attach(TargetArgs),
     /// Type text into a session without attaching
@@ -339,6 +341,7 @@ pub struct HistoryArgs {
 /// session (no `HEELER_SESSION_ID`), without a daemon, on any daemon error, and after 200 ms
 /// they do nothing and exit 0, so a hook can never break the agent that runs it.
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once per process
 pub enum AgentCommand {
     /// Report the agent's state (and optionally how to resume it)
     Report(AgentReportArgs),
@@ -365,6 +368,34 @@ pub struct AgentReportArgs {
     /// Short text shown with the state (a permission prompt, a count of subagents)
     #[arg(long)]
     pub message: Option<String>,
+    /// Report about this node of the agent tree instead of the main agent (protocol 0.10)
+    #[arg(long, value_name = "ID")]
+    pub node: Option<String>,
+    /// The spawning node (default: the main agent); read when the node is first reported
+    #[arg(long, value_name = "ID")]
+    pub parent: Option<String>,
+    /// `main` (default) or `sub`; only meaningful with --node
+    #[arg(long, value_enum, default_value = "main")]
+    pub kind: NodeKindArg,
+    /// The node's name
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The node's agent definition or role
+    #[arg(long)]
+    pub agent_type: Option<String>,
+    /// The model the node runs
+    #[arg(long)]
+    pub model: Option<String>,
+    /// What the node is doing now (at most 200 characters are kept)
+    #[arg(long)]
+    pub activity: Option<String>,
+    /// Token and cost counters as JSON: `{"kind":"omp.tokens","input":1200,"output":80}`; fields
+    /// you do not know stay out (they are never zero-filled)
+    #[arg(long, value_name = "JSON")]
+    pub usage_json: Option<String>,
+    /// Finishes the node
+    #[arg(long, value_enum)]
+    pub outcome: Option<OutcomeArg>,
     /// The agent's own conversation id
     #[arg(long, value_name = "ID")]
     pub agent_session_id: Option<String>,
@@ -378,9 +409,40 @@ pub struct AgentReportArgs {
 pub struct AgentReleaseArgs {
     #[arg(long)]
     pub source: String,
-    /// Must increase per session and source; default: the current time in nanoseconds
+    /// Must increase per session, source and node; default: the current time in nanoseconds
     #[arg(long)]
     pub seq: Option<u64>,
+    /// End only this node of the session's agent tree (default: the main agent)
+    #[arg(long, value_name = "ID")]
+    pub node: Option<String>,
+    /// How the node ended (default: completed)
+    #[arg(long, value_enum)]
+    pub outcome: Option<OutcomeArg>,
+}
+
+/// `heeler agents`: the agents (and subagents) of the sessions, as the daemon observes them.
+#[derive(Debug, Args)]
+pub struct AgentsArgs {
+    /// Only this session: id, unique id prefix, or title
+    #[arg(value_name = "SESSION")]
+    pub target: Option<String>,
+    /// Keep running and print the trees again whenever one changes
+    #[arg(long)]
+    pub watch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutcomeArg {
+    Completed,
+    Failed,
+    Interrupted,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum NodeKindArg {
+    Main,
+    Sub,
 }
 
 #[derive(Debug, Args)]

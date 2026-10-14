@@ -463,6 +463,7 @@ mod tests {
                 message: message.map(str::to_owned),
                 agent_session_id: None,
                 updated_at_ms: 1,
+                blocked_sub: None,
             });
             present(&session, None)
         };

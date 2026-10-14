@@ -1,5 +1,8 @@
 //! Loading durable state at start and the rules for what gets stored (ADR 0006, ADR 0009).
 
+use std::collections::HashMap;
+
+use heeler_core::{ObservationTree, SessionId};
 use heeler_protocol::messages::TerminalSpec;
 use heeler_storage::{RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 use serde::{Deserialize, Serialize};
@@ -11,6 +14,8 @@ pub struct Stored {
     pub sessions: Vec<SessionRow>,
     /// Newest first.
     pub recent_projects: Vec<RecentProject>,
+    /// What the daemon knew about the agents of each session when it stopped.
+    pub agent_trees: HashMap<SessionId, ObservationTree>,
 }
 
 /// Blocking: reads the whole durable state. Run it off the async threads.
@@ -19,6 +24,7 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
         workspaces: storage.workspaces().list()?,
         sessions: storage.sessions().list()?,
         recent_projects: storage.recent_projects().list()?,
+        agent_trees: crate::tree::load(storage)?,
     })
 }
 

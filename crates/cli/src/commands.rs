@@ -19,6 +19,7 @@ use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs};
 use crate::error::{CliError, is_unreachable};
 
 mod agent;
+mod agents;
 mod attach;
 mod chat;
 mod history;
@@ -48,6 +49,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Daemon(DaemonCommand::Restart { stop_sessions }) => {
             ctx?.daemon_restart(stop_sessions).await
         }
+        Command::Agents(args) => ctx?.agents(args).await,
         Command::Ws(command) => ctx?.ws(command).await,
         Command::Api(args) => ctx?.api(args).await,
         Command::Events(args) => ctx?.events(args).await,

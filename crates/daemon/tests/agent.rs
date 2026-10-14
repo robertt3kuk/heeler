@@ -27,11 +27,12 @@ fn report(session: SessionId, source: &str, state: AgentState, seq: u64) -> Agen
         session_id: session,
         source: source.into(),
         agent: "fake".into(),
-        state,
+        state: Some(state),
         message: None,
         seq,
         agent_session_id: None,
         resume_argv: None,
+        node: None,
     }
 }
 
@@ -40,6 +41,8 @@ fn release(session: SessionId, source: &str, seq: u64) -> AgentReleaseRequest {
         session_id: session,
         source: source.into(),
         seq,
+        node: None,
+        outcome: None,
     }
 }
 
@@ -156,6 +159,12 @@ async fn reports_set_the_session_agent_and_only_changes_are_events() {
     assert!(agent.updated_at_ms > 0);
     assert_eq!(agent.message, None);
 
+    // The tree announces the new root too (`agent.tree_updated`); that is the only other event.
+    wait_event(&mut events, "tree update", |event| match event {
+        Event::AgentTreeUpdated { session_id, .. } if *session_id == session.id => Some(()),
+        _ => None,
+    })
+    .await;
     // The same report again changes nothing a client could see: no event.
     assert!(send_report(&client, report(session.id, "hooks", AgentState::Working, 2)).await);
     assert_no_event(&mut events, Duration::from_millis(300)).await;
@@ -557,5 +566,378 @@ async fn a_released_agent_is_not_resumed_after_a_restart() {
     .await;
     sleep(Duration::from_millis(300)).await;
     assert!(!out.exists(), "the plain spec command ran, not the agent");
+    t.stop().await;
+}
+
+// ---- agent observation tree (protocol 0.10) ------------------------------------------------
+
+use heeler_core::{AgentObservation, Liveness, NodeKind, NodeOutcome, NodeState, Usage};
+use heeler_protocol::tree::{AgentTree, AgentTreeRequest, NodeReport};
+
+fn node_report(id: &str, kind: NodeKind, parent: Option<&str>) -> NodeReport {
+    NodeReport {
+        id: id.into(),
+        parent: parent.map(str::to_owned),
+        kind,
+        name: Some(id.into()),
+        agent_type: None,
+        outcome: None,
+        model: None,
+        activity: None,
+        usage: None,
+        transcript_path: None,
+    }
+}
+
+fn node_request(
+    session: SessionId,
+    source: &str,
+    state: AgentState,
+    seq: u64,
+    node: NodeReport,
+) -> AgentReportRequest {
+    AgentReportRequest {
+        node: Some(node),
+        ..report(session, source, state, seq)
+    }
+}
+
+async fn tree_of(client: &Client, session: SessionId) -> Option<AgentObservation> {
+    let tree: AgentTree = client
+        .call(Request::AgentTree(AgentTreeRequest {
+            session_id: Some(session),
+        }))
+        .await
+        .unwrap();
+    tree.observations.into_iter().next()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn v2_reports_build_a_tree_and_a_release_ends_one_node() {
+    let t = TestDaemon::start().await;
+    let (client, mut events) = t.connect_subscribed().await;
+    let session = create(&client, idle_spec()).await;
+    assert!(tree_of(&client, session.id).await.is_none());
+
+    let mut main = node_report("Main", NodeKind::Main, None);
+    main.model = Some("claude-opus-5".into());
+    assert!(
+        send_report(
+            &client,
+            node_request(session.id, "omp", AgentState::Working, 1, main)
+        )
+        .await
+    );
+    let mut sub = node_report("0-Explore", NodeKind::Sub, Some("Main"));
+    sub.agent_type = Some("explore".into());
+    sub.activity = Some("Bash: ls".into());
+    sub.usage = Some(Usage {
+        kind: "omp.tokens".into(),
+        input: Some(10),
+        output: Some(4),
+        ..Usage::default()
+    });
+    assert!(
+        send_report(
+            &client,
+            node_request(session.id, "omp", AgentState::Working, 1, sub)
+        )
+        .await
+    );
+
+    let observation = tree_of(&client, session.id).await.unwrap();
+    assert_eq!(observation.root, "Main");
+    let main = &observation.nodes["Main"];
+    assert_eq!(
+        (main.kind, main.state, main.liveness),
+        (NodeKind::Main, NodeState::Working, Liveness::Alive)
+    );
+    assert_eq!(main.model.as_deref(), Some("claude-opus-5"));
+    let sub = &observation.nodes["0-Explore"];
+    assert_eq!(sub.parent.as_deref(), Some("Main"));
+    assert_eq!(sub.activity.as_deref(), Some("Bash: ls"));
+    assert_eq!(sub.usage.as_ref().unwrap().input, Some(10));
+    assert_eq!(
+        sub.usage.as_ref().unwrap().cache_read,
+        None,
+        "never zero-filled"
+    );
+
+    // Sequence numbers count per node: the same seq for another node is news, a stale one is not.
+    assert!(
+        !send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Idle,
+                1,
+                node_report("0-Explore", NodeKind::Sub, Some("Main"))
+            )
+        )
+        .await
+    );
+
+    // A blocked subagent makes the session need attention for clients that read `agent` only.
+    assert!(
+        send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Blocked,
+                2,
+                node_report("0-Explore", NodeKind::Sub, Some("Main"))
+            )
+        )
+        .await
+    );
+    let blocked = wait_session(&client, session.id, "the blocked subagent", |s| {
+        s.agent
+            .as_ref()
+            .is_some_and(|a| a.state == AgentState::Blocked)
+    })
+    .await;
+    assert_eq!(
+        blocked.agent.unwrap().blocked_sub.as_deref(),
+        Some("0-Explore")
+    );
+
+    // Releasing the node ends it, with the outcome asked for, and leaves the main agent alone.
+    let release_sub = AgentReleaseRequest {
+        node: Some("0-Explore".into()),
+        outcome: Some(NodeOutcome::Failed),
+        ..release(session.id, "omp", 3)
+    };
+    assert!(send_release(&client, release_sub).await);
+    let observation = tree_of(&client, session.id).await.unwrap();
+    let sub = &observation.nodes["0-Explore"];
+    assert_eq!(
+        (sub.outcome, sub.state, sub.liveness),
+        (Some(NodeOutcome::Failed), NodeState::Idle, Liveness::Gone)
+    );
+    assert_eq!(observation.nodes["Main"].outcome, None);
+    let after = wait_session(&client, session.id, "no longer blocked", |s| {
+        s.agent
+            .as_ref()
+            .is_some_and(|a| a.state == AgentState::Working)
+    })
+    .await;
+    assert_eq!(after.agent.unwrap().blocked_sub, None);
+
+    // The same release again holds nothing; the main agent's release ends everything.
+    let again = AgentReleaseRequest {
+        node: Some("0-Explore".into()),
+        ..release(session.id, "omp", 4)
+    };
+    assert!(!send_release(&client, again).await);
+    let release_main = AgentReleaseRequest {
+        node: Some("Main".into()),
+        ..release(session.id, "omp", 5)
+    };
+    assert!(send_release(&client, release_main).await);
+    let observation = tree_of(&client, session.id).await.unwrap();
+    assert_eq!(
+        observation.nodes["Main"].outcome,
+        Some(NodeOutcome::Completed)
+    );
+    assert!(session_of(&client, session.id).await.agent.is_none());
+
+    // Everything above arrived as tree events.
+    wait_event(&mut events, "a tree event", |event| match event {
+        Event::AgentTreeUpdated { nodes_changed, .. } if !nodes_changed.is_empty() => Some(()),
+        _ => None,
+    })
+    .await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tree_events_are_coalesced_to_four_a_second_per_session() {
+    let t = TestDaemon::start().await;
+    let (client, mut events) = t.connect_subscribed().await;
+    let session = create(&client, idle_spec()).await;
+    assert!(send_report(&client, report(session.id, "hooks", AgentState::Working, 1)).await);
+    for n in 0..30u64 {
+        let mut node = node_report(&format!("sub-{}", n % 3), NodeKind::Sub, None);
+        node.activity = Some(format!("step {n}"));
+        assert!(
+            send_report(
+                &client,
+                node_request(session.id, "hooks", AgentState::Working, 100 + n, node)
+            )
+            .await
+        );
+    }
+    // Let the held-back announcement go out, then count what arrived.
+    sleep(Duration::from_millis(700)).await;
+    let mut tree_events = 0;
+    let mut last_changed = Vec::new();
+    while let Ok(Ok((_, event))) = timeout(Duration::from_millis(50), events.recv()).await {
+        if let Event::AgentTreeUpdated { nodes_changed, .. } = event {
+            tree_events += 1;
+            last_changed = nodes_changed;
+        }
+    }
+    assert!(
+        (2..=4).contains(&tree_events),
+        "30 reports in well under a second: {tree_events} events"
+    );
+    // The last event carries the latest state of the nodes (whole nodes, not diffs).
+    assert!(last_changed.iter().all(|n| {
+        n.activity
+            .as_deref()
+            .is_some_and(|a| a.starts_with("step "))
+    }));
+    let observation = tree_of(&client, session.id).await.unwrap();
+    assert_eq!(observation.nodes.len(), 4);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_restart_leaves_live_nodes_unknown_until_they_report_again() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    let session = create(&client, idle_spec()).await;
+    let mut main = node_request(
+        session.id,
+        "omp",
+        AgentState::Working,
+        1,
+        node_report("Main", NodeKind::Main, None),
+    );
+    main.resume_argv = Some(vec!["sleep".into(), "600".into()]);
+    assert!(send_report(&client, main).await);
+    assert!(
+        send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Working,
+                1,
+                node_report("0-Explore", NodeKind::Sub, Some("Main"))
+            )
+        )
+        .await
+    );
+    let mut finished = node_report("0-Done", NodeKind::Sub, Some("Main"));
+    finished.outcome = Some(NodeOutcome::Completed);
+    assert!(
+        send_report(
+            &client,
+            node_request(session.id, "omp", AgentState::Idle, 1, finished)
+        )
+        .await
+    );
+    // The stored tree is written within a second; wait for it before the daemon goes down.
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let storage = Storage::open(&t.paths.database).unwrap();
+        let stored = storage.agent_trees().list().unwrap();
+        storage.close();
+        if stored
+            .iter()
+            .any(|(id, json)| *id == session.id && json.contains("0-Explore"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the tree never reached the database"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    drop(client);
+
+    let t = t.restart().await;
+    let client = t.connect().await;
+    let observation = tree_of(&client, session.id)
+        .await
+        .expect("the tree survives a restart");
+    let main = &observation.nodes["Main"];
+    assert_eq!(
+        (main.state, main.liveness, main.outcome),
+        (NodeState::Unknown, Liveness::Unknown, None)
+    );
+    let sub = &observation.nodes["0-Explore"];
+    assert_eq!(
+        (sub.outcome, sub.liveness),
+        (Some(NodeOutcome::Disconnected), Liveness::Unknown)
+    );
+    assert_eq!(
+        observation.nodes["0-Done"].outcome,
+        Some(NodeOutcome::Completed),
+        "kept as it ended"
+    );
+    assert!(
+        session_of(&client, session.id).await.agent.is_none(),
+        "nothing is known to run"
+    );
+
+    // The resumed agent reports again (a new epoch: seq starts afresh) and is alive.
+    assert!(
+        send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Idle,
+                1,
+                node_report("Main", NodeKind::Main, None)
+            )
+        )
+        .await
+    );
+    let main = &tree_of(&client, session.id).await.unwrap().nodes["Main"];
+    assert_eq!(
+        (main.state, main.liveness),
+        (NodeState::Idle, Liveness::Alive)
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_end_of_the_session_disconnects_every_node() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    let session = create(&client, idle_spec()).await;
+    assert!(
+        send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Working,
+                1,
+                node_report("Main", NodeKind::Main, None)
+            )
+        )
+        .await
+    );
+    assert!(
+        send_report(
+            &client,
+            node_request(
+                session.id,
+                "omp",
+                AgentState::Blocked,
+                1,
+                node_report("sub", NodeKind::Sub, Some("Main"))
+            )
+        )
+        .await
+    );
+    stop(&client, session.id).await.unwrap();
+    let observation = tree_of(&client, session.id).await.unwrap();
+    for node in observation.nodes.values() {
+        assert_eq!(
+            (node.outcome, node.liveness),
+            (Some(NodeOutcome::Disconnected), Liveness::Gone),
+            "{}",
+            node.node_id
+        );
+    }
+    assert!(session_of(&client, session.id).await.agent.is_none());
     t.stop().await;
 }

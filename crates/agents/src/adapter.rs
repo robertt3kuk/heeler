@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use futures::future::BoxFuture;
-use heeler_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, SandboxMode, TurnId};
+use heeler_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, SandboxMode, TurnId};
 
 use crate::error::AgentError;
 
@@ -41,6 +41,9 @@ pub struct ExitInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdapterMessage {
     Event(Box<AgentEventDraft>),
+    /// Something about an agent of the session's observation tree: the main agent's thread, or a
+    /// subagent's (`docs/integrations.md`).
+    Node(Box<NodeUpdate>),
     /// The process ended; nothing follows.
     Exited(ExitInfo),
 }

@@ -396,6 +396,7 @@ impl ChatManager {
         while let Some(message) = events.recv().await {
             match message {
                 AdapterMessage::Event(draft) => self.handle(&live, *draft).await,
+                AdapterMessage::Node(update) => self.notifier.node(live.id, *update).await,
                 AdapterMessage::Exited(info) => {
                     exit = info;
                     break;

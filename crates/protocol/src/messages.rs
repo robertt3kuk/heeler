@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use heeler_core::agent::PermissionOutcome;
 use heeler_core::{
-    AgentEvent, ApprovalId, Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId,
-    WorkspaceId,
+    AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, Seq, SessionId, SessionKind,
+    SessionState, TerminalId, WorkspaceId,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::history::{HistorySearch, HistorySetEnabled};
 use crate::render::Row;
+use crate::tree::{AgentTreeRequest, NodeReport};
 
 /// Parameterless request body; encoded as `{}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -32,6 +33,9 @@ pub struct Empty {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
+// `AgentReport` carries a whole node report; requests are built once, serialised, and dropped,
+// so boxing it would only complicate every sender.
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     #[serde(rename = "hello")]
     Hello(Hello),
@@ -99,6 +103,10 @@ pub enum Request {
     /// Capability `agent.report` (protocol 0.4): the agent exited; forget its report.
     #[serde(rename = "agent.release")]
     AgentRelease(AgentReleaseRequest),
+    /// Capability `agent.tree` (protocol 0.10): the observation tree of one session, or of all;
+    /// answered with `AgentTree`.
+    #[serde(rename = "agent.tree")]
+    AgentTree(AgentTreeRequest),
     /// Capability `terminal.blocks` (protocol 0.5).
     #[serde(rename = "terminal.blocks")]
     TerminalBlocks(TerminalBlocks),
@@ -429,19 +437,27 @@ pub struct TerminalColors {
 /// A coding agent running inside a session reports what it is doing and how to start it again
 /// (`docs/integrations.md`). Answered with [`AgentApplied`].
 ///
-/// `seq` must increase per `(session_id, source)`; a request that does not is ignored
-/// (`applied: false`). `resume_argv`, when present, replaces the session's resume reference: a
-/// plain command name on `PATH` followed by arguments, at most 64 words and 8 KiB in total, with no
-/// apostrophe or control character anywhere. The daemon runs it instead of the session's
-/// command after a daemon restart. Absent leaves the stored reference alone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `seq` must increase per `(session_id, source, node)` (`node` is the id in `node`, none for a
+/// report without one); a request that does not is ignored (`applied: false`). `resume_argv`,
+/// when present, replaces the session's resume reference: a plain command name on `PATH`
+/// followed by arguments, at most 64 words and 8 KiB in total, with no apostrophe or control
+/// character anywhere. The daemon runs it instead of the session's command after a daemon
+/// restart. Absent leaves the stored reference alone.
+///
+/// Protocol 0.10 (capability `agent.tree`): `node` says which agent of the session's
+/// observation tree the report is about. Without it the report is about the main agent, exactly
+/// as in protocol 0.4. `state` is that node's state (absent: unchanged, so that a report can
+/// carry only a model or an activity); `message`, `agent_session_id` and `resume_argv` belong
+/// to the session's main agent and are only read when the report is about it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentReportRequest {
     pub session_id: SessionId,
     /// Who reports (one integration, e.g. `claude-hooks`); sequencing is per source.
     pub source: String,
     /// The agent's name (`omp`, `claude`, `codex`).
     pub agent: String,
-    pub state: AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgentState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub seq: u64,
@@ -450,14 +466,26 @@ pub struct AgentReportRequest {
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_argv: Option<Vec<String>>,
+    /// Protocol 0.10: the node this report is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeReport>,
 }
 
 /// The agent behind `source` is gone: clears its report and its resume reference.
+///
+/// Protocol 0.10: with `node`, only that node of the observation tree ends (`outcome`, default
+/// `completed`), and the report and resume reference stay unless the node is the main agent.
+/// Without it the main agent is released, and every subagent still running under it is
+/// disconnected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentReleaseRequest {
     pub session_id: SessionId,
     pub source: String,
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<NodeOutcome>,
 }
 
 /// Result of `agent.report` and `agent.release`.
@@ -571,17 +599,23 @@ pub struct SessionInfo {
     pub chat: Option<ChatInfo>,
 }
 
-/// The latest report of a coding agent running in a session.
+/// The latest report of a coding agent running in a session: the main agent, with the state
+/// of its subagents rolled in (protocol 0.10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentReport {
     pub source: String,
     pub agent: String,
+    /// `blocked` while the main agent or any subagent waits for the user.
     pub state: AgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
     pub updated_at_ms: u64,
+    /// Protocol 0.10: the name of the subagent that blocks the session while the main agent
+    /// itself does not (then `state` is `blocked` because of it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_sub: Option<String>,
 }
 
 /// Result of `session.create`, `.stop`, `.restart`, and `.rename`: the session after the change.
@@ -682,6 +716,16 @@ pub enum Event {
         #[serde(flatten)]
         outcome: PermissionOutcome,
     },
+    /// Capability `agent.tree` (protocol 0.10): nodes of a session's observation tree changed
+    /// or were dropped. Coalesced: at most 4 per second per session. `nodes_changed` carries
+    /// each node whole, as it is now; a client applies the event to the tree it fetched with
+    /// `agent.tree`.
+    #[serde(rename = "agent.tree_updated")]
+    AgentTreeUpdated {
+        session_id: SessionId,
+        nodes_changed: Vec<AgentNode>,
+        nodes_removed: Vec<String>,
+    },
 }
 
 impl Event {
@@ -712,6 +756,7 @@ impl Event {
         "chat.event",
         "approval.required",
         "approval.resolved",
+        "agent.tree_updated",
     ];
 }
 

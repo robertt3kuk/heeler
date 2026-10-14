@@ -56,6 +56,14 @@ pub enum Write {
     /// Inserts or replaces every column except `created_at_ms`.
     UpsertSession(Box<SessionRow>),
     DeleteSession(SessionId),
+    /// Stores the observation tree of a session (JSON written by the daemon); the session's row
+    /// must have been written before.
+    UpsertAgentTree {
+        session_id: SessionId,
+        tree_json: String,
+        updated_at_ms: u64,
+    },
+    DeleteAgentTree(SessionId),
     SetMeta {
         key: String,
         value: String,
@@ -155,6 +163,27 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         Write::DeleteSession(id) => {
             conn.execute("DELETE FROM sessions WHERE id = ?1", [id.to_string()])
                 .map_err(StorageError::sqlite("deleting a session"))?;
+        }
+        Write::UpsertAgentTree {
+            session_id,
+            tree_json,
+            updated_at_ms,
+        } => {
+            conn.execute(
+                "INSERT INTO agent_trees (session_id, tree_json, updated_at_ms) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (session_id) DO UPDATE SET \
+                     tree_json = excluded.tree_json, updated_at_ms = excluded.updated_at_ms",
+                params![session_id.to_string(), tree_json, ms(*updated_at_ms)],
+            )
+            .map_err(StorageError::sqlite("writing an agent tree"))?;
+        }
+        Write::DeleteAgentTree(session_id) => {
+            conn.execute(
+                "DELETE FROM agent_trees WHERE session_id = ?1",
+                [session_id.to_string()],
+            )
+            .map_err(StorageError::sqlite("deleting an agent tree"))?;
         }
         Write::SetMeta { key, value } => set_meta(conn, key, value)?,
         Write::RecordEpoch(record) => record_epoch(conn, *record)?,
@@ -312,6 +341,25 @@ pub fn list_sessions(conn: &Connection, workspace: Option<WorkspaceId>) -> Resul
     let rows = stmt
         .query_map([workspace.map(|w| w.to_string())], |row| {
             Ok(session_from(row))
+        })
+        .map_err(StorageError::sqlite(context))?;
+    collect(rows, context)
+}
+
+/// The stored agent trees: `(session, tree JSON)`.
+pub fn list_agent_trees(conn: &Connection) -> Result<Vec<(SessionId, String)>> {
+    let context = "listing agent trees";
+    let mut stmt = conn
+        .prepare("SELECT session_id, tree_json FROM agent_trees ORDER BY session_id")
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok(id
+                .parse::<SessionId>()
+                .map(|id| (id, json))
+                .map_err(|e| StorageError::corrupt("agent_trees.session_id", e.to_string())))
         })
         .map_err(StorageError::sqlite(context))?;
     collect(rows, context)

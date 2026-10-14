@@ -13,6 +13,10 @@ pub const MARKER: &str = "heeler-integration=";
 /// Seconds the agent lets a hook run.
 const HOOK_TIMEOUT_SECS: u64 = 10;
 
+/// Events whose hook runs in the background (`"async": true`) so that it never delays the tool
+/// call or the model switch it reports on.
+const ASYNC_EVENTS: &[&str] = &["PreToolUse", "PostToolUseFailure", "PostModelSwitch"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
     #[error("the top level is not a JSON object")]
@@ -64,11 +68,22 @@ pub fn install(doc: &mut Value, events: &[&str], command: &str) -> Result<bool, 
                     hook.insert("command".to_owned(), json!(command));
                     changed = true;
                 }
+                if ASYNC_EVENTS.contains(event) != (hook.get("async") == Some(&json!(true))) {
+                    if ASYNC_EVENTS.contains(event) {
+                        hook.insert("async".to_owned(), json!(true));
+                    } else {
+                        hook.remove("async");
+                    }
+                    changed = true;
+                }
             }
             None => {
-                groups.push(json!({
-                    "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS}]
-                }));
+                let mut hook =
+                    json!({"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS});
+                if ASYNC_EVENTS.contains(event) {
+                    hook["async"] = json!(true);
+                }
+                groups.push(json!({ "hooks": [hook] }));
                 changed = true;
             }
         }

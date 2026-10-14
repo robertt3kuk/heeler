@@ -257,11 +257,12 @@ fn sort_modes_order_the_workspace_rows_and_pins_stay_on_top(cx: &mut TestAppCont
         session_id: blocked.id,
         source: "test".into(),
         agent: "omp".into(),
-        state: AgentState::Blocked,
+        state: Some(AgentState::Blocked),
         message: None,
         seq: 1,
         agent_session_id: None,
         resume_argv: None,
+        node: None,
     }));
     assert!(applied.applied);
 
@@ -587,11 +588,12 @@ fn sessions_that_need_you_stay_visible_in_filtered_workspaces(cx: &mut TestAppCo
         session_id: session.id,
         source: "test".into(),
         agent: "omp".into(),
-        state: AgentState::Blocked,
+        state: Some(AgentState::Blocked),
         message: None,
         seq: 1,
         agent_session_id: None,
         resume_argv: None,
+        node: None,
     }));
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 2, 1);

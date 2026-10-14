@@ -285,14 +285,25 @@ async fn claude_hook_events_drive_the_session_state() {
     go(json!({"hook_event_name": "UserPromptSubmit", "session_id": "conv-1", "prompt": "hi"}))
         .await;
     wait_agent_state(&t, &id, "working").await;
-    go(json!({"hook_event_name": "SubagentStart", "session_id": "conv-1"})).await;
-    timeout(WAIT, async {
-        while agent_of(&t, &id).await["message"] != "subagents: 1" {
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the subagent counter never showed");
+    // A subagent is a node of its own: its permission prompt blocks the session (the summary
+    // names it) without touching the main agent's state, and its tool hooks clear it again.
+    let sub = |event: &str| {
+        json!({"hook_event_name": event, "session_id": "conv-1", "agent_id": "agent-abc123",
+               "agent_type": "Explore", "tool_name": "Bash"})
+    };
+    go(sub("SubagentStart")).await;
+    go(sub("PermissionRequest")).await;
+    let agent = wait_agent_state(&t, &id, "blocked").await;
+    assert_eq!(agent["blocked_sub"], "Explore");
+    assert_eq!(
+        agent.get("message"),
+        None,
+        "the message is the main agent's"
+    );
+    go(sub("PostToolUse")).await;
+    let agent = wait_agent_state(&t, &id, "working").await;
+    assert_eq!(agent.get("blocked_sub"), None);
+    go(sub("SubagentStop")).await;
     go(json!({"hook_event_name": "PermissionRequest", "session_id": "conv-1", "tool_name": "Bash"})).await;
     let agent = wait_agent_state(&t, &id, "blocked").await;
     assert_eq!(agent["message"], "permission: Bash");

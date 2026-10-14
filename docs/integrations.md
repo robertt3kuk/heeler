@@ -58,16 +58,32 @@ Codex asks you to review new or changed hooks the first time it starts after an 
 | | `UserPromptSubmit`, `PostToolUse` | working | same |
 | | `PermissionRequest` | blocked, `permission: <tool>` | same |
 | | `Stop`, `StopFailure` | idle | same |
-| | `SubagentStart` / `SubagentStop` | working, `subagents: N` while any run | same |
+| | `PreToolUse` | the tool as the node\'s activity (`Bash: <command>`); runs in the background | same |
+| | `SubagentStart` / `SubagentStop` | a subagent node keyed by `agent_id`: working / idle + completed (`agent_transcript_path` kept) | — |
+| | any tool or permission hook with an `agent_id` | that subagent\'s activity, working or blocked | — |
+| | `PostModelSwitch` | the main agent\'s model | — |
 | | `SessionEnd` | release | — |
-| OMP | `session_start`, `session_switch` | idle | `omp --resume=<id>` |
+| OMP | `session_start`, `session_switch` | idle, node `ctx.agent.id` (kind, parent, name, model from `ctx`) | `omp --resume=<id>` |
 | | `agent_start` | working | same |
 | | `tool_approval_requested`, the `ask` tool | blocked, the reason or question | same |
-| | `agent_end` | idle (after 400 ms, so an automatic retry stays working) | same |
+| | `agent_end` | idle (after 400 ms, so an automatic retry stays working; `willContinue` keeps it working) | same |
+| | the same events in a subagent session | the subagent\'s node under `ctx.agent.parentId`; its end is idle + completed | — |
 
-Sources are `codex-hooks`, `claude-hooks`, `omp-extension`. `PostToolUse` is hooked because hooks never say that a permission prompt was answered; the next tool result is the signal. Subagent counts live in `$TMPDIR/heeler-agent/<session id>.subagents` until the turn ends. Hook events of a Codex whose `CODEX_THREAD_ID` is another conversation (a Codex started by Codex's own tools) are ignored. OMP reports only from the interactive session; subagents and print mode have no UI and stay silent. Session ids that are not made of letters, digits, `-_.:` are never put in a resume command (the state is still reported).
+Sources are `codex-hooks`, `claude-hooks`, `omp-extension`. `PostToolUse` is hooked because hooks never say that a permission prompt was answered; the next tool result is the signal. Hook events of a Codex whose `CODEX_THREAD_ID` is another conversation (a Codex started by Codex's own tools) are ignored. Session ids that are not made of letters, digits, `-_.:` are never put in a resume command (the state is still reported). The Claude hooks do not install a status line (it would replace the user's); Claude's `subagentStatusLine` (per-subagent model and token counts) is a possible later source.
 
 Resume commands are what the agents document: `codex resume <id>`, `claude --resume <id>`, `omp --resume=<id>`. For other agents (`opencode --session <id>`, …) call `heeler agent report` from their own hooks.
+
+## Observation tree
+
+Every session has a tree of agents: the main agent and the subagents it spawned, as the daemon observes them (`heeler agents [--json] [--watch]`, protocol `agent.tree`, `docs/protocol.md` § Agent observation tree). Reporters name a node with `heeler agent report --node ID [--parent ID --kind sub --name N --agent-type T --model M --activity A --usage-json '{"kind":"omp.tokens","input":1200}' --outcome completed|failed|interrupted|disconnected]`, and end one with `heeler agent release --node ID [--outcome O]`; without `--node` a report is about the main agent, as before. Sequence numbers count per session, source and node; reports are ordered by `seq`, not arrival.
+
+- **Claude Code**: subagents are nodes keyed by the hooks' `agent_id` (the main agent is the node `root`); Claude reports no parent, so subagents hang off the main agent.
+- **OMP**: the extension runs once per session and per subagent; `ctx.agent` gives `kind`, `id`, `parentId`, `name`.
+- **Codex (chats Heeler runs)**: the adapter feeds the tree from `thread/status/changed` (`active` with `waitingOnApproval` / `waitingOnUserInput` is blocked), `thread/started` (`parentThreadId`, `agentNickname`, `agentRole`), `collabAgentToolCall.agentsStates`, `subAgentActivity`, a subagent's `turn/completed`, and `thread/tokenUsage/updated` (usage kind `codex.total`). A finished tool call is not a finished child: only the child's own status ends it. Codex sessions started outside Heeler are not observed.
+- **Attention**: a session needs attention when any node is blocked; `SessionInfo.agent` rolls that up for older clients (`blocked_sub`).
+- **Lifecycle**: the tree is stored (schema v4) without what the agents are doing right now. After a daemon restart the main agent is `unknown` until it reports; subagents are `disconnected`. When the session's process ends, every unfinished node is `disconnected`.
+
+Not yet: reconstructing trees from OMP directories, Claude `subagents/` files or Codex `thread_spawn_edges` for sessions Heeler did not watch (M13-C).
 
 ## Safety
 

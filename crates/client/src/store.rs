@@ -1,9 +1,10 @@
 //! The client-side model of daemon state: what [`Connection::state`](crate::Connection::state)
 //! publishes and how events fold into it. Pure data and logic, no I/O.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use heeler_core::{Epoch, SessionId, TerminalId};
+use heeler_core::{AgentNode, AgentObservation, Epoch, SessionId, TerminalId};
 use heeler_protocol::blocks::Block;
 use heeler_protocol::chat::ApprovalInfo;
 use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
@@ -35,6 +36,9 @@ pub struct StoreState {
     /// Permission requests of agent chats waiting for an answer, oldest first (capability
     /// `chat.codex`). The daemon keeps them across client disconnects.
     pub approvals: Vec<ApprovalInfo>,
+    /// The observation tree of every session that has agents (capability `agent.tree`):
+    /// the main agent and its subagents.
+    pub trees: BTreeMap<SessionId, AgentObservation>,
 }
 
 /// Transient events that are not part of [`StoreState`].
@@ -99,6 +103,7 @@ impl StoreState {
             workspaces: Vec::new(),
             sessions: Vec::new(),
             approvals: Vec::new(),
+            trees: BTreeMap::new(),
         }
     }
 
@@ -129,11 +134,50 @@ impl StoreState {
         effects
     }
 
+    /// Replaces the observation trees with what `agent.tree` answered.
+    pub(crate) fn install_trees(&mut self, observations: Vec<AgentObservation>) {
+        self.trees = observations
+            .into_iter()
+            .map(|observation| (observation.session_id, observation))
+            .collect();
+    }
+
+    /// Folds an `agent.tree_updated` event into the session's tree. The root is the one node
+    /// without a parent.
+    fn apply_tree_update(
+        &mut self,
+        session: SessionId,
+        changed: Vec<AgentNode>,
+        removed: Vec<String>,
+    ) {
+        let observation = self
+            .trees
+            .entry(session)
+            .or_insert_with(|| AgentObservation {
+                session_id: session,
+                root: String::new(),
+                nodes: BTreeMap::new(),
+            });
+        for id in removed {
+            observation.nodes.remove(&id);
+        }
+        for node in changed {
+            observation.nodes.insert(node.node_id.clone(), node);
+        }
+        match observation.nodes.values().find(|n| n.parent.is_none()) {
+            Some(root) => observation.root.clone_from(&root.node_id),
+            None => {
+                self.trees.remove(&session);
+            }
+        }
+    }
+
     /// Drops everything learned from a previous daemon.
     pub(crate) fn clear(&mut self) {
         self.workspaces.clear();
         self.sessions.clear();
         self.approvals.clear();
+        self.trees.clear();
     }
 
     /// Folds one event into the state. Events that only concern terminals' presentation (title)
@@ -163,6 +207,8 @@ impl StoreState {
                 let sessions = &self.sessions;
                 self.approvals
                     .retain(|a| sessions.iter().any(|s| s.id == a.session_id));
+                self.trees
+                    .retain(|id, _| sessions.iter().any(|s| s.id == *id));
             }
             Event::SessionUpdated { session } => {
                 effects
@@ -217,6 +263,11 @@ impl StoreState {
             // Chat events stream to whoever renders the chat (`Client::events`); they are not
             // state of the sessions list.
             Event::ChatEvent { .. } => {}
+            Event::AgentTreeUpdated {
+                session_id,
+                nodes_changed,
+                nodes_removed,
+            } => self.apply_tree_update(session_id, nodes_changed, nodes_removed),
         }
         effects
     }

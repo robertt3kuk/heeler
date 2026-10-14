@@ -96,7 +96,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -146,7 +146,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -387,7 +387,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 3);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 4);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -948,5 +948,62 @@ fn migrating_v2_adds_the_chat_tables_and_keeps_the_data() {
     for table in ["chat_items", "chat_turns", "approvals"] {
         assert!(table_exists(&db(&dir), table), "{table}");
     }
+    integrity_ok(&db(&dir));
+}
+
+#[test]
+fn agent_trees_are_replaced_listed_and_removed_with_their_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let first = chat_session(&storage);
+    let second = chat_session(&storage);
+    assert!(storage.agent_trees().list().unwrap().is_empty());
+
+    storage
+        .agent_trees()
+        .upsert(first, "{\"a\":1}".into(), 10)
+        .unwrap();
+    storage
+        .agent_trees()
+        .upsert(second, "{\"b\":2}".into(), 11)
+        .unwrap();
+    storage
+        .agent_trees()
+        .upsert(first, "{\"a\":3}".into(), 12)
+        .unwrap();
+    let mut listed = storage.agent_trees().list().unwrap();
+    listed.sort_by_key(|(id, _)| id.to_string());
+    let mut expected = vec![
+        (first, "{\"a\":3}".to_owned()),
+        (second, "{\"b\":2}".to_owned()),
+    ];
+    expected.sort_by_key(|(id, _)| id.to_string());
+    assert_eq!(listed, expected);
+
+    storage.agent_trees().delete(second).unwrap();
+    assert_eq!(
+        storage.agent_trees().list().unwrap(),
+        [(first, "{\"a\":3}".to_owned())]
+    );
+    // A session's tree goes with the session.
+    storage.sessions().delete(first).unwrap();
+    assert!(storage.agent_trees().list().unwrap().is_empty());
+    storage.close();
+}
+
+#[test]
+fn migrating_v3_adds_the_agent_tree_table_and_keeps_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..3]).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        storage.close();
+    }
+    assert!(!table_exists(&db(&dir), "agent_trees"));
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    storage.close();
+    assert!(table_exists(&db(&dir), "agent_trees"));
     integrity_ok(&db(&dir));
 }
