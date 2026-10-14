@@ -21,7 +21,7 @@ heeler-client.workspace = true
 heeler-core.workspace = true
 heeler-protocol.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "signal", "sync", "time"] }
 unicode-width.workspace = true

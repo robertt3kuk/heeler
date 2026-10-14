@@ -3,6 +3,8 @@
 mod args;
 mod commands;
 mod error;
+mod hook;
+mod integration;
 
 use std::io::Write as _;
 use std::process::ExitCode;

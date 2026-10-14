@@ -64,6 +64,13 @@ pub enum Request {
     /// Capability `terminal.colors` (protocol 0.2).
     #[serde(rename = "terminal.set_colors")]
     TerminalSetColors(TerminalSetColors),
+    /// Capability `agent.report` (protocol 0.4): a coding agent reports its state and how to
+    /// resume it.
+    #[serde(rename = "agent.report")]
+    AgentReport(AgentReportRequest),
+    /// Capability `agent.report` (protocol 0.4): the agent exited; forget its report.
+    #[serde(rename = "agent.release")]
+    AgentRelease(AgentReleaseRequest),
 }
 
 impl Request {
@@ -254,6 +261,59 @@ pub struct TerminalColors {
     pub cursor: (u8, u8, u8),
 }
 
+/// A coding agent running inside a session reports what it is doing and how to start it again
+/// (`docs/integrations.md`). Answered with [`AgentApplied`].
+///
+/// `seq` must increase per `(session_id, source)`; a request that does not is ignored
+/// (`applied: false`). `resume_argv`, when present, replaces the session's resume reference: a
+/// plain command name on `PATH` followed by arguments, at most 64 words and 8 KiB in total, with no
+/// apostrophe or control character anywhere. The daemon runs it instead of the session's
+/// command after a daemon restart. Absent leaves the stored reference alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReportRequest {
+    pub session_id: SessionId,
+    /// Who reports (one integration, e.g. `claude-hooks`); sequencing is per source.
+    pub source: String,
+    /// The agent's name (`omp`, `claude`, `codex`).
+    pub agent: String,
+    pub state: AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub seq: u64,
+    /// The agent's own id for the conversation (what its resume command takes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_argv: Option<Vec<String>>,
+}
+
+/// The agent behind `source` is gone: clears its report and its resume reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReleaseRequest {
+    pub session_id: SessionId,
+    pub source: String,
+    pub seq: u64,
+}
+
+/// Result of `agent.report` and `agent.release`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentApplied {
+    /// `false`: ignored because `seq` was not newer, the session has ended, or (release) the
+    /// source held nothing.
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentState {
+    /// Waiting for the user.
+    Idle,
+    /// A turn is in progress.
+    Working,
+    /// Waiting for a decision (permission prompt, question).
+    Blocked,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Results
 
@@ -315,10 +375,26 @@ pub struct SessionInfo {
     pub cwd: Option<PathBuf>,
     pub terminal_id: Option<TerminalId>,
     pub created_at_ms: u64,
+    /// What the coding agent in this session last reported (capability `agent.report`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentReport>,
     /// The session ended before a daemon restart and its final screen is gone (true only for
     /// ended sessions loaded from storage).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restored: bool,
+}
+
+/// The latest report of a coding agent running in a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReport {
+    pub source: String,
+    pub agent: String,
+    pub state: AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    pub updated_at_ms: u64,
 }
 
 /// Result of `session.create`, `.stop`, `.restart`, and `.rename`: the session after the change.
@@ -364,6 +440,9 @@ pub fn decode_result<T: DeserializeOwned>(value: Value) -> Result<T, ProtocolErr
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data")]
+// `SessionUpdated` carries a whole `SessionInfo`; events are built once, serialised, and dropped,
+// so boxing it would only complicate every consumer's pattern.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     #[serde(rename = "workspace.updated")]
     WorkspaceUpdated { workspace: WorkspaceInfo },

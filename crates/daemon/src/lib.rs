@@ -10,7 +10,9 @@
 //!   through to `heeler-storage` and restored from it at start).
 //! - [`restore`]: loading durable state and the rules for what is stored.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
+//! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
 
+pub mod agent;
 pub mod bus;
 pub mod config;
 pub mod conn;

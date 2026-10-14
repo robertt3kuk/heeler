@@ -47,9 +47,12 @@ impl TestDaemon {
     pub async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
-        let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
-            .await
-            .unwrap();
+        // Sessions find this build of the CLI through `HEELER_BIN`, as in a real install.
+        let config = DaemonConfig {
+            heeler_bin: Some(PathBuf::from(HEELER)),
+            ..DaemonConfig::new(paths.clone())
+        };
+        let daemon = heeler_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,

@@ -3,7 +3,7 @@
 use heeler_core::WorkspaceId;
 use heeler_protocol::messages::TerminalSpec;
 use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// `app_meta` key of the workspace sessions land in when a client names none.
 pub const DEFAULT_WORKSPACE_KEY: &str = "default_workspace_id";
@@ -32,12 +32,27 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
     })
 }
 
-/// Native resume reference of a session, as stored in `resume_ref_json`. The agent integrations
-/// (roadmap M3.3) fill it in; until then only the argv form exists.
-#[derive(Debug, Deserialize)]
-struct ResumeRef {
+/// Native resume reference of a session, as stored in `resume_ref_json`: written when a coding
+/// agent reports a resume command (`agent.report`, see [`crate::agent`]), read back when the
+/// session is respawned after a daemon restart.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResumeRef {
     /// Replaces the spec's command when the session is respawned after a daemon restart.
-    argv: Vec<String>,
+    pub argv: Vec<String>,
+    /// The reporting source that owns this reference; only its `agent.release` clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+}
+
+/// The reporting source recorded in a stored resume reference.
+pub fn resume_source(resume_ref_json: &str) -> Option<String> {
+    serde_json::from_str::<ResumeRef>(resume_ref_json)
+        .ok()
+        .and_then(|resume| resume.source)
 }
 
 /// The command a stored resume reference asks to run; `None` when absent, unreadable, or empty.

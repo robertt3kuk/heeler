@@ -41,6 +41,7 @@ fn session_info() -> SessionInfo {
         cwd: Some("/repo".into()),
         terminal_id: Some(TID),
         created_at_ms: 1_791_894_164_332,
+        agent: None,
         restored: false,
     }
 }
@@ -191,6 +192,44 @@ fn requests() -> Vec<(&'static str, Request)> {
                 forget: true,
             }),
         ),
+        (
+            "agent_report",
+            Request::AgentReport(AgentReportRequest {
+                session_id: sid(),
+                source: "claude-hooks".into(),
+                agent: "claude".into(),
+                state: AgentState::Blocked,
+                message: Some("Bash: rm -rf build".into()),
+                seq: 1_791_894_164_332_000_000,
+                agent_session_id: Some("5f3e1c1a-8d51-4a6e-9a0c-2b7a3c5d9e10".into()),
+                resume_argv: Some(vec![
+                    "claude".into(),
+                    "--resume".into(),
+                    "5f3e1c1a-8d51-4a6e-9a0c-2b7a3c5d9e10".into(),
+                ]),
+            }),
+        ),
+        (
+            "agent_report_minimal",
+            Request::AgentReport(AgentReportRequest {
+                session_id: sid(),
+                source: "omp-extension".into(),
+                agent: "omp".into(),
+                state: AgentState::Working,
+                message: None,
+                seq: 7,
+                agent_session_id: None,
+                resume_argv: None,
+            }),
+        ),
+        (
+            "agent_release",
+            Request::AgentRelease(AgentReleaseRequest {
+                session_id: sid(),
+                source: "claude-hooks".into(),
+                seq: 1_791_894_164_999_000_000,
+            }),
+        ),
     ]
 }
 
@@ -243,6 +282,22 @@ fn events() -> Vec<(&'static str, Event)> {
                     state: SessionState::Stopped,
                     terminal_id: None,
                     restored: true,
+                    ..session_info()
+                },
+            },
+        ),
+        (
+            "session_updated_agent",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    agent: Some(AgentReport {
+                        source: "omp-extension".into(),
+                        agent: "omp".into(),
+                        state: AgentState::Working,
+                        message: None,
+                        agent_session_id: Some("0f4c7d52".into()),
+                        updated_at_ms: 1_791_894_170_000,
+                    }),
                     ..session_info()
                 },
             },
@@ -474,6 +529,10 @@ fn responses_match_fixtures() {
             .unwrap(),
         ),
         ("ack", ControlMessage::ok(4, &Empty {}).unwrap()),
+        (
+            "agent_applied",
+            ControlMessage::ok(6, &AgentApplied { applied: false }).unwrap(),
+        ),
         (
             "error",
             ControlMessage::err(5, ErrorBody::new(ErrorCode::NotFound, "session not found")),

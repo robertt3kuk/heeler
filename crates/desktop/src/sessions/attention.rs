@@ -2,7 +2,8 @@
 //!
 //! `failed` (exit ≠ 0, a signal, a spawn failure) and `done` (exit 0, or a terminal
 //! notification) are *unread* until the session's view is focused; everything else is idle.
-//! Agent states (blocked, approval, working) arrive with M4/M7.
+//! A coding agent that reports through `agent.report` (M3.3) adds working / blocked / idle to
+//! running sessions; structured approvals arrive with M4/M7.
 //!
 //! GPUI-free and unit tested: [`AttentionTracker`] watches successive session lists and
 //! remembers what the user has not seen yet.
@@ -10,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use heeler_core::{Epoch, SessionId, SessionState};
-use heeler_protocol::messages::SessionInfo;
+use heeler_protocol::messages::{AgentReport, AgentState, SessionInfo};
 
 /// Why a session wants a look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,12 +82,16 @@ pub fn present(info: &SessionInfo, unread: Option<Unread>) -> Presentation {
             filled: true,
             needs_you: true,
         },
-        SessionState::Running | SessionState::Idle => Presentation {
-            label: "idle".into(),
-            detail: String::new(),
-            tone: Tone::Muted,
-            filled: false,
-            needs_you: false,
+        // A coding agent that reports (`agent.report`) says more than a bare "idle".
+        SessionState::Running | SessionState::Idle => match &info.agent {
+            Some(report) => present_agent(report),
+            None => Presentation {
+                label: "idle".into(),
+                detail: String::new(),
+                tone: Tone::Muted,
+                filled: false,
+                needs_you: false,
+            },
         },
         SessionState::WaitingApproval => Presentation {
             label: "approval".into(),
@@ -239,6 +244,26 @@ impl AttentionTracker {
     }
 }
 
+/// Presentation of a live session whose agent has reported.
+fn present_agent(report: &AgentReport) -> Presentation {
+    let detail = match &report.message {
+        Some(message) => format!("{}: {message}", report.agent),
+        None => report.agent.clone(),
+    };
+    let (label, tone, filled, needs_you) = match report.state {
+        AgentState::Idle => ("idle", Tone::Muted, false, false),
+        AgentState::Working => ("working", Tone::Accent, true, false),
+        AgentState::Blocked => ("blocked", Tone::Warning, true, true),
+    };
+    Presentation {
+        label: label.into(),
+        detail,
+        tone,
+        filled,
+        needs_you,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +280,7 @@ mod tests {
             cwd: None,
             terminal_id: None,
             created_at_ms: 0,
+            agent: None,
             restored: false,
         }
     }
@@ -423,5 +449,47 @@ mod tests {
             ended_text(&exited(3)).as_deref(),
             Some("The process exited with code 3")
         );
+    }
+
+    #[test]
+    fn a_reporting_agent_sets_the_label_and_a_blocked_one_needs_you() {
+        let report = |state, message: Option<&str>| {
+            let mut session = info(SessionId::new(), SessionState::Running);
+            session.agent = Some(AgentReport {
+                source: "hooks".into(),
+                agent: "omp".into(),
+                state,
+                message: message.map(str::to_owned),
+                agent_session_id: None,
+                updated_at_ms: 1,
+            });
+            present(&session, None)
+        };
+        let working = report(AgentState::Working, None);
+        assert_eq!(
+            (
+                working.label.as_str(),
+                working.detail.as_str(),
+                working.tone
+            ),
+            ("working", "omp", Tone::Accent)
+        );
+        assert!(working.filled && !working.needs_you);
+        let blocked = report(AgentState::Blocked, Some("approve rm"));
+        assert_eq!(
+            (
+                blocked.label.as_str(),
+                blocked.detail.as_str(),
+                blocked.tone
+            ),
+            ("blocked", "omp: approve rm", Tone::Warning)
+        );
+        assert!(blocked.filled && blocked.needs_you);
+        let idle = report(AgentState::Idle, None);
+        assert_eq!(
+            (idle.label.as_str(), idle.detail.as_str(), idle.tone),
+            ("idle", "omp", Tone::Muted)
+        );
+        assert!(!idle.filled && !idle.needs_you);
     }
 }

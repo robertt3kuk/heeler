@@ -492,6 +492,7 @@ mod tests {
             cwd: Some(PathBuf::from("/tmp")),
             terminal_id: Some(TerminalId(terminal)),
             created_at_ms: 0,
+            agent: None,
             restored: false,
         }
     }

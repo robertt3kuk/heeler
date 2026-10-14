@@ -137,6 +137,8 @@ impl Router {
                 self.hub.set_colors(req)?;
                 ok(&Empty {})
             }
+            Request::AgentReport(req) => ok(&self.registry.report_agent(req).await?),
+            Request::AgentRelease(req) => ok(&self.registry.release_agent(req).await?),
         }
     }
 

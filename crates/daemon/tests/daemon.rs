@@ -179,7 +179,12 @@ async fn handshake_then_status_reports_epoch_and_pid() {
     assert_eq!(welcome.protocol, PROTOCOL_VERSION);
     assert_eq!(
         welcome.capabilities,
-        ["terminal.render.v1", "terminal.colors", "session.restore"]
+        [
+            "terminal.render.v1",
+            "terminal.colors",
+            "session.restore",
+            "agent.report"
+        ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);
 

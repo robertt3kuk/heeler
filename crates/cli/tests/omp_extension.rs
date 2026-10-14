@@ -1,0 +1,150 @@
+//! The OMP extension (`integrations/omp/heeler-agent-state.ts`) driven by a fake OMP event
+//! source under Bun, with a stand-in `heeler` that records its command lines. Skipped when
+//! `bun` is not installed; the gate does not depend on it.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tempfile::TempDir;
+
+fn find_bun() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join("bun"))
+        .find(|candidate| candidate.is_file())
+}
+
+fn extension() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/omp/heeler-agent-state.ts")
+}
+
+const HARNESS: &str = r#"
+import extension from "EXTENSION";
+
+const handlers: Record<string, (event: unknown, ctx: unknown) => void> = {};
+extension({ on: (name: string, handler: (event: unknown, ctx: unknown) => void) => { handlers[name] = handler; } });
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const ui = { hasUI: true, isIdle: () => true, sessionManager: { getSessionId: () => "0f4c7d52-aaaa" } };
+const headless = { hasUI: false };
+
+if (Object.keys(handlers).length > 0) {
+  handlers.session_start?.({}, ui);
+  await sleep(150);
+  handlers.agent_start?.({}, headless);   // a subagent: ignored
+  handlers.agent_start?.({}, ui);
+  await sleep(150);
+  handlers.tool_approval_requested?.({ reason: "Bash approval", toolName: "Bash" }, ui);
+  await sleep(150);
+  handlers.tool_approval_resolved?.({}, ui);
+  await sleep(150);
+  handlers.agent_end?.({}, ui);
+  await sleep(1200);
+}
+"#;
+
+/// Runs the harness and returns the lines the fake `heeler` recorded.
+fn run(env: &[(&str, &str)]) -> Option<Vec<String>> {
+    let bun = find_bun()?;
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("calls");
+    let fake = dir.path().join("heeler");
+    fs::write(
+        &fake,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let harness = dir.path().join("harness.ts");
+    let extension = extension().canonicalize().unwrap();
+    fs::write(
+        &harness,
+        HARNESS.replace("EXTENSION", &extension.to_string_lossy()),
+    )
+    .unwrap();
+
+    let mut command = Command::new(bun);
+    command
+        .arg("run")
+        .arg(&harness)
+        .env_remove("HEELER_ENV")
+        .env_remove("HEELER_SESSION_ID")
+        .env("HEELER_BIN", &fake);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(
+        fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+#[test]
+fn the_extension_reports_turns_approvals_and_the_resume_command() {
+    let Some(calls) = run(&[
+        ("HEELER_ENV", "1"),
+        ("HEELER_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
+    ]) else {
+        eprintln!("skipping: bun is not installed");
+        return;
+    };
+
+    let states: Vec<&str> = calls
+        .iter()
+        .map(|call| {
+            call.split_whitespace()
+                .skip_while(|word| *word != "--state")
+                .nth(1)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        states,
+        ["idle", "working", "blocked", "working", "idle"],
+        "{calls:#?}"
+    );
+
+    for call in &calls {
+        assert!(
+            call.starts_with("agent report --source omp-extension --agent omp --state "),
+            "{call}"
+        );
+        assert!(
+            call.ends_with("--agent-session-id=0f4c7d52-aaaa -- omp --resume=0f4c7d52-aaaa"),
+            "{call}"
+        );
+    }
+    assert!(calls[2].contains("--message=Bash approval"), "{}", calls[2]);
+
+    let seqs: Vec<u64> = calls
+        .iter()
+        .map(|call| {
+            call.split_whitespace()
+                .find_map(|word| word.strip_prefix("--seq="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+}
+
+#[test]
+fn outside_heeler_the_extension_does_nothing() {
+    let Some(calls) = run(&[]) else {
+        eprintln!("skipping: bun is not installed");
+        return;
+    };
+    assert!(calls.is_empty(), "{calls:?}");
+}

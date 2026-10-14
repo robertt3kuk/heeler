@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.3
+# Heeler IPC Protocol — v0.4
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`.
 
 ## Frames
 
@@ -53,6 +53,8 @@ Milestone tag = when the method lands.
 | `terminal.ack` | command | terminal id, frame | M1 |
 | `terminal.history` | query | terminal id, from_line, count → styled rows | M1 |
 | `terminal.set_colors` | command | terminal id, `{foreground, background, cursor}` RGB → `{}`; daemon answers OSC 10/11/12 with them; last writer wins; capability `terminal.colors` | M2 |
+| `agent.report` | command | `{session_id, source, agent, state: idle\|working\|blocked, message?, seq, agent_session_id?, resume_argv?: [string]}` → `{applied: bool}`; capability `agent.report` | M3 |
+| `agent.release` | command | `{session_id, source, seq}` → `{applied: bool}`; the agent behind `source` is gone | M3 |
 | `terminal.tap_output` | command | raw byte subscription (lossy, gap markers) | M7 |
 | `chat.send` | command | session id, content blocks | M4 |
 | `chat.cancel` | command | session id, turn id | M4 |
@@ -68,7 +70,7 @@ Milestone tag = when the method lands.
 | Event | Data | M |
 |---|---|---|
 | `workspace.updated` / `workspace.closed` | workspace | M1 |
-| `session.updated` | session (state, title, cwd, attention, `restored`) | M1 |
+| `session.updated` | session (state, title, cwd, attention, `restored`, `agent`) | M1 |
 | `session.exited` | session id, exit code/signal | M1 |
 | `terminal.bell` / `terminal.title` / `terminal.notification` | from OSC sniffer | M1 |
 | `chat.delta` | session, turn, item, text/blocks | M4 |
@@ -115,11 +117,20 @@ Semantics implemented by the daemon (M1-D1; `crates/daemon/src/{registry,termina
 Persistence and restore (M3-A; capability `session.restore`, protocol 0.3; `crates/daemon/src/{registry,restore,config}.rs`, `crates/storage`):
 - Workspaces and sessions are written through to SQLite (`$HEELER_HOME/heeler.db`) on every change: workspace create/rename/close, session create/rename/stop/restart/exit. Title and cwd changes (OSC 0/2, OSC 7) are coalesced: a session is rewritten at most once per second because of them. Writes go to the storage writer thread and never block request handling.
 - At start the daemon loads the stored state before it listens, under the same ids: workspaces (and which one is `default`), sessions with title, workspace, creation time. A new epoch begins; clients treat it as "everything may have restarted" and re-snapshot.
-- Sessions that were live when the previous daemon stopped (or died) are spawned again as **new terminals** (new `terminal_id`, same `SessionId`) in their last known cwd (falling back to the spec `cwd`, then the shell default, when the directory is gone): `starting` → `running`, title and workspace kept, `restored: false`. A stored `resume_ref` (`{"argv": [...]}` until the agent integrations of M3.3 define more) replaces the spec command for this spawn; a restart afterwards uses the spec again. A stored session whose spec cannot be read comes back `failed`.
+- Sessions that were live when the previous daemon stopped (or died) are spawned again as **new terminals** (new `terminal_id`, same `SessionId`) in their last known cwd (falling back to the spec `cwd`, then the shell default, when the directory is gone): `starting` → `running`, title and workspace kept, `restored: false`. A stored `resume_ref` (`{"argv": [...], "source", "agent", "agent_session_id"}`, written by `agent.report`; only `argv` is read) replaces the spec command for this spawn; a restart afterwards uses the spec again. A stored session whose spec cannot be read comes back `failed`.
 - Sessions that had ended (`exited`, `failed`, `stopped`) stay listed in that state with `restored: true`: the process and its final screen are gone, so there is no terminal to attach (`terminal_id` is absent). `session.restart` yields a live, unrestored session with the same id. `restored` is `false` and omitted from the wire for every other session.
 - `daemon.toml` in the daemon's home directory: `[daemon] restore_sessions = "respawn" | "stopped"` (default `respawn`). `stopped` lists sessions that were live as `stopped` + `restored` instead of spawning them; the file is optional, an unreadable or invalid one stops the daemon from starting.
 - Stopping the daemon does not forget its sessions. `daemon.shutdown { stop_sessions: true }` (and SIGTERM/SIGINT) hang the sessions up as always but leave them in the restore set, so the next daemon respawns them; clients still see them become `stopped` before the connection closes. `forget: true` (`heeler daemon stop --stop-sessions --forget`) records them as stopped instead, so the next start lists them as ended and does not respawn them. Sessions the user stopped or that exited earlier were never in the restore set.
 - Storage is mandatory: a database that cannot be opened or migrated (including one written by a newer Heeler) stops the daemon with an error naming the file; the file is left unchanged. Before migrating an existing database the daemon copies it to `backups/heeler-<unix ms>-v<version>.db` (newest 5 kept). Environment variables in a session spec whose names look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, …) are not stored; restored sessions start without them.
+
+Agent reporting (M3-B; capability `agent.report`, protocol 0.4; `crates/daemon/src/{agent,registry}.rs`, `docs/integrations.md`):
+- Every session process gets `HEELER_ENV=1`, `HEELER_SESSION_ID`, `HEELER_WORKSPACE_ID`, `HEELER_SOCKET`, and `HEELER_BIN` (absolute path of the `heeler` CLI next to `heelerd`, else the first `heeler` on the daemon's `PATH`, else the bare name). The daemon sets them after the spec's environment, so they win.
+- `agent.report` sets `SessionInfo.agent = {source, agent, state, message?, agent_session_id?, updated_at_ms}` and publishes `session.updated`; a report that changes nothing visible (same source, agent, state, message, id) is applied silently. A new state drops the old `message`; `agent_session_id` carries over from the previous report of the same agent when absent. Unknown session → `not_found`; an empty or over-long (256 bytes) `source`/`agent`/`agent_session_id`, or a bad `resume_argv` → `bad_request` (the report is not applied and its `seq` is not consumed). Messages are cut at 512 characters.
+- `seq` is per `(session, source)` (at most 16 sources per session): a request whose `seq` is not greater than the highest accepted for that pair is ignored and answers `{applied: false}`, as is a report for a session that is not live. The counters are memory only and start over when the session's process does (restart, respawn after a daemon restart). Hooks use the clock in nanoseconds; the OMP extension a counter in microseconds.
+- `resume_argv`, when present, replaces the stored resume reference of the session (`resume_ref_json`, written through to SQLite at once). Rules: non-empty, at most 64 words and 8 KiB in total, `argv[0]` a plain command name (`[A-Za-z0-9._+@-]`, no `/`, not starting with `-`, looked up on `PATH`), no apostrophe or control character in any word. Absent leaves the stored reference alone. After a daemon restart the session is respawned running that argv instead of its spec command (`SessionInfo.command` keeps showing the spec); the agent starts without a report, which it is expected to send again.
+- `agent.release` clears the report if it came from `source`, and the resume reference if it was stored by `source`; `applied` says whether anything was cleared. It consumes `seq` like a report.
+- The agent is forgotten without a release when the session's process ends (report and resume reference are dropped; a daemon shutdown keeps the reference for the next start), when a restart begins, and — safety net for agents that die without saying so — when the shell prompts again (OSC 133 `A` from the shell integration) while a report is set.
+- `SessionInfo.agent` is absent from the wire when no agent has reported; after a daemon restart it is absent until the resumed agent reports again.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.

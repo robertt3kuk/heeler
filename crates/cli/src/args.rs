@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use heeler_core::WorkspaceId;
 
 /// Exit codes: 0 ok, 1 remote or other error, 2 usage (including an ambiguous session target),
@@ -51,6 +51,12 @@ pub enum Command {
     Rename(RenameArgs),
     /// Print a session's output (scrollback and screen) as plain text, oldest first
     History(HistoryArgs),
+    /// Report a coding agent's state to the session it runs in (for agent hooks; never fails)
+    #[command(subcommand)]
+    Agent(AgentCommand),
+    /// Install, remove, or inspect the agent integrations (Codex, Claude Code, OMP)
+    #[command(subcommand)]
+    Integration(IntegrationCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -173,6 +179,102 @@ pub struct HistoryArgs {
     /// Print at most this many lines, counted from the newest
     #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(1..))]
     pub lines: u32,
+}
+
+/// The `agent` subcommands run inside Heeler sessions on behalf of agent hooks: outside a
+/// session (no `HEELER_SESSION_ID`), without a daemon, on any daemon error, and after 200 ms
+/// they do nothing and exit 0, so a hook can never break the agent that runs it.
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// Report the agent's state (and optionally how to resume it)
+    Report(AgentReportArgs),
+    /// Say that the agent is gone: forgets its report and resume command
+    Release(AgentReleaseArgs),
+    /// Translate one Codex or Claude Code hook event (JSON on stdin) into a report; used by the
+    /// installed hook scripts
+    Hook(AgentHookArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AgentReportArgs {
+    /// Who reports (one integration, e.g. `claude-hooks`); sequence numbers are per source
+    #[arg(long)]
+    pub source: String,
+    /// The agent's name (`omp`, `claude`, `codex`)
+    #[arg(long)]
+    pub agent: String,
+    #[arg(long, value_enum)]
+    pub state: AgentStateArg,
+    /// Must increase per session and source; default: the current time in nanoseconds
+    #[arg(long)]
+    pub seq: Option<u64>,
+    /// Short text shown with the state (a permission prompt, a count of subagents)
+    #[arg(long)]
+    pub message: Option<String>,
+    /// The agent's own conversation id
+    #[arg(long, value_name = "ID")]
+    pub agent_session_id: Option<String>,
+    /// Command that resumes the agent after a daemon restart, after `--` (a plain command name
+    /// on PATH, at most 64 words, no apostrophes)
+    #[arg(last = true, value_name = "ARGV")]
+    pub resume_argv: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentReleaseArgs {
+    #[arg(long)]
+    pub source: String,
+    /// Must increase per session and source; default: the current time in nanoseconds
+    #[arg(long)]
+    pub seq: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentHookArgs {
+    /// Whose hook events arrive on stdin
+    #[arg(value_enum)]
+    pub agent: HookAgentArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AgentStateArg {
+    Idle,
+    Working,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HookAgentArg {
+    Codex,
+    Claude,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IntegrationCommand {
+    /// Add Heeler's hooks to the agent's configuration (idempotent; other entries are kept and
+    /// the file is backed up first)
+    Install(IntegrationArgs),
+    /// Remove only what `install` added
+    Uninstall(IntegrationArgs),
+    /// Show whether the integration is installed
+    Status(IntegrationArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct IntegrationArgs {
+    #[arg(value_enum)]
+    pub target: IntegrationTarget,
+    /// The agent's configuration directory (default: $CODEX_HOME or ~/.codex; $CLAUDE_CONFIG_DIR
+    /// or ~/.claude; $PI_CODING_AGENT_DIR or ~/.omp/agent)
+    #[arg(long, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IntegrationTarget {
+    Codex,
+    Claude,
+    Omp,
 }
 
 fn parse_env(text: &str) -> Result<(String, String), String> {

@@ -18,15 +18,18 @@ use tokio::time::{Instant, sleep_until};
 use heeler_core::{SessionEvent, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
-    Event, SessionCreate, SessionInfo, SessionList, SessionListFilter, SessionRename,
-    SessionSnapshot, SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceList,
-    WorkspaceRename,
+    AgentApplied, AgentReleaseRequest, AgentReport, AgentReportRequest, Event, SessionCreate,
+    SessionInfo, SessionList, SessionListFilter, SessionRename, SessionSnapshot, SessionSpec,
+    TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRename,
 };
 use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow, Write};
-use heeler_terminal::{ExitStatus, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
+use heeler_terminal::{
+    ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, warn};
 
+use crate::agent;
 use crate::bus::{EventBus, PublishError};
 use crate::config::RestoreMode;
 use crate::restore::{self, DEFAULT_WORKSPACE_KEY, Stored};
@@ -42,6 +45,13 @@ pub const DEFAULT_WORKSPACE_NAME: &str = "default";
 
 /// Title and cwd changes are coalesced: a session is written at most this often because of them.
 const DIRTY_WRITE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Reporting sources one session remembers a sequence number for.
+const MAX_AGENT_SOURCES: usize = 16;
+/// Longest accepted `source`, `agent`, or `agent_session_id`.
+const MAX_AGENT_FIELD_BYTES: usize = 256;
+/// Longer agent messages are cut to this many characters.
+const MAX_AGENT_MESSAGE_CHARS: usize = 512;
 
 type Reply<T> = oneshot::Sender<Result<T, ErrorBody>>;
 
@@ -68,6 +78,8 @@ enum Command {
     /// From a terminal's watcher task.
     TerminalMeta(TerminalId, TerminalMeta),
     TerminalExited(TerminalId, ExitStatus),
+    AgentReport(AgentReportRequest, Reply<AgentApplied>),
+    AgentRelease(AgentReleaseRequest, Reply<AgentApplied>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +158,16 @@ impl RegistryHandle {
     pub async fn stop_all(&self, forget: bool) -> Result<(), ErrorBody> {
         self.ask(|reply| Command::StopAll { forget, reply }).await
     }
+
+    /// A coding agent in the session reports its state and how to resume it.
+    pub async fn report_agent(&self, req: AgentReportRequest) -> Result<AgentApplied, ErrorBody> {
+        self.ask(|r| Command::AgentReport(req, r)).await
+    }
+
+    /// The agent behind `req.source` is gone.
+    pub async fn release_agent(&self, req: AgentReleaseRequest) -> Result<AgentApplied, ErrorBody> {
+        self.ask(|r| Command::AgentRelease(req, r)).await
+    }
 }
 
 /// One terminal session and the daemon-side state around it.
@@ -174,6 +196,8 @@ struct SessionEntry {
     keep_live: Option<SessionState>,
     /// Title or cwd changed since the last write.
     dirty: bool,
+    /// Highest `seq` accepted per reporting source (`agent.report` / `agent.release`).
+    agent_seqs: BTreeMap<String, u64>,
 }
 
 impl SessionEntry {
@@ -199,6 +223,34 @@ impl SessionEntry {
             warn!(session = %self.info.id, %error, "could not signal the terminal");
         }
     }
+
+    /// Records `seq` for `source` unless it does not exceed the last one seen.
+    fn accept_agent_seq(&mut self, source: &str, seq: u64) -> Result<bool, ErrorBody> {
+        if let Some(last) = self.agent_seqs.get_mut(source) {
+            if seq <= *last {
+                return Ok(false);
+            }
+            *last = seq;
+            return Ok(true);
+        }
+        if self.agent_seqs.len() >= MAX_AGENT_SOURCES {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!("a session accepts at most {MAX_AGENT_SOURCES} reporting sources"),
+            ));
+        }
+        self.agent_seqs.insert(source.to_owned(), seq);
+        Ok(true)
+    }
+
+    /// Forgets the agent: its report and its resume reference. Returns what was dropped as
+    /// `(report, resume reference)`.
+    fn forget_agent(&mut self) -> (bool, bool) {
+        (
+            self.info.agent.take().is_some(),
+            self.resume_ref_json.take().is_some(),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -209,6 +261,8 @@ struct SessionRegistry {
     socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     shell_integration_dir: Option<PathBuf>,
+    /// Exported to children as `HEELER_BIN`.
+    heeler_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
     mailbox: mpsc::WeakSender<Command>,
     default_workspace: WorkspaceId,
@@ -229,6 +283,8 @@ pub struct RegistryConfig {
     pub socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     pub shell_integration_dir: Option<PathBuf>,
+    /// The `heeler` CLI exported to sessions as `HEELER_BIN`.
+    pub heeler_bin: PathBuf,
     pub storage: Storage,
     pub restore: RestoreMode,
 }
@@ -252,6 +308,7 @@ pub fn spawn(
         hub,
         socket: config.socket,
         shell_integration_dir: config.shell_integration_dir,
+        heeler_bin: config.heeler_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
         default_workspace,
         workspaces,
@@ -403,6 +460,12 @@ impl SessionRegistry {
                 Command::StopAll { forget, reply } => self.stop_all(forget, reply),
                 Command::TerminalMeta(terminal, meta) => self.on_meta(terminal, meta),
                 Command::TerminalExited(terminal, status) => self.on_exited(terminal, &status),
+                Command::AgentReport(req, reply) => {
+                    let _ = reply.send(self.report_agent(req));
+                }
+                Command::AgentRelease(req, reply) => {
+                    let _ = reply.send(self.release_agent(req));
+                }
             }
         }
         self.flush_dirty();
@@ -547,6 +610,7 @@ impl SessionRegistry {
             command: spec.command.clone(),
             cwd: spec.cwd.clone(),
             terminal_id: None,
+            agent: None,
             created_at_ms: now_ms(),
             restored: false,
         };
@@ -567,6 +631,7 @@ impl SessionRegistry {
             restore_argv: None,
             keep_live: None,
             dirty: false,
+            agent_seqs: BTreeMap::new(),
         });
         let index = self.sessions.len() - 1;
         self.start_terminal(index);
@@ -584,6 +649,8 @@ impl SessionRegistry {
             self.socket.to_string_lossy().into_owned(),
         );
         env.insert("HEELER_SESSION_ID".to_owned(), session.info.id.to_string());
+        env.insert("HEELER_ENV".to_owned(), "1".to_owned());
+        env.insert("HEELER_BIN".to_owned(), self.heeler_bin.clone());
         env.insert(
             "HEELER_WORKSPACE_ID".to_owned(),
             session.info.workspace_id.to_string(),
@@ -663,6 +730,9 @@ impl SessionRegistry {
         session.stopping = false;
         session.keep_live = None;
         session.info.restored = false;
+        // A new process is a new reporting epoch: nothing the old one said applies.
+        session.forget_agent();
+        session.agent_seqs.clear();
         session.osc_title = None;
         session.info.terminal_id = None;
         // Restart where the program last said it was (OSC 7) when that directory still exists.
@@ -693,6 +763,121 @@ impl SessionRegistry {
         session.title_locked = true;
         self.persist_session(index);
         Ok(info)
+    }
+
+    // Agent reports ---------------------------------------------------------------------------
+
+    fn report_agent(&mut self, req: AgentReportRequest) -> Result<AgentApplied, ErrorBody> {
+        let index = self.session_index(req.session_id)?;
+        agent_field("source", &req.source)?;
+        agent_field("agent", &req.agent)?;
+        if let Some(id) = &req.agent_session_id {
+            agent_field("agent_session_id", id)?;
+        }
+        let resume = match &req.resume_argv {
+            Some(argv) => {
+                agent::validate_resume_argv(argv)
+                    .map_err(|message| ErrorBody::new(ErrorCode::BadRequest, message))?;
+                let json = agent::resume_ref_json(
+                    &req.source,
+                    &req.agent,
+                    req.agent_session_id.as_deref(),
+                    argv.clone(),
+                )
+                .map_err(|error| {
+                    error!(%error, "could not encode a resume reference");
+                    ErrorBody::new(ErrorCode::Internal, "could not encode the resume reference")
+                })?;
+                Some(json)
+            }
+            None => None,
+        };
+
+        let session = &mut self.sessions[index];
+        // A hook can fire just as the process ends; there is nothing left to describe.
+        if !session.info.state.is_live() || !session.accept_agent_seq(&req.source, req.seq)? {
+            return Ok(AgentApplied { applied: false });
+        }
+        let message = req
+            .message
+            .map(|message| {
+                message
+                    .chars()
+                    .take(MAX_AGENT_MESSAGE_CHARS)
+                    .collect::<String>()
+            })
+            .filter(|message| !message.is_empty());
+        // The conversation id sticks to the agent until it says otherwise.
+        let agent_session_id = req.agent_session_id.or_else(|| {
+            session
+                .info
+                .agent
+                .as_ref()
+                .filter(|old| old.agent == req.agent)
+                .and_then(|old| old.agent_session_id.clone())
+        });
+        let report = AgentReport {
+            source: req.source,
+            agent: req.agent,
+            state: req.state,
+            message,
+            agent_session_id,
+            updated_at_ms: now_ms(),
+        };
+        // Hooks repeat themselves (every tool call says "working"); only changes are events.
+        let changed = session.info.agent.as_ref().is_none_or(|old| {
+            let same = AgentReport {
+                updated_at_ms: report.updated_at_ms,
+                ..old.clone()
+            };
+            same != report
+        });
+        session.info.agent = Some(report);
+        let resume_changed = resume.is_some() && session.resume_ref_json != resume;
+        if resume_changed {
+            session.resume_ref_json = resume;
+        }
+        if changed {
+            self.emit_session(index);
+        }
+        if resume_changed {
+            self.persist_session(index);
+        }
+        Ok(AgentApplied { applied: true })
+    }
+
+    fn release_agent(&mut self, req: AgentReleaseRequest) -> Result<AgentApplied, ErrorBody> {
+        let index = self.session_index(req.session_id)?;
+        agent_field("source", &req.source)?;
+        let session = &mut self.sessions[index];
+        if !session.accept_agent_seq(&req.source, req.seq)? {
+            return Ok(AgentApplied { applied: false });
+        }
+        let report_released = session
+            .info
+            .agent
+            .as_ref()
+            .is_some_and(|report| report.source == req.source);
+        if report_released {
+            session.info.agent = None;
+        }
+        let resume_released = session
+            .resume_ref_json
+            .as_deref()
+            .and_then(restore::resume_source)
+            .is_some_and(|source| source == req.source);
+        if resume_released {
+            session.resume_ref_json = None;
+        }
+        if report_released {
+            self.emit_session(index);
+        }
+        if resume_released {
+            self.persist_session(index);
+        }
+        Ok(AgentApplied {
+            applied: report_released || resume_released,
+        })
     }
 
     fn stop_all(&mut self, forget: bool, reply: Reply<()>) {
@@ -769,7 +954,17 @@ impl SessionRegistry {
                     self.mark_dirty(index);
                 }
             }
-            // Attention from prompt marks arrives with the agent-state work.
+            TerminalMeta::PromptMark(PromptMark::A) => {
+                // The shell is prompting again: whatever agent was running in the foreground is
+                // gone, even if it never got to say so.
+                let (reported, resumable) = self.sessions[index].forget_agent();
+                if reported {
+                    self.emit_session(index);
+                }
+                if reported || resumable {
+                    self.persist_session(index);
+                }
+            }
             TerminalMeta::PromptMark(_) => {}
         }
     }
@@ -787,6 +982,14 @@ impl SessionRegistry {
         } else {
             SessionEvent::ProcessExited { code, signal }
         });
+        // The agent died with the process. A daemon shutdown keeps the resume reference: the
+        // next daemon starts it again.
+        let resume = session
+            .resume_ref_json
+            .take()
+            .filter(|_| session.keep_live.is_some());
+        session.forget_agent();
+        session.resume_ref_json = resume;
         session.stopping = false;
         let info = session.info.clone();
         let waiters = std::mem::take(&mut session.stop_waiters);
@@ -865,6 +1068,7 @@ impl SessionRegistry {
                 }
             }
             let default_title = default_title(&spec);
+            let state_is_live = state.is_live();
             self.sessions.push(SessionEntry {
                 info: SessionInfo {
                     id: row.id,
@@ -876,6 +1080,7 @@ impl SessionRegistry {
                     cwd,
                     terminal_id: None,
                     created_at_ms: row.created_at_ms,
+                    agent: None,
                     restored,
                 },
                 spec,
@@ -886,10 +1091,12 @@ impl SessionRegistry {
                 stopping: false,
                 stop_waiters: Vec::new(),
                 ended_at_ms,
-                resume_ref_json: row.resume_ref_json,
+                // Only a session that comes back to life resumes; the others forgot their agent.
+                resume_ref_json: row.resume_ref_json.filter(|_| state_is_live),
                 restore_argv,
                 keep_live: None,
                 dirty: false,
+                agent_seqs: BTreeMap::new(),
             });
             let index = self.sessions.len() - 1;
             match action {
@@ -1049,6 +1256,17 @@ async fn watch_terminal(
     }
     debug!(terminal = %id, ?status, "terminal exited");
     send(Command::TerminalExited(id, status)).await;
+}
+
+/// `source`, `agent`, and `agent_session_id` are short, non-empty identifiers.
+fn agent_field(name: &str, value: &str) -> Result<(), ErrorBody> {
+    if value.is_empty() || value.len() > MAX_AGENT_FIELD_BYTES {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            format!("`{name}` must be 1 to {MAX_AGENT_FIELD_BYTES} bytes"),
+        ));
+    }
+    Ok(())
 }
 
 fn validated_name(name: String, what: &str) -> Result<String, ErrorBody> {

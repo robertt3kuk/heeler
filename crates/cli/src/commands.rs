@@ -20,38 +20,47 @@ use tokio::time::sleep;
 use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs, WsCommand};
 use crate::error::{CliError, is_unreachable};
 
+mod agent;
 mod attach;
+mod integration;
 mod sessions;
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
 const STOP_POLL: Duration = Duration::from_millis(25);
 
 pub async fn run(cli: Cli) -> Result<(), CliError> {
-    let ctx = Ctx::new(&cli)?;
+    // Whether a socket can be found is each command's own business: the agent hooks must not
+    // fail on it, the integration commands do not need one.
+    let ctx = Ctx::new(&cli);
     match cli.command {
-        Command::Daemon(DaemonCommand::Start) => ctx.daemon_start().await,
-        Command::Daemon(DaemonCommand::Status) => ctx.daemon_status().await,
+        Command::Agent(command) => {
+            agent::run(ctx.ok(), &command).await;
+            Ok(())
+        }
+        Command::Integration(command) => integration::run(cli.json, command),
+        Command::Daemon(DaemonCommand::Start) => ctx?.daemon_start().await,
+        Command::Daemon(DaemonCommand::Status) => ctx?.daemon_status().await,
         Command::Daemon(DaemonCommand::Stop {
             stop_sessions,
             forget,
-        }) => ctx.daemon_stop(stop_sessions, forget).await,
+        }) => ctx?.daemon_stop(stop_sessions, forget).await,
         Command::Daemon(DaemonCommand::Restart { stop_sessions }) => {
-            ctx.daemon_restart(stop_sessions).await
+            ctx?.daemon_restart(stop_sessions).await
         }
-        Command::Ws(WsCommand::Ls) => ctx.ws_ls().await,
-        Command::Ws(WsCommand::New { name, roots }) => ctx.ws_new(name, roots).await,
-        Command::Ws(WsCommand::Rename { id, name }) => ctx.ws_rename(id, name).await,
-        Command::Ws(WsCommand::Close { id }) => ctx.ws_close(id).await,
-        Command::Api(args) => ctx.api(args).await,
-        Command::Events(args) => ctx.events(args).await,
-        Command::New(args) => ctx.new_session(args).await,
-        Command::Ls(args) => ctx.ls(args).await,
-        Command::Attach(args) => ctx.attach(&args.target).await,
-        Command::Send(args) => ctx.send(args).await,
-        Command::Stop(args) => ctx.stop(&args.target).await,
-        Command::Restart(args) => ctx.restart(&args.target).await,
-        Command::Rename(args) => ctx.rename(args).await,
-        Command::History(args) => ctx.history(args).await,
+        Command::Ws(WsCommand::Ls) => ctx?.ws_ls().await,
+        Command::Ws(WsCommand::New { name, roots }) => ctx?.ws_new(name, roots).await,
+        Command::Ws(WsCommand::Rename { id, name }) => ctx?.ws_rename(id, name).await,
+        Command::Ws(WsCommand::Close { id }) => ctx?.ws_close(id).await,
+        Command::Api(args) => ctx?.api(args).await,
+        Command::Events(args) => ctx?.events(args).await,
+        Command::New(args) => ctx?.new_session(args).await,
+        Command::Ls(args) => ctx?.ls(args).await,
+        Command::Attach(args) => ctx?.attach(&args.target).await,
+        Command::Send(args) => ctx?.send(args).await,
+        Command::Stop(args) => ctx?.stop(&args.target).await,
+        Command::Restart(args) => ctx?.restart(&args.target).await,
+        Command::Rename(args) => ctx?.rename(args).await,
+        Command::History(args) => ctx?.history(args).await,
     }
 }
 

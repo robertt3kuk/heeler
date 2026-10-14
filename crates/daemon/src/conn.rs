@@ -28,7 +28,12 @@ use crate::bus::EventBus;
 use crate::router::Router;
 
 /// Capabilities this daemon offers in `welcome`.
-pub const CAPABILITIES: &[&str] = &["terminal.render.v1", "terminal.colors", "session.restore"];
+pub const CAPABILITIES: &[&str] = &[
+    "terminal.render.v1",
+    "terminal.colors",
+    "session.restore",
+    "agent.report",
+];
 
 /// How long a closing connection may take to flush already queued messages.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);

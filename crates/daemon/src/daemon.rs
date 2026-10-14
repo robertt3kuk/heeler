@@ -17,6 +17,7 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::agent;
 use crate::bus::{EventBus, RingLimits};
 use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
@@ -47,6 +48,9 @@ pub struct DaemonConfig {
     pub outbound_queue: usize,
     /// How long a new connection may stay silent before `hello` arrives.
     pub handshake_timeout: Duration,
+    /// The `heeler` CLI exported to sessions as `HEELER_BIN`; `None` looks for it next to this
+    /// executable, then on `PATH`.
+    pub heeler_bin: Option<PathBuf>,
 }
 
 impl DaemonConfig {
@@ -56,6 +60,7 @@ impl DaemonConfig {
             ring: RingLimits::default(),
             outbound_queue: DEFAULT_OUTBOUND_QUEUE,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            heeler_bin: None,
         }
     }
 }
@@ -155,6 +160,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         RegistryConfig {
             socket: paths.socket.clone(),
             shell_integration_dir,
+            heeler_bin: config.heeler_bin.unwrap_or_else(agent::resolve_heeler_bin),
             storage: storage.clone(),
             restore: settings.restore_sessions,
         },
