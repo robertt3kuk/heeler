@@ -359,7 +359,9 @@ async fn usage_errors_exit_2() {
 
 // daemon start (real heelerd process) -------------------------------------------------------
 
-/// Stops a spawned daemon even when the test fails.
+/// Stops a spawned daemon even when the test fails — also one that never got as far as
+/// accepting connections, which `daemon stop` cannot reach: the pid in `heelerd.lock` gets a
+/// SIGTERM, then a SIGKILL if it is still there.
 struct DaemonGuard {
     home: PathBuf,
 }
@@ -371,6 +373,31 @@ impl Drop for DaemonGuard {
             .env("HEELER_HOME", &self.home)
             .env_remove("HEELER_SOCKET")
             .output();
+        let Some(pid) = std::fs::read_to_string(self.home.join("heelerd.lock"))
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+        else {
+            return;
+        };
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        for signal in ["-TERM", "-KILL"] {
+            if !alive() {
+                return;
+            }
+            let _ = std::process::Command::new("kill")
+                .args([signal, &pid.to_string()])
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while alive() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
     }
 }
 

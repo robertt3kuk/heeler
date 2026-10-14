@@ -58,7 +58,11 @@ const CAPABILITIES: &[&str] = &[
     AGENT_TREE_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
+/// Generous on purpose: the first launch of a freshly built or updated `heelerd` can take
+/// several seconds on macOS while the system scans the new binary (observed 3–11 s), and a
+/// timeout here leaves a daemon that comes up anyway behind an error. A warm start takes
+/// well under a second, so the wait only costs time when the daemon really is slow or broken.
+const AUTOSTART_WAIT: Duration = Duration::from_secs(15);
 const AUTOSTART_POLL: Duration = Duration::from_millis(25);
 /// A missing socket triggers at most one autostart per this interval when dialing repeatedly.
 const AUTOSTART_INTERVAL: Duration = Duration::from_secs(10);
