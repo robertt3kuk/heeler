@@ -19,10 +19,10 @@ use tracing::debug;
 use super::wire::{
     AgentMessageItem, CommandApprovalParams, CommandExecutionItem, DeltaNotification,
     DynamicToolCallItem, ErrorNotification, FileChangeApprovalParams, FileChangeItem,
-    FileUpdateChange, ItemNotification, McpToolCallItem, PatchUpdatedNotification, PlanItem,
-    PermissionsApprovalParams, ProgressNotification, ReasoningItem, ServerRequestResolved,
-    TokenBreakdown, TokenUsageNotification, TurnDiffNotification, TurnNotification,
-    TurnPlanNotification, UserMessageItem, WarningNotification, WebSearchItem,
+    FileUpdateChange, ItemNotification, McpToolCallItem, PatchUpdatedNotification,
+    PermissionsApprovalParams, PlanItem, ProgressNotification, ReasoningItem,
+    ServerRequestResolved, TokenBreakdown, TokenUsageNotification, TurnDiffNotification,
+    TurnNotification, TurnPlanNotification, UserMessageItem, WarningNotification, WebSearchItem,
 };
 
 /// Turns whose local ids are remembered.
@@ -177,7 +177,7 @@ impl Mapper {
             debug!(method, thread, "ignoring a notification of another thread");
             return Vec::new();
         }
-        let drafts = match method {
+        match method {
             "turn/started" => self.with(&params, method, Self::turn_started),
             "turn/completed" => self.with(&params, method, Self::turn_completed),
             "item/started" => self.with(&params, method, |m, n: ItemNotification| {
@@ -288,7 +288,10 @@ impl Mapper {
             }
             "error" => self.with(&params, method, |m, n: ErrorNotification| {
                 let (level, prefix) = if n.will_retry {
-                    (NoticeLevel::Warning, "the agent hit an error and will retry: ")
+                    (
+                        NoticeLevel::Warning,
+                        "the agent hit an error and will retry: ",
+                    )
                 } else {
                     (NoticeLevel::Error, "")
                 };
@@ -300,8 +303,7 @@ impl Mapper {
             }),
             _ if IGNORED.contains(&method) => Vec::new(),
             _ => vec![self.opaque(method, params)],
-        };
-        drafts
+        }
     }
 
     /// Decodes `params` for `handler`; a message that does not fit its schema becomes an
@@ -405,16 +407,18 @@ impl Mapper {
 
     fn item_started(&mut self, turn: &str, item: Value) -> Vec<AgentEventDraft> {
         match item.get("type").and_then(Value::as_str).unwrap_or("") {
-            "userMessage" => self.typed_item(turn, item, "item/started", |m, i: UserMessageItem| {
-                vec![m.draft(
-                    Some(turn),
-                    Some(&i.id),
-                    AgentEventKind::MessageStart {
-                        role: MessageRole::User,
-                        phase: None,
-                    },
-                )]
-            }),
+            "userMessage" => {
+                self.typed_item(turn, item, "item/started", |m, i: UserMessageItem| {
+                    vec![m.draft(
+                        Some(turn),
+                        Some(&i.id),
+                        AgentEventKind::MessageStart {
+                            role: MessageRole::User,
+                            phase: None,
+                        },
+                    )]
+                })
+            }
             "agentMessage" => {
                 self.typed_item(turn, item, "item/started", |m, i: AgentMessageItem| {
                     vec![m.draft(
@@ -588,29 +592,34 @@ impl Mapper {
             }),
             "commandExecution" => {
                 let raw = item.clone();
-                self.typed_item(turn, item, "item/completed", |m, i: CommandExecutionItem| {
-                    let (output, truncated_flag) = match i.aggregated_output {
-                        Some(text) => {
-                            let (text, cut) = truncated(text);
-                            (Some(text), cut)
-                        }
-                        None => (None, false),
-                    };
-                    let mut draft = m.draft(
-                        Some(turn),
-                        Some(&i.id),
-                        AgentEventKind::ToolEnd {
-                            tool: ToolKind::Command,
-                            status: tool_status(&i.status),
-                            output,
-                            truncated: truncated_flag,
-                            exit_code: i.exit_code,
-                            duration_ms: i.duration_ms,
-                        },
-                    );
-                    draft.payload = bounded(raw);
-                    vec![draft]
-                })
+                self.typed_item(
+                    turn,
+                    item,
+                    "item/completed",
+                    |m, i: CommandExecutionItem| {
+                        let (output, truncated_flag) = match i.aggregated_output {
+                            Some(text) => {
+                                let (text, cut) = truncated(text);
+                                (Some(text), cut)
+                            }
+                            None => (None, false),
+                        };
+                        let mut draft = m.draft(
+                            Some(turn),
+                            Some(&i.id),
+                            AgentEventKind::ToolEnd {
+                                tool: ToolKind::Command,
+                                status: tool_status(&i.status),
+                                output,
+                                truncated: truncated_flag,
+                                exit_code: i.exit_code,
+                                duration_ms: i.duration_ms,
+                            },
+                        );
+                        draft.payload = bounded(raw);
+                        vec![draft]
+                    },
+                )
             }
             "fileChange" => {
                 let raw = item.clone();
@@ -841,7 +850,9 @@ impl Mapper {
     fn refuse(&mut self, id: Value, method: &str, params: Value) -> Mapped {
         let notice = self.notice(
             NoticeLevel::Warning,
-            format!("the agent sent `{method}`, which Heeler does not support yet; it was declined"),
+            format!(
+                "the agent sent `{method}`, which Heeler does not support yet; it was declined"
+            ),
             &params,
         );
         Mapped {
@@ -857,10 +868,13 @@ impl Mapper {
     }
 
     fn command_approval(&self, p: CommandApprovalParams) -> BuiltApproval {
-        let decisions = p
-            .available_decisions
-            .unwrap_or_else(|| default_decisions(&["accept", "acceptForSession", "decline", "cancel"]));
-        let title = p.command.clone().unwrap_or_else(|| "run a command".to_owned());
+        let decisions = p.available_decisions.unwrap_or_else(|| {
+            default_decisions(&["accept", "acceptForSession", "decline", "cancel"])
+        });
+        let title = p
+            .command
+            .clone()
+            .unwrap_or_else(|| "run a command".to_owned());
         let mut detail = Vec::new();
         if let Some(reason) = &p.reason {
             detail.push(reason.clone());
@@ -879,9 +893,9 @@ impl Mapper {
     }
 
     fn file_change_approval(&self, p: FileChangeApprovalParams) -> BuiltApproval {
-        let decisions = p
-            .available_decisions
-            .unwrap_or_else(|| default_decisions(&["accept", "acceptForSession", "decline", "cancel"]));
+        let decisions = p.available_decisions.unwrap_or_else(|| {
+            default_decisions(&["accept", "acceptForSession", "decline", "cancel"])
+        });
         let mut detail = Vec::new();
         if let Some(reason) = &p.reason {
             detail.push(reason.clone());
@@ -1039,7 +1053,10 @@ struct BuiltApproval {
 }
 
 fn default_decisions(names: &[&str]) -> Vec<Value> {
-    names.iter().map(|n| Value::String((*n).to_owned())).collect()
+    names
+        .iter()
+        .map(|n| Value::String((*n).to_owned()))
+        .collect()
 }
 
 /// One of the server's `availableDecisions`: a bare string, or an object with one key whose

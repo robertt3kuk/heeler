@@ -156,14 +156,19 @@ impl ChatManager {
         if spec.agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
-                format!("unsupported agent `{}` (supported: {AGENT_CODEX})", spec.agent),
+                format!(
+                    "unsupported agent `{}` (supported: {AGENT_CODEX})",
+                    spec.agent
+                ),
             ));
         }
         let storage = self.storage.clone();
         let last = tokio::task::spawn_blocking(move || storage.chat().last_seq(id))
             .await
             .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))?
-            .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))?;
+            .map_err(|e| {
+                ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}"))
+            })?;
         let start = StartSpec {
             cwd,
             model: spec.model.clone(),
@@ -213,12 +218,18 @@ impl ChatManager {
     /// Sends the user's message; the turn's events follow on the bus.
     pub async fn send(&self, id: SessionId, text: String) -> Result<TurnId, ErrorBody> {
         if text.trim().is_empty() {
-            return Err(ErrorBody::new(ErrorCode::BadRequest, "the message is empty"));
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "the message is empty",
+            ));
         }
         if text.len() > SEND_MAX_BYTES {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
-                format!("the message is {} bytes; at most {SEND_MAX_BYTES} are allowed", text.len()),
+                format!(
+                    "the message is {} bytes; at most {SEND_MAX_BYTES} are allowed",
+                    text.len()
+                ),
             ));
         }
         let live = self.live(id)?;
@@ -321,9 +332,10 @@ impl ChatManager {
             .map(|live| live.next_seq.load(Ordering::Acquire).saturating_sub(1));
         let storage = self.storage.clone();
         let (mut rows, journaled) = tokio::task::spawn_blocking(move || {
-            let rows = storage
-                .chat()
-                .items(req.session_id, req.before_seq, limit.saturating_add(1))?;
+            let rows =
+                storage
+                    .chat()
+                    .items(req.session_id, req.before_seq, limit.saturating_add(1))?;
             let last = storage.chat().last_seq(req.session_id)?;
             Ok::<_, heeler_storage::StorageError>((rows, last))
         })

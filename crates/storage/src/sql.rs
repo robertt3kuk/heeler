@@ -470,17 +470,20 @@ pub fn chat_items(
         .map_err(StorageError::sqlite(context))?;
     let before = before.map_or(i64::MAX, ms);
     let rows = stmt
-        .query_map(params![session.to_string(), before, i64::from(limit)], |row| {
-            Ok(ChatItemRow {
-                session_id: session,
-                seq: unms(row.get(0)?),
-                ts_ms: unms(row.get(1)?),
-                turn_id: row.get(2)?,
-                item_id: row.get(3)?,
-                kind: row.get(4)?,
-                event_json: row.get(5)?,
-            })
-        })
+        .query_map(
+            params![session.to_string(), before, i64::from(limit)],
+            |row| {
+                Ok(ChatItemRow {
+                    session_id: session,
+                    seq: unms(row.get(0)?),
+                    ts_ms: unms(row.get(1)?),
+                    turn_id: row.get(2)?,
+                    item_id: row.get(3)?,
+                    kind: row.get(4)?,
+                    event_json: row.get(5)?,
+                })
+            },
+        )
         .map_err(StorageError::sqlite(context))?;
     let mut items = rows
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -550,8 +553,9 @@ pub fn chat_turns(conn: &Connection, session: SessionId) -> Result<Vec<ChatTurnR
     let mut turns = Vec::new();
     for row in rows {
         let (mut turn, status) = row.map_err(StorageError::sqlite(context))?;
-        turn.status = from_text::<ChatTurnStatus>(&status)
-            .map_err(|e| StorageError::corrupt(format!("chat_turns.status of {}", turn.turn_id), e))?;
+        turn.status = from_text::<ChatTurnStatus>(&status).map_err(|e| {
+            StorageError::corrupt(format!("chat_turns.status of {}", turn.turn_id), e)
+        })?;
         turns.push(turn);
     }
     Ok(turns)

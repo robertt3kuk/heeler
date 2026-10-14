@@ -82,12 +82,19 @@ fn pick(path: &Path) -> io::Result<Result<String, i32>> {
     files.sort();
     for spawn in 0.. {
         let marker = path.join(format!(".spawned-{spawn}"));
-        match OpenOptions::new().write(true).create_new(true).open(&marker) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+        {
             Ok(_) => {
                 return Ok(match files.get(spawn) {
                     Some(file) => Ok(fs::read_to_string(file)?),
                     None => {
-                        eprintln!("fixture: no transcript for spawn {spawn} in {}", path.display());
+                        eprintln!(
+                            "fixture: no transcript for spawn {spawn} in {}",
+                            path.display()
+                        );
                         Err(EXIT_NO_TRANSCRIPT)
                     }
                 });
@@ -134,10 +141,17 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 continue;
             }
             let message: Value = serde_json::from_str(line.trim()).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("client sent non-JSON: {e}"))
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("client sent non-JSON: {e}"),
+                )
             })?;
             if let Some(file) = &mut self.received {
-                writeln!(file, "{}", json!({"spawn": self.spawn_label, "msg": message}))?;
+                writeln!(
+                    file,
+                    "{}",
+                    json!({"spawn": self.spawn_label, "msg": message})
+                )?;
             }
             return Ok(Some(message));
         }
@@ -202,7 +216,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
         response["id"] = id;
         if method.as_deref() == Some("thread/resume")
             && let (Some(recorded), Some(asked)) = (
-                response.pointer("/result/thread/id").and_then(Value::as_str),
+                response
+                    .pointer("/result/thread/id")
+                    .and_then(Value::as_str),
                 params.get("threadId").and_then(Value::as_str),
             )
             && recorded != asked
@@ -278,7 +294,10 @@ mod tests {
                       {\"method\":\"thread/resume\",\"id\":42,\"params\":{\"threadId\":\"actual\"}}\n";
         let (code, output) = serve(TRANSCRIPT, client);
         assert_eq!(code, None);
-        let lines: Vec<Value> = output.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<Value> = output
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(lines[0]["id"], 41);
         assert_eq!(lines[1]["method"], "hello");
         assert_eq!(lines[2]["id"], 42);
@@ -290,7 +309,10 @@ mod tests {
     fn a_wrong_method_is_answered_with_an_error_and_ends_the_replay() {
         let (code, output) = serve(TRANSCRIPT, "{\"method\":\"model/list\",\"id\":7}\n");
         assert_eq!(code, Some(EXIT_MISMATCH));
-        assert!(output.contains("\"id\":7") && output.contains("unexpected request"), "{output}");
+        assert!(
+            output.contains("\"id\":7") && output.contains("unexpected request"),
+            "{output}"
+        );
     }
 
     #[test]

@@ -11,8 +11,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 use super::{Ctx, print_line};
 use crate::args::{ApproveArgs, ChatCommand, ChatNewArgs, ChatSendArgs, TargetArgs};
-use heeler_cli::chat_render::ChatPrinter;
 use crate::error::CliError;
+use heeler_cli::chat_render::ChatPrinter;
 
 /// Shortest approval id prefix accepted.
 const MIN_PREFIX: usize = 4;
@@ -233,7 +233,10 @@ impl Ctx {
 
     async fn chat_models(&self) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let models = client.chat_models("codex").await.map_err(|e| self.fail(e))?;
+        let models = client
+            .chat_models("codex")
+            .await
+            .map_err(|e| self.fail(e))?;
         self.print(&models, || {
             let mut out = String::new();
             for model in models.models.iter().filter(|m| !m.hidden) {
@@ -291,7 +294,10 @@ fn resolve_approval<'a>(
             "no pending approval matches `{target}`; `heeler approvals` lists them"
         ))),
         many => {
-            let mut message = format!("`{target}` matches {} approvals; use a longer id:", many.len());
+            let mut message = format!(
+                "`{target}` matches {} approvals; use a longer id:",
+                many.len()
+            );
             for approval in many {
                 message.push_str(&format!("\n  {}  {}", approval.id, approval.title));
             }
@@ -309,7 +315,12 @@ fn approval_table(approvals: &[ApprovalInfo]) -> String {
         .map(|a| {
             let title = a.title.lines().next().unwrap_or("").to_owned();
             let options: Vec<&str> = a.options.iter().map(|o| o.id.as_str()).collect();
-            [a.id.to_string(), a.session_id.to_string(), title, options.join(" ")]
+            [
+                a.id.to_string(),
+                a.session_id.to_string(),
+                title,
+                options.join(" "),
+            ]
         })
         .collect();
     let header = ["ID", "SESSION", "REQUEST", "OPTIONS"].map(str::to_owned);

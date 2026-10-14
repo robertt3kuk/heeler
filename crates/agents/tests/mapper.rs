@@ -4,8 +4,8 @@
 
 use heeler_agents::codex::Mapper;
 use heeler_core::agent::{
-    MAX_OUTPUT_BYTES, MessageRole, NoticeLevel, PermissionKind, PermissionOutcome,
-    PlanStepStatus, ReasoningPart, ToolKind, ToolStatus,
+    MAX_OUTPUT_BYTES, MessageRole, NoticeLevel, PermissionKind, PermissionOutcome, PlanStepStatus,
+    ReasoningPart, ToolKind, ToolStatus,
 };
 use heeler_core::{AgentEventDraft, AgentEventKind};
 use serde_json::{Value, json};
@@ -53,7 +53,12 @@ fn turn_lifecycle_uses_one_local_turn_id() {
         "turn/completed",
         json!({"turn": {"id": TURN, "status": "completed", "durationMs": 42}}),
     ));
-    assert_eq!(done.kind, AgentEventKind::TurnCompleted { duration_ms: Some(42) });
+    assert_eq!(
+        done.kind,
+        AgentEventKind::TurnCompleted {
+            duration_ms: Some(42)
+        }
+    );
     assert_eq!(done.turn_id, Some(local));
 }
 
@@ -81,8 +86,12 @@ fn turn_endings_map_to_completed_failed_and_cancelled() {
     );
     // A status this build does not know ends nothing.
     assert!(
-        notify(&mut m, "turn/completed", json!({"turn": {"id": "t4", "status": "paused"}}))
-            .is_empty()
+        notify(
+            &mut m,
+            "turn/completed",
+            json!({"turn": {"id": "t4", "status": "paused"}})
+        )
+        .is_empty()
     );
 }
 
@@ -137,8 +146,15 @@ fn messages_stream_and_end_with_the_whole_text() {
         "item/agentMessage/delta",
         json!({"turnId": TURN, "itemId": "m1", "delta": "Hel"}),
     ));
-    assert_eq!(delta.kind, AgentEventKind::MessageDelta { text: "Hel".into() });
-    assert_eq!(delta.item_id, Some(item_id), "deltas share the message's local id");
+    assert_eq!(
+        delta.kind,
+        AgentEventKind::MessageDelta { text: "Hel".into() }
+    );
+    assert_eq!(
+        delta.item_id,
+        Some(item_id),
+        "deltas share the message's local id"
+    );
     assert!(delta.payload.is_none(), "streaming events carry no payload");
     let end = only(item(
         &mut m,
@@ -179,7 +195,12 @@ fn user_messages_join_their_text_parts() {
 fn reasoning_deltas_name_their_part_and_the_end_keeps_both() {
     let mut m = mapper();
     assert_eq!(
-        only(item(&mut m, "item/started", json!({"type": "reasoning", "id": "r1"}))).kind,
+        only(item(
+            &mut m,
+            "item/started",
+            json!({"type": "reasoning", "id": "r1"})
+        ))
+        .kind,
         AgentEventKind::ReasoningStart
     );
     let summary = only(notify(
@@ -189,7 +210,10 @@ fn reasoning_deltas_name_their_part_and_the_end_keeps_both() {
     ));
     assert_eq!(
         summary.kind,
-        AgentEventKind::ReasoningDelta { part: ReasoningPart::Summary, text: "s".into() }
+        AgentEventKind::ReasoningDelta {
+            part: ReasoningPart::Summary,
+            text: "s".into()
+        }
     );
     let content = only(notify(
         &mut m,
@@ -198,7 +222,10 @@ fn reasoning_deltas_name_their_part_and_the_end_keeps_both() {
     ));
     assert_eq!(
         content.kind,
-        AgentEventKind::ReasoningDelta { part: ReasoningPart::Content, text: "c".into() }
+        AgentEventKind::ReasoningDelta {
+            part: ReasoningPart::Content,
+            text: "c".into()
+        }
     );
     let end = only(item(
         &mut m,
@@ -207,7 +234,10 @@ fn reasoning_deltas_name_their_part_and_the_end_keeps_both() {
     ));
     assert_eq!(
         end.kind,
-        AgentEventKind::ReasoningEnd { summary: vec!["s".into()], content: vec!["c".into()] }
+        AgentEventKind::ReasoningEnd {
+            summary: vec!["s".into()],
+            content: vec!["c".into()]
+        }
     );
 }
 
@@ -220,19 +250,34 @@ fn command_executions_start_stream_and_end() {
         json!({"type": "commandExecution", "id": "c1", "command": "ls -la", "cwd": "/tmp/x",
                "status": "inProgress", "commandActions": [{"type": "listFiles", "command": "ls"}]}),
     ));
-    let AgentEventKind::ToolStart { tool, name, title, input } = &start.kind else {
+    let AgentEventKind::ToolStart {
+        tool,
+        name,
+        title,
+        input,
+    } = &start.kind
+    else {
         panic!("{start:?}")
     };
-    assert_eq!((*tool, name.as_str(), title.as_str()), (ToolKind::Command, "shell", "ls -la"));
+    assert_eq!(
+        (*tool, name.as_str(), title.as_str()),
+        (ToolKind::Command, "shell", "ls -la")
+    );
     assert_eq!(input.as_ref().unwrap()["cwd"], "/tmp/x");
-    assert!(start.payload.is_some(), "the raw item is kept for tool events");
+    assert!(
+        start.payload.is_some(),
+        "the raw item is kept for tool events"
+    );
 
     let out = only(notify(
         &mut m,
         "item/commandExecution/outputDelta",
         json!({"turnId": TURN, "itemId": "c1", "delta": "a\n"}),
     ));
-    assert_eq!(out.kind, AgentEventKind::CommandOutput { text: "a\n".into() });
+    assert_eq!(
+        out.kind,
+        AgentEventKind::CommandOutput { text: "a\n".into() }
+    );
 
     let end = only(item(
         &mut m,
@@ -264,7 +309,13 @@ fn huge_command_output_is_cut_and_flagged() {
         json!({"type": "commandExecution", "id": "c1", "command": "yes", "status": "failed",
                "aggregatedOutput": output, "exitCode": 1}),
     ));
-    let AgentEventKind::ToolEnd { output: Some(text), truncated, status, .. } = end.kind else {
+    let AgentEventKind::ToolEnd {
+        output: Some(text),
+        truncated,
+        status,
+        ..
+    } = end.kind
+    else {
         panic!()
     };
     assert!(truncated);
@@ -314,7 +365,10 @@ fn file_changes_become_tool_events_and_per_file_diffs() {
     ));
     assert_eq!(
         aggregate.kind,
-        AgentEventKind::FileDiff { changes: vec![], patch: Some("diff --git a/a b/a\n".into()) }
+        AgentEventKind::FileDiff {
+            changes: vec![],
+            patch: Some("diff --git a/a b/a\n".into())
+        }
     );
 }
 
@@ -327,17 +381,31 @@ fn mcp_tool_calls_use_the_servers_content_as_output() {
         json!({"type": "mcpToolCall", "id": "t1", "server": "docs", "tool": "search",
                "status": "inProgress", "arguments": {"q": "x"}}),
     ));
-    let AgentEventKind::ToolStart { tool, name, title, input } = start.kind else {
+    let AgentEventKind::ToolStart {
+        tool,
+        name,
+        title,
+        input,
+    } = start.kind
+    else {
         panic!()
     };
-    assert_eq!((tool, name.as_str(), title.as_str()), (ToolKind::Mcp, "docs.search", "docs/search"));
+    assert_eq!(
+        (tool, name.as_str(), title.as_str()),
+        (ToolKind::Mcp, "docs.search", "docs/search")
+    );
     assert_eq!(input, Some(json!({"q": "x"})));
     let progress = only(notify(
         &mut m,
         "item/mcpToolCall/progress",
         json!({"turnId": TURN, "itemId": "t1", "message": "50%"}),
     ));
-    assert_eq!(progress.kind, AgentEventKind::ToolUpdate { message: "50%".into() });
+    assert_eq!(
+        progress.kind,
+        AgentEventKind::ToolUpdate {
+            message: "50%".into()
+        }
+    );
     let end = only(item(
         &mut m,
         "item/completed",
@@ -347,7 +415,10 @@ fn mcp_tool_calls_use_the_servers_content_as_output() {
     let AgentEventKind::ToolEnd { output, status, .. } = end.kind else {
         panic!()
     };
-    assert_eq!((output.as_deref(), status), (Some("found"), ToolStatus::Completed));
+    assert_eq!(
+        (output.as_deref(), status),
+        (Some("found"), ToolStatus::Completed)
+    );
     let failed = only(item(
         &mut m,
         "item/completed",
@@ -357,7 +428,10 @@ fn mcp_tool_calls_use_the_servers_content_as_output() {
     let AgentEventKind::ToolEnd { output, status, .. } = failed.kind else {
         panic!()
     };
-    assert_eq!((output.as_deref(), status), (Some("offline"), ToolStatus::Failed));
+    assert_eq!(
+        (output.as_deref(), status),
+        (Some("offline"), ToolStatus::Failed)
+    );
 }
 
 #[test]
@@ -380,7 +454,11 @@ fn dynamic_tools_and_web_searches_are_tools_too() {
     ));
     assert!(matches!(
         end.kind,
-        AgentEventKind::ToolEnd { status: ToolStatus::Failed, tool: ToolKind::Dynamic, .. }
+        AgentEventKind::ToolEnd {
+            status: ToolStatus::Failed,
+            tool: ToolKind::Dynamic,
+            ..
+        }
     ));
     let search = only(item(
         &mut m,
@@ -403,7 +481,12 @@ fn plans_come_as_steps_or_as_prose() {
             {"step": "a", "status": "completed"}, {"step": "b", "status": "inProgress"},
             {"step": "c", "status": "pending"}, {"step": "d", "status": "who knows"}]}),
     ));
-    let AgentEventKind::Plan { explanation, steps, text } = steps.kind else {
+    let AgentEventKind::Plan {
+        explanation,
+        steps,
+        text,
+    } = steps.kind
+    else {
         panic!()
     };
     assert_eq!(explanation.as_deref(), Some("why"));
@@ -418,13 +501,24 @@ fn plans_come_as_steps_or_as_prose() {
             PlanStepStatus::Pending
         ]
     );
-    let prose = only(item(&mut m, "item/completed", json!({"type": "plan", "id": "p", "text": "do x"})));
+    let prose = only(item(
+        &mut m,
+        "item/completed",
+        json!({"type": "plan", "id": "p", "text": "do x"}),
+    ));
     assert!(matches!(
         &prose.kind,
         AgentEventKind::Plan { text: Some(t), .. } if t == "do x"
     ));
     // A plan item is complete when it ends; nothing at its start.
-    assert!(item(&mut m, "item/started", json!({"type": "plan", "id": "p", "text": ""})).is_empty());
+    assert!(
+        item(
+            &mut m,
+            "item/started",
+            json!({"type": "plan", "id": "p", "text": ""})
+        )
+        .is_empty()
+    );
 }
 
 #[test]
@@ -437,11 +531,19 @@ fn usage_keeps_missing_numbers_missing() {
             "total": {"totalTokens": 100, "inputTokens": 90, "outputTokens": 10},
             "modelContextWindow": 258400}}),
     ));
-    let AgentEventKind::Usage { total, last, context_window } = usage.kind else {
+    let AgentEventKind::Usage {
+        total,
+        last,
+        context_window,
+    } = usage.kind
+    else {
         panic!()
     };
     let total = total.unwrap();
-    assert_eq!((total.total_tokens, total.input_tokens, total.output_tokens), (Some(100), Some(90), Some(10)));
+    assert_eq!(
+        (total.total_tokens, total.input_tokens, total.output_tokens),
+        (Some(100), Some(90), Some(10))
+    );
     assert_eq!(total.cached_input_tokens, None, "never zero-filled");
     assert_eq!(total.reasoning_output_tokens, None);
     assert!(last.is_none());
@@ -458,7 +560,10 @@ fn errors_and_warnings_become_notices() {
     ));
     assert_eq!(
         error.kind,
-        AgentEventKind::Notice { level: NoticeLevel::Error, message: "bad".into() }
+        AgentEventKind::Notice {
+            level: NoticeLevel::Error,
+            message: "bad".into()
+        }
     );
     let retry = only(notify(
         &mut m,
@@ -472,7 +577,10 @@ fn errors_and_warnings_become_notices() {
     let warning = only(notify(&mut m, "warning", json!({"message": "careful"})));
     assert_eq!(
         warning.kind,
-        AgentEventKind::Notice { level: NoticeLevel::Warning, message: "careful".into() }
+        AgentEventKind::Notice {
+            level: NoticeLevel::Warning,
+            message: "careful".into()
+        }
     );
 }
 
@@ -495,13 +603,31 @@ fn account_chatter_and_other_threads_are_dropped_unknowns_are_kept() {
         json!({"threadId": "sub-agent", "turnId": "x", "itemId": "y", "delta": "z"}),
     );
     assert!(foreign.is_empty());
-    let unknown = only(notify(&mut m, "brand/new", json!({"turnId": TURN, "a": [1, 2]})));
-    assert_eq!(unknown.kind, AgentEventKind::Opaque { method: "brand/new".into() });
+    let unknown = only(notify(
+        &mut m,
+        "brand/new",
+        json!({"turnId": TURN, "a": [1, 2]}),
+    ));
+    assert_eq!(
+        unknown.kind,
+        AgentEventKind::Opaque {
+            method: "brand/new".into()
+        }
+    );
     assert_eq!(unknown.payload.unwrap()["a"], json!([1, 2]));
     assert_eq!(unknown.provider.turn_id.as_deref(), Some(TURN));
     // Known method, wrong shape: kept as opaque too.
-    let malformed = only(notify(&mut m, "item/agentMessage/delta", json!({"delta": 5})));
-    assert_eq!(malformed.kind, AgentEventKind::Opaque { method: "item/agentMessage/delta".into() });
+    let malformed = only(notify(
+        &mut m,
+        "item/agentMessage/delta",
+        json!({"delta": 5}),
+    ));
+    assert_eq!(
+        malformed.kind,
+        AgentEventKind::Opaque {
+            method: "item/agentMessage/delta".into()
+        }
+    );
 }
 
 fn command_request(m: &mut Mapper, id: i64, decisions: Option<Value>) -> AgentEventDraft {
@@ -518,50 +644,92 @@ fn command_request(m: &mut Mapper, id: i64, decisions: Option<Value>) -> AgentEv
 #[test]
 fn offered_decisions_are_preserved_and_only_they_can_be_chosen() {
     let mut m = mapper();
-    let amendment = json!({"acceptWithExecpolicyAmendment": {"execpolicy_amendment": ["rm", "-rf"]}});
+    let amendment =
+        json!({"acceptWithExecpolicyAmendment": {"execpolicy_amendment": ["rm", "-rf"]}});
     let draft = command_request(&mut m, 5, Some(json!(["accept", amendment, "cancel"])));
-    let AgentEventKind::PermissionRequested { approval_id, options, detail, .. } = draft.kind else {
+    let AgentEventKind::PermissionRequested {
+        approval_id,
+        options,
+        detail,
+        ..
+    } = draft.kind
+    else {
         panic!()
     };
     assert_eq!(detail.as_deref(), Some("cleanup\nin /w"));
-    assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["accept", "acceptWithExecpolicyAmendment", "cancel"]);
+    assert_eq!(
+        options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["accept", "acceptWithExecpolicyAmendment", "cancel"]
+    );
     assert_eq!(options[1].provider.as_ref().unwrap(), &amendment);
-    assert_eq!(m.answer(approval_id, "decline"), Err(heeler_agents::codex::AnswerError::NotOffered("decline".into())));
-    let (rpc_id, result) = m.answer(approval_id, "acceptWithExecpolicyAmendment").unwrap();
+    assert_eq!(
+        m.answer(approval_id, "decline"),
+        Err(heeler_agents::codex::AnswerError::NotOffered(
+            "decline".into()
+        ))
+    );
+    let (rpc_id, result) = m
+        .answer(approval_id, "acceptWithExecpolicyAmendment")
+        .unwrap();
     assert_eq!(rpc_id, json!(5));
     assert_eq!(result, json!({"decision": amendment}));
     // Answered once.
-    assert_eq!(m.answer(approval_id, "accept"), Err(heeler_agents::codex::AnswerError::Unknown));
+    assert_eq!(
+        m.answer(approval_id, "accept"),
+        Err(heeler_agents::codex::AnswerError::Unknown)
+    );
 }
 
 #[test]
 fn a_resolved_request_reports_the_chosen_option_or_expiry() {
     let mut m = mapper();
     let answered = command_request(&mut m, 1, None);
-    let AgentEventKind::PermissionRequested { approval_id: first, options, .. } = answered.kind else {
+    let AgentEventKind::PermissionRequested {
+        approval_id: first,
+        options,
+        ..
+    } = answered.kind
+    else {
         panic!()
     };
     // The schema's decisions are the offer when the server lists none.
     assert_eq!(options.len(), 4);
     m.answer(first, "decline").unwrap();
-    let resolved = only(notify(&mut m, "serverRequest/resolved", json!({"requestId": 1})));
+    let resolved = only(notify(
+        &mut m,
+        "serverRequest/resolved",
+        json!({"requestId": 1}),
+    ));
     assert_eq!(
         resolved.kind,
         AgentEventKind::PermissionResolved {
             approval_id: first,
-            outcome: PermissionOutcome::Selected { option_id: "decline".into() }
+            outcome: PermissionOutcome::Selected {
+                option_id: "decline".into()
+            }
         }
     );
 
     // Withdrawn by the provider without our answer.
     let unanswered = command_request(&mut m, 2, None);
-    let AgentEventKind::PermissionRequested { approval_id: second, .. } = unanswered.kind else {
+    let AgentEventKind::PermissionRequested {
+        approval_id: second,
+        ..
+    } = unanswered.kind
+    else {
         panic!()
     };
-    let resolved = only(notify(&mut m, "serverRequest/resolved", json!({"requestId": 2})));
+    let resolved = only(notify(
+        &mut m,
+        "serverRequest/resolved",
+        json!({"requestId": 2}),
+    ));
     assert_eq!(
         resolved.kind,
-        AgentEventKind::PermissionResolved { approval_id: second, outcome: PermissionOutcome::Expired }
+        AgentEventKind::PermissionResolved {
+            approval_id: second,
+            outcome: PermissionOutcome::Expired
+        }
     );
     // Unknown request ids are ignored.
     assert!(notify(&mut m, "serverRequest/resolved", json!({"requestId": 99})).is_empty());
@@ -583,10 +751,16 @@ fn a_turn_ending_resolves_what_is_still_pending_before_its_own_event() {
     assert_eq!(drafts.len(), 2);
     assert_eq!(
         drafts[0].kind,
-        AgentEventKind::PermissionResolved { approval_id, outcome: PermissionOutcome::Expired }
+        AgentEventKind::PermissionResolved {
+            approval_id,
+            outcome: PermissionOutcome::Expired
+        }
     );
     assert_eq!(drafts[1].kind, AgentEventKind::TurnCancelled);
-    assert_eq!(m.answer(approval_id, "accept"), Err(heeler_agents::codex::AnswerError::Unknown));
+    assert_eq!(
+        m.answer(approval_id, "accept"),
+        Err(heeler_agents::codex::AnswerError::Unknown)
+    );
 }
 
 #[test]
@@ -600,14 +774,30 @@ fn permission_profiles_offer_grant_for_turn_session_or_deny() {
                "permissions": permissions, "reason": "needs the network"}),
     );
     let draft = only(mapped.drafts);
-    let AgentEventKind::PermissionRequested { approval_id, kind, options, .. } = draft.kind else {
+    let AgentEventKind::PermissionRequested {
+        approval_id,
+        kind,
+        options,
+        ..
+    } = draft.kind
+    else {
         panic!()
     };
     assert_eq!(kind, PermissionKind::Permissions);
-    assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["grant", "grant_session", "deny"]);
+    assert_eq!(
+        options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["grant", "grant_session", "deny"]
+    );
     let (rpc, result) = m.answer(approval_id, "grant_session").unwrap();
-    assert_eq!(rpc, json!("req-a"), "string request ids are echoed as they came");
-    assert_eq!(result, json!({"permissions": permissions, "scope": "session"}));
+    assert_eq!(
+        rpc,
+        json!("req-a"),
+        "string request ids are echoed as they came"
+    );
+    assert_eq!(
+        result,
+        json!({"permissions": permissions, "scope": "session"})
+    );
 }
 
 #[test]
@@ -623,7 +813,10 @@ fn requests_heeler_cannot_serve_are_refused_not_ignored() {
     assert_eq!(reply.outcome.unwrap_err().0, -32601);
     assert!(matches!(
         only(mapped.drafts).kind,
-        AgentEventKind::Notice { level: NoticeLevel::Warning, .. }
+        AgentEventKind::Notice {
+            level: NoticeLevel::Warning,
+            ..
+        }
     ));
     // A malformed approval is refused the same way.
     let mapped = m.request(
@@ -645,7 +838,10 @@ fn a_dead_process_expires_everything_pending() {
     assert_eq!(drafts.len(), 2);
     assert!(drafts.iter().all(|d| matches!(
         d.kind,
-        AgentEventKind::PermissionResolved { outcome: PermissionOutcome::Expired, .. }
+        AgentEventKind::PermissionResolved {
+            outcome: PermissionOutcome::Expired,
+            ..
+        }
     )));
     assert!(!m.has_pending());
 }

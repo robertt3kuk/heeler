@@ -92,7 +92,11 @@ impl ChatPrinter {
                     .and_then(|item| self.tools.remove(&item))
                     .unwrap_or_else(|| ("tool".to_owned(), String::new()));
                 let mut out = self.close_line();
-                out.push_str(&format!("• {name}: {} → {}", one_line(&title), status_text(*status)));
+                out.push_str(&format!(
+                    "• {name}: {} → {}",
+                    one_line(&title),
+                    status_text(*status)
+                ));
                 let mut details = Vec::new();
                 if let Some(code) = exit_code {
                     details.push(format!("exit {code}"));
@@ -242,7 +246,9 @@ mod tests {
             .map(|t| {
                 p.render(&event(
                     Some(item),
-                    AgentEventKind::MessageDelta { text: (*t).to_owned() },
+                    AgentEventKind::MessageDelta {
+                        text: (*t).to_owned(),
+                    },
                 ))
             })
             .collect();
@@ -328,20 +334,34 @@ mod tests {
                 ],
             },
         ));
-        assert!(out.starts_with(&format!("? approval {approval}: rm -rf build\n")), "{out}");
+        assert!(
+            out.starts_with(&format!("? approval {approval}: rm -rf build\n")),
+            "{out}"
+        );
         assert!(out.contains("    cleanup\n    in /w\n"), "{out}");
-        assert!(out.contains(&format!("heeler approve {approval} <accept|cancel>")), "{out}");
+        assert!(
+            out.contains(&format!("heeler approve {approval} <accept|cancel>")),
+            "{out}"
+        );
     }
 
     #[test]
     fn a_line_in_progress_is_closed_before_other_output() {
         let mut p = ChatPrinter::new();
         let item = ItemId::new();
-        let delta = p.render(&event(Some(item), AgentEventKind::MessageDelta { text: "partial".into() }));
+        let delta = p.render(&event(
+            Some(item),
+            AgentEventKind::MessageDelta {
+                text: "partial".into(),
+            },
+        ));
         assert_eq!(delta, "partial");
         let failed = p.render(&event(
             None,
-            AgentEventKind::TurnFailed { message: "boom".into(), details: None },
+            AgentEventKind::TurnFailed {
+                message: "boom".into(),
+                details: None,
+            },
         ));
         assert_eq!(failed, "\n✗ turn failed: boom\n");
     }

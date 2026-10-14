@@ -42,6 +42,14 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
+/// What [`Transport::spawn`] returns: the sending half, the stream of the process's own
+/// messages, and the eventual exit status.
+pub type Spawned = (
+    Arc<Transport>,
+    mpsc::Receiver<Incoming>,
+    oneshot::Receiver<ExitInfo>,
+);
+
 /// A message from the process that is not a response.
 #[derive(Debug)]
 pub enum Incoming {
@@ -99,16 +107,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Transport {
     /// Starts the process and its reader, writer and reaper tasks.
-    pub fn spawn(
-        launch: &Launch,
-    ) -> Result<
-        (
-            Arc<Self>,
-            mpsc::Receiver<Incoming>,
-            oneshot::Receiver<ExitInfo>,
-        ),
-        AgentError,
-    > {
+    pub fn spawn(launch: &Launch) -> Result<Spawned, AgentError> {
         let mut command = Command::new(&launch.program);
         command
             .args(&launch.args)
@@ -289,7 +288,10 @@ async fn read_loop(stdout: ChildStdout, pending: Pending, incoming: mpsc::Sender
         let id = message.get("id").cloned();
         match (method, id) {
             (Some(method), Some(id)) => {
-                let params = message.get_mut("params").map(Value::take).unwrap_or_default();
+                let params = message
+                    .get_mut("params")
+                    .map(Value::take)
+                    .unwrap_or_default();
                 if incoming
                     .send(Incoming::Request { id, method, params })
                     .await
@@ -299,7 +301,10 @@ async fn read_loop(stdout: ChildStdout, pending: Pending, incoming: mpsc::Sender
                 }
             }
             (Some(method), None) => {
-                let params = message.get_mut("params").map(Value::take).unwrap_or_default();
+                let params = message
+                    .get_mut("params")
+                    .map(Value::take)
+                    .unwrap_or_default();
                 if incoming
                     .send(Incoming::Notification { method, params })
                     .await
@@ -342,7 +347,10 @@ fn resolve(pending: &Pending, id: &Value, message: &mut Value) {
                 .unwrap_or("unknown error")
                 .to_owned(),
         }),
-        None => Ok(message.get_mut("result").map(Value::take).unwrap_or_default()),
+        None => Ok(message
+            .get_mut("result")
+            .map(Value::take)
+            .unwrap_or_default()),
     };
     let _ = tx.send(outcome);
 }
@@ -392,11 +400,7 @@ async fn reap(
     };
     // Let the stderr task drain what the process wrote last.
     tokio::task::yield_now().await;
-    let stderr_tail = lock(&stderr)
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let stderr_tail = lock(&stderr).iter().cloned().collect::<Vec<_>>().join("\n");
     let _ = exit.send(ExitInfo {
         code,
         signal,

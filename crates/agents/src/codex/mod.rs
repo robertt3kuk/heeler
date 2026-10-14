@@ -22,9 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
-use crate::adapter::{
-    AdapterMessage, AgentAdapter, ExitInfo, StartSpec, Started, TurnRef,
-};
+use crate::adapter::{AdapterMessage, AgentAdapter, ExitInfo, StartSpec, Started, TurnRef};
 use crate::error::AgentError;
 use crate::jsonrpc::{Incoming, Launch, Transport};
 
@@ -82,7 +80,11 @@ pub fn check_version(user_agent: &str) -> Result<String, AgentError> {
         .unwrap_or("");
     let mut numbers = version
         .split('.')
-        .map(|part| part.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .map(|part| {
+            part.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
         .map(|digits| digits.parse::<u32>().ok());
     let (Some(Some(major)), Some(Some(minor))) = (numbers.next(), numbers.next()) else {
         return Err(AgentError::UnknownVersion(user_agent.to_owned()));
@@ -137,8 +139,9 @@ async fn call<P: Serialize, R: DeserializeOwned>(
     let params = serde_json::to_value(params)
         .map_err(|e| AgentError::Protocol(format!("encoding `{method}`: {e}")))?;
     let result = transport.request(method, params).await?;
-    serde_json::from_value(result)
-        .map_err(|e| AgentError::Protocol(format!("`{method}` answered with an unexpected shape: {e}")))
+    serde_json::from_value(result).map_err(|e| {
+        AgentError::Protocol(format!("`{method}` answered with an unexpected shape: {e}"))
+    })
 }
 
 /// `initialize`, version check, `initialized`.
@@ -172,18 +175,20 @@ async fn model_catalog(transport: &Transport) -> Result<Vec<ModelInfo>, AgentErr
             },
         )
         .await?;
-        models.extend(page.data.into_iter().map(|m| ModelInfo {
-            id: m.model.unwrap_or(m.id),
-            display_name: m.display_name,
-            description: m.description,
-            is_default: m.is_default,
-            hidden: m.hidden,
-            default_reasoning_effort: m.default_reasoning_effort,
-            reasoning_efforts: m
-                .supported_reasoning_efforts
-                .into_iter()
-                .map(|e| e.reasoning_effort)
-                .collect(),
+        models.extend(page.data.into_iter().map(|m| {
+            ModelInfo {
+                id: m.model.unwrap_or(m.id),
+                display_name: m.display_name,
+                description: m.description,
+                is_default: m.is_default,
+                hidden: m.hidden,
+                default_reasoning_effort: m.default_reasoning_effort,
+                reasoning_efforts: m
+                    .supported_reasoning_efforts
+                    .into_iter()
+                    .map(|e| e.reasoning_effort)
+                    .collect(),
+            }
         }));
         cursor = page.next_cursor;
         if cursor.is_none() {
@@ -464,7 +469,10 @@ impl AgentAdapter for CodexAppServerAdapter {
     fn interrupt(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async move {
             let shared = &self.shared;
-            let turn = lock(&shared.turn).current.clone().ok_or(AgentError::NoTurn)?;
+            let turn = lock(&shared.turn)
+                .current
+                .clone()
+                .ok_or(AgentError::NoTurn)?;
             let _: Value = call(
                 &shared.transport,
                 "turn/interrupt",
@@ -522,7 +530,10 @@ mod tests {
         for found in ["0.144.2", "0.159.9", "0.170.0", "1.0.0"] {
             let error = check_version(&format!("heeler/{found} (Mac OS)")).unwrap_err();
             let text = error.to_string();
-            assert!(text.contains(found) && text.contains(">=0.160, <0.170"), "{text}");
+            assert!(
+                text.contains(found) && text.contains(">=0.160, <0.170"),
+                "{text}"
+            );
         }
     }
 
@@ -550,11 +561,23 @@ mod tests {
 
     #[test]
     fn the_catalog_picks_the_model_not_a_config_default() {
-        let catalog = [model("a", false, false), model("b", true, false), model("c", false, true)];
+        let catalog = [
+            model("a", false, false),
+            model("b", true, false),
+            model("c", false, true),
+        ];
         assert_eq!(choose_model(&catalog, None).unwrap(), "b");
         assert_eq!(choose_model(&catalog, Some("a")).unwrap(), "a");
-        let error = choose_model(&catalog, Some("gpt-nope")).unwrap_err().to_string();
-        assert!(error.contains("gpt-nope") && error.contains("a, b"), "{error}");
-        assert!(!error.contains(", c"), "hidden models are not advertised: {error}");
+        let error = choose_model(&catalog, Some("gpt-nope"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("gpt-nope") && error.contains("a, b"),
+            "{error}"
+        );
+        assert!(
+            !error.contains(", c"),
+            "hidden models are not advertised: {error}"
+        );
     }
 }

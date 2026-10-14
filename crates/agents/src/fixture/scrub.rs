@@ -44,20 +44,21 @@ fn re(pattern: &str) -> Regex {
     Regex::new(pattern).expect("a valid regex")
 }
 
-static UUID: LazyLock<Regex> =
-    LazyLock::new(|| re(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"));
-static FIXTURE_UUID: LazyLock<Regex> =
-    LazyLock::new(|| re(r"^01a00000-0000-7000-8000-(\d{12})$"));
+static UUID: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+});
+static FIXTURE_UUID: LazyLock<Regex> = LazyLock::new(|| re(r"^01a00000-0000-7000-8000-(\d{12})$"));
 static PROVIDER_ID: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(msg|rs|fc|call|resp)_[0-9a-fA-F]{16,}"));
 static FIXTURE_PROVIDER_ID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-z]+_fixture_(\d+)$"));
 static TEMP_DIR: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?:/private)?/var/folders/[^/\s]+/[^/\s]+/T/[A-Za-z0-9._-]+|/tmp/heeler-rec-[A-Za-z0-9_-]+")
+    re(
+        r"(?:/private)?/var/folders/[^/\s]+/[^/\s]+/T/[A-Za-z0-9._-]+|/tmp/heeler-rec-[A-Za-z0-9_-]+",
+    )
 });
 static ROLLOUT: LazyLock<Regex> = LazyLock::new(|| re(r"^/.*/sessions/.*rollout-.*\.jsonl$"));
-static USER_AGENT: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"^([A-Za-z0-9_.-]+)/(\d+\.\d+\.\d+[^ ]*) \([^)]*\)(?: .*)?$")
-});
+static USER_AGENT: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^([A-Za-z0-9_.-]+)/(\d+\.\d+\.\d+[^ ]*) \([^)]*\)(?: .*)?$"));
 static EMAIL: LazyLock<Regex> =
     LazyLock::new(|| re(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"));
 
@@ -65,9 +66,15 @@ static EMAIL: LazyLock<Regex> =
 static LEAKS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     vec![
         ("a home directory", re(r"/Users/|/home/[a-z]")),
-        ("an email address", re(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
+        (
+            "an email address",
+            re(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+        ),
         ("an API key", re(r"\bsk-[A-Za-z0-9_-]{10,}")),
-        ("a bearer or JWT token", re(r"\beyJ[A-Za-z0-9_-]{10,}|[Bb]earer [A-Za-z0-9._-]{16,}")),
+        (
+            "a bearer or JWT token",
+            re(r"\beyJ[A-Za-z0-9_-]{10,}|[Bb]earer [A-Za-z0-9._-]{16,}"),
+        ),
         ("a macOS temp directory", re(r"/var/folders/")),
     ]
 });
@@ -144,7 +151,10 @@ impl Renamer {
         let text = TEMP_DIR.replace_all(text, FIXTURE_CWD);
         let text = EMAIL.replace_all(&text, "user@example.com");
         // `replace_all` with a closure cannot borrow `self` twice, so collect first.
-        let uuids: Vec<String> = UUID.find_iter(&text).map(|m| m.as_str().to_owned()).collect();
+        let uuids: Vec<String> = UUID
+            .find_iter(&text)
+            .map(|m| m.as_str().to_owned())
+            .collect();
         let mut text = text.into_owned();
         for found in uuids {
             let renamed = self.uuid(&found);
@@ -270,7 +280,10 @@ mod tests {
         assert!(out.contains("heeler/0.162.1 (Mac OS; arm64)"), "{out}");
         assert!(out.contains(FIXTURE_CWD), "{out}");
         assert!(out.contains("msg_fixture_1"), "{out}");
-        assert!(out.contains("01a00000-0000-7000-8000-000000000001"), "{out}");
+        assert!(
+            out.contains("01a00000-0000-7000-8000-000000000001"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -281,9 +294,19 @@ mod tests {
 
     #[test]
     fn something_private_that_survives_is_refused() {
-        let raw = r#"{"dir":"in","msg":{"method":"x","params":{"note":"token sk-abcdefghijklmnop"}}}"#;
+        let raw =
+            r#"{"dir":"in","msg":{"method":"x","params":{"note":"token sk-abcdefghijklmnop"}}}"#;
         let error = scrub(raw).unwrap_err();
-        assert!(matches!(error, ScrubError::Leak { what: "an API key", .. }), "{error}");
+        assert!(
+            matches!(
+                error,
+                ScrubError::Leak {
+                    what: "an API key",
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]

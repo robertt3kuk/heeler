@@ -123,7 +123,10 @@ fn kinds(messages: &[AdapterMessage]) -> Vec<&AgentEventKind> {
 }
 
 fn names(messages: &[AdapterMessage]) -> Vec<&'static str> {
-    kinds(messages).into_iter().map(AgentEventKind::name).collect()
+    kinds(messages)
+        .into_iter()
+        .map(AgentEventKind::name)
+        .collect()
 }
 
 fn is_permission_request(message: &AdapterMessage) -> bool {
@@ -179,30 +182,53 @@ async fn a_command_turn_with_an_approval_maps_to_the_unified_events() {
     };
     assert_eq!(*kind, PermissionKind::Command);
     assert!(title.contains("touch hi.txt"), "{title}");
-    assert!(detail.as_deref().unwrap_or("").contains("/tmp/heeler-fixture"));
+    assert!(
+        detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("/tmp/heeler-fixture")
+    );
     // Exactly what the server offered, in its order.
     let offered: Vec<_> = options.iter().map(|o| (o.id.as_str(), o.kind)).collect();
     assert_eq!(
         offered,
         [
             ("accept", PermissionOptionKind::AllowOnce),
-            ("acceptWithExecpolicyAmendment", PermissionOptionKind::AllowAlways),
+            (
+                "acceptWithExecpolicyAmendment",
+                PermissionOptionKind::AllowAlways
+            ),
             ("cancel", PermissionOptionKind::Cancel),
         ]
     );
     assert_eq!(options[0].provider, Some(Value::String("accept".into())));
-    assert!(options[1].label.contains("touch hi.txt"), "{}", options[1].label);
+    assert!(
+        options[1].label.contains("touch hi.txt"),
+        "{}",
+        options[1].label
+    );
     assert_eq!(draft.turn_id, Some(turn.turn_id), "local turn id is stable");
-    assert_eq!(draft.provider.turn_id.as_deref(), Some(turn.provider_turn_id.as_str()));
+    assert_eq!(
+        draft.provider.turn_id.as_deref(),
+        Some(turn.provider_turn_id.as_str())
+    );
     assert!(draft.provider.request_id.is_some());
 
     // The first part of the turn: user message echo, commentary, tool start.
     let before = names(&first);
     assert_eq!(
         &before[..4],
-        ["resume_locator", "turn_started", "message_start", "message_end"]
+        [
+            "resume_locator",
+            "turn_started",
+            "message_start",
+            "message_end"
+        ]
     );
-    assert!(before.contains(&"tool_start") && before.contains(&"message_delta"), "{before:?}");
+    assert!(
+        before.contains(&"tool_start") && before.contains(&"message_delta"),
+        "{before:?}"
+    );
 
     adapter.respond(approval, "accept".into()).await.unwrap();
     let rest = collect_until(&mut events, ends_turn).await;
@@ -228,26 +254,44 @@ async fn a_command_turn_with_an_approval_maps_to_the_unified_events() {
         .unwrap();
     assert!(matches!(
         tool_end,
-        AgentEventKind::ToolEnd { tool: ToolKind::Command, status: ToolStatus::Completed, .. }
+        AgentEventKind::ToolEnd {
+            tool: ToolKind::Command,
+            status: ToolStatus::Completed,
+            ..
+        }
     ));
     let final_text = kinds(&rest)
         .into_iter()
         .filter_map(|k| match k {
-            AgentEventKind::MessageEnd { role: MessageRole::Assistant, text, .. } => Some(text.as_str()),
+            AgentEventKind::MessageEnd {
+                role: MessageRole::Assistant,
+                text,
+                ..
+            } => Some(text.as_str()),
             _ => None,
         })
-        .last();
+        .next_back();
     assert_eq!(final_text, Some("done"));
 
     // The provider got the decision it was offered, answering its own request id.
     let received = h.received();
-    let response = received.iter().find(|(name, _)| name == "response").unwrap();
+    let response = received
+        .iter()
+        .find(|(name, _)| name == "response")
+        .unwrap();
     assert_eq!(response.1["id"], 0);
     assert_eq!(response.1["result"]["decision"], "accept");
     let methods: Vec<_> = received.iter().map(|(m, _)| m.as_str()).collect();
     assert_eq!(
         methods,
-        ["initialize", "initialized", "model/list", "thread/start", "turn/start", "response"]
+        [
+            "initialize",
+            "initialized",
+            "model/list",
+            "thread/start",
+            "turn/start",
+            "response"
+        ]
     );
     let start = &received[3].1["params"];
     assert_eq!(start["approvalPolicy"], "untrusted");
@@ -261,7 +305,9 @@ async fn a_command_turn_with_an_approval_maps_to_the_unified_events() {
 async fn only_offered_options_are_sent_to_the_provider() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("approval-touch").await;
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
@@ -294,13 +340,18 @@ async fn only_offered_options_are_sent_to_the_provider() {
 async fn an_answered_request_cannot_be_answered_twice() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("approval-touch").await;
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
     let (approval, _) = requested(&first);
     adapter.respond(approval, "accept".into()).await.unwrap();
-    let error = adapter.respond(approval, "accept".into()).await.unwrap_err();
+    let error = adapter
+        .respond(approval, "accept".into())
+        .await
+        .unwrap_err();
     assert!(matches!(error, AgentError::UnknownApproval), "{error}");
     collect_until(&mut events, ends_turn).await;
     adapter.shutdown().await;
@@ -310,7 +361,9 @@ async fn an_answered_request_cannot_be_answered_twice() {
 async fn a_declined_command_ends_as_a_declined_tool() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("approval-decline").await;
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
@@ -339,7 +392,9 @@ async fn a_declined_command_ends_as_a_declined_tool() {
 async fn file_changes_carry_per_file_diffs_and_default_options() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("file-change").await;
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
@@ -365,7 +420,10 @@ async fn file_changes_carry_per_file_diffs_and_default_options() {
     adapter.respond(approval, "accept".into()).await.unwrap();
     let rest = collect_until(&mut events, ends_turn).await;
     let after = names(&rest);
-    assert!(after.contains(&"file_diff") && after.contains(&"tool_end"), "{after:?}");
+    assert!(
+        after.contains(&"file_diff") && after.contains(&"tool_end"),
+        "{after:?}"
+    );
     // The aggregate turn diff arrives as a patch.
     assert!(
         kinds(&rest).into_iter().any(|k| matches!(
@@ -381,7 +439,9 @@ async fn file_changes_carry_per_file_diffs_and_default_options() {
 async fn interrupting_a_streaming_turn_cancels_it() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("interrupt").await;
     adapter
         .send_message("Write the numbers from 1 to 300".into())
@@ -403,7 +463,7 @@ async fn interrupting_a_streaming_turn_cancels_it() {
     let methods: Vec<_> = h.received().into_iter().map(|(m, _)| m).collect();
     assert_eq!(methods.last().map(String::as_str), Some("turn/interrupt"));
     let interrupt = h.received().pop().unwrap().1;
-    assert_eq!(interrupt["params"]["turnId"].as_str().is_some(), true);
+    assert!(interrupt["params"]["turnId"].as_str().is_some());
     adapter.shutdown().await;
 }
 
@@ -420,7 +480,9 @@ async fn interrupting_without_a_turn_is_an_error() {
 async fn a_pending_approval_expires_when_the_turn_is_interrupted() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("approval-interrupt").await;
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
@@ -438,7 +500,10 @@ async fn a_pending_approval_expires_when_the_turn_is_interrupted() {
     );
     assert_eq!(kinds[kinds.len() - 1], &AgentEventKind::TurnCancelled);
     // Too late to answer.
-    let error = adapter.respond(approval, "accept".into()).await.unwrap_err();
+    let error = adapter
+        .respond(approval, "accept".into())
+        .await
+        .unwrap_err();
     assert!(matches!(error, AgentError::UnknownApproval), "{error}");
     adapter.shutdown().await;
 }
@@ -447,7 +512,9 @@ async fn a_pending_approval_expires_when_the_turn_is_interrupted() {
 async fn a_failed_turn_reports_the_providers_message() {
     let h = Harness::new();
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start("turn-failed").await;
     adapter.send_message("hi".into()).await.unwrap();
     let all = collect_until(&mut events, ends_turn).await;
@@ -455,7 +522,10 @@ async fn a_failed_turn_reports_the_providers_message() {
     let AgentEventKind::TurnFailed { message, .. } = failed else {
         panic!("{failed:?}")
     };
-    assert!(message.contains("is not supported when using Codex"), "{message}");
+    assert!(
+        message.contains("is not supported when using Codex"),
+        "{message}"
+    );
     // The provider's own error notification is kept as a notice.
     assert!(names(&all).contains(&"notice"), "{:?}", names(&all));
     adapter.shutdown().await;
@@ -468,7 +538,9 @@ async fn resuming_reopens_the_stored_thread_and_continues() {
         adapter,
         started,
         mut events,
-    } = h.start_with(&fixture("resume-turn"), Some("thread-from-the-journal")).await;
+    } = h
+        .start_with(&fixture("resume-turn"), Some("thread-from-the-journal"))
+        .await;
     assert!(started.resumed);
     assert_eq!(started.thread_id, "thread-from-the-journal");
 
@@ -476,7 +548,10 @@ async fn resuming_reopens_the_stored_thread_and_continues() {
     let all = collect_until(&mut events, ends_turn).await;
     // Events of the resumed thread (whose recorded id differs) are not dropped as foreign.
     let completed = kinds(&all).pop().unwrap();
-    assert!(matches!(completed, AgentEventKind::TurnCompleted { .. }), "{completed:?}");
+    assert!(
+        matches!(completed, AgentEventKind::TurnCompleted { .. }),
+        "{completed:?}"
+    );
     let locator = kinds(&all)[0];
     assert_eq!(
         *locator,
@@ -490,11 +565,20 @@ async fn resuming_reopens_the_stored_thread_and_continues() {
 
     let received = h.received();
     let methods: Vec<_> = received.iter().map(|(m, _)| m.as_str()).collect();
-    assert_eq!(methods, ["initialize", "initialized", "thread/resume", "turn/start"]);
+    assert_eq!(
+        methods,
+        ["initialize", "initialized", "thread/resume", "turn/start"]
+    );
     let resume = &received[2].1["params"];
     assert_eq!(resume["threadId"], "thread-from-the-journal");
-    assert_eq!(resume["excludeTurns"], true, "history comes from our journal");
-    assert_eq!(received[3].1["params"]["threadId"], "thread-from-the-journal");
+    assert_eq!(
+        resume["excludeTurns"], true,
+        "history comes from our journal"
+    );
+    assert_eq!(
+        received[3].1["params"]["threadId"],
+        "thread-from-the-journal"
+    );
     adapter.shutdown().await;
 }
 
@@ -530,8 +614,14 @@ async fn unsupported_versions_are_refused_with_a_clear_error() {
         .unwrap()
         .unwrap_err();
         let text = error.to_string();
-        assert!(matches!(error, AgentError::UnsupportedVersion { .. }), "{text}");
-        assert!(text.contains(found) && text.contains(">=0.160, <0.170"), "{text}");
+        assert!(
+            matches!(error, AgentError::UnsupportedVersion { .. }),
+            "{text}"
+        );
+        assert!(
+            text.contains(found) && text.contains(">=0.160, <0.170"),
+            "{text}"
+        );
         let methods: Vec<_> = h.received().into_iter().map(|(m, _)| m).collect();
         assert_eq!(methods, ["initialize"], "nothing past the version check");
     }
@@ -568,7 +658,11 @@ async fn unknown_messages_become_opaque_events_and_never_crash_the_adapter() {
     }
     let thread = lines
         .iter()
-        .find_map(|l| l["msg"]["result"]["thread"]["id"].as_str().map(str::to_owned))
+        .find_map(|l| {
+            l["msg"]["result"]["thread"]["id"]
+                .as_str()
+                .map(str::to_owned)
+        })
         .unwrap();
     lines.extend([
         json!({"dir":"out","msg":{"method":"turn/start","id":4,"params":{}}}),
@@ -584,7 +678,9 @@ async fn unknown_messages_become_opaque_events_and_never_crash_the_adapter() {
     ]);
     let transcript = write_transcript(&h, "odd.jsonl", &lines);
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start_with(&transcript, None).await;
     adapter.send_message("go".into()).await.unwrap();
     let all = collect_until(&mut events, |m| matches!(m, AdapterMessage::Exited(_))).await;
@@ -638,7 +734,9 @@ async fn a_process_that_dies_expires_what_was_pending() {
     lines.push(json!({"dir":"exit","code":1}));
     let transcript = write_transcript(&h, "dies.jsonl", &lines);
     let CodexSession {
-        adapter, mut events, ..
+        adapter,
+        mut events,
+        ..
     } = h.start_with(&transcript, None).await;
     adapter.send_message("go".into()).await.unwrap();
     let all = collect_until(&mut events, |m| matches!(m, AdapterMessage::Exited(_))).await;
@@ -667,7 +765,12 @@ fn committed_fixtures_are_already_scrubbed() {
         }
         let text = std::fs::read_to_string(&path).unwrap();
         let scrubbed = scrub(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        assert_eq!(scrubbed, text, "{} changes when scrubbed again", path.display());
+        assert_eq!(
+            scrubbed,
+            text,
+            "{} changes when scrubbed again",
+            path.display()
+        );
         count += 1;
     }
     assert!(count >= 7, "{count} fixtures");

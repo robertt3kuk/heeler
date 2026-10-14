@@ -274,7 +274,9 @@ pub enum AgentEventKind {
         phase: Option<String>,
     },
     /// Streamed text; not journaled.
-    MessageDelta { text: String },
+    MessageDelta {
+        text: String,
+    },
     /// The message is complete; `text` is all of it.
     MessageEnd {
         role: MessageRole,
@@ -284,7 +286,10 @@ pub enum AgentEventKind {
     },
     ReasoningStart,
     /// Streamed reasoning text; not journaled.
-    ReasoningDelta { part: ReasoningPart, text: String },
+    ReasoningDelta {
+        part: ReasoningPart,
+        text: String,
+    },
     ReasoningEnd {
         #[serde(default)]
         summary: Vec<String>,
@@ -299,7 +304,9 @@ pub enum AgentEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<Value>,
     },
-    ToolUpdate { message: String },
+    ToolUpdate {
+        message: String,
+    },
     ToolEnd {
         tool: ToolKind,
         status: ToolStatus,
@@ -314,7 +321,9 @@ pub enum AgentEventKind {
         duration_ms: Option<u64>,
     },
     /// Streamed output of a running command; not journaled (`tool_end` has the whole output).
-    CommandOutput { text: String },
+    CommandOutput {
+        text: String,
+    },
     /// Files changed (or about to be), per file and/or as one aggregate unified patch.
     FileDiff {
         #[serde(default)]
@@ -371,9 +380,14 @@ pub enum AgentEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
-    Notice { level: NoticeLevel, message: String },
+    Notice {
+        level: NoticeLevel,
+        message: String,
+    },
     /// A provider message Heeler has no model for; only `provider` and `payload` are meaningful.
-    Opaque { method: String },
+    Opaque {
+        method: String,
+    },
 }
 
 impl AgentEventKind {
@@ -622,7 +636,12 @@ mod tests {
 
     #[test]
     fn streaming_and_turn_end_classification() {
-        assert!(AgentEventKind::MessageDelta { text: String::new() }.is_streaming());
+        assert!(
+            AgentEventKind::MessageDelta {
+                text: String::new()
+            }
+            .is_streaming()
+        );
         assert!(!AgentEventKind::TurnCancelled.is_streaming());
         assert!(AgentEventKind::TurnCancelled.ends_turn());
         assert!(!AgentEventKind::TurnStarted.ends_turn());
@@ -635,7 +654,10 @@ mod tests {
             ApprovalPolicy::OnRequest,
             ApprovalPolicy::Never,
         ] {
-            assert_eq!(policy.to_string().parse::<ApprovalPolicy>().unwrap(), policy);
+            assert_eq!(
+                policy.to_string().parse::<ApprovalPolicy>().unwrap(),
+                policy
+            );
             assert_eq!(
                 serde_json::to_value(policy).unwrap(),
                 json!(policy.as_str())

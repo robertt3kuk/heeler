@@ -119,7 +119,10 @@ enum Command {
         pending: u32,
     },
     /// From a chat session's pump: the agent process is gone.
-    ChatExited { session: SessionId, exit: ExitInfo },
+    ChatExited {
+        session: SessionId,
+        exit: ExitInfo,
+    },
     /// Whether the session is a chat session, and live.
     ChatTarget(SessionId, Reply<bool>),
 }
@@ -1775,7 +1778,10 @@ impl SessionRegistry {
         if req.agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
-                format!("unsupported agent `{}` (supported: {AGENT_CODEX})", req.agent),
+                format!(
+                    "unsupported agent `{}` (supported: {AGENT_CODEX})",
+                    req.agent
+                ),
             ));
         }
         let workspace_id = match req.workspace_id {
@@ -1889,7 +1895,8 @@ impl SessionRegistry {
         outcome: Result<Started, ErrorBody>,
         reply: Option<Reply<SessionInfo>>,
     ) {
-        let respond = |reply: Option<Reply<SessionInfo>>, result: Result<SessionInfo, ErrorBody>| {
+        let respond = |reply: Option<Reply<SessionInfo>>,
+                       result: Result<SessionInfo, ErrorBody>| {
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -1899,7 +1906,10 @@ impl SessionRegistry {
             self.chats.stop(id);
             respond(
                 reply,
-                Err(ErrorBody::new(ErrorCode::NotFound, format!("session {id} not found"))),
+                Err(ErrorBody::new(
+                    ErrorCode::NotFound,
+                    format!("session {id} not found"),
+                )),
             );
             return;
         };

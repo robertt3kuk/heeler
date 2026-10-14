@@ -173,11 +173,7 @@ impl Router {
             }),
             Request::ChatSend(req) => {
                 self.live_chat(req.session_id).await?;
-                let turn_id = self
-                    .registry
-                    .chats()
-                    .send(req.session_id, req.text)
-                    .await?;
+                let turn_id = self.registry.chats().send(req.session_id, req.text).await?;
                 ok(&ChatSent { turn_id })
             }
             Request::ChatInterrupt(req) => {

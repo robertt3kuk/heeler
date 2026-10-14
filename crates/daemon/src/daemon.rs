@@ -180,9 +180,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             restore: settings.restore_sessions,
             home_folder,
             activity_interval: config.activity_interval,
-            codex: config
-                .codex
-                .unwrap_or_else(|| settings.codex.to_config()),
+            codex: config.codex.unwrap_or_else(|| settings.codex.to_config()),
         },
         stored,
     );

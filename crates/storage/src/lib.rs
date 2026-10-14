@@ -379,7 +379,8 @@ impl Approvals<'_> {
 
     /// Oldest first; `session` limits to one session.
     pub fn list(&self, session: Option<SessionId>) -> Result<Vec<ApprovalRow>> {
-        self.0.read(move |conn| sql::approvals(conn, session, false))
+        self.0
+            .read(move |conn| sql::approvals(conn, session, false))
     }
 
     /// Requests never resolved (what a crashed daemon left behind).

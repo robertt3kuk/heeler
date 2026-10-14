@@ -5,20 +5,20 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_core::agent::{
-    FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption, PermissionOptionKind,
-    PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
+    FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
+    PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
 };
 use heeler_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
     SandboxMode, TurnId,
 };
-use heeler_protocol::chat::*;
+use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
 };
+use heeler_protocol::chat::*;
 use heeler_protocol::control::ControlMessage;
 use heeler_protocol::history::*;
 use heeler_protocol::messages::*;

@@ -780,7 +780,10 @@ fn the_chat_journal_pages_backwards_and_survives_a_restart() {
         assert_eq!(storage.chat().last_seq(id).unwrap(), 0);
         // seq has gaps where streaming deltas were.
         for seq in [1, 2, 5, 6, 9] {
-            storage.chat().append(chat_item(id, seq, "message_end")).unwrap();
+            storage
+                .chat()
+                .append(chat_item(id, seq, "message_end"))
+                .unwrap();
         }
         // A repeated seq is ignored, not an error and not an overwrite.
         let mut again = chat_item(id, 5, "other");
@@ -804,8 +807,15 @@ fn the_chat_journal_pages_backwards_and_survives_a_restart() {
     assert_eq!(seqs(Some(6), 2), [2, 5]);
     assert_eq!(seqs(Some(1), 10), Vec::<u64>::new());
     let row = &storage.chat().items(id, Some(6), 1).unwrap()[0];
-    assert_eq!((row.kind.as_str(), row.turn_id.as_deref()), ("message_end", Some("turn-1")));
-    assert!(row.event_json.contains("\"seq\":5"), "the first write won: {}", row.event_json);
+    assert_eq!(
+        (row.kind.as_str(), row.turn_id.as_deref()),
+        ("message_end", Some("turn-1"))
+    );
+    assert!(
+        row.event_json.contains("\"seq\":5"),
+        "the first write won: {}",
+        row.event_json
+    );
     storage.close();
 }
 
@@ -833,7 +843,11 @@ fn chat_turns_are_updated_in_place() {
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].status, ChatTurnStatus::Failed);
     assert_eq!(turns[0].error.as_deref(), Some("boom"));
-    assert_eq!(turns[0].provider_turn_id.as_deref(), Some("p1"), "a known provider id is kept");
+    assert_eq!(
+        turns[0].provider_turn_id.as_deref(),
+        Some("p1"),
+        "a known provider id is kept"
+    );
     storage.close();
 }
 
@@ -868,13 +882,22 @@ fn approvals_record_the_request_and_the_decision() {
     decided.decided_by = Some("cli".to_owned());
     storage.approvals().upsert(decided.clone()).unwrap();
 
-    assert_eq!(storage.approvals().unresolved().unwrap(), [open.clone()]);
+    assert_eq!(
+        storage.approvals().unresolved().unwrap(),
+        std::slice::from_ref(&open)
+    );
     assert_eq!(
         storage.approvals().list(Some(id)).unwrap(),
         [decided, open],
         "oldest request first, decision recorded"
     );
-    assert!(storage.approvals().list(Some(SessionId::new())).unwrap().is_empty());
+    assert!(
+        storage
+            .approvals()
+            .list(Some(SessionId::new()))
+            .unwrap()
+            .is_empty()
+    );
     storage.close();
 }
 
@@ -883,7 +906,10 @@ fn deleting_a_session_deletes_its_journal_and_approvals() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
     let id = chat_session(&storage);
-    storage.chat().append(chat_item(id, 1, "turn_started")).unwrap();
+    storage
+        .chat()
+        .append(chat_item(id, 1, "turn_started"))
+        .unwrap();
     storage
         .approvals()
         .upsert(ApprovalRow {

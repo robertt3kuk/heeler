@@ -2,6 +2,8 @@
 //! connections, and `heeler-codex-fixture replay` standing in for `codex app-server` with
 //! transcripts recorded from codex 0.162.1.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -12,6 +14,7 @@ use heeler_agents::CodexConfig;
 use heeler_client::Client;
 use heeler_core::agent::PermissionOutcome;
 use heeler_core::{AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode, SessionId};
+use heeler_core::{Seq, SessionState};
 use heeler_protocol::ErrorCode;
 use heeler_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
@@ -20,7 +23,6 @@ use heeler_protocol::chat::{
 use heeler_protocol::messages::{
     Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef, SessionResult,
 };
-use heeler_core::{Seq, SessionState};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
@@ -156,7 +158,9 @@ impl Chat {
 
     async fn approvals(&self, client: &Client) -> Vec<ApprovalInfo> {
         client
-            .call::<ApprovalList>(Request::ApprovalList(ApprovalListRequest { session_id: None }))
+            .call::<ApprovalList>(Request::ApprovalList(ApprovalListRequest {
+                session_id: None,
+            }))
             .await
             .unwrap()
             .approvals
@@ -230,13 +234,21 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
     assert_eq!(created.terminal_id, None);
     let chat = created.chat.clone().expect("chat info");
     assert_eq!(chat.agent, "codex");
-    assert_eq!(chat.model, "gpt-6.1-sol", "the catalog's default, not a config default");
+    assert_eq!(
+        chat.model, "gpt-6.1-sol",
+        "the catalog's default, not a config default"
+    );
     assert_eq!(chat.approval_policy, ApprovalPolicy::OnRequest);
     assert_eq!(chat.sandbox, SandboxMode::WorkspaceWrite);
     assert!(!chat.turn_active);
 
     // Workspace of the session: Home (the work dir is under no project).
-    let sent = t.send(created.id, "Reply with the single word pong and nothing else.").await;
+    let sent = t
+        .send(
+            created.id,
+            "Reply with the single word pong and nothing else.",
+        )
+        .await;
 
     let first = next_chat_event(&mut t.events, "turn_started", |e| {
         matches!(e.kind, AgentEventKind::TurnStarted)
@@ -248,7 +260,10 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
     let mut text = String::new();
     loop {
         let event = next_chat_event(&mut t.events, "the turn to end", |_| true).await;
-        assert!(event.seq > *seqs.last().unwrap(), "seq increases per session");
+        assert!(
+            event.seq > *seqs.last().unwrap(),
+            "seq increases per session"
+        );
         seqs.push(event.seq);
         assert_eq!(event.delivery, heeler_core::Delivery::Live);
         if let AgentEventKind::MessageDelta { text: delta } = &event.kind {
@@ -277,9 +292,17 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
     ] {
         assert!(kinds.contains(&expected), "{expected} in {kinds:?}");
     }
-    assert!(history.events.iter().all(|e| e.delivery == heeler_core::Delivery::Replay));
+    assert!(
+        history
+            .events
+            .iter()
+            .all(|e| e.delivery == heeler_core::Delivery::Replay)
+    );
     let journal_seqs: Vec<u64> = history.events.iter().map(|e| e.seq).collect();
-    assert!(journal_seqs.windows(2).all(|w| w[0] < w[1]), "{journal_seqs:?}");
+    assert!(
+        journal_seqs.windows(2).all(|w| w[0] < w[1]),
+        "{journal_seqs:?}"
+    );
     assert!(!history.has_more);
     assert_eq!(history.last_seq, *seqs.last().unwrap());
     assert!(
@@ -290,10 +313,14 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
         .events
         .iter()
         .filter_map(|e| match &e.kind {
-            AgentEventKind::MessageEnd { role: heeler_core::agent::MessageRole::Assistant, text, .. } => Some(text.as_str()),
+            AgentEventKind::MessageEnd {
+                role: heeler_core::agent::MessageRole::Assistant,
+                text,
+                ..
+            } => Some(text.as_str()),
             _ => None,
         })
-        .last();
+        .next_back();
     assert_eq!(answer, Some("pong"));
 
     // Paging backwards: the newest two, then the two before them.
@@ -334,9 +361,17 @@ async fn a_session_is_created_with_the_requested_model_policy_and_sandbox() {
     let chat = created.chat.unwrap();
     assert_eq!(
         (chat.model.as_str(), chat.approval_policy, chat.sandbox),
-        ("gpt-5.6-luna", ApprovalPolicy::Untrusted, SandboxMode::ReadOnly)
+        (
+            "gpt-5.6-luna",
+            ApprovalPolicy::Untrusted,
+            SandboxMode::ReadOnly
+        )
     );
-    let start = t.received().into_iter().find(|(m, _)| m == "thread/start").unwrap();
+    let start = t
+        .received()
+        .into_iter()
+        .find(|(m, _)| m == "thread/start")
+        .unwrap();
     assert_eq!(start.1["params"]["model"], "gpt-5.6-luna");
     assert_eq!(start.1["params"]["approvalPolicy"], "untrusted");
     assert_eq!(start.1["params"]["sandbox"], "read-only");
@@ -363,7 +398,11 @@ async fn an_unknown_model_is_refused_with_the_catalog() {
         panic!("{error:?}")
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
-    assert!(error.message.contains("gpt-nope") && error.message.contains("gpt-6.1-sol"), "{}", error.message);
+    assert!(
+        error.message.contains("gpt-nope") && error.message.contains("gpt-6.1-sol"),
+        "{}",
+        error.message
+    );
     // The session exists, failed, so the attempt is visible.
     let sessions = t
         .client
@@ -371,7 +410,10 @@ async fn an_unknown_model_is_refused_with_the_catalog() {
         .await
         .unwrap()
         .sessions;
-    assert!(matches!(sessions[0].state, SessionState::Failed { .. }), "{sessions:?}");
+    assert!(
+        matches!(sessions[0].state, SessionState::Failed { .. }),
+        "{sessions:?}"
+    );
     t.stop().await;
 }
 
@@ -379,9 +421,17 @@ async fn an_unknown_model_is_refused_with_the_catalog() {
 async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_options() {
     let mut t = Chat::with_fixture("approval-touch").await;
     let created = t
-        .create_with(None, Some(ApprovalPolicy::Untrusted), Some(SandboxMode::ReadOnly))
+        .create_with(
+            None,
+            Some(ApprovalPolicy::Untrusted),
+            Some(SandboxMode::ReadOnly),
+        )
         .await;
-    t.send(created.id, "Run `touch hi.txt` in a shell, then reply with the word done.").await;
+    t.send(
+        created.id,
+        "Run `touch hi.txt` in a shell, then reply with the word done.",
+    )
+    .await;
 
     let info = wait_event(&mut t.events, "approval.required", |event| match event {
         Event::ApprovalRequired { approval } => Some((**approval).clone()),
@@ -391,12 +441,17 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
     assert_eq!(info.session_id, created.id);
     assert!(info.title.contains("touch hi.txt"), "{}", info.title);
     let offered: Vec<_> = info.options.iter().map(|o| o.id.as_str()).collect();
-    assert_eq!(offered, ["accept", "acceptWithExecpolicyAmendment", "cancel"]);
+    assert_eq!(
+        offered,
+        ["accept", "acceptWithExecpolicyAmendment", "cancel"]
+    );
 
     // The session says it waits; the approval is listed.
-    let waiting = t.wait_state(created.id, SessionState::WaitingApproval).await;
+    let waiting = t
+        .wait_state(created.id, SessionState::WaitingApproval)
+        .await;
     assert_eq!(waiting.chat.unwrap().pending_approvals, 1);
-    assert_eq!(t.approvals(&t.client).await, [info.clone()]);
+    assert_eq!(t.approvals(&t.client).await, std::slice::from_ref(&info));
 
     // A second client sees it too; the first one going away changes nothing.
     let other = t.daemon.connect().await;
@@ -404,7 +459,11 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
     drop(std::mem::replace(&mut t.client, reconnected));
     t.events = events;
     sleep(Duration::from_millis(100)).await;
-    assert_eq!(t.approvals(&other).await, [info.clone()], "survives a client disconnect");
+    assert_eq!(
+        t.approvals(&other).await,
+        std::slice::from_ref(&info),
+        "survives a client disconnect"
+    );
     assert_eq!(t.approvals(&t.client).await.len(), 1);
 
     // Only offered options can be chosen; nothing reaches the provider otherwise.
@@ -427,7 +486,11 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
         .await;
     assert_eq!(remote_code(unknown), ErrorCode::NotFound);
     assert!(t.received().iter().all(|(m, _)| m != "response"));
-    assert_eq!(t.approvals(&t.client).await.len(), 1, "refusals leave it pending");
+    assert_eq!(
+        t.approvals(&t.client).await.len(),
+        1,
+        "refusals leave it pending"
+    );
 
     // Answered by the second client; everyone is told.
     let mut other_events = {
@@ -446,16 +509,25 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
         .await
         .unwrap();
     let outcome = wait_event(&mut t.events, "approval.resolved", |event| match event {
-        Event::ApprovalResolved { approval_id, outcome, .. } if *approval_id == info.id => {
-            Some(outcome.clone())
-        }
+        Event::ApprovalResolved {
+            approval_id,
+            outcome,
+            ..
+        } if *approval_id == info.id => Some(outcome.clone()),
         _ => None,
     })
     .await;
-    assert_eq!(outcome, PermissionOutcome::Selected { option_id: "accept".into() });
-    wait_event(&mut other_events, "approval.resolved on the other client", |event| {
-        matches!(event, Event::ApprovalResolved { .. }).then_some(())
-    })
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Selected {
+            option_id: "accept".into()
+        }
+    );
+    wait_event(
+        &mut other_events,
+        "approval.resolved on the other client",
+        |event| matches!(event, Event::ApprovalResolved { .. }).then_some(()),
+    )
     .await;
 
     let mut done = false;
@@ -516,16 +588,21 @@ async fn a_pending_approval_expires_when_its_turn_ends() {
         _ => None,
     })
     .await;
-    t.wait_state(created.id, SessionState::WaitingApproval).await;
+    t.wait_state(created.id, SessionState::WaitingApproval)
+        .await;
 
     t.client
-        .call::<Empty>(Request::ChatInterrupt(SessionRef { session_id: created.id }))
+        .call::<Empty>(Request::ChatInterrupt(SessionRef {
+            session_id: created.id,
+        }))
         .await
         .unwrap();
     let outcome = wait_event(&mut t.events, "approval.resolved", |event| match event {
-        Event::ApprovalResolved { approval_id, outcome, .. } if *approval_id == info.id => {
-            Some(outcome.clone())
-        }
+        Event::ApprovalResolved {
+            approval_id,
+            outcome,
+            ..
+        } if *approval_id == info.id => Some(outcome.clone()),
         _ => None,
     })
     .await;
@@ -545,7 +622,10 @@ async fn a_pending_approval_expires_when_its_turn_ends() {
         }))
         .await;
     assert_eq!(remote_code(late), ErrorCode::NotFound);
-    assert!(t.received().iter().all(|(m, _)| m != "response"), "nothing was answered");
+    assert!(
+        t.received().iter().all(|(m, _)| m != "response"),
+        "nothing was answered"
+    );
 
     let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
     let (outcome, decided_by): (String, Option<String>) = db
@@ -625,7 +705,11 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
     assert!(!restored.restored, "the journal has the whole conversation");
     assert_eq!(restored.chat.unwrap().model, "gpt-6.1-sol");
 
-    let spawns: Vec<_> = chat.received().into_iter().filter(|(m, _)| m == "thread/resume").collect();
+    let spawns: Vec<_> = chat
+        .received()
+        .into_iter()
+        .filter(|(m, _)| m == "thread/resume")
+        .collect();
     assert_eq!(spawns.len(), 1, "{:?}", chat.received());
     assert_eq!(spawns[0].1["params"]["threadId"], thread_id.as_str());
     assert_eq!(spawns[0].1["params"]["excludeTurns"], true);
@@ -645,12 +729,19 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
         .filter(|seq| *seq > last_before)
         .collect();
     assert!(resumed_seqs.len() >= 4, "{resumed_seqs:?}");
-    assert!(all.events.windows(2).all(|w| w[0].seq < w[1].seq), "seq never goes back");
+    assert!(
+        all.events.windows(2).all(|w| w[0].seq < w[1].seq),
+        "seq never goes back"
+    );
     let answers: Vec<_> = all
         .events
         .iter()
         .filter_map(|e| match &e.kind {
-            AgentEventKind::MessageEnd { role: heeler_core::agent::MessageRole::Assistant, text, .. } => Some(text.as_str()),
+            AgentEventKind::MessageEnd {
+                role: heeler_core::agent::MessageRole::Assistant,
+                text,
+                ..
+            } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -691,7 +782,12 @@ async fn approvals_pending_at_a_daemon_restart_are_expired() {
         })
         .await;
     let (client, events) = daemon.connect_subscribed().await;
-    let chat = Chat { daemon, work, client, events };
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events,
+    };
     chat.wait_state(created.id, SessionState::Idle).await;
     assert!(chat.approvals(&chat.client).await.is_empty());
     let late = chat
@@ -704,7 +800,11 @@ async fn approvals_pending_at_a_daemon_restart_are_expired() {
     assert_eq!(remote_code(late), ErrorCode::NotFound);
     let db = rusqlite::Connection::open(&chat.daemon.paths.database).unwrap();
     let outcome: String = db
-        .query_row("SELECT outcome FROM approvals WHERE id = ?1", [info.id.to_string()], |r| r.get(0))
+        .query_row(
+            "SELECT outcome FROM approvals WHERE id = ?1",
+            [info.id.to_string()],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(outcome, "expired");
     // The journal shows the interrupted turn ended (the agent went down mid-turn).
@@ -726,7 +826,12 @@ async fn stopping_a_chat_ends_its_agent_and_restarting_resumes_it() {
     let config = replay(&scripted, &work.path().join("received.jsonl"));
     let daemon = TestDaemon::start_with("", move |c| c.codex = Some(config)).await;
     let (client, events) = daemon.connect_subscribed().await;
-    let chat = Chat { daemon, work, client, events };
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events,
+    };
     let created = chat.create().await;
 
     let stopped = stop(&chat.client, created.id).await.unwrap();
@@ -735,19 +840,28 @@ async fn stopping_a_chat_ends_its_agent_and_restarting_resumes_it() {
     assert_eq!(remote_code(again), ErrorCode::InvalidState);
     let blocked = chat
         .client
-        .call::<ChatSent>(Request::ChatSend(ChatSend { session_id: created.id, text: "hi".into() }))
+        .call::<ChatSent>(Request::ChatSend(ChatSend {
+            session_id: created.id,
+            text: "hi".into(),
+        }))
         .await;
     assert_eq!(remote_code(blocked), ErrorCode::InvalidState);
 
     let restarted = chat
         .client
-        .call::<SessionResult>(Request::SessionRestart(SessionRef { session_id: created.id }))
+        .call::<SessionResult>(Request::SessionRestart(SessionRef {
+            session_id: created.id,
+        }))
         .await
         .unwrap()
         .session;
     assert_eq!(restarted.id, created.id);
     chat.wait_state(created.id, SessionState::Idle).await;
-    let resumed = chat.received().into_iter().filter(|(m, _)| m == "thread/resume").count();
+    let resumed = chat
+        .received()
+        .into_iter()
+        .filter(|(m, _)| m == "thread/resume")
+        .count();
     assert_eq!(resumed, 1);
     chat.stop().await;
 }
@@ -758,23 +872,34 @@ async fn sending_is_validated() {
     let created = t.create().await;
     let empty = t
         .client
-        .call::<ChatSent>(Request::ChatSend(ChatSend { session_id: created.id, text: "  \n".into() }))
+        .call::<ChatSent>(Request::ChatSend(ChatSend {
+            session_id: created.id,
+            text: "  \n".into(),
+        }))
         .await;
     assert_eq!(remote_code(empty), ErrorCode::BadRequest);
     let unknown = t
         .client
-        .call::<ChatSent>(Request::ChatSend(ChatSend { session_id: SessionId::new(), text: "x".into() }))
+        .call::<ChatSent>(Request::ChatSend(ChatSend {
+            session_id: SessionId::new(),
+            text: "x".into(),
+        }))
         .await;
     assert_eq!(remote_code(unknown), ErrorCode::NotFound);
     let terminal = create(&t.client, spec(&["cat"])).await;
     let not_chat = t
         .client
-        .call::<ChatSent>(Request::ChatSend(ChatSend { session_id: terminal.id, text: "x".into() }))
+        .call::<ChatSent>(Request::ChatSend(ChatSend {
+            session_id: terminal.id,
+            text: "x".into(),
+        }))
         .await;
     assert_eq!(remote_code(not_chat), ErrorCode::BadRequest);
     let no_turn = t
         .client
-        .call::<Empty>(Request::ChatInterrupt(SessionRef { session_id: created.id }))
+        .call::<Empty>(Request::ChatInterrupt(SessionRef {
+            session_id: created.id,
+        }))
         .await;
     assert_eq!(remote_code(no_turn), ErrorCode::InvalidState);
 
@@ -782,11 +907,16 @@ async fn sending_is_validated() {
     t.send(created.id, "Write the numbers from 1 to 300").await;
     let second = t
         .client
-        .call::<ChatSent>(Request::ChatSend(ChatSend { session_id: created.id, text: "more".into() }))
+        .call::<ChatSent>(Request::ChatSend(ChatSend {
+            session_id: created.id,
+            text: "more".into(),
+        }))
         .await;
     assert_eq!(remote_code(second), ErrorCode::InvalidState);
     t.client
-        .call::<Empty>(Request::ChatInterrupt(SessionRef { session_id: created.id }))
+        .call::<Empty>(Request::ChatInterrupt(SessionRef {
+            session_id: created.id,
+        }))
         .await
         .unwrap();
     next_chat_event(&mut t.events, "turn_cancelled", |e| {
@@ -817,9 +947,18 @@ async fn creating_a_chat_validates_the_request() {
                 .await
         }
     };
-    assert_eq!(remote_code(create("gemini", t.cwd()).await), ErrorCode::BadRequest);
-    assert_eq!(remote_code(create("codex", t.cwd().join("missing")).await), ErrorCode::BadRequest);
-    assert_eq!(remote_code(create("codex", "relative/dir".into()).await), ErrorCode::BadRequest);
+    assert_eq!(
+        remote_code(create("gemini", t.cwd()).await),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        remote_code(create("codex", t.cwd().join("missing")).await),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        remote_code(create("codex", "relative/dir".into()).await),
+        ErrorCode::BadRequest
+    );
     let history = t
         .client
         .call::<ChatHistory>(Request::ChatHistory(ChatHistoryRequest {
@@ -849,7 +988,12 @@ async fn an_unsupported_codex_version_fails_the_session_with_a_clear_reason() {
     let config = replay(&transcript, &work.path().join("received.jsonl"));
     let daemon = TestDaemon::start_with("", move |c| c.codex = Some(config)).await;
     let (client, _events) = daemon.connect_subscribed().await;
-    let chat = Chat { daemon, work, client, events: _events };
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events: _events,
+    };
     let result = chat
         .client
         .call::<SessionResult>(Request::ChatCreate(ChatCreate {
@@ -911,7 +1055,8 @@ async fn a_missing_codex_says_where_to_configure_it() {
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
     assert!(
-        error.message.contains("/nonexistent/heeler-test-codex") && error.message.contains("daemon.toml"),
+        error.message.contains("/nonexistent/heeler-test-codex")
+            && error.message.contains("daemon.toml"),
         "{}",
         error.message
     );
@@ -923,16 +1068,25 @@ async fn models_come_from_the_agents_catalog() {
     let t = Chat::with_fixture("plain-turn").await;
     let models = t
         .client
-        .call::<ChatModels>(Request::ChatModels(ChatModelsRequest { agent: "codex".into() }))
+        .call::<ChatModels>(Request::ChatModels(ChatModelsRequest {
+            agent: "codex".into(),
+        }))
         .await
         .unwrap();
     assert_eq!(models.agent, "codex");
-    let default: Vec<_> = models.models.iter().filter(|m| m.is_default).map(|m| m.id.as_str()).collect();
+    let default: Vec<_> = models
+        .models
+        .iter()
+        .filter(|m| m.is_default)
+        .map(|m| m.id.as_str())
+        .collect();
     assert_eq!(default, ["gpt-6.1-sol"]);
     assert!(models.models.iter().any(|m| m.id == "gpt-5.6-luna"));
     let unsupported = t
         .client
-        .call::<ChatModels>(Request::ChatModels(ChatModelsRequest { agent: "gemini".into() }))
+        .call::<ChatModels>(Request::ChatModels(ChatModelsRequest {
+            agent: "gemini".into(),
+        }))
         .await;
     assert_eq!(remote_code(unsupported), ErrorCode::BadRequest);
     t.stop().await;
@@ -955,7 +1109,12 @@ async fn an_agent_that_dies_mid_turn_fails_the_session_and_ends_the_turn() {
     let config = replay(&transcript, &work.path().join("received.jsonl"));
     let daemon = TestDaemon::start_with("", move |c| c.codex = Some(config)).await;
     let (client, events) = daemon.connect_subscribed().await;
-    let mut t = Chat { daemon, work, client, events };
+    let mut t = Chat {
+        daemon,
+        work,
+        client,
+        events,
+    };
     let created = t.create().await;
     t.send(created.id, "ping").await;
     let failed = next_chat_event(&mut t.events, "turn_failed", |e| {

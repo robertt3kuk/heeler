@@ -158,7 +158,10 @@ pub fn heelerd_dir() -> PathBuf {
 /// The fake codex app server, next to the `heeler` test binary; `just test` builds the
 /// workspace binaries first.
 pub fn codex_fixture_bin() -> PathBuf {
-    let bin = Path::new(HEELER).parent().unwrap().join("heeler-codex-fixture");
+    let bin = Path::new(HEELER)
+        .parent()
+        .unwrap()
+        .join("heeler-codex-fixture");
     assert!(
         bin.is_file(),
         "heeler-codex-fixture not built: run `cargo build -p heeler-agents --bins` (or `just test`)"

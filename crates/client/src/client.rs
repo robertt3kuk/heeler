@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use heeler_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
+use heeler_protocol::blocks::{
+    BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
+};
 use heeler_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, HISTORY_MAX_LIMIT,
-};
-use heeler_protocol::blocks::{
-    BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
 use heeler_protocol::messages::{
     ClientInfo, Empty, Event, Hello, Request, ResumePoint, SessionInfo, SessionRef, SessionResult,
@@ -294,7 +294,9 @@ impl Client {
         &self,
         session_id: SessionId,
     ) -> Result<ChatHistory, ClientError> {
-        let mut all = self.chat_history(session_id, None, HISTORY_MAX_LIMIT).await?;
+        let mut all = self
+            .chat_history(session_id, None, HISTORY_MAX_LIMIT)
+            .await?;
         while all.has_more {
             let Some(first) = all.events.first().map(|e| e.seq) else {
                 break;
