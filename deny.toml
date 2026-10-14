@@ -3,6 +3,13 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+# Transitive dependencies of the pinned GPUI (ADR 0003); informational "unmaintained" notices
+# with no safe upgrade. Revisit on every GPUI bump.
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained, pulled in by gpui" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, pulled in by gpui/fontdb" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained, pulled in by gpui_wgpu/usvg" },
+]
 
 [licenses]
 confidence-threshold = 0.9
@@ -14,6 +21,8 @@ allow = [
   "BSD-3-Clause",
   "CC0-1.0", # notify (file watcher); public-domain dedication
   "ISC",
+  # File-level copyleft only: used unmodified by GPUI's font stack (cbindgen, dwrote, option-ext).
+  "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
 ]
@@ -30,4 +39,9 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/zed-industries/zed"]
+allow-git = [
+  "https://github.com/zed-industries/zed",
+  # Git dependencies of the pinned zed revision (ADR 0003).
+  "https://github.com/zed-industries/font-kit",
+  "https://github.com/proptest-rs/proptest",
+]
