@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 
 /// Failures of PTY ownership and process control.
 #[derive(Debug, thiserror::Error)]
@@ -21,4 +22,10 @@ pub enum TerminalError {
     Resize(String),
     #[error("failed to signal the child process: {0}")]
     Signal(#[source] io::Error),
+    #[error("failed to install shell integration at {path}: {source}")]
+    ShellIntegration {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }

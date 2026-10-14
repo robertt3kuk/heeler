@@ -37,7 +37,7 @@ crates/
   protocol/       frames, envelope, handshake, commands/queries/events, render DTOs, JSON Schema gen
   client/         async protocol client: connect/spawn daemon, reconnect, replay/snapshot reconciliation
   daemon/         heelerd binary: lifecycle, connections, event bus, wiring of services below
-  terminal/       PTY spawn (portable-pty), alacritty_terminal engine, OSC sniffer, render snapshot/frames
+  terminal/       PTY spawn (portable-pty), alacritty_terminal engine, OSC sniffer, shell-integration scripts + injection (`docs/shell-integration.md`), render snapshot/frames
   runtime/        stdio subprocess supervision for agent adapters (spawn, restart policy, stderr capture)
   agents/         AgentAdapter trait; codex app-server adapter (M4), ACP v1 adapter (M8)
   gateway/        direct model chat: provider trait, OpenAI-compatible, Anthropic, local endpoints (M5)

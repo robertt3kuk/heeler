@@ -14,6 +14,7 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - `docs/architecture.md` — components, crates, data flows, state ownership
 - `docs/protocol.md` — IPC framing, handshake, sequencing, message catalog
 - `docs/roadmap.md` — milestones, slices (checkboxes), risk register
+- `docs/shell-integration.md` — automatic OSC 133/OSC 7 injection for zsh, bash, fish
 - `docs/process.md` — how we work, gates, testing strategy
 - `docs/adr/` — decisions; `docs/spikes/` — evidence behind them
 

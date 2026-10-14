@@ -29,6 +29,7 @@ use tokio::sync::{broadcast, watch};
 use crate::emulator::{DefaultColors, Emulator};
 use crate::error::TerminalError;
 use crate::render::RenderTracker;
+use crate::shell_integration;
 use crate::sniffer::TerminalMeta;
 use crate::sys::{self, Reaped, Signal};
 
@@ -59,6 +60,12 @@ pub struct TerminalConfig {
     pub scrollback_lines: usize,
     /// Colours reported for OSC 10/11/12 queries while the application has not set its own.
     pub default_colors: DefaultColors,
+    /// Inject OSC 133 / OSC 7 shell integration when the session runs zsh, bash or fish
+    /// (default true). The session environment variable `HEELER_SHELL_INTEGRATION=0` opts
+    /// out as well.
+    pub shell_integration: bool,
+    /// Directory written by [`crate::shell_integration::install`]; `None` = nothing to inject.
+    pub shell_integration_dir: Option<PathBuf>,
 }
 
 impl Default for TerminalConfig {
@@ -75,6 +82,8 @@ impl Default for TerminalConfig {
             },
             scrollback_lines: 10_000,
             default_colors: DefaultColors::default(),
+            shell_integration: true,
+            shell_integration_dir: None,
         }
     }
 }
@@ -262,6 +271,11 @@ fn command(cfg: &TerminalConfig) -> CommandBuilder {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "heeler");
+    let integration_dir = cfg
+        .shell_integration_dir
+        .as_deref()
+        .filter(|_| cfg.shell_integration);
+    shell_integration::inject(&mut cmd, integration_dir, cfg.cwd.as_deref());
     if let Some(cwd) = &cfg.cwd {
         cmd.cwd(cwd);
     }

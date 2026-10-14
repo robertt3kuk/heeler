@@ -129,7 +129,20 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     let clients = Arc::new(AtomicU32::new(0));
     let bus = Arc::new(EventBus::new(epoch, config.ring));
     let hub = Arc::new(TerminalHub::new());
-    let registry = registry::spawn(bus.clone(), hub.clone(), paths.socket.clone());
+    // Best effort: without the scripts terminals still work, they just carry no prompt marks.
+    let shell_integration_dir = match heeler_terminal::shell_integration::install(&paths.base) {
+        Ok(dir) => Some(dir),
+        Err(error) => {
+            warn!(%error, "shell integration unavailable");
+            None
+        }
+    };
+    let registry = registry::spawn(
+        bus.clone(),
+        hub.clone(),
+        paths.socket.clone(),
+        shell_integration_dir,
+    );
     let router = Router::new(
         registry,
         hub,

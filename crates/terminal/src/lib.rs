@@ -9,6 +9,7 @@ mod emulator;
 mod error;
 mod queries;
 mod render;
+pub mod shell_integration;
 mod sniffer;
 mod sys;
 mod terminal;

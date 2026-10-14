@@ -934,6 +934,43 @@ async fn daemon_managed_environment_wins_over_the_spec() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn zsh_sessions_get_the_installed_shell_integration() {
+    if !std::path::Path::new("/bin/zsh").exists() {
+        eprintln!("skipping: zsh is not installed");
+        return;
+    }
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    let home = tempfile::tempdir().unwrap();
+    // `zsh -c` reads the injected ZDOTDIR shim's .zshenv like an interactive zsh does, which
+    // restores the user's ZDOTDIR (unset here) and leaves the integration variables behind.
+    let mut spec = spec(&[
+        "/bin/zsh",
+        "-c",
+        "echo \"VER=$HEELER_SHELL_INTEGRATION_VERSION DIR=$HEELER_SHELL_INTEGRATION_DIR ZD=[$ZDOTDIR]\"; exec cat",
+    ]);
+    spec.size = Some(size(400, 10));
+    spec.env
+        .insert("HOME".into(), home.path().to_string_lossy().into_owned());
+    let session = create(&client, spec).await;
+    let mut view = View::attach(&client, terminal_of(&session), None).await;
+    view.wait_for("integration line", |s| s.contains("ZD=["))
+        .await;
+    let root = t.paths.base.join("shell-integration").join("1");
+    assert_eq!(
+        view.screen.after("VER=").unwrap(),
+        format!("1 DIR={} ZD=[]", root.display())
+    );
+    assert!(root.join("zsh/.zshenv").is_file());
+    assert!(root.join("bash/heeler.bash").is_file());
+    assert!(
+        root.join("fish/vendor_conf.d/heeler-shell-integration.fish")
+            .is_file()
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
     let t = TestDaemon::start().await;
     let (client, mut events) = t.connect_subscribed().await;

@@ -175,6 +175,8 @@ struct SessionRegistry {
     hub: Arc<TerminalHub>,
     /// Exported to children as `HEELER_SOCKET`.
     socket: PathBuf,
+    /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
+    shell_integration_dir: Option<PathBuf>,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
     mailbox: mpsc::WeakSender<Command>,
     default_workspace: WorkspaceId,
@@ -184,13 +186,19 @@ struct SessionRegistry {
 }
 
 /// Starts the actor. It stops when every [`RegistryHandle`] is dropped.
-pub fn spawn(bus: Arc<EventBus>, hub: Arc<TerminalHub>, socket: PathBuf) -> RegistryHandle {
+pub fn spawn(
+    bus: Arc<EventBus>,
+    hub: Arc<TerminalHub>,
+    socket: PathBuf,
+    shell_integration_dir: Option<PathBuf>,
+) -> RegistryHandle {
     let (tx, rx) = mpsc::channel(MAILBOX_CAPACITY);
     let default_workspace = WorkspaceId::new();
     let registry = SessionRegistry {
         bus,
         hub,
         socket,
+        shell_integration_dir,
         mailbox: tx.downgrade(),
         default_workspace,
         workspaces: vec![WorkspaceInfo {
@@ -428,6 +436,7 @@ impl SessionRegistry {
             argv: session.spec.command.clone(),
             cwd: session.info.cwd.clone(),
             env,
+            shell_integration_dir: self.shell_integration_dir.clone(),
             ..TerminalConfig::default()
         };
         if let Some(size) = session.spec.size {
