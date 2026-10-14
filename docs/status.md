@@ -4,8 +4,8 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 
 ## Current
 - **Milestone**: M2 — GPUI workbench and terminal client (M0, M1 complete). Design: `docs/design.md`, ADR 0010.
-- **Active slice**: M2-H (`../heeler-wt/M2-H`): compact scrollback store (ADR 0013) for budget B2 + bench B4a/B4b split (ADR 0011).
-- **Next action**: review/merge M2-H; M2 demo with screenshots (M2.8); close M2; then M10 (shell integration + blocks). Plan changes 2026-10-14: B4 redefined (ADR 0011); embedded editor added as M11 (ADR 0012 proposed, blocked on the license question); terminal blocks as M10; rich shell input dropped; execution order in `roadmap.md`.
+- **Active slice**: M2-H (`../heeler-wt/M2-H`): compact scrollback store (ADR 0013) for budget B2 + bench B4a/B4b split (ADR 0011). M10-A (shell integration) merged `0758389`; M10-B brief ready (waits for M2-H).
+- **Next action**: review/merge M2-H; on a quiet machine rerun `cargo nextest run --workspace` ×3 and investigate `ack_pacing_keeps_floods_bounded_and_the_daemon_responsive` (flood of 20 MB not finished in the wait window under load ≈ 20; 12.4 s isolated vs 5.7 s in M1) and `fd::descriptors_return_to_the_initial_count` (13 vs 12 under load); M2 demo (M2.8); then M10-B → M10-C.
 - **Blockers**: none. Antigravity (`agy`) was dropped from the process: account not eligible ("Eligibility check failed"); can return once the account works.
 - **Open questions** (decide during M0/M1, not blocking):
   1. **Project license — now on the critical path for M11**: Zed's `editor`/`language`/`lsp`/`vim` crates are GPL-3.0 (reusable only if Heeler is GPL-3.0); Warp is AGPL-3.0 (ideas only). Permissive license ⇒ own editor on tree-sitter/ropey/lsp-types (ADR 0012 option B).
