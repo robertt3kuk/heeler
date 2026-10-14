@@ -1,6 +1,6 @@
 # M3-A: `storage` crate (SQLite actor) + daemon restore pipeline (roadmap M3.1 + M3.2)
 
-Agent: implementer   Depends on: master (after M2-H)   Branch: slice/M3-A
+Agent: implementer   Depends on: master `2c75da5`+ (runs concurrently with M2-H, which owns `crates/terminal` and `xtask` — do not edit those)   Branch: slice/M3-A
 
 ## Context
 Read `AGENTS.md`, ADR 0006 (storage: rusqlite bundled, single writer actor thread, WAL, forward-only embedded migrations with pre-migration backup, ULID ids), ADR 0009 step 1 (children die with the daemon; restore structure and respawn), `docs/architecture.md` (§ State ownership, § Persistence and restore, § Paths), `docs/protocol.md`, `crates/daemon/src/{registry,terminals,daemon}.rs`, `crates/core`.
