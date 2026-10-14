@@ -21,15 +21,15 @@ Newest entry first. Every session ends by updating **Current** and adding a log 
 - Installed agents: `codex` 0.144.2, `codex-acp` 1.12.0, `omp` 18.10.3 (`omp acp`), `opencode` 2.0.14; no Claude Code ACP adapter.
 - Antigravity CLI `agy` 1.3.4 is installed but unusable (account not eligible); not part of the process.
 - Gate tools: just 1.58.0, cargo-deny 0.20.2, cargo-nextest 0.9.148 (Homebrew).
+
+## Log
+
 ### 2026-10-14 — M2 design + wave 1 merged; protocol 0.2
 - Design with the user: layout A + overview board + ⌘K, native chrome + own terminal themes, density setting, one session with Chat/Terminal switch, **everything movable and configurable** → `docs/design.md`, ADR 0010 (workbench: docks + pane tree + panel registry + presets; layered TOML settings; GPUI only in UI crates). Vision/M7: task placement main checkout or worktree.
 - Wave 1: `client::Connection` (`3f94df0`), `settings` (`ecf304b`), `terminal_view` (`fa7babc`), `desktop` workbench core (`6c2c2d9`, fixes `75d9c55`: exact overview round-trip, readable tinted sidebar). `just check` 484 tests green.
 - Orchestrator: golden fixtures canonicalized (GPUI turns on `serde_json/preserve_order` workspace-wide); `deny.toml` gained MPL-2.0/CC0, zed font-kit + proptest git sources, 3 unmaintained-advisory ignores (all transitive via GPUI); protocol 0.2 `terminal.set_colors`.
 - Visual checks (orchestrator screenshots via `screencapture -l`): workbench default layout matches the design (titlebar, sessions/inspector docks, status bar); sidebar contrast fixed; `terminal_view` renders OMP v18.10.3 correctly (truecolor gradient, block glyphs, emoji, status line), live input incl. Cyrillic lands on the grid.
 - Known gaps (GPUI): no left/right Option distinction (option-as-meta applies to both), no keypad distinction, no system accent API (fixed blue). Client limitation: one attachment per terminal per connection → desktop shares one terminal model across views.
-
-
-## Log
 
 ### 2026-10-13 — M1 tech debt paid
 - DT2 (`c3d556a`): CLI tests locate a prebuilt `heelerd` (fail fast with a build hint, no nested `cargo build`), one shared test harness; `just test` builds `--bins` first; `heeler attach` on an ended session shows the final screen and exits 0 with the end line.
