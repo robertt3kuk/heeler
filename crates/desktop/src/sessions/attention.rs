@@ -495,6 +495,7 @@ mod tests {
             sandbox: heeler_core::SandboxMode::WorkspaceWrite,
             turn_active,
             pending_approvals: pending,
+            provider_id: None,
         });
         session
     }

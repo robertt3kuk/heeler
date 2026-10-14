@@ -142,6 +142,8 @@ impl TestDaemon {
             approval_policy: None,
             sandbox: None,
             title: None,
+            provider_id: None,
+            system_prompt: None,
         }));
         created.session
     }
