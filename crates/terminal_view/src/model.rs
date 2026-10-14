@@ -9,8 +9,10 @@
 //! only grows. Content that scrolls into history keeps its number, so a selection (or a cached
 //! page) stays attached to its text while output continues.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
+use heeler_client::BlockList;
+use heeler_protocol::blocks::Block;
 use heeler_protocol::render::{
     CellFlags, Cursor, CursorShape, Modes, Palette, Row, Run, TerminalFrame, TerminalRender,
     TerminalSnapshot,
@@ -119,6 +121,13 @@ pub struct TerminalModel {
     history_total: u64,
     /// Fetched scrollback by absolute line.
     history: HashMap<u64, Row>,
+    /// The daemon's absolute line number of viewport row 0 (`viewport_top` of the last render):
+    /// block lines map to rows with it, see [`Self::line_of`].
+    viewport_top: u64,
+    /// Blocks of this terminal (protocol 0.5), kept current by the owner.
+    blocks: BlockList,
+    /// Ids of blocks whose output the views fold into one summary row.
+    collapsed: BTreeSet<u64>,
 }
 
 impl Default for TerminalModel {
@@ -142,6 +151,9 @@ impl Default for TerminalModel {
             history_len: 0,
             history_total: 0,
             history: HashMap::new(),
+            viewport_top: 0,
+            blocks: BlockList::new(),
+            collapsed: BTreeSet::new(),
         }
     }
 }
@@ -211,6 +223,80 @@ impl TerminalModel {
         self.history_total
     }
 
+    /// The daemon's line number (`terminal.blocks` numbering) of viewport row 0.
+    pub fn viewport_top(&self) -> u64 {
+        self.viewport_top
+    }
+
+    /// The model line (see the module docs) of the daemon's absolute line `abs`. Both numberings
+    /// advance together, so the offset from the viewport is all that links them; the model's
+    /// own counts are never used to guess it.
+    pub fn line_of(&self, abs: u64) -> i64 {
+        let offset = i128::from(abs) - i128::from(self.viewport_top);
+        let line = i128::from(self.history_total) + offset;
+        i64::try_from(line).unwrap_or(if line < 0 { i64::MIN } else { i64::MAX })
+    }
+
+    /// The daemon's absolute line number of the model line `line`; `None` before the first line
+    /// of the terminal.
+    pub fn abs_of(&self, line: i64) -> Option<u64> {
+        let offset = i128::from(line) - i128::from(self.history_total);
+        u64::try_from(i128::from(self.viewport_top) + offset).ok()
+    }
+
+    /// The oldest model line the daemon still retains.
+    pub fn oldest_line(&self) -> i64 {
+        i64::try_from(
+            self.history_total
+                .saturating_sub(u64::from(self.history_len)),
+        )
+        .unwrap_or(i64::MAX)
+    }
+
+    // ---- blocks ----------------------------------------------------------------------------
+
+    /// The blocks of this terminal, oldest first.
+    pub fn blocks(&self) -> &BlockList {
+        &self.blocks
+    }
+
+    /// Replaces the block list (an initial fetch, or one after a reconnect). Folds of blocks
+    /// that are gone are forgotten.
+    pub fn set_blocks(&mut self, blocks: BlockList) {
+        self.blocks = blocks;
+        let blocks = &self.blocks;
+        self.collapsed.retain(|id| blocks.get(*id).is_some());
+    }
+
+    /// Folds one `terminal.block` event into the list.
+    pub fn apply_block(&mut self, block: Block) {
+        self.blocks.apply(block);
+    }
+
+    /// Ids of the folded blocks.
+    pub fn collapsed(&self) -> &BTreeSet<u64> {
+        &self.collapsed
+    }
+
+    pub fn is_collapsed(&self, id: u64) -> bool {
+        self.collapsed.contains(&id)
+    }
+
+    /// Replaces the folded set (restoring what the desktop saved). Ids of blocks that do not
+    /// exist fold nothing; the next [`Self::set_blocks`] forgets them.
+    pub fn set_collapsed(&mut self, ids: BTreeSet<u64>) {
+        self.collapsed = ids;
+    }
+
+    /// Folds or unfolds a block; returns whether the set changed (only known blocks can fold).
+    pub fn set_block_collapsed(&mut self, id: u64, collapsed: bool) -> bool {
+        if collapsed {
+            self.blocks.get(id).is_some() && self.collapsed.insert(id)
+        } else {
+            self.collapsed.remove(&id)
+        }
+    }
+
     pub fn apply(&mut self, render: TerminalRender) -> Option<Applied> {
         match render {
             TerminalRender::Snapshot(s) => Some(self.apply_snapshot(s)),
@@ -238,6 +324,7 @@ impl TerminalModel {
         self.frame = s.frame;
         self.ready = true;
         self.history_len = s.history_len;
+        self.viewport_top = s.viewport_top;
 
         let mut history_grew = 0;
         let mut history_reset = false;
@@ -308,6 +395,7 @@ impl TerminalModel {
 
         let old_len = self.history_len;
         self.history_len = f.history_len;
+        self.viewport_top = f.viewport_top;
         let mut history_grew = 0;
         let mut history_reset = false;
         if f.history_len < old_len {
@@ -457,6 +545,7 @@ pub(crate) mod fixtures {
             lines: lines.iter().map(|l| row(l)).collect(),
             links: vec![],
             history_len,
+            viewport_top: 0,
         }
     }
 
@@ -470,6 +559,7 @@ pub(crate) mod fixtures {
             title: None,
             links: vec![],
             history_len,
+            viewport_top: 0,
         }
     }
 }
@@ -482,6 +572,75 @@ mod tests {
 
     fn text(model: &TerminalModel, row: usize) -> String {
         TerminalModel::row_text(&model.viewport()[row])
+    }
+
+    #[test]
+    fn daemon_lines_map_onto_model_lines_through_the_viewport_top() {
+        let mut m = TerminalModel::new();
+        // 30 lines of history, the daemon says the first viewport row is its line 500.
+        let mut s = snapshot(1, 10, &["a", "b"], 30);
+        s.viewport_top = 500;
+        m.apply_snapshot(s);
+        assert_eq!(m.viewport_top(), 500);
+        assert_eq!(
+            m.line_of(500),
+            30,
+            "row 0 is the first model line of the viewport"
+        );
+        assert_eq!(m.line_of(499), 29);
+        assert_eq!(m.line_of(470), 0, "the oldest retained line");
+        assert_eq!(m.oldest_line(), 0);
+        assert_eq!(m.abs_of(31), Some(501));
+        assert_eq!(m.abs_of(0), Some(470));
+        // The history is at its bound: lines scroll off, the model's own count stands still, but
+        // the daemon's number moves and so does the mapping.
+        let mut f = frame(2, &[], 30);
+        f.viewport_top = 507;
+        m.apply_frame(f).unwrap();
+        assert_eq!(m.line_of(507), 30);
+        assert_eq!(m.line_of(500), 23);
+        // A terminal with fewer lines than the number says maps below zero.
+        assert_eq!(m.line_of(0), 30 - 507);
+        assert_eq!(m.abs_of(-1000), None);
+    }
+
+    #[test]
+    fn collapsed_blocks_are_pruned_by_a_new_list_only() {
+        use heeler_protocol::blocks::{Block, BlockState, TerminalBlocksResult};
+        let block = |id| Block {
+            id,
+            prompt_line: id,
+            command_line: None,
+            output_start: None,
+            end_line: None,
+            command: None,
+            exit_code: None,
+            started_at_ms: 0,
+            finished_at_ms: None,
+            cwd: None,
+            state: BlockState::Prompt,
+        };
+        let list = |ids: &[u64]| {
+            let mut list = BlockList::new();
+            list.replace(TerminalBlocksResult {
+                blocks: ids.iter().rev().map(|id| block(*id)).collect(),
+                viewport_top: 0,
+            });
+            list
+        };
+        let mut m = TerminalModel::new();
+        // Restored before the first fetch: kept.
+        m.set_collapsed([1, 2, 9].into());
+        assert_eq!(m.collapsed().len(), 3);
+        // Events do not prune; a fetch does.
+        m.apply_block(block(1));
+        assert_eq!(m.collapsed().len(), 3);
+        m.set_blocks(list(&[1, 2, 3]));
+        assert_eq!(m.collapsed().iter().copied().collect::<Vec<_>>(), [1, 2]);
+        assert!(!m.set_block_collapsed(7, true), "unknown block");
+        assert!(m.set_block_collapsed(3, true));
+        assert!(!m.set_block_collapsed(3, true), "already folded");
+        assert!(m.set_block_collapsed(3, false));
     }
 
     #[test]

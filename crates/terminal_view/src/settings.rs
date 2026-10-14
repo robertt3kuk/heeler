@@ -1,6 +1,6 @@
 //! Plain view configuration. Wave 2 maps the `terminal` settings namespace onto it.
 
-use crate::theme::TerminalPalette;
+use crate::theme::{Rgb, TerminalPalette};
 
 /// Which Option key acts as Meta (ESC prefix) instead of composing characters.
 ///
@@ -45,6 +45,40 @@ impl Default for CursorSettings {
     }
 }
 
+/// The block overlay (gutter, separators, chips, folds, actions bar).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlockSettings {
+    /// Draw the overlay; false makes the terminal look as if blocks did not exist.
+    pub enabled: bool,
+    /// Width of the gutter bar in logical pixels (a density token); it is drawn inside the
+    /// padding at the left edge, the grid never moves.
+    pub gutter_width: f32,
+    /// Gutter bar and chip of a command that exited 0.
+    pub success: Rgb,
+    /// Gutter bar and chip of a command that failed.
+    pub error: Rgb,
+    /// Running commands, commands without an exit code, hover and highlight tints.
+    pub neutral: Rgb,
+    /// Accent for the highlighted block.
+    pub accent: Rgb,
+    /// Animate the activity indicator of a running block (false under Reduce Motion).
+    pub animate: bool,
+}
+
+impl Default for BlockSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gutter_width: 3.0,
+            success: Rgb(0x30, 0xd1, 0x58),
+            error: Rgb(0xff, 0x45, 0x3a),
+            neutral: Rgb(0xaa, 0xaa, 0xaf),
+            accent: Rgb(0x0a, 0x84, 0xff),
+            animate: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalViewSettings {
     pub font_family: String,
@@ -59,6 +93,7 @@ pub struct TerminalViewSettings {
     /// Space between the view's edge and the grid, on all four sides, in logical pixels. The
     /// grid (columns and rows, mouse hit-testing) is laid out in the padded content box.
     pub padding: f32,
+    pub blocks: BlockSettings,
 }
 
 impl Default for TerminalViewSettings {
@@ -73,6 +108,7 @@ impl Default for TerminalViewSettings {
             copy_on_select: false,
             scroll_to_bottom_on_input: true,
             padding: 0.0,
+            blocks: BlockSettings::default(),
         }
     }
 }

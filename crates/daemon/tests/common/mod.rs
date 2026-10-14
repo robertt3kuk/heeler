@@ -224,6 +224,8 @@ pub struct Screen {
     pub lines: Vec<String>,
     pub frame: u64,
     pub history_len: u32,
+    /// Absolute line of row 0 (protocol 0.6).
+    pub viewport_top: u64,
     pub snapshots: usize,
     pub frames: usize,
 }
@@ -238,6 +240,7 @@ impl Screen {
                 self.lines = snapshot.lines.iter().map(row_text).collect();
                 self.frame = snapshot.frame;
                 self.history_len = snapshot.history_len;
+                self.viewport_top = snapshot.viewport_top;
                 self.snapshots += 1;
             }
             TerminalRender::Frame(frame) => {
@@ -253,6 +256,7 @@ impl Screen {
                 }
                 self.frame = frame.frame;
                 self.history_len = frame.history_len;
+                self.viewport_top = frame.viewport_top;
                 self.frames += 1;
             }
         }

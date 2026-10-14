@@ -10,6 +10,7 @@ use gpui::{
     Entity, Focusable as _, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TestAppContext,
     TouchPhase, VisualTestContext, point, px, size,
 };
+use heeler_protocol::blocks::BlockPart;
 use heeler_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, Run,
     TerminalFrame, TerminalRender, TerminalSnapshot,
@@ -26,11 +27,14 @@ enum Call {
     Ack(u64),
     History(u32, u32),
     Colors(DefaultColors),
+    BlockText(u64, BlockPart),
 }
 
 #[derive(Default)]
 struct Recorder {
     calls: RefCell<Vec<Call>>,
+    /// What `block_text` answers.
+    texts: RefCell<Vec<(u64, BlockPart, String)>>,
 }
 
 impl Recorder {
@@ -66,6 +70,18 @@ impl TerminalBackend for Recorder {
     }
     fn set_default_colors(&self, colors: DefaultColors) {
         self.calls.borrow_mut().push(Call::Colors(colors));
+    }
+    fn block_text(&self, block_id: u64, part: BlockPart) -> gpui::Task<Option<String>> {
+        self.calls
+            .borrow_mut()
+            .push(Call::BlockText(block_id, part));
+        gpui::Task::ready(
+            self.texts
+                .borrow()
+                .iter()
+                .find(|(id, p, _)| *id == block_id && *p == part)
+                .map(|(_, _, text)| text.clone()),
+        )
     }
 }
 
@@ -144,6 +160,7 @@ fn snapshot(frame: u64, lines: &[&str], modes: Modes, history_len: u32) -> Termi
         lines: lines.iter().map(|l| row(l)).collect(),
         links: vec![],
         history_len,
+        viewport_top: 0,
     })
 }
 
@@ -157,6 +174,7 @@ fn frame(frame: u64, dirty: &[(u16, &str)], history_len: u32) -> TerminalRender 
         title: None,
         links: vec![],
         history_len,
+        viewport_top: 0,
     })
 }
 
@@ -787,6 +805,7 @@ fn links_open_with_cmd_click_only_for_safe_schemes(cx: &mut TestAppContext) {
             },
         ],
         history_len: 0,
+        viewport_top: 0,
     });
     apply(&view, cx, render);
     draw(cx);
@@ -893,6 +912,7 @@ fn every_run_style_paints_without_panicking(cx: &mut TestAppContext) {
             ],
             links: vec![],
             history_len: 0,
+            viewport_top: 0,
         };
         s.frame = 1;
         apply(&view, cx, TerminalRender::Snapshot(s));

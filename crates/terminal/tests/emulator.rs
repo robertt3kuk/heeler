@@ -63,6 +63,35 @@ fn cursor_only_change_produces_a_frame_without_dirty_rows() {
 }
 
 #[test]
+fn snapshots_and_frames_carry_the_absolute_line_of_the_first_row() {
+    let mut em = emulator(10, 3);
+    let mut tracker = RenderTracker::new();
+    assert_eq!(em.snapshot(&mut tracker).viewport_top, 0);
+    // Two line feeds fill the screen; each one after that scrolls a row into the history.
+    em.feed(b"a\r\nb\r\nc\r\nd\r\ne");
+    let frame = em.frame(&mut tracker).expect("output");
+    assert_eq!(frame.viewport_top, em.viewport_top());
+    assert_eq!(frame.viewport_top, 2);
+    // With the history full, output that scrolls without changing a single visible row (the
+    // same text again) moves only the number, so it must still produce a frame.
+    let mut em = Emulator::new(size(10, 3), 1).expect("emulator");
+    let mut tracker = RenderTracker::new();
+    em.feed(b"x\r\nx\r\nx\r\nx\r\nx");
+    let before = em.snapshot(&mut tracker);
+    assert_eq!(before.history_len, 1, "the history is at its bound");
+    em.feed(b"\r\nx");
+    let frame = em.frame(&mut tracker).expect("the viewport scrolled");
+    assert!(frame.dirty.is_empty(), "{:?}", frame.dirty);
+    assert_eq!(frame.history_len, 1);
+    assert_eq!(frame.viewport_top, before.viewport_top + 1);
+    // The alternate screen keeps the number of the primary screen.
+    em.feed(b"\x1b[?1049h\x1b[2J\x1b[Halt");
+    let alt = em.snapshot(&mut tracker);
+    assert!(alt.modes.alt_screen);
+    assert_eq!(alt.viewport_top, frame.viewport_top);
+}
+
+#[test]
 fn mode_and_title_changes_are_reported_once() {
     let mut em = emulator(10, 3);
     let mut tracker = RenderTracker::new();

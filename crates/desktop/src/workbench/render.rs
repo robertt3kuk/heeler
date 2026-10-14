@@ -354,6 +354,14 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::NewChat, _, cx| {
             this.set_notice("Chats arrive with M5", cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &heeler_terminal_view::SendBlockToAgent, _, cx| {
+                this.set_notice("Sending a block to an agent arrives with M4", cx);
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::JumpToBlock, window, cx| {
+            this.jump_to_block(&a.0.session, a.0.block, window, cx);
+        }))
         .on_action(cx.listener(|this, _: &actions::StopSession, window, cx| {
             if let Some(session) = this.focused_session() {
                 this.stop_session(session, window, cx);

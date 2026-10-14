@@ -13,12 +13,12 @@ name = "heeler_terminal_view"
 gpui.workspace = true
 gpui_platform.workspace = true
 heeler-protocol.workspace = true
+heeler-client.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
-heeler-client.workspace = true
 heeler-core.workspace = true
 heeler-daemon.workspace = true
 serde_json.workspace = true

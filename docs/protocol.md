@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.6
+# Heeler IPC Protocol — v0.7
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`. 0.7 — render DTOs carry `viewport_top` (absolute line of viewport row 0).
 
 ## Frames
 
@@ -92,8 +92,8 @@ Milestone tag = when the method lands.
 ## Terminal render types (ADR 0004)
 
 ```text
-TerminalSnapshot { frame, cols, rows, cursor, modes, palette, title?, lines: [Row; rows], links: [Link], history_len }
-TerminalFrame    { frame, scrolled: i32, dirty: [(row, Row)], cursor, modes?, title??, links: [Link], history_len }
+TerminalSnapshot { frame, cols, rows, cursor, modes, palette, title?, lines: [Row; rows], links: [Link], history_len, viewport_top }
+TerminalFrame    { frame, scrolled: i32, dirty: [(row, Row)], cursor, modes?, title??, links: [Link], history_len, viewport_top }
 Row              { runs: [Run], wrapped }
 Run              { text, fg: Color, bg: Color, flags: CellFlags, underline_color: Color?, link: u32? }
 Color            default | indexed(u8) | rgb(u8, u8, u8)
@@ -109,6 +109,7 @@ Semantics produced by the `terminal` crate (what clients can rely on):
 - `scrolled` is always 0: a scrolling viewport is reported as the rows that differ.
 - Frames carry neither dimensions nor palette. After a resize or a palette change (OSC 4/10/11/12) the daemon sends a fresh `TerminalSnapshot` instead of a frame (`Terminal::render`).
 - `terminal.history`: `from_line` 0 is the line directly above the viewport, rows are newest first; the alternate screen has no history (`history_len` = 0 while it is active).
+- `viewport_top` (0.7): the absolute line number of viewport row 0, as in `terminal.blocks` (see § Terminal blocks), counted over the primary screen only, so it keeps its last primary value while the alternate screen shows. A frame carries it after every change; a render whose only change is a new `viewport_top` (the screen scrolled and every row looks the same) is still sent. Clients map block lines to rows with `row = line - viewport_top` and never derive it from scroll counts (`scrolled` stays 0).  Render frames are postcard (field order is the format), so this field is a wire change the version number does not negotiate away: client and daemon of one build speak it, a 0.5 peer cannot decode 0.6 render frames.
 - Scrollback storage (ADR 0013, no wire change): the daemon keeps the newest ≤ 256 history rows in the engine and older ones in a compact store; `terminal.history` reads across both with the semantics above, and the retained history is exactly `scrollback_lines` rows. Consequences clients may observe: after a resize only rows within the newest ~256 history rows are reflowed to the new width — older history rows keep the width they had when they scrolled out (a row of any width is valid; paint it as is, `wrapped` still marks soft wraps); `ESC[3J` and `ESC c` erase all of it; link ids of history rows are assigned when a row leaves that window, not when it is first read (ids stay stable, and the link table in a snapshot may therefore list links of history rows no client has fetched).
 - Terminal queries answered by the daemon (through the terminal's single PTY writer, in query order, echoing the terminator the query used): OSC 10/11/12 `?` → `OSC 1x ; rgb:RRRR/GGGG/BBBB` (the application's override, else the configured default colours: foreground `#d4d4d4`, background `#1e1e1e`, cursor `#d4d4d4`); OSC 4 `;N;?` → override, else the standard xterm 256-colour table; CSI 18 t → `CSI 8 ; rows ; cols t`; CSI 14 t → `CSI 4 ; height_px ; width_px t`; CSI 16 t → `CSI 6 ; cell_h ; cell_w t` (pixel values from the last `TerminalSize`, `0` when unknown). Clients do not answer these queries.
 

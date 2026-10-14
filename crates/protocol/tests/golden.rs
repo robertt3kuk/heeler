@@ -540,6 +540,7 @@ fn renders() -> Vec<(&'static str, TerminalRender)> {
                     uri: "https://example.com".into(),
                 }],
                 history_len: 120,
+                viewport_top: 1480,
             }),
         ),
         (
@@ -553,6 +554,7 @@ fn renders() -> Vec<(&'static str, TerminalRender)> {
                 title: Some(None),
                 links: vec![],
                 history_len: 121,
+                viewport_top: 1481,
             }),
         ),
     ]

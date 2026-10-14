@@ -478,6 +478,7 @@ impl Emulator {
         let palette = self.palette();
         let title = self.title.clone();
         let history_len = self.history_len();
+        let viewport_top = self.viewport_top();
         let links = self.links.all();
         tracker.frame += 1;
         tracker.synced = true;
@@ -490,6 +491,7 @@ impl Emulator {
         tracker.title = title.clone();
         tracker.links_sent = self.links.len();
         tracker.history_len = history_len;
+        tracker.viewport_top = viewport_top;
         tracker.generation = self.generation;
         TerminalSnapshot {
             frame: tracker.frame,
@@ -502,6 +504,7 @@ impl Emulator {
             lines,
             links,
             history_len,
+            viewport_top,
         }
     }
 
@@ -515,6 +518,7 @@ impl Emulator {
         let cursor = self.cursor();
         let modes = self.modes();
         let history_len = self.history_len();
+        let viewport_top = self.viewport_top();
         let dirty: Vec<(u16, Row)> = lines
             .iter()
             .zip(&tracker.lines)
@@ -530,6 +534,7 @@ impl Emulator {
             && !modes_changed
             && tracker.cursor == Some(cursor)
             && tracker.history_len == history_len
+            && tracker.viewport_top == viewport_top
         {
             return None;
         }
@@ -540,6 +545,7 @@ impl Emulator {
         tracker.cursor = Some(cursor);
         tracker.modes = modes;
         tracker.history_len = history_len;
+        tracker.viewport_top = viewport_top;
         if title_changed {
             tracker.title.clone_from(&self.title);
         }
@@ -552,6 +558,7 @@ impl Emulator {
             title: title_changed.then(|| self.title.clone()),
             links,
             history_len,
+            viewport_top,
         })
     }
 

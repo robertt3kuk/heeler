@@ -353,6 +353,53 @@ async fn blocks_have_exact_lines_and_texts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn renders_carry_the_same_viewport_top_as_the_blocks_answer() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    // 100 lines scroll the 24-row screen, then one block and a prompt on the last rows.
+    let session = create(
+        &client,
+        sh("seq 1 100; printf '\\033]133;A\\007$ \\033]133;B\\007cmd\\r\\n\\033]133;C\\007out\\r\\n\\033]133;D;0\\007\\033]133;A\\007$ \\033]133;B\\007'; exec cat"),
+    )
+    .await;
+    let terminal = terminal_of(&session);
+    wait_blocks(&client, terminal, "the block", |b| {
+        b.len() == 2 && b[0].state == BlockState::Finished
+    })
+    .await;
+    let mut view = View::attach(&client, terminal, None).await;
+    let first = view.screen.viewport_top;
+    view.wait_for("the screen to settle", |s| s.contains("$ "))
+        .await;
+    let answer = client.terminal_blocks(terminal, None, 10).await.unwrap();
+    assert!(
+        answer.viewport_top > 70,
+        "the screen scrolled: {}",
+        answer.viewport_top
+    );
+    assert_eq!(
+        view.screen.viewport_top, answer.viewport_top,
+        "snapshot {first}"
+    );
+    // The block's lines map onto rows with it: the prompt line is a row of the screen.
+    let blocks = blocks(&client, terminal).await;
+    let row = blocks[0].prompt_line - answer.viewport_top;
+    assert_eq!(
+        view.screen.lines[usize::try_from(row).unwrap()].trim_end(),
+        "$ cmd"
+    );
+    // More output moves the number in the frames, and the answer follows.
+    client.send_input(terminal, b"x\n").await.unwrap();
+    view.wait_for("the screen to scroll", |s| {
+        s.viewport_top > answer.viewport_top
+    })
+    .await;
+    let later = client.terminal_blocks(terminal, None, 10).await.unwrap();
+    assert_eq!(later.viewport_top, view.screen.viewport_top);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unknown_terminals_and_blocks_are_not_found_and_limits_are_clamped() {
     let t = TestDaemon::start().await;
     let client = t.connect().await;

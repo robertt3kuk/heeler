@@ -13,7 +13,7 @@ use gpui::{
 use heeler_core::SessionId;
 use heeler_protocol::messages::SessionInfo;
 use heeler_settings::{ChangeSet, KEYMAP_NAMESPACE};
-use heeler_terminal_view::{DefaultColors, TerminalView, ViewMode};
+use heeler_terminal_view::{DefaultColors, SharedEvent, SharedTerminal, TerminalView, ViewMode};
 
 use super::actions;
 use super::modal::PromptSpec;
@@ -24,6 +24,22 @@ use super::view::{MenuEntry, Workbench, system_appearance};
 use crate::sessions::TerminalSession;
 use crate::settings::{AppearanceSettings, LayoutSettings, TerminalSettings};
 use crate::theme::Theme;
+
+/// The view configuration of a terminal: the `terminal` namespace with its theme resolved, plus
+/// what follows the density (padding, block gutter) and the chrome theme (block colors).
+pub(crate) fn terminal_style(
+    settings: &TerminalSettings,
+    system: heeler_settings::SystemAppearance,
+    theme: &Theme,
+    density: heeler_settings::Density,
+) -> heeler_terminal_view::TerminalViewSettings {
+    let base = settings.view_settings(system);
+    heeler_terminal_view::TerminalViewSettings {
+        padding: density.ui().terminal_padding,
+        blocks: theme.block_settings(density, base.blocks.enabled, !crate::theme::reduce_motion()),
+        ..base
+    }
+}
 
 /// A terminal tab's view; the attachment it draws from lives in [`Workbench::held`].
 #[derive(Debug)]
@@ -87,6 +103,8 @@ impl Workbench {
             );
         }
         self.held.retain(|session, _| wanted.contains(session));
+        self.collapse_watch
+            .retain(|session, _| wanted.contains(session));
         let keep: HashSet<(PaneId, SessionId)> = items.into_iter().collect();
         let gone: Vec<(PaneId, SessionId)> = self
             .terminals
@@ -117,7 +135,82 @@ impl Workbench {
             .sessions
             .update(cx, |store, cx| store.terminal_session(session, cx))?;
         self.held.insert(session, attached.clone());
+        self.watch_collapsed(session, &attached, cx);
         Some(attached)
+    }
+
+    /// Restores the folded blocks saved for `attached`'s terminal and saves the changes the
+    /// user makes from now on.
+    fn watch_collapsed(
+        &mut self,
+        session: SessionId,
+        attached: &Entity<TerminalSession>,
+        cx: &mut Context<Self>,
+    ) {
+        let (shared, terminal) = {
+            let attached = attached.read(cx);
+            (attached.shared().clone(), attached.terminal())
+        };
+        if let Some(ids) = terminal.and_then(|t| self.collapsed_blocks.get(&t.to_string())) {
+            let ids: std::collections::BTreeSet<u64> = ids.iter().copied().collect();
+            shared.update(cx, |shared, cx| shared.set_collapsed(ids, cx));
+        }
+        let watch = cx.subscribe(&shared, move |this, shared, event: &SharedEvent, cx| {
+            if *event == SharedEvent::Collapsed {
+                this.collapsed_changed(session, &shared, cx);
+            }
+        });
+        self.collapse_watch.insert(session, watch);
+    }
+
+    fn collapsed_changed(
+        &mut self,
+        session: SessionId,
+        shared: &Entity<SharedTerminal>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.held.get(&session).and_then(|h| h.read(cx).terminal()) else {
+            return;
+        };
+        let ids: Vec<u64> = shared
+            .read(cx)
+            .model()
+            .collapsed()
+            .iter()
+            .copied()
+            .collect();
+        let key = terminal.to_string();
+        let changed = if ids.is_empty() {
+            self.collapsed_blocks.remove(&key).is_some()
+        } else {
+            self.collapsed_blocks.insert(key, ids.clone()).as_ref() != Some(&ids)
+        };
+        if changed {
+            self.schedule_save(cx);
+        }
+    }
+
+    /// Forgets the folds of terminals the daemon no longer has (once it has said what it has).
+    fn prune_collapsed(&mut self, cx: &mut Context<Self>) {
+        let live: HashSet<String> = {
+            let store = self.sessions.read(cx);
+            if !store.synced()
+                || store.connection_state() != heeler_client::ConnectionState::Connected
+            {
+                return;
+            }
+            store
+                .sessions()
+                .iter()
+                .filter_map(|s| s.terminal_id)
+                .map(|t| t.to_string())
+                .collect()
+        };
+        let before = self.collapsed_blocks.len();
+        self.collapsed_blocks.retain(|key, _| live.contains(key));
+        if self.collapsed_blocks.len() != before {
+            self.schedule_save(cx);
+        }
     }
 
     /// The view of `session` in `pane`, created on first use.
@@ -487,6 +580,26 @@ impl Workbench {
         self.set_notice("Copied the session id", cx);
     }
 
+    /// Shows `session`, scrolls its terminal to `block` and highlights it (the inspector's
+    /// block list).
+    pub fn jump_to_block(
+        &mut self,
+        session: &str,
+        block: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(session) = session.parse::<SessionId>() else {
+            return;
+        };
+        self.open_session(session, window, cx);
+        if let Some(view) = self.terminal_view_of(session) {
+            view.update(cx, |view, cx| {
+                view.jump_to_block(block, cx);
+            });
+        }
+    }
+
     /// Focuses the next session that needs the user.
     pub fn jump_to_next_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.focused_session();
@@ -559,6 +672,7 @@ impl Workbench {
     pub(crate) fn on_sessions_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.held.len();
         self.attach_open_items(cx);
+        self.prune_collapsed(cx);
         self.sync_session_focus(cx);
         let nothing_focused = window.focused(cx).is_none() || self.focus_handle.is_focused(window);
         if nothing_focused && self.held.len() != before {
@@ -755,10 +869,12 @@ impl Workbench {
     /// terminal.
     pub(crate) fn refresh_terminal_style(&mut self, cx: &mut Context<Self>) {
         let settings = self.settings.get::<TerminalSettings>();
-        let style = heeler_terminal_view::TerminalViewSettings {
-            padding: self.density.ui().terminal_padding,
-            ..settings.view_settings(system_appearance(self.appearance))
-        };
+        let style = terminal_style(
+            &settings,
+            system_appearance(self.appearance),
+            &self.theme,
+            self.density,
+        );
         self.terminal_settings = settings;
         if style == self.terminal_style {
             return;

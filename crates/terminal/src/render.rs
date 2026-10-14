@@ -76,6 +76,7 @@ pub struct RenderTracker {
     pub(crate) title: Option<String>,
     pub(crate) links_sent: usize,
     pub(crate) history_len: u32,
+    pub(crate) viewport_top: u64,
     pub(crate) generation: u64,
 }
 

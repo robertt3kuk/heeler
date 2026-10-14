@@ -18,7 +18,7 @@ use gpui::{
 use std::rc::Rc;
 
 pub use common::{kind_icon, tone_color};
-pub use inspector::InspectorPanel;
+pub use inspector::{BlockRow, InspectorPanel};
 pub use overview::OverviewPanel;
 pub use sessions::SessionsPanel;
 pub use status::{Tone as StatusTone, builtin_status_items, connection_label};

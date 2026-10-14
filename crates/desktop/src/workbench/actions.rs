@@ -146,6 +146,15 @@ data_actions! {
     OpenSettingsFor(String);
     /// Set the working mode (`app.on_quit`): what quitting does with the daemon.
     SetOnQuit(OnQuit);
+    /// Scroll the terminal of the session to a block and highlight it.
+    JumpToBlock(BlockRef);
+}
+
+/// A block of a session's terminal (`block` is the daemon's block id).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BlockRef {
+    pub session: String,
+    pub block: u64,
 }
 
 /// A palette entry: human title, the action it runs, and the action whose key binding is shown
@@ -273,6 +282,31 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
             SetOnQuit(OnQuit::StopDaemon),
         ),
     ];
+    out.extend([
+        command(
+            "Block: Previous Prompt",
+            heeler_terminal_view::JumpToPreviousPrompt,
+        ),
+        command("Block: Next Prompt", heeler_terminal_view::JumpToNextPrompt),
+        command(
+            "Block: Select Output",
+            heeler_terminal_view::SelectBlockOutput,
+        ),
+        command("Block: Copy Output", heeler_terminal_view::CopyBlockOutput),
+        command(
+            "Block: Copy Command",
+            heeler_terminal_view::CopyBlockCommand,
+        ),
+        command(
+            "Block: Collapse / Expand",
+            heeler_terminal_view::ToggleBlockCollapse,
+        ),
+        command("Block: Rerun", heeler_terminal_view::RerunBlock),
+        command(
+            "Block: Send to Agent (arrives with M4)",
+            heeler_terminal_view::SendBlockToAgent,
+        ),
+    ]);
     for dir in [
         Direction::Left,
         Direction::Right,
@@ -376,6 +410,22 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<ResizeDown>("ctrl-cmd-down", None),
         bind::<heeler_terminal_view::Copy>("cmd-c", Some(heeler_terminal_view::KEY_CONTEXT)),
         bind::<heeler_terminal_view::Paste>("cmd-v", Some(heeler_terminal_view::KEY_CONTEXT)),
+        bind::<heeler_terminal_view::JumpToPreviousPrompt>(
+            "cmd-up",
+            Some(heeler_terminal_view::KEY_CONTEXT),
+        ),
+        bind::<heeler_terminal_view::JumpToNextPrompt>(
+            "cmd-down",
+            Some(heeler_terminal_view::KEY_CONTEXT),
+        ),
+        bind::<heeler_terminal_view::SelectBlockOutput>(
+            "cmd-shift-a",
+            Some(heeler_terminal_view::KEY_CONTEXT),
+        ),
+        bind::<heeler_terminal_view::CopyBlockOutput>(
+            "cmd-shift-c",
+            Some(heeler_terminal_view::KEY_CONTEXT),
+        ),
         bind::<palette::SelectNext>("down", Some("Palette")),
         bind::<palette::SelectNext>("ctrl-n", Some("Palette")),
         bind::<palette::SelectPrev>("up", Some("Palette")),

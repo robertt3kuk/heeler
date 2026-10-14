@@ -85,6 +85,15 @@ impl TerminalBackend for ChannelBackend {
         // own #d4d4d4/#1e1e1e defaults, which match heeler-dark).
         eprintln!("attach: default colors {colors:?}");
     }
+
+    fn block_text(
+        &self,
+        _block_id: u64,
+        _part: heeler_terminal_view::BlockPart,
+    ) -> gpui::Task<Option<String>> {
+        // This example does not fetch blocks, so no block is ever offered to copy.
+        gpui::Task::ready(None)
+    }
 }
 
 struct Args {

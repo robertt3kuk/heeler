@@ -10,9 +10,12 @@
 //! catches the view up with a single coalesced frame.
 
 use std::cell::{Ref, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use gpui::{Context, EventEmitter};
+use heeler_client::BlockList;
+use heeler_protocol::blocks::Block;
 use heeler_protocol::render::{Row, TerminalRender};
 
 use crate::ViewStatus;
@@ -29,6 +32,11 @@ pub enum SharedEvent {
     Status,
     /// The model was replaced by an empty one (the terminal was swapped for another).
     Reset,
+    /// The block list or the set of folded blocks changed.
+    Blocks,
+    /// A view folded or unfolded a block: the set to persist changed (restoring a saved set
+    /// emits [`SharedEvent::Blocks`] only).
+    Collapsed,
 }
 
 /// A cheap, cloneable read handle on the model for code that has no GPUI context at hand.
@@ -112,6 +120,47 @@ impl SharedTerminal {
         }
         cx.emit(SharedEvent::History { from_line, empty });
         cx.notify();
+    }
+
+    /// Replaces the block list: an initial fetch, or one after a reconnect.
+    pub fn set_blocks(&mut self, blocks: BlockList, cx: &mut Context<Self>) {
+        self.model.borrow_mut().set_blocks(blocks);
+        cx.emit(SharedEvent::Blocks);
+        cx.notify();
+    }
+
+    /// Folds one `terminal.block` event into the list.
+    pub fn apply_block(&mut self, block: Block, cx: &mut Context<Self>) {
+        self.model.borrow_mut().apply_block(block);
+        cx.emit(SharedEvent::Blocks);
+        cx.notify();
+    }
+
+    /// Restores the folded blocks the owner saved.
+    pub fn set_collapsed(&mut self, ids: BTreeSet<u64>, cx: &mut Context<Self>) {
+        if *self.model.borrow().collapsed() == ids {
+            return;
+        }
+        self.model.borrow_mut().set_collapsed(ids);
+        cx.emit(SharedEvent::Blocks);
+        cx.notify();
+    }
+
+    /// Folds or unfolds a block for every view of this terminal (view-only: the daemon never
+    /// hears of it). Returns whether anything changed.
+    pub fn set_block_collapsed(
+        &mut self,
+        id: u64,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self.model.borrow_mut().set_block_collapsed(id, collapsed);
+        if changed {
+            cx.emit(SharedEvent::Blocks);
+            cx.emit(SharedEvent::Collapsed);
+            cx.notify();
+        }
+        changed
     }
 
     /// Replaces the status every view shows (live, reconnecting, ended).

@@ -31,6 +31,9 @@ pub struct SessionsStore {
     state: Arc<StoreState>,
     attention: AttentionTracker,
     focused: Option<SessionId>,
+    /// The session that had focus most recently; the inspector keeps showing it while a dock or
+    /// panel has focus (clicking inside the inspector must not empty it).
+    last_focused: Option<SessionId>,
     terminals: HashMap<SessionId, WeakEntity<TerminalSession>>,
     /// Sessions this desktop created or changed whose events have not reached `state` yet.
     recent: HashMap<SessionId, SessionInfo>,
@@ -96,6 +99,7 @@ impl SessionsStore {
             }),
             attention: AttentionTracker::new(),
             focused: None,
+            last_focused: None,
             terminals: HashMap::new(),
             recent: HashMap::new(),
             colors: None,
@@ -161,12 +165,22 @@ impl SessionsStore {
                     cx.notify();
                 }
             }
-            // Exits are read off the session state; bells are not attention in M2; blocks have
-            // no UI yet (M10-C).
-            Notice::SessionExited { .. }
-            | Notice::Bell { .. }
-            | Notice::DaemonRestarted { .. }
-            | Notice::TerminalBlock { .. } => {}
+            // Blocks go to the attachment that shows the terminal, if there is one.
+            Notice::TerminalBlock { terminal, block } => {
+                let attached: Vec<_> = self
+                    .terminals
+                    .values()
+                    .filter_map(WeakEntity::upgrade)
+                    .collect();
+                for session in attached {
+                    session.update(cx, |session, cx| {
+                        session.apply_block_event(*terminal, block.clone(), cx);
+                    });
+                }
+            }
+            // Exits are read off the session state; bells are not attention in M2.
+            Notice::SessionExited { .. } | Notice::Bell { .. } | Notice::DaemonRestarted { .. } => {
+            }
         }
     }
 
@@ -251,12 +265,20 @@ impl SessionsStore {
         self.focused
     }
 
+    /// The session that had focus most recently (still the focused one while it has focus).
+    pub fn last_focused(&self) -> Option<SessionId> {
+        self.focused.or(self.last_focused)
+    }
+
     // ---- attention -------------------------------------------------------------------------
 
     /// The session shown in the focused item changed (`None`: no session has focus).
     pub fn set_focused(&mut self, session: Option<SessionId>, cx: &mut Context<Self>) {
         if self.focused != session {
             self.focused = session;
+            if session.is_some() {
+                self.last_focused = session;
+            }
             cx.notify();
         }
     }

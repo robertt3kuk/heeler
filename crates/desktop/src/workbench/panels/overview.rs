@@ -55,6 +55,10 @@ fn preview_settings(base: TerminalViewSettings) -> TerminalViewSettings {
             blink: false,
             ..base.cursor
         },
+        blocks: heeler_terminal_view::BlockSettings {
+            gutter_width: base.blocks.gutter_width * PREVIEW_SCALE,
+            ..base.blocks
+        },
         ..base
     }
 }

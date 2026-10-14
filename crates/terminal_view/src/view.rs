@@ -6,17 +6,20 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ModifiersChangedEvent,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, Size, Styled, Subscription, Task, UTF16Selection, Window,
-    actions, div, point, px, rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Styled,
+    Subscription, Task, UTF16Selection, Window, actions, div, point, px, rgba,
 };
+use heeler_protocol::blocks::{Block, BlockPart, BlockState};
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
 
 use crate::TerminalBackend;
+use crate::blocks::{self, DisplayRow};
 use crate::convert;
 use crate::element::TerminalElement;
 use crate::keys::{KeyOptions, Mods, encode_key};
@@ -37,19 +40,39 @@ actions!(
         /// Copies the selection to the clipboard.
         Copy,
         /// Pastes the clipboard into the terminal.
-        Paste
+        Paste,
+        /// Scrolls to the previous prompt and highlights its block.
+        JumpToPreviousPrompt,
+        /// Scrolls to the next prompt and highlights its block.
+        JumpToNextPrompt,
+        /// Selects the output of the current block.
+        SelectBlockOutput,
+        /// Copies the output of the current block (works beyond the loaded scrollback).
+        CopyBlockOutput,
+        /// Copies the command of the current block.
+        CopyBlockCommand,
+        /// Folds or unfolds the output of the current block.
+        ToggleBlockCollapse,
+        /// Types the current block's command into the session again and runs it.
+        RerunBlock,
+        /// Sends the current block to an agent (arrives with M4).
+        SendBlockToAgent
     ]
 );
 
 /// Key context of the view's root element, for keymap bindings.
 pub const KEY_CONTEXT: &str = "HeelerTerminal";
 
-/// Binds ⌘C and ⌘V to [`Copy`] and [`Paste`] in the view's key context. Optional: the view also
-/// handles both chords itself when no binding claims them.
+/// Binds ⌘C and ⌘V to [`Copy`] and [`Paste`], and the block keys (⌘↑ ⌘↓ ⌘⇧A ⌘⇧C) in the view's
+/// key context. Optional: the view also handles these chords itself when no binding claims them.
 pub fn bind_default_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-c", Copy, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-v", Paste, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-up", JumpToPreviousPrompt, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-down", JumpToNextPrompt, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-a", SelectBlockOutput, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-shift-c", CopyBlockOutput, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -60,6 +83,10 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 /// repaint the window twice a second for as long as the app is open, which is the whole idle CPU
 /// budget (docs/perf.md, B3).
 const BLINK_TICKS: u32 = 10;
+/// Time between two phases of the running-block indicator.
+const ANIMATION_TICK: Duration = Duration::from_millis(140);
+/// Phases of one cycle of the running-block indicator.
+pub(crate) const ANIMATION_PHASES: u8 = 8;
 /// Lines one wheel event may scroll.
 const MAX_WHEEL_LINES: f32 = 64.0;
 /// Hyperlink schemes ⌘-click opens; anything else in an OSC 8 target is untrusted.
@@ -152,6 +179,13 @@ pub struct TerminalView {
     resize_task: Option<Task<()>>,
 
     pub(crate) blink_on: bool,
+    /// The block the last prompt jump (or output selection) landed on.
+    pub(crate) highlight: Option<u64>,
+    /// Phase of the running-block indicator, `0..ANIMATION_PHASES`.
+    pub(crate) animation_phase: u8,
+    animation_task: Option<Task<()>>,
+    /// What the last paint drew of the overlay.
+    pub(crate) painted_overlay: blocks::OverlayReport,
     pub(crate) rows: RowCache,
     /// Keystroke → paint correlation, fed only while `HEELER_TRACE_LATENCY` is on.
     latency: crate::trace::LatencyTracker,
@@ -262,6 +296,10 @@ impl TerminalView {
             wanted_size: None,
             resize_task: None,
             blink_on: true,
+            highlight: None,
+            animation_phase: 0,
+            animation_task: None,
+            painted_overlay: blocks::OverlayReport::default(),
             rows: RowCache::default(),
             latency: crate::trace::LatencyTracker::default(),
             traced_cursor: None,
@@ -313,6 +351,7 @@ impl TerminalView {
         self.settings = settings;
         self.blink_on = true;
         self.keep_blinking(cx);
+        self.sync_animation(cx);
         cx.notify();
     }
 
@@ -373,9 +412,21 @@ impl TerminalView {
             }
             SharedEvent::Reset => {
                 self.reset_history_view();
+                self.highlight = None;
                 self.theme.set_overrides(&Palette::default());
             }
+            SharedEvent::Blocks => {
+                if self
+                    .highlight
+                    .is_some_and(|id| self.model.get().blocks().get(id).is_none())
+                {
+                    self.highlight = None;
+                }
+                self.ensure_history();
+            }
+            SharedEvent::Collapsed => {}
         }
+        self.sync_animation(cx);
         cx.notify();
     }
 
@@ -482,10 +533,65 @@ impl TerminalView {
         self.focus_handle.is_focused(window)
     }
 
-    /// Absolute line shown in grid row `row`.
+    /// Absolute line shown in grid row `row` (a folded block's summary row: its first hidden
+    /// line).
     pub(crate) fn line_for_row(&self, row: u16) -> i64 {
-        self.model.get().viewport_line(0) + i64::from(row + self.row_offset())
-            - i64::from(self.scroll_offset)
+        match self.display().get(usize::from(row)) {
+            Some(shown) => shown.line(),
+            None => {
+                self.model.get().viewport_line(0) + i64::from(row + self.row_offset())
+                    - i64::from(self.scroll_offset)
+            }
+        }
+    }
+
+    /// Whether the block overlay is drawn: enabled, a render has arrived and the primary screen
+    /// shows (vim, htop and other alternate-screen programs hide it).
+    pub fn blocks_visible(&self) -> bool {
+        let model = self.model.get();
+        self.settings.blocks.enabled && model.is_ready() && !model.modes().alt_screen
+    }
+
+    /// Whether folds apply to this view: only an interactive view folds, and not while the
+    /// application receives mouse reports (their coordinates are grid rows).
+    fn folds_active(&self) -> bool {
+        self.mode == ViewMode::Interactive
+            && self.blocks_visible()
+            && self.model.get().modes().mouse == MouseMode::None
+            && !self.model.get().collapsed().is_empty()
+    }
+
+    /// What each grid row shows, top to bottom. The last row shows the line the scroll position
+    /// names; folded blocks take one summary row each and older lines fill the rest.
+    pub(crate) fn display(&self) -> Vec<DisplayRow> {
+        let rows = usize::from(
+            self.layout
+                .map_or(self.model.get().screen_rows(), |l| l.rows),
+        );
+        let offset = self.row_offset();
+        let model = self.model.get();
+        let last = model.viewport_line(0) + i64::from(offset) + rows as i64
+            - 1
+            - i64::from(self.scroll_offset);
+        let folds = if self.folds_active() {
+            blocks::folds(&model)
+        } else {
+            Vec::new()
+        };
+        blocks::layout_rows(model.oldest_line(), &folds, last, rows)
+    }
+
+    /// The grid row the cursor is on, if it is on the screen.
+    pub(crate) fn cursor_row(&self) -> Option<u16> {
+        let cursor = self.model.get().cursor();
+        if !self.folds_active() {
+            return Some(cursor.row);
+        }
+        let line = self.model.get().viewport_line(cursor.row);
+        self.display()
+            .iter()
+            .position(|shown| *shown == DisplayRow::Line(line))
+            .and_then(|row| u16::try_from(row).ok())
     }
 
     /// Rows of the screen above the first one shown. A preview too short for the whole screen
@@ -524,19 +630,21 @@ impl TerminalView {
         }
     }
 
-    /// The text of the rows as laid out (what the view shows), top to bottom. Empty before the
-    /// first layout.
+    /// The text of the rows as laid out (what the view shows), top to bottom. A folded block
+    /// shows its summary row. Empty before the first layout.
     pub fn visible_text(&self) -> Vec<String> {
-        let Some(layout) = self.layout else {
+        if self.layout.is_none() {
             return Vec::new();
-        };
+        }
         let model = self.model.get();
-        (0..layout.rows)
-            .map(|r| {
-                model
-                    .row_at(self.line_for_row(r))
+        self.display()
+            .iter()
+            .map(|shown| match shown {
+                DisplayRow::Line(line) => model
+                    .row_at(*line)
                     .map(TerminalModel::row_text)
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                DisplayRow::Summary(fold) => fold.summary(),
             })
             .collect()
     }
@@ -560,7 +668,12 @@ impl TerminalView {
 
     pub(crate) fn link_at(&self, row: u16, col: u16) -> Option<u32> {
         let model = self.model.get();
-        let row = model.row_at(self.line_for_row(row))?;
+        let line = match self.display().get(usize::from(row)) {
+            Some(DisplayRow::Summary(_)) => return None,
+            Some(DisplayRow::Line(line)) => *line,
+            None => self.line_for_row(row),
+        };
+        let row = model.row_at(line)?;
         row_cells(row)
             .iter()
             .find(|c| c.col <= col && col < c.end())
@@ -737,6 +850,7 @@ impl TerminalView {
         }
         self.selection = None;
         self.selecting = false;
+        self.highlight = None;
         self.blink_on = true;
         self.keep_blinking(cx);
         self.backend.input(bytes);
@@ -756,6 +870,21 @@ impl TerminalView {
                     "c" if !m.shift => {
                         self.copy(cx);
                         cx.stop_propagation();
+                    }
+                    "c" => {
+                        if self.copy_current_block_output(cx) {
+                            cx.stop_propagation();
+                        }
+                    }
+                    "a" if m.shift => {
+                        if self.select_current_block_output(cx) {
+                            cx.stop_propagation();
+                        }
+                    }
+                    "up" | "down" if !m.shift => {
+                        if self.jump_to_prompt(ks.key == "up", cx) {
+                            cx.stop_propagation();
+                        }
                     }
                     "v" => {
                         self.paste(cx);
@@ -849,19 +978,25 @@ impl TerminalView {
 
     /// Requests the first missing history page the viewport needs.
     fn ensure_history(&mut self) {
-        if self.scroll_offset == 0 {
+        if self.scroll_offset == 0 && !self.folds_active() {
             return;
         }
-        let rows = u32::from(
-            self.layout
-                .map_or(self.model.get().screen_rows(), |l| l.rows),
-        )
-        .max(1);
-        let hi = self.scroll_offset - 1;
-        let lo = self.scroll_offset.saturating_sub(rows);
-        let Some(missing) = self.model.get().first_missing_history(lo, hi - lo + 1) else {
-            return;
+        let missing = {
+            let model = self.model.get();
+            let total = model.history_total();
+            self.display()
+                .iter()
+                .filter_map(|shown| match shown {
+                    DisplayRow::Line(line) => u64::try_from(*line).ok().filter(|l| *l < total),
+                    DisplayRow::Summary(_) => None,
+                })
+                .map(|line| u32::try_from(total - 1 - line).unwrap_or(u32::MAX))
+                .filter(|from_line| {
+                    *from_line < model.history_len() && !model.has_history(*from_line)
+                })
+                .min()
         };
+        let Some(missing) = missing else { return };
         if self.history_end.is_some_and(|end| missing >= end)
             || !self.history_in_flight.insert(missing)
         {
@@ -902,6 +1037,7 @@ impl TerminalView {
         let Some(layout) = self.layout else { return };
         window.focus(&self.focus_handle, cx);
         let (row, col) = layout.cell_at(event.position);
+        self.highlight = None;
         if event.button == gpui::MouseButton::Left
             && event.modifiers.platform
             && let Some(id) = self.link_at(row, col)
@@ -954,9 +1090,10 @@ impl TerminalView {
         let cmd = event.modifiers.platform;
         if hover != self.hover_cell || cmd != self.cmd_held {
             let had_link = self.hover_link().is_some();
+            let had_block = self.hover_block();
             self.hover_cell = hover;
             self.cmd_held = cmd;
-            if had_link || self.hover_link().is_some() {
+            if had_link || self.hover_link().is_some() || had_block != self.hover_block() {
                 cx.notify();
             }
         }
@@ -1086,6 +1223,396 @@ impl TerminalView {
     }
 }
 
+// ---- blocks ---------------------------------------------------------------------------------
+
+/// What the hover actions bar offers for one block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockActions {
+    pub block: u64,
+    pub copy_command: bool,
+    pub copy_output: bool,
+    /// `Some(true)` when the output is folded (the button unfolds), `Some(false)` when it can
+    /// be folded, `None` when there is nothing to fold.
+    pub folded: Option<bool>,
+    pub rerun: bool,
+}
+
+fn shows(row: &DisplayRow, line: i64) -> bool {
+    match row {
+        DisplayRow::Line(l) => *l == line,
+        DisplayRow::Summary(fold) => fold.start <= line && line < fold.end,
+    }
+}
+
+impl TerminalView {
+    fn cursor_line(&self) -> i64 {
+        let model = self.model.get();
+        model.viewport_line(model.cursor().row)
+    }
+
+    pub(crate) fn block_spans(&self) -> Vec<blocks::BlockSpan> {
+        blocks::spans(&self.model.get(), self.cursor_line())
+    }
+
+    /// The block under the pointer (interactive views only; none while selecting or while the
+    /// application receives mouse reports).
+    pub fn hover_block(&self) -> Option<u64> {
+        if !self.can_hover_blocks() {
+            return None;
+        }
+        self.hover_block_in(&self.display(), &self.block_spans())
+    }
+
+    fn can_hover_blocks(&self) -> bool {
+        self.mode == ViewMode::Interactive
+            && self.blocks_visible()
+            && !self.selecting
+            && self.reporting.is_none()
+    }
+
+    /// [`Self::hover_block`] over a display and spans the caller already has (one paint).
+    pub(crate) fn hover_block_in(
+        &self,
+        display: &[DisplayRow],
+        spans: &[blocks::BlockSpan],
+    ) -> Option<u64> {
+        if !self.can_hover_blocks() {
+            return None;
+        }
+        let (row, _) = self.hover_cell?;
+        let line = display.get(usize::from(row))?.line();
+        blocks::block_at(spans, line)
+    }
+
+    /// The block the last prompt jump or output selection landed on.
+    pub fn highlighted_block(&self) -> Option<u64> {
+        self.highlight
+    }
+
+    /// The block the keyboard actions act on: the highlighted one when it qualifies, else the
+    /// newest block that does.
+    pub fn current_block(&self, wanted: impl Fn(&Block) -> bool) -> Option<u64> {
+        let model = self.model.get();
+        let blocks = model.blocks();
+        self.highlight
+            .and_then(|id| blocks.get(id))
+            .filter(|block| wanted(block))
+            .or_else(|| {
+                blocks
+                    .iter()
+                    .rev()
+                    .find(|block| block.state != BlockState::Prompt && wanted(block))
+            })
+            .map(|block| block.id)
+    }
+
+    fn has_output(&self, block: &Block) -> bool {
+        blocks::output_lines(&self.model.get(), block, self.cursor_line()).is_some()
+    }
+
+    /// What the actions bar offers for `id` right now.
+    pub fn block_actions(&self, id: u64) -> Option<BlockActions> {
+        let model = self.model.get();
+        let block = model.blocks().get(id)?;
+        if block.state == BlockState::Prompt {
+            return None;
+        }
+        let running = model
+            .blocks()
+            .iter()
+            .any(|block| block.state == BlockState::Running);
+        let folded = if model.is_collapsed(id) {
+            Some(true)
+        } else {
+            blocks::foldable(block).then_some(false)
+        };
+        Some(BlockActions {
+            block: id,
+            copy_command: block.command.is_some(),
+            copy_output: self.has_output(block),
+            folded,
+            rerun: self.accepts_input()
+                && block
+                    .command
+                    .as_deref()
+                    .is_some_and(|c| !c.trim().is_empty())
+                && !running
+                && !model.modes().alt_screen,
+        })
+    }
+
+    /// Makes sure `line` is on screen: scrolls it to the top of the view when it is not.
+    fn reveal(&mut self, line: i64) {
+        if self.display().iter().any(|row| shows(row, line)) {
+            return;
+        }
+        let (top, max) = {
+            let model = self.model.get();
+            (model.viewport_line(0), model.history_len())
+        };
+        let offset = (top - line).clamp(0, i64::from(max));
+        self.scroll_offset = u32::try_from(offset).unwrap_or(0);
+        self.scroll_accum = 0.0;
+        self.ensure_history();
+    }
+
+    /// Scrolls to `id`'s prompt and highlights the block.
+    pub fn jump_to_block(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        let Some(span) = self.block_spans().into_iter().find(|span| span.id == id) else {
+            return false;
+        };
+        self.highlight = Some(id);
+        self.reveal(span.first);
+        cx.notify();
+        true
+    }
+
+    /// ⌘↑ / ⌘↓: moves the highlight to the previous / next prompt and scrolls to it. Without a
+    /// highlight the previous prompt is the one before the live one (or, scrolled back, the one
+    /// above the first visible line). Past the newest block, `next` returns to the live screen.
+    /// Returns whether the key was used.
+    pub fn jump_to_prompt(&mut self, previous: bool, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        let spans = self.block_spans();
+        if spans.is_empty() {
+            return false;
+        }
+        let at = self
+            .highlight
+            .and_then(|id| spans.iter().position(|span| span.id == id));
+        let target = match at {
+            Some(index) if previous => index.checked_sub(1),
+            Some(index) => (index + 1 < spans.len()).then_some(index + 1),
+            None if self.scroll_offset == 0 => {
+                if previous {
+                    spans.len().checked_sub(2)
+                } else {
+                    None
+                }
+            }
+            None => {
+                let top = self.display().first().map(DisplayRow::line);
+                top.and_then(|top| {
+                    if previous {
+                        spans.iter().rposition(|span| span.first < top)
+                    } else {
+                        spans.iter().position(|span| span.first > top)
+                    }
+                })
+            }
+        };
+        match target {
+            Some(index) => self.jump_to_block(spans[index].id, cx),
+            None if !previous && (at.is_some() || self.scroll_offset > 0) => {
+                self.highlight = None;
+                self.scroll_to_bottom(cx);
+                cx.notify();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Selects the output of block `id` with the regular selection (copy it with ⌘C).
+    pub fn select_block_output(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        let range = {
+            let model = self.model.get();
+            model
+                .blocks()
+                .get(id)
+                .and_then(|block| blocks::output_lines(&model, block, self.cursor_line()))
+        };
+        let Some((start, end)) = range else {
+            return false;
+        };
+        self.highlight = Some(id);
+        self.reveal(start);
+        let selection = {
+            let model = self.model.get();
+            let mut selection = Selection::new(
+                SelectionKind::Simple,
+                GridPoint {
+                    line: start,
+                    col: 0,
+                },
+                &model,
+            );
+            selection.extend(GridPoint {
+                line: end - 1,
+                col: model.cols().max(1) - 1,
+            });
+            selection
+        };
+        self.selection = Some(selection);
+        self.selecting = false;
+        cx.notify();
+        true
+    }
+
+    /// Copies the command or the output of block `id` to the clipboard. The text comes from the
+    /// daemon (`terminal.block_text`), so it works for output that left the loaded scrollback.
+    pub fn copy_block_part(&mut self, id: u64, part: BlockPart, cx: &mut Context<Self>) -> bool {
+        if self.model.get().blocks().get(id).is_none() {
+            return false;
+        }
+        let text = self.backend.block_text(id, part);
+        cx.spawn(async move |this, cx| {
+            if let Some(text) = text.await {
+                this.update(cx, |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                })
+                .ok();
+            }
+        })
+        .detach();
+        true
+    }
+
+    /// Folds `id`'s output into one summary row, or unfolds it. Only finished blocks with output
+    /// fold. View-only: the daemon, the scrollback and other clients are untouched.
+    pub fn toggle_block_collapsed(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        let collapsed = {
+            let model = self.model.get();
+            let Some(block) = model.blocks().get(id) else {
+                return false;
+            };
+            if model.is_collapsed(id) {
+                true
+            } else if blocks::foldable(block) {
+                false
+            } else {
+                return false;
+            }
+        };
+        self.shared.update(cx, |shared, cx| {
+            shared.set_block_collapsed(id, !collapsed, cx)
+        })
+    }
+
+    /// Types block `id`'s command into the session and presses Enter.
+    pub fn rerun_block(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        if self.block_actions(id).is_none_or(|actions| !actions.rerun) {
+            return false;
+        }
+        let (command, bracketed) = {
+            let model = self.model.get();
+            let command = model
+                .blocks()
+                .get(id)
+                .and_then(|block| block.command.clone());
+            (command, model.modes().bracketed_paste)
+        };
+        let Some(command) = command else {
+            return false;
+        };
+        let mut bytes = if command.contains('\n') {
+            paste_bytes(&command, bracketed)
+        } else {
+            command
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .into_bytes()
+        };
+        bytes.push(b'\r');
+        self.send_input(bytes, cx);
+        true
+    }
+
+    /// ⌘⇧C: copies the output of the current block.
+    pub fn copy_current_block_output(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        match self.current_block(|block| self.has_output(block)) {
+            Some(id) => self.copy_block_part(id, BlockPart::Output, cx),
+            None => false,
+        }
+    }
+
+    /// ⌘⇧A: selects the output of the current block.
+    pub fn select_current_block_output(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.blocks_visible() {
+            return false;
+        }
+        match self.current_block(|block| self.has_output(block)) {
+            Some(id) => self.select_block_output(id, cx),
+            None => false,
+        }
+    }
+
+    /// Whether a running block's indicator should animate now.
+    fn wants_animation(&self) -> bool {
+        self.mode == ViewMode::Interactive
+            && self.settings.blocks.animate
+            && self.blocks_visible()
+            && self
+                .model
+                .get()
+                .blocks()
+                .last()
+                .is_some_and(|block| block.state == BlockState::Running)
+    }
+
+    /// Starts or stops the indicator timer; it exists only while a command runs in a visible
+    /// overlay, so an idle terminal wakes nothing.
+    fn sync_animation(&mut self, cx: &mut Context<Self>) {
+        if !self.wants_animation() {
+            self.animation_task = None;
+            self.animation_phase = 0;
+            return;
+        }
+        if self.animation_task.is_some() {
+            return;
+        }
+        self.animation_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ANIMATION_TICK).await;
+                let more = this.update(cx, |view, cx| {
+                    if !view.wants_animation() {
+                        view.animation_task = None;
+                        view.animation_phase = 0;
+                        cx.notify();
+                        return false;
+                    }
+                    view.animation_phase = (view.animation_phase + 1) % ANIMATION_PHASES;
+                    cx.notify();
+                    true
+                });
+                if !more.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// What the last paint drew of the block overlay, in grid rows.
+    pub fn painted_overlay(&self) -> &blocks::OverlayReport {
+        &self.painted_overlay
+    }
+
+    /// Phase of the running-block indicator (`0` while it does not run).
+    pub fn animation_phase_for_tests(&self) -> u8 {
+        self.animation_phase
+    }
+
+    /// Whether the running-block indicator timer is active (tests).
+    pub fn block_animation_active(&self) -> bool {
+        self.animation_task.is_some()
+    }
+}
+
 // ---- text input (IME) ---------------------------------------------------------------------
 
 fn utf16_len(s: &str) -> usize {
@@ -1206,7 +1733,8 @@ impl gpui::EntityInputHandler for TerminalView {
         let col = f32::from(cursor.col) + skipped as f32;
         let origin = point(
             element_bounds.origin.x + layout.cell.width * col,
-            element_bounds.origin.y + layout.cell.height * f32::from(cursor.row),
+            element_bounds.origin.y
+                + layout.cell.height * f32::from(self.cursor_row().unwrap_or(cursor.row)),
         );
         Some(Bounds::new(origin, layout.cell))
     }
@@ -1227,6 +1755,104 @@ impl gpui::EntityInputHandler for TerminalView {
 
 // ---- rendering ----------------------------------------------------------------------------
 
+impl TerminalView {
+    /// The hover actions bar of the block under the pointer, positioned on the block's first
+    /// visible row at the right edge.
+    fn actions_bar(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let id = self.hover_block()?;
+        let actions = self.block_actions(id)?;
+        let layout = self.layout?;
+        let spans = self.block_spans();
+        let row = self
+            .display()
+            .iter()
+            .position(|shown| blocks::block_at(&spans, shown.line()) == Some(id))?;
+        let (background, foreground) = (self.theme.background(), self.theme.foreground());
+        let surface = hsla(background.mix(foreground, 0.16));
+        let text = hsla(foreground.mix(background, 0.2));
+        let dim = hsla(foreground.mix(background, 0.6));
+        let hover = hsla(background.mix(foreground, 0.28));
+        let size = (self.settings.font_size * 0.85).max(8.0);
+        let button =
+            |key: &'static str,
+             label: String,
+             enabled: bool,
+             run: fn(&mut TerminalView, u64, &mut Context<TerminalView>)| {
+                div()
+                    .id(key)
+                    .px(px(6.))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .whitespace_nowrap()
+                    .text_size(px(size))
+                    .text_color(if enabled { text } else { dim })
+                    .when(enabled, |d| {
+                        d.cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _, _, cx| run(this, id, cx)))
+                    })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(SharedString::from(label))
+            };
+        let fold_label = match actions.folded {
+            Some(true) => "Expand",
+            _ => "Collapse",
+        };
+        Some(
+            div()
+                .id("heeler-block-actions")
+                .absolute()
+                .top(px(self.settings.padding) + layout.cell.height * row as f32)
+                .right(px(self.settings.padding))
+                .h(layout.cell.height)
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .bg(surface)
+                .child(button(
+                    "block-copy-command",
+                    "Copy command".into(),
+                    actions.copy_command,
+                    |this, id, cx| {
+                        this.copy_block_part(id, BlockPart::Command, cx);
+                    },
+                ))
+                .child(button(
+                    "block-copy-output",
+                    "Copy output".into(),
+                    actions.copy_output,
+                    |this, id, cx| {
+                        this.copy_block_part(id, BlockPart::Output, cx);
+                    },
+                ))
+                .child(button(
+                    "block-collapse",
+                    fold_label.into(),
+                    actions.folded.is_some(),
+                    |this, id, cx| {
+                        this.toggle_block_collapsed(id, cx);
+                    },
+                ))
+                .child(button(
+                    "block-rerun",
+                    "Rerun".into(),
+                    actions.rerun,
+                    |this, id, cx| {
+                        this.rerun_block(id, cx);
+                    },
+                ))
+                .child(button(
+                    "block-agent",
+                    "Send to agent · M4".into(),
+                    false,
+                    |_, _, _| {},
+                ))
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = hsla(self.theme.background());
@@ -1245,6 +1871,7 @@ impl Render for TerminalView {
             ViewStatus::Reconnecting => Some("Reconnecting…".to_owned()),
             ViewStatus::Ended(message) => Some(message.clone()),
         };
+        let bar = self.actions_bar(cx);
         let root = div()
             .id("heeler-terminal")
             .key_context(KEY_CONTEXT)
@@ -1254,11 +1881,52 @@ impl Render for TerminalView {
                 this.copy(cx);
             }))
             .on_action(cx.listener(|this, _: &Paste, _window, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &JumpToPreviousPrompt, _window, cx| {
+                if !this.jump_to_prompt(true, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &JumpToNextPrompt, _window, cx| {
+                if !this.jump_to_prompt(false, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectBlockOutput, _window, cx| {
+                if !this.select_current_block_output(cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CopyBlockOutput, _window, cx| {
+                if !this.copy_current_block_output(cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CopyBlockCommand, _window, cx| {
+                let current = this.current_block(|block| block.command.is_some());
+                if !current.is_some_and(|id| this.copy_block_part(id, BlockPart::Command, cx)) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleBlockCollapse, _window, cx| {
+                let current = this.current_block(|block| {
+                    blocks::foldable(block) || this.model.get().is_collapsed(block.id)
+                });
+                if !current.is_some_and(|id| this.toggle_block_collapsed(id, cx)) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &RerunBlock, _window, cx| {
+                let current = this.current_block(|block| block.command.is_some());
+                if !current.is_some_and(|id| this.rerun_block(id, cx)) {
+                    cx.propagate();
+                }
+            }))
             .relative()
             .size_full()
             .overflow_hidden()
             .bg(background)
-            .child(TerminalElement::new(cx.entity()));
+            .child(TerminalElement::new(cx.entity()))
+            .children(bar);
         match banner {
             None => root.into_any_element(),
             Some(text) => root

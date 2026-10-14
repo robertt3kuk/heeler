@@ -11,13 +11,14 @@ use gpui::{
 };
 use heeler_protocol::render::{CellFlags, Color, CursorShape};
 
-use crate::model::row_cells;
+use crate::blocks::{self, DisplayRow, OverlayReport, Tone};
+use crate::model::{row_cells, row_width};
 use crate::shape::{
     Decoration, FontSpec, RowCache, ShapedRow, UnderlineKind, hsla, row_key, shape_row, styled_row,
     text_columns,
 };
 use crate::theme::Theme;
-use crate::view::{Layout, TerminalView, ViewMode};
+use crate::view::{ANIMATION_PHASES, Layout, TerminalView, ViewMode};
 
 pub(crate) struct TerminalElement {
     view: Entity<TerminalView>,
@@ -41,6 +42,36 @@ struct RowPaint {
     shaped: Option<Rc<ShapedRow>>,
     /// Selected columns, end exclusive.
     selected: Option<(u16, u16)>,
+    /// Fill of the whole row (the summary row of a folded block).
+    fill: Option<Hsla>,
+}
+
+/// A run of rows drawn with one color: a block's gutter bar, or a highlight tint.
+struct RowRun {
+    from: u16,
+    /// Exclusive.
+    to: u16,
+    color: Hsla,
+}
+
+/// The status chip on a block's prompt line.
+struct ChipPaint {
+    row: u16,
+    col: u16,
+    cols: u16,
+    shaped: ShapedRow,
+}
+
+/// What the block overlay adds to the grid (see [`crate::blocks`]); empty when the overlay is
+/// off. Everything is drawn over the grid: no cell moves.
+#[derive(Default)]
+struct OverlayPaint {
+    bars: Vec<RowRun>,
+    tints: Vec<RowRun>,
+    separators: Vec<u16>,
+    chips: Vec<ChipPaint>,
+    separator: Hsla,
+    gutter_width: Pixels,
 }
 
 struct CursorPaint {
@@ -68,6 +99,7 @@ pub(crate) struct Prepaint {
     background: Hsla,
     selection: Hsla,
     rows: Vec<RowPaint>,
+    overlay: OverlayPaint,
     cursor: Option<CursorPaint>,
     marked: Option<MarkedPaint>,
     cursor_style: CursorStyle,
@@ -201,9 +233,44 @@ fn prepare(
     let model_cols = model.cols();
 
     view.rows.begin_frame();
+    let display = view.display();
     let mut rows = Vec::with_capacity(usize::from(grid_rows));
     for r in 0..grid_rows {
-        let line = view.line_for_row(r);
+        let Some(shown) = display.get(usize::from(r)) else {
+            rows.push(RowPaint {
+                shaped: None,
+                selected: None,
+                fill: None,
+            });
+            continue;
+        };
+        let line = shown.line();
+        let selected = span.and_then(|s| s.columns_on(line, model_cols));
+        if let DisplayRow::Summary(fold) = shown {
+            let (background, foreground) = (view.theme.background(), view.theme.foreground());
+            let text = format!("  {}", fold.summary());
+            let styled = styled_row(
+                &text,
+                Color::Rgb(
+                    foreground.mix(background, 0.4).0,
+                    foreground.mix(background, 0.4).1,
+                    foreground.mix(background, 0.4).2,
+                ),
+                CellFlags::ITALIC,
+            );
+            rows.push(RowPaint {
+                shaped: Some(Rc::new(shape_row(
+                    &styled,
+                    &view.theme,
+                    &font,
+                    None,
+                    text_system,
+                ))),
+                selected,
+                fill: Some(hsla(background.mix(foreground, 0.07))),
+            });
+            continue;
+        }
         let shaped = model
             .row_at(line)
             .filter(|row| !row.runs.is_empty())
@@ -221,22 +288,26 @@ fn prepare(
             });
         rows.push(RowPaint {
             shaped,
-            selected: span.and_then(|s| s.columns_on(line, model_cols)),
+            selected,
+            fill: None,
         });
     }
+    let (overlay, report) = prepare_overlay(view, &display, grid_rows, &font, text_system);
+    view.painted_overlay = report;
 
     let theme = &view.theme;
     let cursor = prepare_cursor(view, focused, &font, grid_rows, text_system);
 
+    let cursor_row = view.cursor_row().unwrap_or(u16::MAX);
     let marked = view.marked_for_paint().and_then(|text| {
         let cursor = view.model.get().cursor();
-        if cursor.row >= grid_rows {
+        if cursor_row >= grid_rows {
             return None;
         }
         let row = styled_row(text, Color::Default, CellFlags::UNDERLINE);
         Some(MarkedPaint {
             col: cursor.col,
-            row: cursor.row,
+            row: cursor_row,
             cols: u16::try_from(text_columns(text)).unwrap_or(u16::MAX),
             shaped: shape_row(&row, theme, &font, None, text_system),
         })
@@ -257,10 +328,167 @@ fn prepare(
         background: hsla(theme.background()),
         selection: hsla(theme.selection()),
         rows,
+        overlay,
         cursor,
         marked,
         cursor_style,
     }
+}
+
+/// Opacity of a running block's bar: a slow triangle wave, or steady without animation.
+fn running_alpha(phase: u8, animate: bool) -> f32 {
+    if !animate {
+        return 0.6;
+    }
+    let half = f32::from(ANIMATION_PHASES / 2);
+    let t = f32::from(phase % ANIMATION_PHASES);
+    let wave = if t <= half {
+        t / half
+    } else {
+        (2.0 * half - t) / half
+    };
+    0.3 + 0.55 * wave
+}
+
+fn prepare_overlay(
+    view: &TerminalView,
+    display: &[DisplayRow],
+    grid_rows: u16,
+    font: &FontSpec,
+    text_system: &WindowTextSystem,
+) -> (OverlayPaint, OverlayReport) {
+    let mut report = OverlayReport::default();
+    if !view.blocks_visible() {
+        return (OverlayPaint::default(), report);
+    }
+    let cfg = view.settings.blocks;
+    let interactive = view.mode == ViewMode::Interactive;
+    let model = view.model.get();
+    let spans = view.block_spans();
+    let rows = display.len().min(usize::from(grid_rows));
+    let owner: Vec<Option<u64>> = display[..rows]
+        .iter()
+        .map(|shown| blocks::block_at(&spans, shown.line()))
+        .collect();
+    let (background, foreground) = (view.theme.background(), view.theme.foreground());
+    let tone_color = |tone: Tone| match tone {
+        Tone::Success => cfg.success,
+        Tone::Error => cfg.error,
+        Tone::Neutral => cfg.neutral,
+    };
+
+    // Runs of consecutive rows of one block.
+    let mut runs: Vec<(u64, u16, u16)> = Vec::new();
+    for (row, id) in owner.iter().enumerate() {
+        let (Some(id), Ok(row)) = (id, u16::try_from(row)) else {
+            continue;
+        };
+        match runs.last_mut() {
+            Some((last, _, to)) if *last == *id && *to == row => *to = row + 1,
+            _ => runs.push((*id, row, row + 1)),
+        }
+    }
+
+    let hovered = if interactive {
+        view.hover_block()
+    } else {
+        None
+    };
+    let mut overlay = OverlayPaint {
+        gutter_width: px(cfg.gutter_width.max(0.0)),
+        separator: hsla(background.mix(foreground, 0.16)),
+        ..OverlayPaint::default()
+    };
+    for (id, from, to) in &runs {
+        let Some(block) = model.blocks().get(*id) else {
+            continue;
+        };
+        if let Some(tone) = blocks::tone(block) {
+            let alpha = match (block.state, tone) {
+                (heeler_protocol::blocks::BlockState::Running, _) => {
+                    running_alpha(view.animation_phase, cfg.animate && interactive)
+                }
+                (_, Tone::Neutral) => 0.5,
+                _ => 0.9,
+            };
+            overlay.bars.push(RowRun {
+                from: *from,
+                to: *to,
+                color: hsla(tone_color(tone)).opacity(alpha),
+            });
+            report.bars.push((*from, *to, tone));
+        }
+        if !interactive {
+            continue;
+        }
+        if view.highlight == Some(*id) {
+            report.highlighted.extend(*from..*to);
+            overlay.tints.push(RowRun {
+                from: *from,
+                to: *to,
+                color: hsla(cfg.accent).opacity(0.13),
+            });
+        } else if hovered == Some(*id) {
+            overlay.tints.push(RowRun {
+                from: *from,
+                to: *to,
+                color: hsla(cfg.neutral).opacity(0.07),
+            });
+        }
+    }
+    if !interactive {
+        return (overlay, report);
+    }
+    report.summaries = display[..rows]
+        .iter()
+        .enumerate()
+        .filter(|(_, shown)| matches!(shown, DisplayRow::Summary(_)))
+        .filter_map(|(row, _)| u16::try_from(row).ok())
+        .collect();
+
+    let model_cols = model.cols();
+    for span in &spans {
+        let Some(row) = display[..rows]
+            .iter()
+            .position(|shown| *shown == DisplayRow::Line(span.first))
+            .and_then(|row| u16::try_from(row).ok())
+        else {
+            continue;
+        };
+        let Some(block) = model.blocks().get(span.id) else {
+            continue;
+        };
+        if row > 0 && block.prompt_line > 0 {
+            overlay.separators.push(row);
+            report.separators.push(row);
+        }
+        let (Some(text), Some(tone)) = (blocks::chip_text(block), blocks::tone(block)) else {
+            continue;
+        };
+        let cols = u16::try_from(text_columns(&text)).unwrap_or(u16::MAX);
+        let Some(col) = model_cols.checked_sub(cols.saturating_add(1)) else {
+            continue;
+        };
+        // The chip never covers what the prompt line shows.
+        let used = model.row_at(span.first).map_or(0, row_width);
+        if col < 2 || used >= col {
+            continue;
+        }
+        let color = tone_color(tone);
+        let styled = styled_row(
+            &text,
+            Color::Rgb(color.0, color.1, color.2),
+            CellFlags::empty(),
+        );
+        report.chips.push((row, text.clone()));
+        overlay.chips.push(ChipPaint {
+            row,
+            col,
+            cols,
+            shaped: shape_row(&styled, &view.theme, font, None, text_system),
+        });
+    }
+    (overlay, report)
 }
 
 fn shape_cached(
@@ -283,10 +511,10 @@ fn prepare_cursor(
     text_system: &WindowTextSystem,
 ) -> Option<CursorPaint> {
     let cursor = view.model.get().cursor();
+    let row = view.cursor_row().filter(|row| *row < grid_rows)?;
     if view.mode == ViewMode::Preview
         || view.scroll_offset != 0
         || !cursor.visible
-        || cursor.row >= grid_rows
         || cursor.col >= view.model.get().cols().max(1)
     {
         return None;
@@ -301,8 +529,8 @@ fn prepare_cursor(
         return None;
     }
     let model = view.model.get();
-    let row = model.row_at(view.line_for_row(cursor.row));
-    let cell = row.and_then(|row| {
+    let cell_row = model.row_at(model.viewport_line(cursor.row));
+    let cell = cell_row.and_then(|row| {
         row_cells(row)
             .into_iter()
             .find(|c| c.col <= cursor.col && cursor.col < c.end())
@@ -326,7 +554,7 @@ fn prepare_cursor(
     };
     Some(CursorPaint {
         col: cursor.col,
-        row: cursor.row,
+        row,
         cols,
         shape,
         color: hsla(view.theme.cursor()),
@@ -417,6 +645,9 @@ fn paint_grid(bounds: Bounds<Pixels>, state: &mut Prepaint, window: &mut Window,
     // Backgrounds and selection first, so no row's fill covers a neighbour's glyph overhang.
     for (r, row) in state.rows.iter().enumerate() {
         let r = r as u16;
+        if let Some(fill) = row.fill {
+            window.paint_quad(fill_quad(origin, &font, r, state.content.size.width, fill));
+        }
         if let Some(shaped) = &row.shaped {
             for bg in &shaped.backgrounds {
                 window.paint_quad(fill(
@@ -429,6 +660,18 @@ fn paint_grid(bounds: Bounds<Pixels>, state: &mut Prepaint, window: &mut Window,
             window.paint_quad(fill(
                 cell_bounds(origin, &font, r, from, to - from),
                 state.selection,
+            ));
+        }
+    }
+
+    for tint in &state.overlay.tints {
+        for r in tint.from..tint.to {
+            window.paint_quad(fill_quad(
+                origin,
+                &font,
+                r,
+                state.content.size.width,
+                tint.color,
             ));
         }
     }
@@ -451,6 +694,16 @@ fn paint_grid(bounds: Bounds<Pixels>, state: &mut Prepaint, window: &mut Window,
             paint_decoration(decoration, origin, &font, r, window);
         }
     }
+
+    paint_overlay(
+        &state.overlay,
+        bounds,
+        state.content,
+        &font,
+        &state.background,
+        window,
+        cx,
+    );
 
     if let Some(marked) = &state.marked {
         let at = cell_bounds(origin, &font, marked.row, marked.col, marked.cols);
@@ -476,6 +729,70 @@ fn paint_grid(bounds: Bounds<Pixels>, state: &mut Prepaint, window: &mut Window,
 
     if let Some(cursor) = &state.cursor {
         paint_cursor(cursor, origin, &font, window, cx);
+    }
+}
+
+/// A quad over the whole width of grid row `row`.
+fn fill_quad(
+    origin: Point<Pixels>,
+    font: &FontSpec,
+    row: u16,
+    width: Pixels,
+    color: Hsla,
+) -> gpui::PaintQuad {
+    fill(
+        Bounds::new(
+            point(origin.x, origin.y + font.cell_height * f32::from(row)),
+            size(width, font.cell_height),
+        ),
+        color,
+    )
+}
+
+/// Gutter bars, separators and chips, over the grid.
+fn paint_overlay(
+    overlay: &OverlayPaint,
+    bounds: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+    font: &FontSpec,
+    background: &Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let origin = content.origin;
+    for chip in &overlay.chips {
+        let at = cell_bounds(origin, font, chip.row, chip.col, chip.cols);
+        window.paint_quad(fill(at, *background));
+        if let Some(line) = &chip.shaped.line {
+            let _ = line.paint(
+                at.origin,
+                font.cell_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    }
+    for row in &overlay.separators {
+        let y = origin.y + font.cell_height * f32::from(*row);
+        window.paint_quad(fill(
+            Bounds::new(point(origin.x, y), size(content.size.width, px(1.))),
+            overlay.separator,
+        ));
+    }
+    if overlay.gutter_width > px(0.) {
+        for bar in &overlay.bars {
+            let top = origin.y + font.cell_height * f32::from(bar.from) + px(1.);
+            let bottom = origin.y + font.cell_height * f32::from(bar.to);
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(bounds.origin.x + px(1.), top),
+                    size(overlay.gutter_width, (bottom - top).max(px(0.))),
+                ),
+                bar.color,
+            ));
+        }
     }
 }
 

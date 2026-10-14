@@ -181,6 +181,10 @@ pub struct Workbench {
     pub(crate) env: PanelEnv,
     pub(crate) terminals: HashMap<(PaneId, SessionId), TerminalItem>,
     pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
+    /// Folded blocks per terminal, saved with the layout (see [`persistence::CollapsedBlocks`]).
+    pub(crate) collapsed_blocks: persistence::CollapsedBlocks,
+    /// What tells the workbench a terminal's folds changed, per held session.
+    pub(crate) collapse_watch: HashMap<SessionId, Subscription>,
     pub(crate) window_active: bool,
     pub(crate) rendered_terminals: std::collections::HashSet<(PaneId, SessionId)>,
     pub(crate) pruned: Vec<Entity<heeler_terminal_view::TerminalView>>,
@@ -257,11 +261,12 @@ impl Workbench {
 
         let window_appearance = window.appearance();
         let theme = Theme::for_chrome(appearance_settings.chrome, window_appearance);
-        let terminal_style = terminal_settings.view_settings(system_appearance(window_appearance));
-        let terminal_style = heeler_terminal_view::TerminalViewSettings {
-            padding: appearance_settings.density.ui().terminal_padding,
-            ..terminal_style
-        };
+        let terminal_style = super::terminals::terminal_style(
+            &terminal_settings,
+            system_appearance(window_appearance),
+            &theme,
+            appearance_settings.density,
+        );
         cx.set_global(UiStyle {
             theme,
             density: appearance_settings.density,
@@ -351,6 +356,12 @@ impl Workbench {
             env,
             terminals: HashMap::new(),
             held: HashMap::new(),
+            collapsed_blocks: options
+                .state_path
+                .as_deref()
+                .map(persistence::load_collapsed)
+                .unwrap_or_default(),
+            collapse_watch: HashMap::new(),
             window_active: window.is_window_active(),
             rendered_terminals: std::collections::HashSet::new(),
             pruned: Vec::new(),
@@ -535,7 +546,7 @@ impl Workbench {
         self.schedule_save(cx);
     }
 
-    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn schedule_save(&mut self, cx: &mut Context<Self>) {
         if self.state_path.is_none() {
             return;
         }
@@ -551,7 +562,7 @@ impl Workbench {
         let Some(path) = &self.state_path else {
             return;
         };
-        let json = match self.state.to_json() {
+        let json = match persistence::state_json(&self.state, &self.collapsed_blocks) {
             Ok(json) => json,
             Err(err) => {
                 tracing::error!("cannot serialize desktop layout: {err}");

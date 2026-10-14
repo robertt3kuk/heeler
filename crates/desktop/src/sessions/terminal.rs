@@ -10,11 +10,15 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, WeakEntity};
-use heeler_client::{Connection, GoneReason, TerminalHandle, TerminalUpdate};
+use heeler_client::{
+    BlockList, ClientError, Connection, GoneReason, TerminalHandle, TerminalUpdate,
+};
 use heeler_core::{SessionId, TerminalId};
+use heeler_protocol::blocks::{Block, BlockPart};
 use heeler_protocol::messages::{
     Request, SessionInfo, TerminalColors, TerminalHistory, TerminalHistoryRows, TerminalSize,
 };
+use heeler_protocol::render::TerminalRender;
 use heeler_terminal_view::{DefaultColors, SharedTerminal, TerminalBackend, ViewStatus};
 
 use super::attention::ended_text;
@@ -89,6 +93,26 @@ impl TerminalBackend for SessionBackend {
             handle.set_colors(terminal_colors(colors));
         }
     }
+
+    fn block_text(&self, block_id: u64, part: BlockPart) -> Task<Option<String>> {
+        let Some(terminal) = self.handle.borrow().as_ref().map(TerminalHandle::terminal) else {
+            return Task::ready(None);
+        };
+        let connection = self.connection.clone();
+        // The daemon clamps the limit to its own (512 KiB).
+        self.cx.spawn(async move |_| {
+            match connection
+                .terminal_block_text(terminal, block_id, part, u32::MAX)
+                .await
+            {
+                Ok(answer) => Some(answer.text),
+                Err(err) => {
+                    tracing::debug!("terminal.block_text failed: {err}");
+                    None
+                }
+            }
+        })
+    }
 }
 
 pub struct TerminalSession {
@@ -104,6 +128,13 @@ pub struct TerminalSession {
     colors: Option<DefaultColors>,
     /// The user stopped the daemon from the app; nothing reconnects until they start it.
     daemon_stopped: bool,
+    /// The block list must be fetched with the next snapshot: a fresh attachment, or the
+    /// connection dropped in between and events were missed.
+    blocks_stale: bool,
+    /// While a fetch is under way: the `terminal.block` events that arrived meanwhile, applied
+    /// on top of its answer (a plain replace would lose the ones newer than the answer).
+    blocks_fetch: Option<Vec<Block>>,
+    _blocks_task: Task<()>,
     _pump: Task<()>,
 }
 
@@ -154,6 +185,9 @@ impl TerminalSession {
                 gone: None,
                 colors,
                 daemon_stopped: false,
+                blocks_stale: true,
+                blocks_fetch: None,
+                _blocks_task: Task::ready(()),
                 _pump: Task::ready(()),
             };
             this.bind(terminal, cx);
@@ -191,12 +225,18 @@ impl TerminalSession {
         match update {
             TerminalUpdate::Render(render) => {
                 self.reconnecting = false;
+                let snapshot = matches!(render, TerminalRender::Snapshot(_));
                 self.shared
                     .update(cx, |shared, cx| shared.apply_render(render, cx));
                 self.refresh_status(cx);
+                if snapshot && self.blocks_stale {
+                    self.fetch_blocks(cx);
+                }
             }
             TerminalUpdate::Reconnecting => {
                 self.reconnecting = true;
+                // Events during the gap are lost: the next snapshot refetches the list.
+                self.blocks_stale = true;
                 self.refresh_status(cx);
             }
             TerminalUpdate::Gone { reason } => match reason {
@@ -217,9 +257,76 @@ impl TerminalSession {
     /// `Reconnecting` until its first snapshot arrives, which makes them report their size.
     fn rebind(&mut self, new_terminal: TerminalId, cx: &mut Context<Self>) {
         self.shared.update(cx, |shared, cx| shared.reset(cx));
+        self.blocks_stale = true;
+        self.blocks_fetch = None;
+        self._blocks_task = Task::ready(());
         self.reconnecting = true;
         self.bind(new_terminal, cx);
         self.refresh_status(cx);
+    }
+
+    /// Loads the terminal's blocks (the daemon keeps at most 2 000). A daemon without capability
+    /// `terminal.blocks` has none; a failed fetch is retried with the next snapshot.
+    fn fetch_blocks(&mut self, cx: &mut Context<Self>) {
+        let Some(terminal) = self.terminal() else {
+            return;
+        };
+        if !self.connection.supports_blocks() {
+            // Not connected (the snapshot was a replay) or an older daemon: the next snapshot
+            // after a reconnect asks again.
+            return;
+        }
+        self.blocks_stale = false;
+        self.blocks_fetch = Some(Vec::new());
+        let connection = self.connection.clone();
+        self._blocks_task = cx.spawn(async move |this, cx| {
+            let result = connection.fetch_blocks(terminal).await;
+            this.update(cx, |this, cx| this.finish_fetch(terminal, result, cx))
+                .ok();
+        });
+    }
+
+    fn finish_fetch(
+        &mut self,
+        terminal: TerminalId,
+        result: Result<BlockList, ClientError>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal() != Some(terminal) {
+            return;
+        }
+        let buffered = self.blocks_fetch.take().unwrap_or_default();
+        match result {
+            Ok(mut list) => {
+                for block in buffered {
+                    list.apply(block);
+                }
+                self.shared
+                    .update(cx, |shared, cx| shared.set_blocks(list, cx));
+            }
+            Err(err) => {
+                tracing::debug!("terminal.blocks failed: {err}");
+                self.blocks_stale = true;
+            }
+        }
+    }
+
+    /// A `terminal.block` event for `terminal`; ignored when this session shows another one.
+    pub fn apply_block_event(
+        &mut self,
+        terminal: TerminalId,
+        block: Block,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal() != Some(terminal) {
+            return;
+        }
+        match &mut self.blocks_fetch {
+            Some(buffered) => buffered.push(block),
+            None => self
+                .shared
+                .update(cx, |shared, cx| shared.apply_block(block, cx)),
+        }
     }
 
     fn compute_status(&self) -> ViewStatus {

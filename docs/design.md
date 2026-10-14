@@ -204,6 +204,7 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 | base spacing | 4 px | 6 px |
 | corner radius | 6 px | 8 px |
 | terminal padding (all sides) | 6 px | 8 px |
+| block gutter bar | 3 px | 4 px |
 
 - **Themes**: one theme definition drives chrome, terminal palette, and (M11) syntax scopes; built-in `heeler-dark` (terminal bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `heeler-light`; follows system appearance unless pinned. Later: import Ghostty/Zed theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
 - **Motion**: ≤ 150 ms, ease-out; no motion on terminal content; respects Reduce Motion.
@@ -234,6 +235,7 @@ theme = "auto"                 # auto | heeler-dark | heeler-light | <name>
 cursor = { style = "block", blink = true }
 option_as_meta = "left"        # none | left | right | both
 copy_on_select = false
+blocks = true                  # prompt blocks over the terminal (see Terminal blocks)
 
 [layout]
 preset = "default"
@@ -258,6 +260,17 @@ card_size = "medium"           # small | medium | large
 preview = "live"               # live | static | off
 sort = "attention"             # attention | recent | name
 ```
+
+## Terminal blocks (M10-C)
+
+The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws them **over the single grid** — the grid, its columns and the PTY size never change, and `terminal.blocks = false` makes the terminal look exactly as without blocks (hot-reloaded).
+
+- **Gutter**: a thin bar at the left edge, inside the terminal padding (width = the `block gutter bar` density token), one per block from its prompt to the end of its output. `--success` after exit 0, `--error` after a failure, neutral (`--muted`) while the command runs and when no exit code is known; the bar of a running block pulses slowly (steady under Reduce Motion, read from macOS; `HEELER_REDUCE_MOTION=0|1` overrides). The open prompt has no bar.
+- **Separator** above every prompt but the first row, and a right-aligned **chip** on the prompt line: `✓ 1.2 s`, `✗ 2 3 m` (exit status, duration). A chip never covers text the prompt line shows: when the line is too full for it, it is left out.
+- **Hover** a block: a faint tint and an actions bar at the right of its first visible row — Copy command, Copy output (both through `terminal.block_text`, so they work beyond the loaded scrollback), Collapse / Expand, Rerun (types the command and Enter into the session; off while a command runs), Send to agent (disabled, "M4").
+- **Collapse** folds a finished block's output rows into one summary row (`… 241 lines, exit 0`) *in the view only*: nothing changes in the PTY, the scrollback or what other clients see, and older lines move down to fill the freed rows (the view stays anchored at its bottom). Folds apply to the pane, not to overview previews; they are saved per terminal in `desktop-state.json` (`collapsed_blocks`, terminal id → block ids) so they survive a desktop restart, and are forgotten with the terminal.
+- **Keyboard**: ⌘↑ / ⌘↓ move the highlight to the previous / next prompt and scroll to it (past the newest block ⌘↓ returns to the live screen; typing clears the highlight); ⌘⇧A selects the current block's output, ⌘⇧C copies it. The *current* block is the highlighted one, else the newest command with output. Every action is also in ⌘K under `Block:`.
+- **Overview previews** show the gutter colors only (no chips, separators or folds). The inspector's Info tab lists the last 20 commands of the focused terminal (command, exit, duration, cwd); a click scrolls that terminal to the block.
 
 ## Daemon lifecycle (until M6 launch agent)
 
@@ -298,9 +311,11 @@ flowchart TD
 | Close tab (detach) / stop session | ⌘W / ⌘⇧W |
 | Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘J |
 | Overview | ⌘⇧O |
+| Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ |
+| Select / copy the current block's output | ⌘⇧A / ⌘⇧C |
 | Approve / deny focused approval | ⌘↩ / ⎋ (only when the approval card has focus) |
 
-Inside a focused terminal every other key goes to the PTY; Option-as-Meta follows `terminal.option_as_meta`.
+The block keys apply while the primary screen shows (a program on the alternate screen — vim, htop — hides blocks and gets every key). Inside a focused terminal every other key goes to the PTY; Option-as-Meta follows `terminal.option_as_meta`.
 
 ## Accessibility
 

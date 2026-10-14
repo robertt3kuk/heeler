@@ -20,6 +20,7 @@ use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
+use crate::blocks::BlockList;
 use crate::client::{Client, ConnectOptions};
 use crate::error::ClientError;
 use crate::socket::default_socket_path;
@@ -188,6 +189,21 @@ impl Connection {
     ) -> Result<T, ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
         client.call(req).await
+    }
+
+    /// True while connected to a daemon that advertised capability `terminal.blocks`
+    /// ([`Client::supports_blocks`]); false when disconnected.
+    pub fn supports_blocks(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_blocks())
+    }
+
+    /// Every block the daemon keeps for `terminal` ([`BlockList::fetch`] on the current
+    /// connection).
+    pub async fn fetch_blocks(&self, terminal: TerminalId) -> Result<BlockList, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        BlockList::fetch(&client, terminal).await
     }
 
     /// One page of `terminal`'s blocks, newest first (see [`Client::terminal_blocks`]).

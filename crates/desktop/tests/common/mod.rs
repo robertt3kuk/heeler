@@ -199,6 +199,47 @@ impl TestDaemon {
         created.session
     }
 
+    /// Types `bytes` into `terminal` from a connection of its own (no desktop involved).
+    pub fn send_input(&self, terminal: heeler_core::TerminalId, bytes: &[u8]) {
+        let options = self.options();
+        self.rt().block_on(async move {
+            let client = Client::connect(options).await.unwrap();
+            client.send_input(terminal, bytes).await.unwrap();
+            // The input frame is queued; a round trip proves the daemon has read it.
+            let _: serde_json::Value = client
+                .call(Request::DaemonStatus(Default::default()))
+                .await
+                .unwrap();
+        });
+    }
+
+    /// The daemon's blocks of `terminal`, oldest first.
+    pub fn blocks(&self, terminal: heeler_core::TerminalId) -> Vec<heeler_protocol::blocks::Block> {
+        let result: heeler_protocol::blocks::TerminalBlocksResult = self.call(
+            Request::TerminalBlocks(heeler_protocol::blocks::TerminalBlocks {
+                terminal_id: terminal,
+                before_id: None,
+                limit: 500,
+            }),
+        );
+        let mut blocks = result.blocks;
+        blocks.reverse();
+        blocks
+    }
+
+    /// What `terminal.block_text` answers for a block's output.
+    pub fn block_output(&self, terminal: heeler_core::TerminalId, block_id: u64) -> String {
+        let result: heeler_protocol::blocks::TerminalBlockTextResult = self.call(
+            Request::TerminalBlockText(heeler_protocol::blocks::TerminalBlockText {
+                terminal_id: terminal,
+                block_id,
+                part: heeler_protocol::blocks::BlockPart::Output,
+                max_bytes: 1 << 20,
+            }),
+        );
+        result.text
+    }
+
     /// `sh -c script` as a session.
     pub fn sh(&self, script: &str) -> SessionInfo {
         self.create_session(&["sh", "-c", script], None)
@@ -432,5 +473,101 @@ impl Drop for ProcessDaemon {
                 }
             }
         });
+    }
+}
+
+// Real shells -----------------------------------------------------------------------------
+
+/// A shell the daemon injects its OSC 133 integration into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shell {
+    Zsh,
+    Bash,
+    Fish,
+}
+
+impl Shell {
+    pub const ALL: [Shell; 3] = [Shell::Zsh, Shell::Bash, Shell::Fish];
+
+    /// The shell's executable, if it is installed (bash is macOS's 3.2 `/bin/bash`).
+    pub fn path(self) -> Option<&'static str> {
+        let candidates: &[&str] = match self {
+            Shell::Zsh => &["/bin/zsh"],
+            Shell::Bash => &["/bin/bash"],
+            Shell::Fish => &[
+                "/opt/homebrew/bin/fish",
+                "/usr/local/bin/fish",
+                "/usr/bin/fish",
+            ],
+        };
+        candidates.iter().copied().find(|p| Path::new(p).exists())
+    }
+}
+
+/// A shell session with a plain `$ ` prompt in a home of its own; keeps the home alive.
+pub struct ShellSession {
+    pub home: TempDir,
+    pub info: SessionInfo,
+}
+
+impl TestDaemon {
+    /// Starts `shell` as a terminal session with the user's startup files reduced to a `$ `
+    /// prompt, so the automatic shell integration is the only thing that marks blocks.
+    pub fn shell_session(&self, shell: Shell, path: &str) -> ShellSession {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let write = |file: &str, content: &str| {
+            let file = home.join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, content).unwrap();
+        };
+        match shell {
+            Shell::Zsh => write(".zshrc", "PS1='$ '\nunsetopt PROMPT_SP\n"),
+            Shell::Bash => {
+                write(".bash_profile", ". \"$HOME/.bashrc\"\n");
+                write(".bashrc", "PS1='$ '\n");
+            }
+            Shell::Fish => write(
+                ".config/fish/config.fish",
+                "function fish_prompt\n    echo -n '$ '\nend\n",
+            ),
+        }
+        let env = [
+            ("HOME", home.to_string_lossy().into_owned()),
+            ("SHELL", path.to_owned()),
+            ("ZDOTDIR", home.to_string_lossy().into_owned()),
+            (
+                "XDG_CONFIG_HOME",
+                home.join(".config").to_string_lossy().into_owned(),
+            ),
+            (
+                "XDG_DATA_HOME",
+                home.join(".local/share").to_string_lossy().into_owned(),
+            ),
+            (
+                "XDG_CACHE_HOME",
+                home.join(".cache").to_string_lossy().into_owned(),
+            ),
+            (
+                "HISTFILE",
+                home.join(".hist").to_string_lossy().into_owned(),
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        let created: SessionResult = self.call(Request::SessionCreate(SessionCreate {
+            workspace_id: None,
+            spec: SessionSpec::Terminal(TerminalSpec {
+                env,
+                cwd: Some(home.clone()),
+                ..TerminalSpec::default()
+            }),
+        }));
+        ShellSession {
+            home: tmp,
+            info: created.session,
+        }
     }
 }

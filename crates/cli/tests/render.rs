@@ -63,6 +63,7 @@ fn snapshot(cols: u16, lines: Vec<Row>) -> TerminalSnapshot {
         lines,
         links: vec![],
         history_len: 0,
+        viewport_top: 0,
     }
 }
 
@@ -76,6 +77,7 @@ fn frame(dirty: Vec<(u16, Row)>) -> TerminalFrame {
         title: None,
         links: vec![],
         history_len: 0,
+        viewport_top: 0,
     }
 }
 

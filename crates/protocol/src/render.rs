@@ -27,6 +27,9 @@ pub struct TerminalSnapshot {
     pub links: Vec<Link>,
     /// Lines of scrollback available through `terminal.history`.
     pub history_len: u32,
+    /// Absolute line number of row 0 (`terminal.blocks` numbering, `docs/protocol.md`); stays at
+    /// the last primary-screen value while the alternate screen shows.
+    pub viewport_top: u64,
 }
 
 /// Changes since the frame the client last acked.
@@ -45,6 +48,8 @@ pub struct TerminalFrame {
     /// Hyperlinks first referenced in this frame.
     pub links: Vec<Link>,
     pub history_len: u32,
+    /// Absolute line number of row 0 after this frame (see [`TerminalSnapshot::viewport_top`]).
+    pub viewport_top: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

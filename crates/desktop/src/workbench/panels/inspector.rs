@@ -7,12 +7,30 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use heeler_core::SessionKind;
+use heeler_protocol::blocks::BlockState;
 use heeler_protocol::messages::SessionInfo;
+use heeler_terminal_view::blocks::{self as block_ui, Tone};
 
 use super::common::{age_label, format_utc, panel_header, state_dot, tone_color};
 use crate::settings::InspectorPanelSettings;
+use crate::workbench::actions::{BlockRef, JumpToBlock};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::style::UiStyle;
+
+/// Blocks the info tab lists.
+const BLOCK_ROWS: usize = 20;
+
+/// One command of the info tab's block list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockRow {
+    pub id: u64,
+    pub command: String,
+    pub state: BlockState,
+    pub exit_code: Option<i32>,
+    /// `1.2 s`; `None` while it runs or when no time is known.
+    pub duration: Option<String>,
+    pub cwd: Option<String>,
+}
 
 pub struct InspectorPanel {
     env: PanelEnv,
@@ -49,6 +67,35 @@ impl InspectorPanel {
     pub fn new(env: PanelEnv, cx: &mut Context<Self>) -> Self {
         cx.observe(&env.sessions, |_, _, cx| cx.notify()).detach();
         Self { env, active: None }
+    }
+
+    /// The last [`BLOCK_ROWS`] commands of the session's terminal, newest first (tests and
+    /// rendering share this). Empty while the terminal is not attached or has no blocks.
+    pub fn block_rows(&self, info: &SessionInfo, cx: &gpui::App) -> Vec<BlockRow> {
+        let Some(terminal) = self.env.sessions.read(cx).attached(info.id) else {
+            return Vec::new();
+        };
+        let shared = terminal.read(cx).shared().clone();
+        let model = shared.read(cx).model();
+        model
+            .blocks()
+            .iter()
+            .rev()
+            .filter(|block| block.state != BlockState::Prompt)
+            .take(BLOCK_ROWS)
+            .map(|block| BlockRow {
+                id: block.id,
+                command: block
+                    .command
+                    .as_deref()
+                    .map(|c| c.lines().next().unwrap_or_default().trim().to_owned())
+                    .unwrap_or_default(),
+                state: block.state,
+                exit_code: block.exit_code,
+                duration: block_ui::duration_ms(block).map(block_ui::format_duration),
+                cwd: block.cwd.as_ref().map(|c| c.display().to_string()),
+            })
+            .collect()
     }
 
     /// Label/value rows of the info tab for `info` (tests and rendering share this).
@@ -138,7 +185,9 @@ impl Render for InspectorPanel {
         let hover = theme.hover;
         let focused = {
             let store = self.env.sessions.read(cx);
-            store.focused().and_then(|id| store.session(id).cloned())
+            store
+                .last_focused()
+                .and_then(|id| store.session(id).cloned())
         };
 
         let tabs: Vec<AnyElement> = settings
@@ -185,6 +234,8 @@ impl Render for InspectorPanel {
                 Some(info) => {
                     let presentation = self.env.sessions.read(cx).presentation(info);
                     let rows = self.info_rows(info, cx);
+                    let block_rows = self.block_rows(info, cx);
+                    let session = info.id.to_string();
                     div()
                         .flex()
                         .flex_col()
@@ -223,6 +274,89 @@ impl Render for InspectorPanel {
                                         .child(SharedString::from(value)),
                                 )
                         }))
+                        .when(!block_rows.is_empty(), |s| {
+                            s.child(
+                                div()
+                                    .mt(px(tokens.spacing * 2.0))
+                                    .text_size(px(tokens.section_font_size))
+                                    .text_color(theme.muted)
+                                    .child("RECENT COMMANDS"),
+                            )
+                            .children(block_rows.into_iter().map(|row| {
+                                let tone = match row.state {
+                                    BlockState::Running => Tone::Neutral,
+                                    _ => match row.exit_code {
+                                        Some(0) => Tone::Success,
+                                        Some(_) => Tone::Error,
+                                        None => Tone::Neutral,
+                                    },
+                                };
+                                let color = match tone {
+                                    Tone::Success => theme.success,
+                                    Tone::Error => theme.error,
+                                    Tone::Neutral => theme.muted,
+                                };
+                                let status = match (row.state, row.exit_code) {
+                                    (BlockState::Running, _) => "running".to_owned(),
+                                    (_, Some(0)) => "✓".to_owned(),
+                                    (_, Some(code)) => format!("✗ {code}"),
+                                    (_, None) => "–".to_owned(),
+                                };
+                                let jump = BlockRef {
+                                    session: session.clone(),
+                                    block: row.id,
+                                };
+                                div()
+                                    .id(SharedString::from(format!("inspector-block-{}", row.id)))
+                                    .flex()
+                                    .flex_col()
+                                    .px(px(tokens.spacing))
+                                    .py(px(tokens.spacing * 0.5))
+                                    .rounded(px(tokens.radius - 2.0))
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(hover))
+                                    .on_click(cx.listener(move |_, _, window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(JumpToBlock(jump.clone())),
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(tokens.spacing * 1.5))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .child(SharedString::from(row.command)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(color)
+                                                    .child(SharedString::from(status)),
+                                            )
+                                            .children(row.duration.map(|d| {
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(theme.muted)
+                                                    .child(SharedString::from(d))
+                                            })),
+                                    )
+                                    .children(row.cwd.map(|cwd| {
+                                        div()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_size(px(tokens.font_size - 1.0))
+                                            .text_color(theme.muted)
+                                            .child(SharedString::from(cwd))
+                                    }))
+                            }))
+                        })
                         .into_any_element()
                 }
             },

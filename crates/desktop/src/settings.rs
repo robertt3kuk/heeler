@@ -11,7 +11,8 @@ pub use heeler_settings::AppearanceSettings;
 use heeler_settings::themes::{self, SystemAppearance};
 use heeler_settings::{Setting, SettingsStore};
 use heeler_terminal_view::{
-    CursorSettings, CursorStyle, OptionAsMeta, Rgb, TerminalPalette, TerminalViewSettings,
+    BlockSettings, CursorSettings, CursorStyle, OptionAsMeta, Rgb, TerminalPalette,
+    TerminalViewSettings,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,9 @@ pub struct TerminalSettings {
     pub copy_on_select: bool,
     /// Jump back to the live screen when typing while scrolled into history.
     pub scroll_to_bottom_on_input: bool,
+    /// Draw prompt blocks over the terminal: gutter bars, status chips, hover actions, folds.
+    /// Off, the terminal looks as if blocks did not exist.
+    pub blocks: bool,
 }
 
 impl Default for TerminalSettings {
@@ -90,6 +94,7 @@ impl Default for TerminalSettings {
             option_as_meta: OptionAsMetaSetting::Left,
             copy_on_select: false,
             scroll_to_bottom_on_input: true,
+            blocks: true,
         }
     }
 }
@@ -140,6 +145,12 @@ impl TerminalSettings {
             scroll_to_bottom_on_input: self.scroll_to_bottom_on_input,
             // Padding follows the density; the workbench fills it in.
             padding: 0.0,
+            // The gutter width, colors and motion follow the density and the chrome theme; the
+            // workbench fills them in.
+            blocks: BlockSettings {
+                enabled: self.blocks,
+                ..BlockSettings::default()
+            },
         }
     }
 }
