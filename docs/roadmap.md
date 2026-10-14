@@ -81,9 +81,9 @@ Exit demo: open a Codex chat session, stream reply, see tool calls and diffs, ap
 
 ## M5 — Direct model chat
 Exit demo: chat with an OpenAI-compatible endpoint and a local Ollama model; switch model mid-conversation; keys in Keychain.
-- [ ] M5.1 `gateway` provider trait + OpenAI-compatible + Anthropic adapters, streaming
-- [ ] M5.2 Local endpoints (Ollama/LM Studio) discovery
-- [ ] M5.3 Keychain credential store + `provider.*` protocol
+- [x] M5.1 `gateway` provider trait + OpenAI-compatible + Anthropic adapters, streaming
+- [x] M5.2 Local endpoints (Ollama/LM Studio) discovery
+- [x] M5.3 Keychain credential store + `provider.*` protocol
 - [ ] M5.4 Direct chat view reuses chat components
 
 ## M6 — macOS integration
