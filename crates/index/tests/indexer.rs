@@ -7,7 +7,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use heeler_index::{HeelerRecord, IndexConfig, IndexHandle, Indexer, Role, SearchQuery, Source};
+use heeler_index::{
+    HeelerRecord, IndexConfig, IndexHandle, Indexer, Role, SearchQuery, SessionTextQuery, Source,
+};
 
 const WAIT: Duration = Duration::from_secs(15);
 
@@ -315,4 +317,83 @@ fn stopping_joins_the_worker_and_further_calls_fail() {
         ext_key: "k".to_owned(),
     }));
     indexer.stop();
+}
+
+#[test]
+fn the_rows_of_a_session_come_back_in_conversation_order_filtered_and_bounded() {
+    let env = env();
+    let file = env.claude.join("-work-app/conv.jsonl");
+    append(&file, &claude_line("first question about zebras"));
+    let indexer = Indexer::start(config(&env, true)).unwrap();
+    let handle = indexer.handle();
+    wait_for("the startup pass", || keys(&handle, "zebras") == ["conv"]);
+    for (index, (role, text)) in [
+        (Role::User, "hello"),
+        (Role::Assistant, "hi there"),
+        (Role::Tool, "ls -la"),
+        (Role::User, "and a token=abcdef0123456789xyz"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        handle.push_heeler(HeelerRecord {
+            session_key: "CHAT".to_owned(),
+            title: Some("A chat".to_owned()),
+            cwd: None,
+            role,
+            ts_ms: 1_790_000_000_000 + index as u64,
+            text: text.to_owned(),
+            ext_key: format!("c:{index}"),
+        });
+    }
+    handle.flush().unwrap();
+
+    let query = |roles: Vec<Role>, limit: usize| SessionTextQuery {
+        key: "CHAT".to_owned(),
+        sources: Vec::new(),
+        roles,
+        limit,
+    };
+    let all = handle.session_text(&query(Vec::new(), 100)).unwrap();
+    assert_eq!(
+        all.iter().map(|r| r.role).collect::<Vec<_>>(),
+        [Role::User, Role::Assistant, Role::Tool, Role::User]
+    );
+    assert_eq!(all[0].text, "hello");
+    assert_eq!(all[0].title.as_deref(), Some("A chat"));
+    assert!(
+        !all[3].text.contains("abcdef0123456789xyz"),
+        "redacted: {all:?}"
+    );
+    // Only the conversation, and only the newest rows when there are more than asked for.
+    let talk = handle
+        .session_text(&query(vec![Role::User, Role::Assistant], 2))
+        .unwrap();
+    assert_eq!(
+        talk.iter().map(|r| r.role).collect::<Vec<_>>(),
+        [Role::Assistant, Role::User]
+    );
+    // A transcript file's session is found by its key, filtered by source.
+    let conv = handle
+        .session_text(&SessionTextQuery {
+            key: "conv".to_owned(),
+            sources: vec![Source::Claude],
+            roles: Vec::new(),
+            limit: 10,
+        })
+        .unwrap();
+    assert_eq!(conv.len(), 1);
+    assert_eq!(conv[0].source, Source::Claude);
+    assert!(
+        handle
+            .session_text(&SessionTextQuery {
+                key: "conv".to_owned(),
+                sources: vec![Source::Heeler],
+                roles: Vec::new(),
+                limit: 10,
+            })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(handle.session_text(&query(Vec::new(), 10)).is_ok());
 }

@@ -1,5 +1,6 @@
 //! Heeler IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
 //!
+//! - [`assistant`]: assistant chat DTOs and context attachments (protocol 0.12).
 //! - [`blocks`]: terminal block DTOs (protocol 0.5).
 //! - [`chat`]: agent chat and approval DTOs (protocol 0.9).
 //! - [`provider`]: model provider and direct chat DTOs (protocol 0.11).
@@ -10,6 +11,7 @@
 //! - [`tree`]: agent observation tree DTOs (protocol 0.10).
 //! - [`render`]: terminal render snapshot/frame DTOs carried in binary frames.
 
+pub mod assistant;
 pub mod blocks;
 pub mod chat;
 pub mod control;
@@ -31,7 +33,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 11,
+    minor: 12,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

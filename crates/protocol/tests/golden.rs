@@ -15,6 +15,7 @@ use heeler_core::{
     TurnId, Usage,
 };
 use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_protocol::assistant::*;
 use heeler_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
@@ -181,6 +182,41 @@ fn agent_event(seq: u64, kind: AgentEventKind) -> AgentEvent {
     draft.provider.turn_id = Some("turn-1".into());
     draft.provider.item_id = Some("item-1".into());
     draft.into_event(sid(), seq, 1_791_894_170_000 + seq)
+}
+
+fn attachments_meta_fixture() -> Vec<AttachmentMeta> {
+    vec![
+        AttachmentMeta {
+            kind: AttachmentKind::ShellBlock,
+            label: "cargo test".into(),
+            chars: 1250,
+            truncated: false,
+        },
+        AttachmentMeta {
+            kind: AttachmentKind::File,
+            label: "src/main.rs:10-40".into(),
+            chars: 3000,
+            truncated: true,
+        },
+    ]
+}
+
+fn assistant_session_info() -> SessionInfo {
+    SessionInfo {
+        title: "Assistant · heeler".into(),
+        state: SessionState::Idle,
+        command: vec!["assistant".into()],
+        chat: Some(ChatInfo {
+            agent: AGENT_ASSISTANT.into(),
+            model: "llama3.3:70b".into(),
+            approval_policy: ApprovalPolicy::OnRequest,
+            sandbox: SandboxMode::WorkspaceWrite,
+            turn_active: false,
+            pending_approvals: 0,
+            provider_id: Some("ollama".into()),
+        }),
+        ..chat_session_info()
+    }
 }
 
 fn permission_options() -> Vec<PermissionOption> {
@@ -642,6 +678,7 @@ fn requests() -> Vec<(&'static str, Request)> {
             Request::ChatSend(ChatSend {
                 session_id: sid(),
                 text: "run the tests".into(),
+                attachments: vec![],
             }),
         ),
         (
@@ -848,6 +885,66 @@ fn requests() -> Vec<(&'static str, Request)> {
             }),
         ),
         ("provider_discover", Request::ProviderDiscover(Empty {})),
+        (
+            "chat_send_attachments",
+            Request::ChatSend(ChatSend {
+                session_id: sid(),
+                text: "why does this fail?".into(),
+                attachments: vec![
+                    Attachment::ShellBlock {
+                        terminal_id: TID,
+                        block_id: 12,
+                    },
+                    Attachment::ShellRecent {
+                        terminal_id: TID,
+                        lines: 80,
+                    },
+                    Attachment::AgentTranscript {
+                        session_id: "5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60".into(),
+                        last_turns: 3,
+                    },
+                    Attachment::File {
+                        path: "src/main.rs".into(),
+                        range: Some(LineRange { start: 10, end: 40 }),
+                    },
+                    Attachment::File {
+                        path: "/repo/README.md".into(),
+                        range: None,
+                    },
+                    Attachment::Search {
+                        query: "scheduler stall".into(),
+                        limit: 5,
+                    },
+                ],
+            }),
+        ),
+        (
+            "assistant_open_global",
+            Request::AssistantOpen(AssistantOpen {
+                scope: AssistantScope::Global,
+                workspace_id: None,
+                new: false,
+            }),
+        ),
+        (
+            "assistant_open_workspace_new",
+            Request::AssistantOpen(AssistantOpen {
+                scope: AssistantScope::Workspace,
+                workspace_id: Some(ws()),
+                new: true,
+            }),
+        ),
+        (
+            "assistant_list",
+            Request::AssistantList(AssistantListRequest {
+                scope: Some(AssistantScope::Workspace),
+                workspace_id: Some(ws()),
+            }),
+        ),
+        (
+            "assistant_list_all",
+            Request::AssistantList(AssistantListRequest::default()),
+        ),
     ]
 }
 
@@ -1157,6 +1254,25 @@ fn events() -> Vec<(&'static str, Event)> {
             "session_updated_chat_direct",
             Event::SessionUpdated {
                 session: direct_chat_session_info(),
+            },
+        ),
+        (
+            "chat_event_message_end_attachments",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new({
+                    let mut draft = AgentEventDraft::new(AgentEventKind::MessageEnd {
+                        role: MessageRole::User,
+                        phase: None,
+                        text: "why does this fail?\n\n[shell: cargo test · exit 101 · 3 lines]\nerror[E0308]".into(),
+                    });
+                    draft.turn_id = Some(turn());
+                    draft.item_id = Some(item());
+                    draft.payload = Some(serde_json::json!({
+                        ATTACHMENTS_META_KEY: attachments_meta_fixture(),
+                    }));
+                    draft.into_event(sid(), 43, 1_791_894_170_043)
+                }),
             },
         ),
     ]
@@ -1479,6 +1595,7 @@ fn responses_match_fixtures() {
                                 "--resume".into(),
                                 "5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60".into(),
                             ]),
+                            session_id: None,
                         },
                         HistoryHit {
                             source: HistorySource::Heeler,
@@ -1491,6 +1608,7 @@ fn responses_match_fixtures() {
                             score: 1.5,
                             matches: 1,
                             resume_argv: None,
+                            session_id: Some(sid()),
                         },
                     ],
                 },
@@ -1541,6 +1659,49 @@ fn responses_match_fixtures() {
                     "option `decline` was not offered; offered: accept, cancel",
                 ),
             ),
+        ),
+        (
+            "error_forbidden",
+            ControlMessage::err(
+                7,
+                ErrorBody::new(
+                    ErrorCode::Forbidden,
+                    "attachment `file` is not allowed: `assistant.context.files` is false for the global assistant",
+                ),
+            ),
+        ),
+        (
+            "assistant_list",
+            ControlMessage::ok(
+                14,
+                &AssistantList {
+                    assistants: vec![
+                        AssistantEntry {
+                            scope: AssistantScope::Global,
+                            workspace_id: ws(),
+                            default: true,
+                            session: assistant_session_info(),
+                        },
+                        AssistantEntry {
+                            scope: AssistantScope::Workspace,
+                            workspace_id: ws(),
+                            default: false,
+                            session: assistant_session_info(),
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "assistant_session_result",
+            ControlMessage::ok(
+                15,
+                &SessionResult {
+                    session: assistant_session_info(),
+                },
+            )
+            .unwrap(),
         ),
         (
             "chat_session_result",

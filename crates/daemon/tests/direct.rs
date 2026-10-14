@@ -234,6 +234,7 @@ impl Direct {
         self.call(Request::ChatSend(ChatSend {
             session_id: id,
             text: text.to_owned(),
+            attachments: vec![],
         }))
         .await
     }
@@ -1150,6 +1151,7 @@ async fn stopping_a_session_mid_turn_ends_the_turn_and_the_session() {
         .try_call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "hello?".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(result), ErrorCode::InvalidState);
@@ -1189,6 +1191,7 @@ async fn provider_failures_end_the_turn_with_a_clear_message_and_leave_the_chat_
         .try_call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "hello".into(),
+            attachments: vec![],
         }))
         .await;
     let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
@@ -1396,6 +1399,7 @@ async fn a_chat_whose_provider_was_removed_stays_listed_and_fails_clearly() {
         .try_call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "hello".into(),
+            attachments: vec![],
         }))
         .await;
     let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
@@ -1421,6 +1425,7 @@ async fn a_chat_whose_provider_was_removed_stays_listed_and_fails_clearly() {
     t.call::<ChatSent>(Request::ChatSend(ChatSend {
         session_id: created.id,
         text: "hello again".into(),
+        attachments: vec![],
     }))
     .await;
     t.stop().await;

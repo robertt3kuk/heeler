@@ -24,11 +24,29 @@
 //!
 //! [gateway]                      # direct model chat (protocol 0.11, docs/gateway.md)
 //! max_context_chars = 200000     # oldest messages are left out of a request beyond this
+//!
+//! [assistant]                    # assistant chat (protocol 0.12, docs/assistant.md)
+//! provider = "openrouter"        # provider and model of new assistants
+//! model = "meta-llama/llama-3.3-70b-instruct"
+//! context_budget_chars = 60000   # attached context per message, split over the attachments
+//!
+//! [assistant.context]            # what assistants of project workspaces may read
+//! shell = true
+//! agents = true
+//! files = true
+//! search = true
+//!
+//! [assistant.global_context]     # the global (Home) assistant; files are off by default
+//! files = false
+//!
+//! [assistant.workspaces.heeler]  # per workspace (name or id): only what differs
+//! files = false
 //! ```
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use heeler_protocol::assistant::AttachmentKind;
 use serde::Deserialize;
 use serde::de::Error as _;
 
@@ -54,6 +72,7 @@ pub struct DaemonSettings {
     pub history: HistorySettings,
     pub codex: CodexSettings,
     pub gateway: GatewaySettings,
+    pub assistant: AssistantSettings,
 }
 
 /// `gateway.max_context_chars` when the setting is absent.
@@ -137,6 +156,124 @@ impl Default for HistorySettings {
     }
 }
 
+/// `assistant.context_budget_chars` when the setting is absent.
+pub const DEFAULT_CONTEXT_BUDGET_CHARS: usize = 60_000;
+
+/// What an assistant may read when a message attaches it (`docs/assistant.md`). Nothing is read
+/// that is not attached; these only decide whether an attachment is accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ContextPermissions {
+    /// `shell_block`, `shell_recent`: terminal text.
+    pub shell: bool,
+    /// `agent_transcript`: the journal of a Heeler chat or an indexed transcript.
+    pub agents: bool,
+    /// `file`: files under the workspace roots.
+    pub files: bool,
+    /// `search`: the history index.
+    pub search: bool,
+}
+
+impl Default for ContextPermissions {
+    fn default() -> Self {
+        Self {
+            shell: true,
+            agents: true,
+            files: true,
+            search: true,
+        }
+    }
+}
+
+impl ContextPermissions {
+    /// The default of the global assistant: files are off (its folder is Home).
+    pub fn global_default() -> Self {
+        Self {
+            files: false,
+            ..Self::default()
+        }
+    }
+
+    /// Whether an attachment of this kind is accepted.
+    pub fn allows(self, kind: AttachmentKind) -> bool {
+        match kind {
+            AttachmentKind::ShellBlock | AttachmentKind::ShellRecent => self.shell,
+            AttachmentKind::AgentTranscript => self.agents,
+            AttachmentKind::File => self.files,
+            AttachmentKind::Search => self.search,
+        }
+    }
+}
+
+/// The setting that gates an attachment kind, as `daemon.toml` names it.
+pub fn gating_setting(kind: AttachmentKind) -> &'static str {
+    match kind {
+        AttachmentKind::ShellBlock | AttachmentKind::ShellRecent => "shell",
+        AttachmentKind::AgentTranscript => "agents",
+        AttachmentKind::File => "files",
+        AttachmentKind::Search => "search",
+    }
+}
+
+/// `[assistant.workspaces.<name or id>]`: the permissions of one workspace that differ from
+/// `[assistant.context]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct ContextOverride {
+    pub shell: Option<bool>,
+    pub agents: Option<bool>,
+    pub files: Option<bool>,
+    pub search: Option<bool>,
+}
+
+/// `[assistant]` of `daemon.toml`: the assistant sessions' model and what they may read.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AssistantSettings {
+    /// The provider (`heeler provider ls`) of assistants created from now on.
+    pub provider: Option<String>,
+    /// Their model; absent takes the provider's default model.
+    pub model: Option<String>,
+    /// Characters of attached context one message carries, split evenly over its attachments.
+    pub context_budget_chars: usize,
+    /// What assistants of project workspaces may read.
+    pub context: ContextPermissions,
+    /// What the global assistant (Home) may read.
+    pub global_context: ContextPermissions,
+    /// Differences per workspace, by workspace name or id.
+    pub workspaces: std::collections::BTreeMap<String, ContextOverride>,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            context_budget_chars: DEFAULT_CONTEXT_BUDGET_CHARS,
+            context: ContextPermissions::default(),
+            global_context: ContextPermissions::global_default(),
+            workspaces: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl AssistantSettings {
+    /// The permissions of a project workspace: `[assistant.context]` with the overrides of
+    /// `[assistant.workspaces.<id>]` and then `[assistant.workspaces.<name>]` applied.
+    pub fn permissions_for_workspace(&self, name: &str, id: &str) -> ContextPermissions {
+        let mut permissions = self.context;
+        for key in [id, name] {
+            if let Some(over) = self.workspaces.get(key) {
+                permissions.shell = over.shell.unwrap_or(permissions.shell);
+                permissions.agents = over.agents.unwrap_or(permissions.agents);
+                permissions.files = over.files.unwrap_or(permissions.files);
+                permissions.search = over.search.unwrap_or(permissions.search);
+            }
+        }
+        permissions
+    }
+}
+
 /// The `range_days` values the settings accept.
 pub const RANGE_DAYS: [u32; 3] = [0, 30, 90];
 
@@ -152,6 +289,8 @@ struct File {
     codex: CodexSettings,
     #[serde(default)]
     gateway: GatewaySettings,
+    #[serde(default)]
+    assistant: AssistantSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -199,12 +338,18 @@ impl DaemonSettings {
             .home_folder
             .map(|folder| expand_home_folder(&folder, user_home))
             .transpose()?;
+        if file.assistant.context_budget_chars == 0 {
+            return Err(toml::de::Error::custom(
+                "assistant.context_budget_chars must be at least 1",
+            ));
+        }
         Ok(Self {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
             history: file.history,
             codex: file.codex,
             gateway: file.gateway,
+            assistant: file.assistant,
         })
     }
 }
@@ -453,5 +598,53 @@ mod tests {
             "another user's home"
         );
         assert_eq!(DaemonSettings::parse("", None).unwrap().home_folder, None);
+    }
+
+    #[test]
+    fn assistant_settings_default_to_everything_but_global_files() {
+        let settings = DaemonSettings::parse("", None).unwrap().assistant;
+        assert_eq!(settings.provider, None);
+        assert_eq!(settings.model, None);
+        assert_eq!(settings.context_budget_chars, 60_000);
+        assert_eq!(settings.context, ContextPermissions::default());
+        assert!(settings.context.files && settings.context.shell);
+        assert!(!settings.global_context.files);
+        assert!(settings.global_context.shell && settings.global_context.agents);
+        assert!(settings.global_context.search);
+    }
+
+    #[test]
+    fn assistant_settings_are_read_and_overridden_per_workspace() {
+        let settings = DaemonSettings::parse(
+            "[assistant]\nprovider = \"ollama\"\nmodel = \"llama3\"\ncontext_budget_chars = 900\n\
+             [assistant.context]\nshell = false\n\
+             [assistant.global_context]\nfiles = true\n\
+             [assistant.workspaces.secret]\nfiles = false\nsearch = false\n",
+            None,
+        )
+        .unwrap()
+        .assistant;
+        assert_eq!(settings.provider.as_deref(), Some("ollama"));
+        assert_eq!(settings.model.as_deref(), Some("llama3"));
+        assert_eq!(settings.context_budget_chars, 900);
+        assert!(!settings.context.shell && settings.context.files);
+        assert!(settings.global_context.files);
+        let secret = settings.permissions_for_workspace("secret", "01WS");
+        assert!(!secret.files && !secret.search && !secret.shell && secret.agents);
+        // Another workspace has the plain `[assistant.context]`; the id works as a key too.
+        assert_eq!(
+            settings.permissions_for_workspace("other", "01WS"),
+            settings.context
+        );
+        let by_id = DaemonSettings::parse("[assistant.workspaces.01WS]\nagents = false\n", None)
+            .unwrap()
+            .assistant;
+        assert!(!by_id.permissions_for_workspace("any", "01WS").agents);
+    }
+
+    #[test]
+    fn assistant_budget_must_be_positive() {
+        assert!(DaemonSettings::parse("[assistant]\ncontext_budget_chars = 0\n", None).is_err());
+        assert!(DaemonSettings::parse("[assistant.context]\nshell = \"yes\"\n", None).is_err());
     }
 }

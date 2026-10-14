@@ -327,6 +327,7 @@ mod tests {
             score: 1.0,
             matches: 1,
             resume_argv: None,
+            session_id: None,
         }
     }
 

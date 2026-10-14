@@ -1,6 +1,7 @@
 //! `heeler`: command-line client for heelerd.
 
 mod args;
+mod attach_spec;
 mod commands;
 mod error;
 mod hook;

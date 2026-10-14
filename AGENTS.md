@@ -17,6 +17,7 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - `docs/shell-integration.md` — automatic OSC 133/OSC 7 injection for zsh, bash, fish
 - `docs/history-index.md` — opt-in session history index and search (sources, formats, ranking, privacy, performance)
 - `docs/gateway.md` — direct model chat: providers (OpenAI-compatible, Anthropic, Ollama), Keychain credentials, direct chat sessions, `heeler provider` / `heeler chat` commands, tests
+- `docs/assistant.md` — assistant chat: scopes, context attachments (shell, agent transcripts, files, search), redaction and budgets, permissions, `heeler ask`
 - `docs/agents.md` — Codex chat sessions: adapter, `AgentEvent`, approvals, journal, how to re-record the test transcripts
 - `docs/integrations.md` — agent reporting (state + resume command), `heeler agent`, `heeler integration` for Codex, Claude Code, OMP
 - `docs/process.md` — how we work, gates, testing strategy

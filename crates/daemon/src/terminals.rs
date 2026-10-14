@@ -55,6 +55,16 @@ const INPUT_QUEUE: usize = 32;
 /// `INPUT_QUEUE * INPUT_SLICE` bytes per terminal.
 const INPUT_SLICE: usize = 64 * 1024;
 
+/// What [`TerminalHub::recent_text`] read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentText {
+    pub text: String,
+    /// Lines in `text`.
+    pub lines: usize,
+    /// The terminal showed a full-screen program: only its visible screen was read.
+    pub alternate_screen: bool,
+}
+
 /// A registered terminal. Obtained from [`TerminalHub::register`].
 #[derive(Debug)]
 pub struct TerminalEntry {
@@ -396,6 +406,45 @@ impl TerminalHub {
                 Err(ErrorBody::new(ErrorCode::InvalidState, error.to_string()))
             }
         }
+    }
+
+    /// The last `lines` lines of what the terminal shows and has scrolled away, as plain text
+    /// (soft wraps joined, trailing blank lines dropped), and how many lines that is. A
+    /// full-screen program (the alternate screen) has no scrollback to speak of: then only the
+    /// visible screen counts.
+    pub fn recent_text(&self, id: TerminalId, lines: usize) -> Result<RecentText, ErrorBody> {
+        let entry = self.get(id)?;
+        let snapshot = entry.terminal.snapshot(&mut RenderTracker::new());
+        let alternate_screen = snapshot.modes.alt_screen;
+        let row_text = |row: &heeler_protocol::render::Row| {
+            let text: String = row.runs.iter().map(|run| run.text.as_str()).collect();
+            (text.trim_end_matches(' ').to_owned(), row.wrapped)
+        };
+        // Rows above the viewport, newest first; a logical line may take several rows, so ask
+        // for a multiple of the lines wanted (bounded).
+        let scrolled = if alternate_screen {
+            Vec::new()
+        } else {
+            let wanted = u32::try_from(lines.saturating_mul(3).saturating_add(16))
+                .unwrap_or(HISTORY_MAX_ROWS)
+                .min(HISTORY_MAX_ROWS);
+            entry.terminal.history(0, wanted)
+        };
+        let rows: Vec<(String, bool)> = scrolled
+            .iter()
+            .rev()
+            .chain(snapshot.lines.iter())
+            .map(row_text)
+            .collect();
+        let (text, count) = crate::context::last_lines(
+            rows.iter().map(|(text, wrapped)| (text.as_str(), *wrapped)),
+            lines,
+        );
+        Ok(RecentText {
+            text,
+            lines: count,
+            alternate_screen,
+        })
     }
 
     /// Queues a kind=2 frame body for the terminal. Waits while the terminal's input queue is

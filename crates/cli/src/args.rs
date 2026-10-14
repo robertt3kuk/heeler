@@ -71,6 +71,12 @@ pub enum Command {
     /// Model providers for direct chat: OpenAI, Anthropic, Ollama, OpenAI-compatible servers
     #[command(subcommand)]
     Provider(ProviderCommand),
+    /// Ask the assistant a question, with context attached (shell output, files, agent
+    /// transcripts, search results); streams the answer
+    Ask(AskArgs),
+    /// Assistant sessions: direct chats with a scope (global, or one workspace)
+    #[command(subcommand)]
+    Assistant(AssistantCommand),
     /// List the permission requests of agent chats that wait for an answer
     Approvals,
     /// Answer a permission request with one of the options it offers (see `heeler approvals`)
@@ -208,6 +214,50 @@ pub struct ChatSendArgs {
     /// exits 1 when the turn fails or is cancelled
     #[arg(long)]
     pub wait: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AskArgs {
+    /// The question
+    pub question: String,
+    /// Ask the assistant of this workspace: id, unique id prefix, or exact name (default:
+    /// $HEELER_WORKSPACE, else the global assistant of Home)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+    /// Context to attach, repeatable: block:<terminal>:<block>, recent:<terminal>:<lines>,
+    /// agent:<session>[:<turns>], file:<path>[:<first>-<last>], search:<query>
+    #[arg(
+        long = "attach",
+        value_name = "KIND:VALUE",
+        value_parser = crate::attach_spec::parse_attachment
+    )]
+    pub attach: Vec<heeler_protocol::assistant::Attachment>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AssistantCommand {
+    /// List the assistant sessions, with their scope and which is the default
+    Ls(AssistantLsArgs),
+    /// Print the default assistant session of a scope, creating it on first use
+    Open(AssistantOpenArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AssistantLsArgs {
+    /// Only the assistants of this workspace (id, unique id prefix, or exact name)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct AssistantOpenArgs {
+    /// The workspace: id, unique id prefix, or exact name (default: $HEELER_WORKSPACE, else the
+    /// global assistant of Home)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+    /// Create one more assistant instead of returning the default
+    #[arg(long)]
+    pub new: bool,
 }
 
 #[derive(Debug, Args)]

@@ -86,7 +86,8 @@ impl EventBus {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Sends a copy of every session and terminal block event to `tap` from now on (`None`
+    /// Sends a copy of every session and terminal block event, and every chat event that is
+    /// journaled, to `tap` from now on (`None`
     /// stops). Never blocks: when the tap's queue is full the event is dropped for it.
     pub fn set_tap(&self, tap: Option<mpsc::Sender<Event>>) {
         self.lock().tap = tap;
@@ -127,11 +128,13 @@ impl EventBus {
         inner
             .subscribers
             .retain(|_, sub| sub.enqueue(Outbound::Frame(frame.clone())));
-        if matches!(
-            event,
-            Event::SessionUpdated { .. } | Event::TerminalBlock { .. }
-        ) && let Some(tap) = &inner.tap
-        {
+        // Session and block events, and the journaled (not streamed) events of chats.
+        let tapped = match event {
+            Event::SessionUpdated { .. } | Event::TerminalBlock { .. } => true,
+            Event::ChatEvent { event, .. } => !event.kind.is_streaming(),
+            _ => false,
+        };
+        if tapped && let Some(tap) = &inner.tap {
             match tap.try_send(event.clone()) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {

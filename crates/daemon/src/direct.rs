@@ -19,6 +19,7 @@ use heeler_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId
 use heeler_gateway::{
     ChatMessage, ChatRequest, GatewayError, GatewayEvent, Provider, Role, is_length_cut,
 };
+use heeler_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_storage::Storage;
 use parking_lot::Mutex;
@@ -28,6 +29,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use crate::context::Attached;
 use crate::providers::ProviderService;
 
 /// Most journal rows read to rebuild a conversation; far more than any context limit allows.
@@ -117,14 +119,27 @@ impl DirectSession {
         draft
     }
 
-    /// Starts a turn with the user's `text`; its events follow on the session's stream.
-    pub(crate) async fn send(self: &Arc<Self>, text: String) -> Result<TurnId, ErrorBody> {
+    /// Starts a turn with the user's `text` and what they attached; its events follow on the
+    /// session's stream. The attachments are part of the journaled message: the model gets, and
+    /// the conversation keeps, `text` followed by their resolved text.
+    pub(crate) async fn send(
+        self: &Arc<Self>,
+        text: String,
+        attached: Option<Attached>,
+    ) -> Result<TurnId, ErrorBody> {
         if self.shut.load(Ordering::Acquire) {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidState,
                 "the chat session is shutting down",
             ));
         }
+        let (text, attachments) = match attached {
+            Some(attached) => (
+                format!("{text}\n\n{}", attached.appendix),
+                Some(attached.meta),
+            ),
+            None => (text, None),
+        };
         let target = self.target.lock().clone();
         // Fails before anything is journaled when the provider is gone or lacks its key.
         let (record, provider) = self.providers.resolve(&target.provider_id).await?;
@@ -145,6 +160,7 @@ impl DirectSession {
             provider,
             request,
             text,
+            attachments,
             provider_id: record.id,
             dropped,
             cancel: cancel.clone(),
@@ -251,6 +267,7 @@ impl DirectSession {
             provider,
             request,
             text,
+            attachments,
             provider_id,
             dropped,
             cancel,
@@ -263,19 +280,26 @@ impl DirectSession {
         self.emit(start).await;
 
         let user_item = ItemId::new();
-        for kind in [
+        self.emit(Self::draft(
+            turn_id,
+            Some(user_item),
             AgentEventKind::MessageStart {
                 role: MessageRole::User,
                 phase: None,
             },
+        ))
+        .await;
+        let mut user_end = Self::draft(
+            turn_id,
+            Some(user_item),
             AgentEventKind::MessageEnd {
                 role: MessageRole::User,
                 phase: None,
                 text,
             },
-        ] {
-            self.emit(Self::draft(turn_id, Some(user_item), kind)).await;
-        }
+        );
+        user_end.payload = attachments.map(|meta| json!({ ATTACHMENTS_META_KEY: meta }));
+        self.emit(user_end).await;
         if dropped > 0 {
             self.emit(Self::draft(
                 turn_id,
@@ -421,6 +445,8 @@ struct Run {
     provider: Arc<dyn Provider>,
     request: ChatRequest,
     text: String,
+    /// What the user's message says about its attachments (`attachments_meta`).
+    attachments: Option<Vec<AttachmentMeta>>,
     provider_id: String,
     dropped: usize,
     cancel: CancellationToken,

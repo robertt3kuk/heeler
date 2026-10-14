@@ -11,6 +11,8 @@ use heeler_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::assistant::Attachment;
+
 /// Most events one `chat.history` returns, whatever `limit` asks for.
 pub const HISTORY_MAX_LIMIT: u32 = 1000;
 /// `limit` when a request leaves it out.
@@ -55,10 +57,18 @@ pub struct ChatCreate {
 }
 
 /// `chat.send`: the user's message; the turn's events follow as `chat.event`.
+///
+/// Protocol 0.12 (capability `assistant`): `attachments` is read-only context the daemon
+/// resolves, redacts, bounds and journals with the message (`docs/assistant.md`); only direct
+/// and assistant chats take any (`bad_request` for a Codex chat). `forbidden` when the daemon's
+/// `[assistant.context]` does not allow one of them, `not_found` when it names something that
+/// does not exist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSend {
     pub session_id: SessionId,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 /// Result of `chat.send`.

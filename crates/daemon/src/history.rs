@@ -10,9 +10,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use heeler_core::{SessionId, TerminalId};
+use heeler_core::agent::MessageRole;
+use heeler_core::{AgentEvent, AgentEventKind, SessionId, TerminalId};
 use heeler_index::{
-    HeelerRecord, IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery, Source,
+    HeelerRecord, IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery, SessionText,
+    SessionTextQuery, Source,
 };
 use heeler_protocol::blocks::{BlockPart, BlockState, TerminalBlockText};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
@@ -225,6 +227,19 @@ impl HistoryService {
         })
     }
 
+    /// The newest rows of one indexed session, oldest first (what an `agent_transcript`
+    /// attachment reads for a transcript of another tool).
+    pub async fn session_text(
+        &self,
+        query: SessionTextQuery,
+    ) -> Result<Vec<SessionText>, ErrorBody> {
+        let handle = self.handle().await?;
+        tokio::task::spawn_blocking(move || handle.session_text(&query))
+            .await
+            .map_err(internal)?
+            .map_err(index_error)
+    }
+
     pub async fn status(&self) -> Result<HistoryStatusInfo, ErrorBody> {
         let handle = {
             let state = self.state.lock().await;
@@ -396,6 +411,10 @@ fn hit_out(hit: heeler_index::Hit) -> HistoryHit {
     // The same rules as `agent.report` resume commands: an id that would not pass is not offered.
     let resume_argv = heeler_index::resume_argv(hit.source, &hit.session_key)
         .filter(|argv| validate_resume_argv(argv).is_ok());
+    // A Heeler hit's key is the Heeler session id: a client can open the session.
+    let session_id = (hit.source == Source::Heeler)
+        .then(|| hit.session_key.parse::<SessionId>().ok())
+        .flatten();
     HistoryHit {
         source: source_out(hit.source),
         session_key: hit.session_key,
@@ -407,6 +426,7 @@ fn hit_out(hit: heeler_index::Hit) -> HistoryHit {
         score: hit.score,
         matches: hit.matches,
         resume_argv,
+        session_id,
     }
 }
 
@@ -422,13 +442,51 @@ struct SessionMeta {
 #[derive(Default)]
 struct Consumer {
     by_terminal: HashMap<TerminalId, SessionMeta>,
+    /// Chat sessions (Codex, direct, assistant): their journals are indexed as they are written.
+    by_session: HashMap<SessionId, SessionMeta>,
     /// The last agent report seen per session, to index state changes once.
     agents: HashMap<SessionId, (AgentState, Option<String>, u64)>,
+}
+
+/// What the index keeps of a chat event: user and assistant messages, tool calls and their
+/// output. The key makes a record replace itself when it is pushed again.
+fn chat_row(event: &AgentEvent) -> Option<(Role, String, String)> {
+    let key = format!("c:{}", event.seq);
+    match &event.kind {
+        AgentEventKind::MessageEnd { role, text, .. } if !text.trim().is_empty() => {
+            let role = match role {
+                MessageRole::User => Role::User,
+                MessageRole::Assistant => Role::Assistant,
+            };
+            Some((role, text.clone(), key))
+        }
+        AgentEventKind::ToolStart { name, title, .. } => {
+            Some((Role::Tool, format!("{name}: {title}"), key))
+        }
+        AgentEventKind::ToolEnd {
+            output: Some(output),
+            ..
+        } if !output.trim().is_empty() => Some((Role::Tool, output.clone(), key)),
+        _ => None,
+    }
 }
 
 impl Consumer {
     /// Learns a session; `emit` also turns a changed agent report into a row.
     fn learn(&mut self, session: &SessionInfo, emit: bool, handle: &IndexHandle) {
+        if session.chat.is_some() {
+            self.by_session.insert(
+                session.id,
+                SessionMeta {
+                    id: session.id,
+                    title: session.title.clone(),
+                    cwd: session
+                        .cwd
+                        .as_ref()
+                        .map(|c| c.to_string_lossy().into_owned()),
+                },
+            );
+        }
         if let Some(terminal) = session.terminal_id {
             self.by_terminal.insert(
                 terminal,
@@ -537,6 +595,23 @@ async fn consume(
                     && !output.text.trim().is_empty()
                 {
                     handle.push_heeler(record(Role::Output, &output.text, ":out"));
+                }
+            }
+            Event::ChatEvent { session_id, event } => {
+                let Some(session) = consumer.by_session.get(&session_id) else {
+                    debug!(%session_id, "history: chat event of an unknown session");
+                    continue;
+                };
+                if let Some((role, text, key)) = chat_row(&event) {
+                    handle.push_heeler(HeelerRecord {
+                        session_key: session_id.to_string(),
+                        title: Some(session.title.clone()),
+                        cwd: session.cwd.clone(),
+                        role,
+                        ts_ms: event.ts_ms,
+                        text,
+                        ext_key: key,
+                    });
                 }
             }
             _ => {}

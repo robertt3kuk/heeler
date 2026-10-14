@@ -185,3 +185,28 @@ pub struct Status {
     pub sources: Vec<SourceStatus>,
     pub db_bytes: u64,
 }
+
+/// A request for the rows of one session, in conversation order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionTextQuery {
+    /// The session's id in its source (the agent's session id, or the Heeler session id).
+    pub key: String,
+    /// Only these sources; empty = all.
+    pub sources: Vec<Source>,
+    /// Only these roles; empty = all.
+    pub roles: Vec<Role>,
+    /// Newest rows kept when the session has more; the answer is still oldest first.
+    pub limit: usize,
+}
+
+/// One indexed chunk of a session. A long message is several chunks in a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionText {
+    pub source: Source,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub role: Role,
+    pub ts_ms: Option<u64>,
+    /// Redacted text, as indexed.
+    pub text: String,
+}

@@ -17,12 +17,18 @@
 //! - [`providers`]: model providers: SQLite config, Keychain credentials, adapters.
 //! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
 //! - [`tree`]: the per-session agent observation tree: event coalescing, rollup, storage.
+//! - [`assistant`]: assistant sessions (direct chats with a scope) and their context providers.
+//! - [`context`]: redaction, budget, headers and assembly of attached context.
+//! - [`context_file`]: file attachments, read below the workspace roots without following symlinks.
 
 pub mod agent;
+pub mod assistant;
 pub mod bus;
 pub mod chat;
 pub mod config;
 pub mod conn;
+pub mod context;
+pub mod context_file;
 pub mod daemon;
 pub mod direct;
 pub mod error;
@@ -37,7 +43,7 @@ pub mod terminals;
 pub mod tree;
 
 pub use bus::RingLimits;
-pub use config::{DaemonSettings, HistorySettings, RestoreMode};
+pub use config::{AssistantSettings, DaemonSettings, HistorySettings, RestoreMode};
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;
 pub use paths::Paths;

@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::agent;
+use crate::assistant::AssistantService;
 use crate::bus::{EventBus, RingLimits};
 use crate::chat;
 use crate::config::DaemonSettings;
@@ -213,10 +214,18 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         registry.clone(),
     );
     history.start().await;
+    let assistant = AssistantService::new(
+        settings.assistant.clone(),
+        registry.clone(),
+        hub.clone(),
+        history.clone(),
+        storage.clone(),
+    );
     let router = Router::new(
         registry,
         hub,
         history,
+        assistant,
         bus.clone(),
         shutdown.clone(),
         clients.clone(),

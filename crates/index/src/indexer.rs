@@ -26,7 +26,9 @@ use crate::search;
 use crate::store;
 use crate::sys;
 use crate::text::{chunks, idents};
-use crate::types::{HeelerRecord, Hit, Role, SearchQuery, Source, Status};
+use crate::types::{
+    HeelerRecord, Hit, Role, SearchQuery, SessionText, SessionTextQuery, Source, Status,
+};
 
 /// Quiet time after the last file event before the changed files are read.
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -80,6 +82,13 @@ impl IndexHandle {
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<Hit>> {
         let conn = store::open_read_only(&self.shared.db_path)?;
         search::search(&conn, query)
+    }
+
+    /// The newest rows of one session, oldest first (what assistant transcript attachments
+    /// read).
+    pub fn session_text(&self, query: &SessionTextQuery) -> Result<Vec<SessionText>> {
+        let conn = store::open_read_only(&self.shared.db_path)?;
+        store::session_text(&conn, &query.key, &query.sources, &query.roles, query.limit)
     }
 
     pub fn status(&self) -> Result<Status> {

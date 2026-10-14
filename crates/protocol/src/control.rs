@@ -42,6 +42,10 @@ pub enum ErrorCode {
     InvalidState,
     OptionNotOffered,
     SlowConsumer,
+    /// Protocol 0.12: the request is understood but a setting or a boundary refuses it (an
+    /// assistant attachment the daemon's `[assistant.context]` does not allow, a file outside
+    /// the workspace roots); the message names what gates it.
+    Forbidden,
     ProviderError,
     Internal,
     /// Code from a newer peer; treat like `internal`.

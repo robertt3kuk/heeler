@@ -72,6 +72,7 @@ meta      small facts
 - **Bounded CPU.** One dedicated thread at QoS *utility* (`pthread_set_qos_class_self_np`; `nice 10` off macOS), batched transactions, `yield_now` between batches and files. A panic on one transcript is logged and skipped.
 - **History range.** With `range_days` > 0 files whose mtime is older, and rows whose timestamp is older, are not indexed; old rows are pruned at start.
 - **Heeler feed.** The event bus has a bounded tap (1 024 events, drop when full) for `session.updated` and `terminal.block`. A block that reaches `finished` becomes a `command` row and (if non-empty) an `output` row keyed `b:<block id>:<started_at_ms>`; an agent report that changes state or message becomes a `tool` row keyed `a:<updated_at_ms>`. Records with the same key replace each other; records from before indexing was enabled are not backfilled; unfinished blocks are indexed when they finish.
+- **Chat feed (M16-A).** The tap also carries the journaled (not streamed) events of chat sessions: user and assistant `message_end` become `user`/`assistant` rows, `tool_start` and the output of `tool_end` become `tool` rows, keyed `c:<seq>`, with the session's title and cwd. A chat session's id is its `session_key`.
 
 ## Operations
 
@@ -108,3 +109,4 @@ Unit-level numbers on real-format data: copies of 222 real transcript files (12 
 - Heeler rows only cover blocks and reports seen while indexing was on; terminal output without shell integration (no OSC 133 marks) has no blocks.
 - OpenCode, Cursor and Gemini adapters are not implemented (M17 roadmap lists them; OpenCode is deferred above).
 - The desktop History panel and the ⌘K / ⌘J integration are in (`docs/design.md` § History panel); assistant `@search` is M16. A hit carries neither the transcript's path (so the panel cannot reveal the file) nor the id of a Heeler block (the panel finds the block by its start time, `ts_ms`).
+- Chat journals (Codex, direct, assistant) are indexed as source `heeler` since M16-A (`docs/assistant.md` § Indexing of chats); `history.search` hits of Heeler sessions carry `session_id`. `IndexHandle::session_text` returns the rows of one session in order (used by the assistant's `agent_transcript` and `search` attachments); the assistant's `@search` is now the `search` attachment.

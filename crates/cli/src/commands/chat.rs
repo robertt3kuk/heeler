@@ -132,13 +132,28 @@ impl Ctx {
                 || format!("sent to {} (turn {})", session.id, sent.turn_id),
             );
         }
+        self.follow_turn(&mut events, session.id, sent.turn_id)
+            .await
+    }
+
+    /// Prints the events of one turn as they stream, until it ends: `Ok` when it completed,
+    /// else the reason is printed and the error is [`CliError::Reported`].
+    pub(super) async fn follow_turn(
+        &self,
+        events: &mut tokio::sync::broadcast::Receiver<(heeler_core::Seq, Event)>,
+        session_id: heeler_core::SessionId,
+        turn_id: heeler_core::TurnId,
+    ) -> Result<(), CliError> {
         let mut printer = ChatPrinter::without_user_messages();
         loop {
             match events.recv().await {
-                Ok((_, Event::ChatEvent { session_id, event }))
-                    if session_id == session.id
-                        && event.turn_id.is_none_or(|turn| turn == sent.turn_id) =>
-                {
+                Ok((
+                    _,
+                    Event::ChatEvent {
+                        session_id: from,
+                        event,
+                    },
+                )) if from == session_id && event.turn_id.is_none_or(|turn| turn == turn_id) => {
                     self.show(&mut printer, &event)?;
                     if event.kind.ends_turn() {
                         return match event.kind {
@@ -149,7 +164,7 @@ impl Ctx {
                     }
                 }
                 Ok((_, Event::SessionUpdated { session: updated }))
-                    if updated.id == session.id && !updated.state.is_live() =>
+                    if updated.id == session_id && !updated.state.is_live() =>
                 {
                     return Err(CliError::Failed(format!(
                         "the session ended before the turn did ({})",

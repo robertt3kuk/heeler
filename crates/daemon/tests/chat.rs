@@ -142,6 +142,7 @@ impl Chat {
             .call(Request::ChatSend(ChatSend {
                 session_id: id,
                 text: text.to_owned(),
+                attachments: vec![],
             }))
             .await
             .unwrap()
@@ -847,6 +848,7 @@ async fn stopping_a_chat_ends_its_agent_and_restarting_resumes_it() {
         .call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "hi".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(blocked), ErrorCode::InvalidState);
@@ -879,6 +881,7 @@ async fn sending_is_validated() {
         .call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "  \n".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(empty), ErrorCode::BadRequest);
@@ -887,6 +890,7 @@ async fn sending_is_validated() {
         .call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: SessionId::new(),
             text: "x".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(unknown), ErrorCode::NotFound);
@@ -896,6 +900,7 @@ async fn sending_is_validated() {
         .call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: terminal.id,
             text: "x".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(not_chat), ErrorCode::BadRequest);
@@ -914,6 +919,7 @@ async fn sending_is_validated() {
         .call::<ChatSent>(Request::ChatSend(ChatSend {
             session_id: created.id,
             text: "more".into(),
+            attachments: vec![],
         }))
         .await;
     assert_eq!(remote_code(second), ErrorCode::InvalidState);

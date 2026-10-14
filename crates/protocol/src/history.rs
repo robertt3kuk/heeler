@@ -1,6 +1,7 @@
 //! Session history search (protocol 0.8, capability `history.search`): the local FTS index over
 //! Heeler terminal blocks and external agent transcripts (`docs/history-index.md`).
 
+use heeler_core::SessionId;
 use serde::{Deserialize, Serialize};
 
 /// Most hits one `history.search` returns, whatever `limit` asks for.
@@ -109,6 +110,10 @@ pub struct HistoryHit {
     /// absent for sources that cannot be resumed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_argv: Option<Vec<String>>,
+    /// Protocol 0.12: the Heeler session (a terminal or a chat) a `heeler` hit belongs to, so
+    /// that a client can open it; absent for transcripts of other tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

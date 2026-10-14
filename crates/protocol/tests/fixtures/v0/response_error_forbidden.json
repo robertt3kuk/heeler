@@ -1,0 +1,1 @@
+{"error":{"code":"forbidden","message":"attachment `file` is not allowed: `assistant.context.files` is false for the global assistant"},"id":7}

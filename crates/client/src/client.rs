@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use heeler_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
+use heeler_protocol::assistant::{
+    AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
+};
 use heeler_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
@@ -53,6 +56,8 @@ pub(crate) const AGENT_TREE_CAPABILITY: &str = "agent.tree";
 /// Capability for `provider.*` and direct chats (`chat.create` with agent `direct`,
 /// `chat.set_model`; protocol 0.11).
 pub(crate) const DIRECT_CAPABILITY: &str = "chat.direct";
+/// Capability for `assistant.*` and `chat.send` attachments (protocol 0.12).
+pub(crate) const ASSISTANT_CAPABILITY: &str = "assistant";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -64,6 +69,7 @@ const CAPABILITIES: &[&str] = &[
     CHAT_CAPABILITY,
     AGENT_TREE_CAPABILITY,
     DIRECT_CAPABILITY,
+    ASSISTANT_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `heelerd` can take
@@ -318,11 +324,47 @@ impl Client {
         session_id: SessionId,
         text: impl Into<String>,
     ) -> Result<ChatSent, ClientError> {
+        self.chat_send_with(session_id, text, Vec::new()).await
+    }
+
+    /// [`chat_send`](Self::chat_send) with read-only context attached (protocol 0.12,
+    /// capability `assistant`): the daemon resolves, redacts, bounds and journals it with the
+    /// message. `forbidden` when the daemon's `[assistant.context]` does not allow one of them.
+    pub async fn chat_send_with(
+        &self,
+        session_id: SessionId,
+        text: impl Into<String>,
+        attachments: Vec<Attachment>,
+    ) -> Result<ChatSent, ClientError> {
         self.call(Request::ChatSend(ChatSend {
             session_id,
             text: text.into(),
+            attachments,
         }))
         .await
+    }
+
+    /// True when the daemon advertised capability `assistant` (protocol 0.12).
+    pub fn supports_assistant(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == ASSISTANT_CAPABILITY)
+    }
+
+    /// The default assistant session of a scope (created on first use), or with `new` one more.
+    pub async fn assistant_open(&self, req: AssistantOpen) -> Result<SessionInfo, ClientError> {
+        let result: SessionResult = self.call(Request::AssistantOpen(req)).await?;
+        Ok(result.session)
+    }
+
+    /// The assistant sessions, oldest first.
+    pub async fn assistant_list(
+        &self,
+        req: AssistantListRequest,
+    ) -> Result<Vec<AssistantEntry>, ClientError> {
+        let list: AssistantList = self.call(Request::AssistantList(req)).await?;
+        Ok(list.assistants)
     }
 
     /// Stops the turn in progress.

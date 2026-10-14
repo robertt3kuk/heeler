@@ -28,8 +28,8 @@ pub use indexer::{IndexConfig, IndexHandle, Indexer};
 pub use scan::Metrics;
 pub use sys::process_cpu_micros;
 pub use types::{
-    Entry, HeelerRecord, Hit, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, Source, SourceStatus,
-    Status,
+    Entry, HeelerRecord, Hit, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, SessionText,
+    SessionTextQuery, Source, SourceStatus, Status,
 };
 
 /// The command that resumes an agent session, `None` for sources without one (Heeler's own

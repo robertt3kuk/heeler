@@ -40,7 +40,9 @@ use tracing::{debug, error, warn};
 
 use crate::agent;
 use crate::bus::{EventBus, PublishError};
-use crate::chat::{AGENT_CODEX, AGENT_DIRECT, ChatManager, ChatSpec};
+use crate::chat::{
+    AGENT_ASSISTANT, AGENT_CODEX, AGENT_DIRECT, ChatManager, ChatSpec, is_gateway_agent,
+};
 use crate::config::RestoreMode;
 use crate::direct::MAX_SYSTEM_PROMPT_BYTES;
 use crate::projects::{self, Folder};
@@ -1865,16 +1867,16 @@ impl SessionRegistry {
 
     /// Adds the session (state `starting`) and stores it; the agent is started by the caller.
     fn begin_chat(&mut self, req: ChatCreate) -> Result<usize, ErrorBody> {
-        if req.agent != AGENT_CODEX && req.agent != AGENT_DIRECT {
+        if req.agent != AGENT_CODEX && !is_gateway_agent(&req.agent) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
                     req.agent
                 ),
             ));
         }
-        let direct = if req.agent == AGENT_DIRECT {
+        let direct = if is_gateway_agent(&req.agent) {
             Some(self.direct_target(&req)?)
         } else {
             None
@@ -2052,7 +2054,7 @@ impl SessionRegistry {
                 format!("session {} is not a chat session", req.session_id),
             ));
         };
-        if spec.agent != AGENT_DIRECT {
+        if !is_gateway_agent(&spec.agent) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 "only a direct chat has a switchable model",

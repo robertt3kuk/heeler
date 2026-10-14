@@ -39,6 +39,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::bus::EventBus;
+use crate::context::Attached;
 use crate::direct::{DirectSession, Target};
 use crate::providers::ProviderService;
 use crate::registry::{self, ChatNotifier};
@@ -46,7 +47,13 @@ use crate::registry::{self, ChatNotifier};
 /// The Codex app-server agent.
 pub const AGENT_CODEX: &str = "codex";
 /// The model gateway: no agent, a provider's chat API.
+pub use heeler_protocol::assistant::AGENT_ASSISTANT;
 pub use heeler_protocol::provider::AGENT_DIRECT;
+
+/// Whether sessions of this agent are model gateway chats: a provider's API, no process.
+pub fn is_gateway_agent(agent: &str) -> bool {
+    agent == AGENT_DIRECT || agent == AGENT_ASSISTANT
+}
 
 /// How long a fetched model catalog is reused.
 const MODEL_CACHE: Duration = Duration::from_secs(60);
@@ -195,14 +202,14 @@ impl ChatManager {
         cwd: PathBuf,
         spec: &ChatSpec,
     ) -> Result<Started, ErrorBody> {
-        if spec.agent == AGENT_DIRECT {
+        if is_gateway_agent(&spec.agent) {
             return self.start_direct(id, spec).await;
         }
         if spec.agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
                     spec.agent
                 ),
             ));
@@ -343,7 +350,12 @@ impl ChatManager {
     }
 
     /// Sends the user's message; the turn's events follow on the bus.
-    pub async fn send(&self, id: SessionId, text: String) -> Result<TurnId, ErrorBody> {
+    pub async fn send(
+        &self,
+        id: SessionId,
+        text: String,
+        attached: Option<Attached>,
+    ) -> Result<TurnId, ErrorBody> {
         if text.trim().is_empty() {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
@@ -367,12 +379,16 @@ impl ChatManager {
             ));
         }
         let started = match &live.backend {
+            Backend::Agent(_) if attached.is_some() => Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "attachments are only supported by direct and assistant chats",
+            )),
             Backend::Agent(adapter) => adapter
                 .send_message(text)
                 .await
                 .map(|turn| turn.turn_id)
                 .map_err(|error| ErrorBody::new(ErrorCode::ProviderError, error.to_string())),
-            Backend::Direct(session) => session.send(text).await,
+            Backend::Direct(session) => session.send(text, attached).await,
         };
         if started.is_err() {
             live.busy.store(false, Ordering::Release);
@@ -515,7 +531,7 @@ impl ChatManager {
     }
 
     pub async fn models(&self, agent: &str) -> Result<ChatModels, ErrorBody> {
-        if agent == AGENT_DIRECT {
+        if is_gateway_agent(agent) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 "a direct chat's models come from its provider: use `provider.models`",

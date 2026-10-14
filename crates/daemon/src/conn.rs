@@ -39,6 +39,7 @@ pub const CAPABILITIES: &[&str] = &[
     "chat.codex",
     "agent.tree",
     "chat.direct",
+    "assistant",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

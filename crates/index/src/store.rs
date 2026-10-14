@@ -23,7 +23,7 @@ use tracing::{info, warn};
 
 use crate::adapters::ParseState;
 use crate::error::{IndexError, Result};
-use crate::types::{Role, Source, SourceStatus};
+use crate::types::{Role, SessionText, Source, SourceStatus};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -503,4 +503,73 @@ pub fn source_status(conn: &Connection, sources: &[Source]) -> Result<Vec<Source
             }
         })
         .collect())
+}
+
+/// The newest `limit` rows of the sessions with `key` (of `sources` and `roles`, when given),
+/// oldest first. Rows of one message are consecutive chunks of the same role.
+pub fn session_text(
+    conn: &Connection,
+    key: &str,
+    sources: &[Source],
+    roles: &[Role],
+    limit: usize,
+) -> Result<Vec<SessionText>> {
+    let context = "reading the rows of a session";
+    let mut params: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(key.to_owned())];
+    let mut filters = String::new();
+    if !sources.is_empty() {
+        filters.push_str(&format!(
+            " AND s.source IN ({})",
+            vec!["?"; sources.len()].join(",")
+        ));
+        params.extend(
+            sources
+                .iter()
+                .map(|s| rusqlite::types::Value::Text(s.as_str().to_owned())),
+        );
+    }
+    if !roles.is_empty() {
+        filters.push_str(&format!(
+            " AND e.role IN ({})",
+            vec!["?"; roles.len()].join(",")
+        ));
+        params.extend(
+            roles
+                .iter()
+                .map(|r| rusqlite::types::Value::Text(r.as_str().to_owned())),
+        );
+    }
+    params.push(rusqlite::types::Value::Integer(
+        i64::try_from(limit.max(1)).unwrap_or(i64::MAX),
+    ));
+    let sql = format!(
+        "SELECT s.source, s.title, s.cwd, e.role, e.ts_ms, f.body
+         FROM entries e
+         JOIN sessions s ON s.id = e.session_id
+         JOIN fts f ON f.rowid = e.id
+         WHERE s.key = ?{filters}
+         ORDER BY COALESCE(e.ts_ms, 0) DESC, e.id DESC
+         LIMIT ?"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(IndexError::sqlite(context))?;
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(params))
+        .map_err(IndexError::sqlite(context))?;
+    let mut found = Vec::new();
+    while let Some(row) = rows.next().map_err(IndexError::sqlite(context))? {
+        let source: String = row.get(0).map_err(IndexError::sqlite(context))?;
+        let role: String = row.get(3).map_err(IndexError::sqlite(context))?;
+        let ts_ms: Option<i64> = row.get(4).map_err(IndexError::sqlite(context))?;
+        found.push(SessionText {
+            source: source.parse().unwrap_or(Source::Claude),
+            title: row.get(1).map_err(IndexError::sqlite(context))?,
+            cwd: row.get(2).map_err(IndexError::sqlite(context))?,
+            role: role.parse().unwrap_or(Role::Tool),
+            ts_ms: ts_ms.and_then(|t| u64::try_from(t).ok()),
+            text: row.get(5).map_err(IndexError::sqlite(context))?,
+        });
+    }
+    found.reverse();
+    Ok(found)
 }

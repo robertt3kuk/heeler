@@ -16,6 +16,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::assistant::AssistantService;
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
 use crate::history::HistoryService;
@@ -28,6 +29,7 @@ pub struct Router {
     registry: RegistryHandle,
     hub: Arc<TerminalHub>,
     history: Arc<HistoryService>,
+    assistant: Arc<AssistantService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -41,6 +43,7 @@ impl Router {
         registry: RegistryHandle,
         hub: Arc<TerminalHub>,
         history: Arc<HistoryService>,
+        assistant: Arc<AssistantService>,
         bus: Arc<EventBus>,
         shutdown: CancellationToken,
         clients: Arc<AtomicU32>,
@@ -49,6 +52,7 @@ impl Router {
             registry,
             hub,
             history,
+            assistant,
             bus,
             started: Instant::now(),
             shutdown,
@@ -175,7 +179,17 @@ impl Router {
             }),
             Request::ChatSend(req) => {
                 self.live_chat(req.session_id).await?;
-                let turn_id = self.registry.chats().send(req.session_id, req.text).await?;
+                // Resolved before anything is journaled or sent: a refused attachment fails
+                // the whole message.
+                let attached = self
+                    .assistant
+                    .prepare(req.session_id, &req.attachments)
+                    .await?;
+                let turn_id = self
+                    .registry
+                    .chats()
+                    .send(req.session_id, req.text, attached)
+                    .await?;
                 ok(&ChatSent { turn_id })
             }
             Request::ChatInterrupt(req) => {
@@ -199,6 +213,10 @@ impl Router {
             Request::ChatSetModel(req) => ok(&SessionResult {
                 session: self.registry.set_chat_model(req).await?,
             }),
+            Request::AssistantOpen(req) => ok(&SessionResult {
+                session: self.assistant.open(req).await?,
+            }),
+            Request::AssistantList(req) => ok(&self.assistant.list(req).await?),
             Request::ProviderList(_) => ok(&self.providers().list().await?),
             Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
             Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),

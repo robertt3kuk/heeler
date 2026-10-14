@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
+use crate::assistant::{AssistantListRequest, AssistantOpen};
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::chat::{
     ApprovalInfo, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistoryRequest, ChatInfo,
@@ -185,6 +186,13 @@ pub enum Request {
     /// with `SessionResult`.
     #[serde(rename = "chat.set_model")]
     ChatSetModel(ChatSetModel),
+    /// Capability `assistant` (protocol 0.12): the default assistant session of a scope,
+    /// created on first use; answered with `SessionResult`.
+    #[serde(rename = "assistant.open")]
+    AssistantOpen(AssistantOpen),
+    /// Capability `assistant`: the assistant sessions; answered with `AssistantList`.
+    #[serde(rename = "assistant.list")]
+    AssistantList(AssistantListRequest),
 }
 
 impl Request {
