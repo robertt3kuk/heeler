@@ -1038,3 +1038,47 @@ fn two_views_share_one_model_and_one_ack(cx: &mut TestAppContext) {
     cx.simulate_input("x");
     assert!(recorder.inputs().is_empty(), "previews ignore typing");
 }
+
+#[gpui::test]
+fn padding_shrinks_the_grid_on_all_four_sides(cx: &mut TestAppContext) {
+    let settings = TerminalViewSettings {
+        padding: 10.0,
+        ..TerminalViewSettings::default()
+    };
+    let (view, cx, recorder) = setup(cx, settings);
+    // (800 - 20) / 7.8 = 100 columns, (600 - 20) / 15.6 = 37.2 rows.
+    assert_eq!(view.read_with(cx, |v, _| v.grid_size()), Some((100, 37)));
+    cx.executor().advance_clock(Duration::from_millis(60));
+    cx.run_until_parked();
+    let last = recorder
+        .take()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Resize(size) => Some(size),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!((last.cols, last.rows), (100, 37));
+    // Device pixels of the content box (2x scale in the test display): 780 × 2.
+    assert_eq!(
+        (last.pixel_width, last.pixel_height),
+        (1560, 1160),
+        "{last:?}"
+    );
+
+    // Clicks in the padding clamp to the nearest cell instead of missing the grid.
+    apply(&view, cx, snapshot(1, &["abc"], Modes::default(), 0));
+    draw(cx);
+    cx.simulate_mouse_down(
+        point(px(2.0), px(2.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        point(px(2.0), px(2.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.grid_size()), Some((100, 37)));
+}

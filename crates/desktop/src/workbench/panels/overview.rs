@@ -50,6 +50,7 @@ impl std::fmt::Debug for OverviewPanel {
 fn preview_settings(base: TerminalViewSettings) -> TerminalViewSettings {
     TerminalViewSettings {
         font_size: (base.font_size * PREVIEW_SCALE).max(4.0),
+        padding: base.padding * PREVIEW_SCALE,
         cursor: heeler_terminal_view::CursorSettings {
             blink: false,
             ..base.cursor

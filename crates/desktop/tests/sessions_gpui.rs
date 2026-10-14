@@ -472,6 +472,33 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     };
     let before = cell_height(cx);
     assert!((before - 13.0 * 1.2).abs() < 0.1, "{before}");
+    // Terminal text keeps off the pane edge: 6 px compact, 8 px comfortable.
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.terminal_view_settings().padding),
+        6.0
+    );
+    let pane = view
+        .read_with(cx, |wb, _| {
+            wb.region_bounds(heeler_desktop::workbench::Region::Pane(
+                wb.state().active_pane_id(),
+            ))
+        })
+        .unwrap();
+    let grid_cols = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |wb, cx| {
+            wb.terminal_view_of(info.id)
+                .and_then(|v| v.read(cx).grid_size())
+        })
+        .unwrap()
+        .0
+    };
+    let cell_w = 13.0 * 0.6;
+    let expected = ((f32::from(pane.size.width) - 12.0) / cell_w).floor() as u16;
+    assert_eq!(
+        grid_cols(cx),
+        expected,
+        "columns come from the padded content box"
+    );
 
     write(
         daemon.home(),
@@ -487,6 +514,10 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     assert_eq!(
         view.read_with(cx, |wb, _| wb.terminal_view_settings().font_size),
         20.0
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.terminal_view_settings().padding),
+        8.0
     );
     // Panel geometry follows the density tokens: the status bar is 26 px comfortable.
     draw(cx);
@@ -561,8 +592,17 @@ fn changing_the_terminal_theme_updates_the_daemons_osc_11_answer(cx: &mut TestAp
 fn keymap_edits_rebind_live(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 0);
+    let panes = |cx: &mut VisualTestContext| state_of(&view, cx).panes().len();
+    // Splits start terminals asynchronously; let them land.
+    let settle = |cx: &mut VisualTestContext| {
+        for _ in 0..30 {
+            draw(cx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
     cx.simulate_keystrokes("cmd-d");
-    assert_eq!(state_of(&view, cx).panes().len(), 2);
+    wait_until(cx, "the first split", |cx| panes(cx) == 2);
 
     write(
         daemon.home(),
@@ -577,9 +617,10 @@ fn keymap_edits_rebind_live(cx: &mut TestAppContext) {
         })
     });
     cx.simulate_keystrokes("cmd-d");
-    assert_eq!(state_of(&view, cx).panes().len(), 2, "⌘D is unbound now");
+    settle(cx);
+    assert_eq!(panes(cx), 2, "⌘D is unbound now");
     cx.simulate_keystrokes("cmd-shift-d");
-    assert_eq!(state_of(&view, cx).panes().len(), 3, "⌘⇧D splits right");
+    wait_until(cx, "⌘⇧D splitting right", |cx| panes(cx) == 3);
 
     // Deleting the file restores the defaults.
     std::fs::remove_file(daemon.home().join("keymap.toml")).unwrap();
@@ -693,6 +734,28 @@ fn the_settings_sheet_writes_values_and_keeps_comments(cx: &mut TestAppContext) 
         row,
         serde_json::json!(["state", "kind", "title", "placement", "age"])
     );
+
+    // Order: move items up and down; the ends do nothing.
+    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 2, -1, cx));
+    let row =
+        |cx: &mut VisualTestContext| view.read_with(cx, |wb, _| wb.sheet_value("row")).unwrap();
+    assert_eq!(
+        row(cx),
+        serde_json::json!(["state", "title", "kind", "placement", "age"])
+    );
+    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 0, -1, cx));
+    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 4, 1, cx));
+    assert_eq!(
+        row(cx),
+        serde_json::json!(["state", "title", "kind", "placement", "age"])
+    );
+    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 0, 1, cx));
+    assert_eq!(
+        row(cx),
+        serde_json::json!(["title", "state", "kind", "placement", "age"])
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("# my settings"), "{text}");
 
     // Errors from the files show up in the store the sheet reads.
     write(
@@ -1106,4 +1169,155 @@ fn terminal_notifications_flag_attention_but_replays_after_a_reconnect_do_not(
     open_session(&view, cx, info.id);
     assert!(needs(cx).is_empty());
     assert!(session_state(&view, cx, info.id).unwrap().is_live());
+}
+
+#[gpui::test]
+fn the_overview_preset_shows_the_board_from_every_path(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let info = daemon.sh("echo boards; sleep 600");
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+    open_session(&view, cx, info.id);
+    wait_screen(&view, cx, info.id, "boards");
+    let terminal = ItemRef::Terminal {
+        session: info.id.to_string(),
+    };
+    let board_shown = |cx: &mut VisualTestContext| {
+        let s = state_of(&view, cx);
+        s.preset == LayoutPreset::OVERVIEW
+            && s.panes().len() == 1
+            && s.active_pane().unwrap().active_item() == Some(&ItemRef::panel("overview"))
+            && matches!(
+                s.focus,
+                heeler_desktop::workbench::model::FocusTarget::Pane(_)
+            )
+    };
+
+    // Settings file (hot reload).
+    write(
+        daemon.home(),
+        "settings.toml",
+        "[layout]\npreset = \"overview\"\n",
+    );
+    wait_until(cx, "the overview from settings.toml", |cx| board_shown(cx));
+    draw(cx);
+    assert!(
+        view.read_with(cx, |wb, _| wb.panel::<OverviewPanel>("overview"))
+            .is_some()
+    );
+    // Leaving through the settings file restores the stashed layout exactly.
+    write(
+        daemon.home(),
+        "settings.toml",
+        "[layout]\npreset = \"default\"\n",
+    );
+    wait_until(cx, "the default layout from settings.toml", |cx| {
+        state_of(&view, cx).preset == LayoutPreset::DEFAULT
+    });
+    let s = state_of(&view, cx);
+    assert_eq!(s.active_pane().unwrap().active_item(), Some(&terminal));
+    assert!(s.find_panel(&"overview".into()).is_none());
+
+    // Palette / menu path, then ⌘⇧O and a card click leave again.
+    cx.dispatch_action(actions::ApplyPreset("overview".into()));
+    assert!(board_shown(cx));
+    cx.simulate_keystrokes("cmd-shift-o");
+    assert_eq!(
+        state_of(&view, cx).active_pane().unwrap().active_item(),
+        Some(&terminal)
+    );
+    cx.dispatch_action(actions::ApplyPreset("overview".into()));
+    assert!(board_shown(cx));
+    cx.dispatch_action(actions::ApplyPreset("default".into()));
+    let s = state_of(&view, cx);
+    assert_eq!(s.preset, LayoutPreset::DEFAULT);
+    assert_eq!(
+        s.active_pane().unwrap().active_item(),
+        Some(&terminal),
+        "stash restored"
+    );
+    cx.dispatch_action(actions::ApplyPreset("overview".into()));
+    cx.dispatch_action(actions::OpenSessionFromOverview(info.id.to_string()));
+    assert_eq!(state_of(&view, cx).preset, LayoutPreset::DEFAULT);
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.focused_session()),
+        Some(info.id)
+    );
+}
+
+#[gpui::test]
+fn the_overview_preset_applies_at_startup_from_settings(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    write(
+        daemon.home(),
+        "settings.toml",
+        "[layout]\npreset = \"overview\"\n",
+    );
+    let (view, cx) = open(cx, &daemon);
+    let s = state_of(&view, cx);
+    assert_eq!(s.preset, LayoutPreset::OVERVIEW);
+    assert_eq!(
+        s.active_pane().unwrap().active_item(),
+        Some(&ItemRef::panel("overview"))
+    );
+}
+
+#[gpui::test]
+fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let dir = tempfile::tempdir().unwrap();
+    let created: heeler_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
+        heeler_protocol::messages::SessionCreate {
+            workspace_id: None,
+            spec: heeler_protocol::messages::SessionSpec::Terminal(
+                heeler_protocol::messages::TerminalSpec {
+                    command: vec!["sleep".into(), "600".into()],
+                    cwd: Some(dir.path().to_path_buf()),
+                    ..Default::default()
+                },
+            ),
+        },
+    ));
+    let origin = created.session;
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+    open_session(&view, cx, origin.id);
+
+    // ⌘D: a new pane with a NEW session, started where the focused one is.
+    cx.simulate_keystrokes("cmd-d");
+    wait_until(cx, "the new session in the split", |cx| {
+        state_of(&view, cx).panes().len() == 2
+            && view
+                .read_with(cx, |wb, _| wb.focused_session())
+                .is_some_and(|s| s != origin.id)
+    });
+    let right = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
+    assert_eq!(daemon.session(right).cwd.as_deref(), Some(dir.path()));
+    assert_eq!(state_of(&view, cx).active_pane().unwrap().items.len(), 1);
+
+    // ⌘⇧D from that one splits again, from its directory.
+    cx.simulate_keystrokes("cmd-shift-d");
+    wait_until(cx, "the third pane", |cx| {
+        state_of(&view, cx).panes().len() == 3
+    });
+    wait_until(cx, "its session", |cx| {
+        view.read_with(cx, |wb, _| wb.focused_session())
+            .is_some_and(|s| s != origin.id && s != right)
+    });
+    let below = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
+    assert_eq!(daemon.session(below).cwd.as_deref(), Some(dir.path()));
+
+    // From a panel (not a terminal): the workspace root, else $HOME.
+    cx.dispatch_action(actions::OpenPanel("sessions".into()));
+    cx.dispatch_action(actions::OpenActivePanelAsTab);
+    cx.simulate_keystrokes("cmd-d");
+    wait_until(cx, "the split from a panel", |cx| {
+        state_of(&view, cx).panes().len() == 4
+    });
+    wait_until(cx, "its session", |cx| {
+        view.read_with(cx, |wb, _| wb.focused_session())
+            .is_some_and(|s| ![origin.id, right, below].contains(&s))
+    });
+    let fourth = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
+    assert_eq!(daemon.session(fourth).cwd, std::env::home_dir());
 }

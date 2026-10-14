@@ -62,6 +62,8 @@ struct MarkedPaint {
 
 pub(crate) struct Prepaint {
     hitbox: Hitbox,
+    /// The padded box the grid is laid out in.
+    content: Bounds<Pixels>,
     font: FontSpec,
     background: Hsla,
     selection: Hsla,
@@ -109,19 +111,21 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let (family, font_size, line_height) = {
+        let (family, font_size, line_height, padding) = {
             let settings = &self.view.read(cx).settings;
             (
                 settings.font_family.clone(),
                 settings.font_size,
                 settings.line_height,
+                settings.padding.max(0.0),
             )
         };
         let font = FontSpec::measure(&family, font_size, line_height, window.text_system());
-        let cols = ((bounds.size.width / font.cell_width).floor() as u16).max(1);
-        let rows = ((bounds.size.height / font.cell_height).floor() as u16).max(1);
+        let content = padded(bounds, padding);
+        let cols = ((content.size.width / font.cell_width).floor() as u16).max(1);
+        let rows = ((content.size.height / font.cell_height).floor() as u16).max(1);
         let layout = Layout {
-            bounds,
+            bounds: content,
             cell: size(font.cell_width, font.cell_height),
             cols,
             rows,
@@ -130,7 +134,9 @@ impl Element for TerminalElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         self.view.update(cx, |view, cx| {
             view.update_layout(layout, cx);
-            prepare(view, font, rows, hitbox, window)
+            let mut prepaint = prepare(view, font, rows, hitbox, window);
+            prepaint.content = content;
+            prepaint
         })
     }
 
@@ -149,7 +155,7 @@ impl Element for TerminalElement {
             let focus_handle = self.view.read(cx).focus_handle(cx);
             window.handle_input(
                 &focus_handle,
-                ElementInputHandler::new(bounds, self.view.clone()),
+                ElementInputHandler::new(state.content, self.view.clone()),
                 cx,
             );
             window.set_cursor_style(state.cursor_style, &state.hitbox);
@@ -242,6 +248,7 @@ fn prepare(
 
     Prepaint {
         hitbox,
+        content: Bounds::default(),
         font,
         background: hsla(theme.background()),
         selection: hsla(theme.selection()),
@@ -371,6 +378,17 @@ fn register_mouse_listeners(
     });
 }
 
+/// `bounds` inset by `padding` on every side (never negative).
+fn padded(bounds: Bounds<Pixels>, padding: f32) -> Bounds<Pixels> {
+    let pad = px(padding);
+    let width = (bounds.size.width - pad * 2.0).max(px(0.0));
+    let height = (bounds.size.height - pad * 2.0).max(px(0.0));
+    Bounds::new(
+        point(bounds.origin.x + pad, bounds.origin.y + pad),
+        size(width, height),
+    )
+}
+
 fn cell_bounds(
     origin: Point<Pixels>,
     font: &FontSpec,
@@ -388,7 +406,7 @@ fn cell_bounds(
 }
 
 fn paint_grid(bounds: Bounds<Pixels>, state: &mut Prepaint, window: &mut Window, cx: &mut App) {
-    let origin = bounds.origin;
+    let origin = state.content.origin;
     let font = state.font.clone();
     window.paint_quad(fill(bounds, state.background));
 

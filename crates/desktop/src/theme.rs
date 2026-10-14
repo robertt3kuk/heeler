@@ -18,6 +18,9 @@ pub struct Tokens {
     pub font_size: f32,
     /// Uppercase section headers: 10 pt semibold.
     pub section_font_size: f32,
+    /// Space between a terminal view's edge and its text on every side: 6 px compact, 8 px
+    /// comfortable.
+    pub terminal_padding: f32,
 }
 
 /// Desktop-side additions to [`Density`] (which lives in `heeler-settings`).
@@ -43,6 +46,10 @@ impl DensityExt for Density {
                 Density::Comfortable => 13.0,
             },
             section_font_size: 10.0,
+            terminal_padding: match self {
+                Density::Compact => 6.0,
+                Density::Comfortable => 8.0,
+            },
         }
     }
 
@@ -271,6 +278,7 @@ mod tests {
             (30.0, 32.0, 34.0, 26.0, 6.0, 8.0)
         );
         assert_eq!((c.font_size, m.font_size), (12.0, 13.0));
+        assert_eq!((c.terminal_padding, m.terminal_padding), (6.0, 8.0));
         assert_eq!(Density::default(), Density::Compact);
     }
 }

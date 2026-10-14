@@ -56,6 +56,9 @@ pub struct TerminalViewSettings {
     pub option_as_meta: OptionAsMeta,
     pub copy_on_select: bool,
     pub scroll_to_bottom_on_input: bool,
+    /// Space between the view's edge and the grid, on all four sides, in logical pixels. The
+    /// grid (columns and rows, mouse hit-testing) is laid out in the padded content box.
+    pub padding: f32,
 }
 
 impl Default for TerminalViewSettings {
@@ -69,6 +72,7 @@ impl Default for TerminalViewSettings {
             option_as_meta: OptionAsMeta::Left,
             copy_on_select: false,
             scroll_to_bottom_on_input: true,
+            padding: 0.0,
         }
     }
 }

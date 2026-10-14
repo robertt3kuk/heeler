@@ -215,6 +215,34 @@ impl WorkbenchState {
         *self = restored;
     }
 
+    /// Switch to the preset called `name` by any path (menu, palette, keys, settings, restore).
+    ///
+    /// Applying a preset that overrides the center (the overview) stashes the current layout and
+    /// makes the override the only center item, active. Applying a preset that keeps the center
+    /// while such an override is current first restores the stashed layout exactly, then (unless
+    /// the restored layout already is that preset) applies the preset on top.
+    pub fn switch_preset(
+        &mut self,
+        name: &str,
+        presets: &[LayoutPreset],
+    ) -> Result<(), ModelError> {
+        let find = |n: &str| presets.iter().find(|p| p.name == n);
+        let target = find(name).ok_or_else(|| ModelError::UnknownPreset(name.to_owned()))?;
+        if self.stashed.is_some() && matches!(target.center, CenterLayout::Keep) {
+            let departing = find(&self.preset)
+                .cloned()
+                .unwrap_or_else(LayoutPreset::overview_preset);
+            if let Some(saved) = self.stashed.take() {
+                self.restore_saved(*saved, &departing.placed_panels());
+            }
+            if self.preset == target.name {
+                return Ok(());
+            }
+        }
+        self.apply_preset(target);
+        Ok(())
+    }
+
     /// Apply the preset called `name`, or if it is already the current preset, go back to the
     /// previous one (or `default`). Leaving a preset that put panels in the center removes the
     /// ones the new preset does not place (the overview board only lives while selected).

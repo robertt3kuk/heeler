@@ -271,6 +271,43 @@ impl Workbench {
         }
     }
 
+    /// Moves item `index` of a string list by `delta` places (negative = up), keeping the
+    /// order the user wants (e.g. the fields of `panels.sessions.row`).
+    pub fn sheet_move_list_item(
+        &mut self,
+        field: &str,
+        index: usize,
+        delta: isize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, f, value)) = self.sheet_field(field) else {
+            return;
+        };
+        if f.kind != FieldKind::StringList {
+            return;
+        }
+        let mut items: Vec<String> = value
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(target) = index
+            .checked_add_signed(delta)
+            .filter(|t| *t < items.len() && index < items.len())
+        else {
+            return;
+        };
+        items.swap(index, target);
+        self.sheet_write(
+            field,
+            toml::Value::Array(items.into_iter().map(toml::Value::String).collect()),
+            cx,
+        );
+    }
+
     // ---- text editing -----------------------------------------------------------------------
 
     /// Starts editing `field` (a number/string box, or "add item" of a list).
@@ -650,6 +687,15 @@ impl Workbench {
                             .max_w(px(320.0))
                             .children(items.iter().enumerate().map(|(index, item)| {
                                 let k = key.clone();
+                                let (k_up, k_down) = (key.clone(), key.clone());
+                                let last = items.len() - 1;
+                                let step = |id: String, label: &'static str, enabled: bool| {
+                                    div()
+                                        .id(SharedString::from(id))
+                                        .text_color(if enabled { theme.fg } else { theme.border })
+                                        .when(enabled, |s| s.cursor_pointer())
+                                        .child(label)
+                                };
                                 div()
                                     .id(SharedString::from(format!("item-{key}-{index}")))
                                     .flex()
@@ -661,6 +707,19 @@ impl Workbench {
                                     .border_1()
                                     .border_color(theme.border)
                                     .child(SharedString::from(item.clone()))
+                                    .child(
+                                        step(format!("up-{key}-{index}"), "↑", index > 0).on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.sheet_move_list_item(&k_up, index, -1, cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        step(format!("down-{key}-{index}"), "↓", index < last)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.sheet_move_list_item(&k_down, index, 1, cx);
+                                            })),
+                                    )
                                     .child(
                                         div()
                                             .id(SharedString::from(format!("remove-{key}-{index}")))

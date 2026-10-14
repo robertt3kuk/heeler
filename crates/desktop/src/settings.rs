@@ -138,6 +138,8 @@ impl TerminalSettings {
             },
             copy_on_select: self.copy_on_select,
             scroll_to_bottom_on_input: self.scroll_to_bottom_on_input,
+            // Padding follows the density; the workbench fills it in.
+            padding: 0.0,
         }
     }
 }

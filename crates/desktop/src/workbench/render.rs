@@ -147,12 +147,12 @@ impl Workbench {
 
     fn bind_actions<E: InteractiveElement>(&self, root: E, cx: &mut Context<Self>) -> E {
         let (dock_step, split_step) = steps();
-        root.on_action(
-            cx.listener(|this, _: &actions::SplitRight, _, cx| this.split_active(Edge::Right, cx)),
-        )
-        .on_action(
-            cx.listener(|this, _: &actions::SplitDown, _, cx| this.split_active(Edge::Bottom, cx)),
-        )
+        root.on_action(cx.listener(|this, _: &actions::SplitRight, window, cx| {
+            this.split_active(Edge::Right, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &actions::SplitDown, window, cx| {
+            this.split_active(Edge::Bottom, window, cx)
+        }))
         .on_action(cx.listener(|this, _: &actions::ToggleLeftDock, _, cx| {
             this.mutate(cx, |s| s.toggle_dock(DockPosition::Left));
         }))
@@ -1021,23 +1021,16 @@ impl Workbench {
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             let entries = vec![
-                                Workbench::entry("Split Right", move |this, _, cx| {
-                                    this.try_mutate(cx, |s| {
-                                        s.split_pane(
-                                            pane_id,
-                                            Edge::Right,
-                                            ItemRef::placeholder("New pane"),
-                                        )
-                                    });
+                                Workbench::entry("Split Right", move |this, window, cx| {
+                                    this.split_pane_with_terminal(pane_id, Edge::Right, window, cx);
                                 }),
-                                Workbench::entry("Split Down", move |this, _, cx| {
-                                    this.try_mutate(cx, |s| {
-                                        s.split_pane(
-                                            pane_id,
-                                            Edge::Bottom,
-                                            ItemRef::placeholder("New pane"),
-                                        )
-                                    });
+                                Workbench::entry("Split Down", move |this, window, cx| {
+                                    this.split_pane_with_terminal(
+                                        pane_id,
+                                        Edge::Bottom,
+                                        window,
+                                        cx,
+                                    );
                                 }),
                             ];
                             this.open_menu(event.position, entries, window, cx);

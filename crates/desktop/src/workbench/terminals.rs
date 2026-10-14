@@ -294,6 +294,89 @@ impl Workbench {
         .detach();
     }
 
+    /// Where a terminal started from `pane` begins: the pane's terminal session's current
+    /// directory (it follows OSC 7) in its workspace; for any other item the default
+    /// workspace's root, else `$HOME`.
+    fn split_target(
+        &self,
+        pane: PaneId,
+        cx: &gpui::App,
+    ) -> (Option<heeler_core::WorkspaceId>, Option<PathBuf>) {
+        let store = self.sessions.read(cx);
+        let home_or_root = |workspace: Option<&heeler_protocol::messages::WorkspaceInfo>| {
+            workspace
+                .and_then(|w| w.roots.first().cloned())
+                .or_else(std::env::home_dir)
+        };
+        let info = self
+            .state
+            .pane(pane)
+            .and_then(|p| p.active_item())
+            .and_then(session_of_item)
+            .and_then(|id| store.session(id));
+        match info {
+            Some(info) => {
+                let workspace = store.workspace(info.workspace_id);
+                (
+                    Some(info.workspace_id),
+                    info.cwd.clone().or_else(|| home_or_root(workspace)),
+                )
+            }
+            None => {
+                let workspace = store.workspaces().first();
+                (workspace.map(|w| w.id), home_or_root(workspace))
+            }
+        }
+    }
+
+    /// Splits `pane` at `edge` and starts a new terminal in the new pane (iTerm / Ghostty
+    /// style). Without a daemon connection the new pane is an empty placeholder and a toast says
+    /// why.
+    pub fn split_pane_with_terminal(
+        &mut self,
+        pane: PaneId,
+        edge: Edge,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sessions.read(cx).connection_state() != heeler_client::ConnectionState::Connected {
+            self.split_with_placeholder(pane, edge, cx);
+            self.set_notice("Not connected to heelerd: opened an empty pane", cx);
+            return;
+        }
+        let (workspace, cwd) = self.split_target(pane, cx);
+        let task = self
+            .sessions
+            .update(cx, |store, cx| store.create_terminal(workspace, cwd, cx));
+        cx.spawn_in(window, async move |this, cx| match task.await {
+            Ok(info) => {
+                this.update_in(cx, |this, window, cx| {
+                    // The pane may have closed meanwhile; then split the focused one.
+                    let pane = if this.state.pane(pane).is_some() {
+                        pane
+                    } else {
+                        this.state.active_pane_id()
+                    };
+                    if this.state.focus != FocusTarget::Pane(pane) {
+                        this.try_mutate(cx, |s| s.focus_pane(pane));
+                    }
+                    this.open_session_in_split(info.id, edge, window, cx);
+                })
+                .ok();
+            }
+            Err(err) => {
+                this.update(cx, |this, cx| {
+                    if this.state.pane(pane).is_some() {
+                        this.split_with_placeholder(pane, edge, cx);
+                    }
+                    this.set_notice(format!("Cannot start a terminal: {err}"), cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     // ---- lifecycle --------------------------------------------------------------------------
 
     fn info_of(&self, session: SessionId, cx: &gpui::App) -> Option<SessionInfo> {
@@ -629,7 +712,10 @@ impl Workbench {
     /// terminal.
     pub(crate) fn refresh_terminal_style(&mut self, cx: &mut Context<Self>) {
         let settings = self.settings.get::<TerminalSettings>();
-        let style = settings.view_settings(system_appearance(self.appearance));
+        let style = heeler_terminal_view::TerminalViewSettings {
+            padding: self.density.ui().terminal_padding,
+            ..settings.view_settings(system_appearance(self.appearance))
+        };
         self.terminal_settings = settings;
         if style == self.terminal_style {
             return;
@@ -661,6 +747,7 @@ impl Workbench {
             self.density = appearance.density;
             self.theme = Theme::for_chrome(self.chrome, self.appearance);
             self.publish_style(cx);
+            self.refresh_terminal_style(cx);
         }
         if changes.contains("terminal") {
             self.refresh_terminal_style(cx);

@@ -244,12 +244,17 @@ impl Workbench {
                 .iter()
                 .find(|d| d.layout.name == layout_settings.preset)
         {
-            state.apply_preset(&def.layout);
+            let presets: Vec<LayoutPreset> = preset_defs.iter().map(|d| d.layout.clone()).collect();
+            let _ = state.switch_preset(&def.layout.name, &presets);
         }
 
         let window_appearance = window.appearance();
         let theme = Theme::for_chrome(appearance_settings.chrome, window_appearance);
         let terminal_style = terminal_settings.view_settings(system_appearance(window_appearance));
+        let terminal_style = heeler_terminal_view::TerminalViewSettings {
+            padding: appearance_settings.density.ui().terminal_padding,
+            ..terminal_style
+        };
         cx.set_global(UiStyle {
             theme,
             density: appearance_settings.density,
@@ -579,6 +584,7 @@ impl Workbench {
         }
         self.density = density;
         self.publish_style(cx);
+        self.refresh_terminal_style(cx);
         let value = match density {
             Density::Compact => "compact",
             Density::Comfortable => "comfortable",
@@ -611,8 +617,20 @@ impl Workbench {
 
     // ---- action handlers ---------------------------------------------------------------------
 
-    pub(crate) fn split_active(&mut self, edge: Edge, cx: &mut Context<Self>) {
+    /// Splits the focused pane; the new pane starts a terminal (see
+    /// [`Workbench::split_pane_with_terminal`]).
+    pub(crate) fn split_active(&mut self, edge: Edge, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.state.active_pane_id();
+        self.split_pane_with_terminal(pane, edge, window, cx);
+    }
+
+    /// An empty split showing a placeholder (no daemon to start a terminal on).
+    pub(crate) fn split_with_placeholder(
+        &mut self,
+        pane: PaneId,
+        edge: Edge,
+        cx: &mut Context<Self>,
+    ) {
         self.try_mutate(cx, |s| {
             s.split_pane(pane, edge, ItemRef::placeholder("New pane"))
         });
@@ -635,10 +653,8 @@ impl Workbench {
     }
 
     pub(crate) fn apply_preset_named(&mut self, name: &str, cx: &mut Context<Self>) {
-        match self.presets.iter().find(|p| p.name == name).cloned() {
-            Some(preset) => self.mutate(cx, |s| s.apply_preset(&preset)),
-            None => tracing::warn!("unknown layout preset `{name}`"),
-        }
+        let presets = self.presets.clone();
+        self.try_mutate(cx, |s| s.switch_preset(name, &presets));
     }
 
     pub(crate) fn toggle_overview(&mut self, cx: &mut Context<Self>) {

@@ -59,6 +59,9 @@ fn split_actions_and_keys_change_the_pane_tree(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
     cx.dispatch_action(actions::SplitRight);
     assert_eq!(state(&view, cx).panes().len(), 2);
+    // Without a daemon the pane is an empty placeholder and a toast says why.
+    let notice = view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string));
+    assert!(notice.unwrap().contains("Not connected"));
     // ⌘D goes through the real keymap.
     cx.simulate_keystrokes("cmd-d");
     assert_eq!(state(&view, cx).panes().len(), 3);
@@ -857,4 +860,29 @@ fn title_bar_preset_menu_marks_the_current_preset(cx: &mut TestAppContext) {
     );
     view.update_in(cx, |wb, window, cx| wb.run_menu_entry(1, window, cx));
     assert_eq!(state(&view, cx).preset, "focus");
+}
+
+#[gpui::test]
+fn a_saved_overview_layout_restores_with_its_stash(cx: &mut TestAppContext) {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join(STATE_FILE);
+    {
+        let (view, cx) = open(cx, Some(path.clone()));
+        cx.dispatch_action(actions::SplitRight);
+        cx.dispatch_action(actions::ApplyPreset("overview".into()));
+        view.update(cx, |wb, _| wb.flush_save());
+    }
+    let (view, cx) = open(cx, Some(path));
+    let s = state(&view, cx);
+    assert_eq!(s.preset, "overview");
+    assert_eq!(
+        s.active_pane().unwrap().active_item(),
+        Some(&ItemRef::panel("overview"))
+    );
+    cx.dispatch_action(actions::ApplyPreset("default".into()));
+    assert_eq!(
+        state(&view, cx).panes().len(),
+        2,
+        "the stashed split layout comes back"
+    );
 }
