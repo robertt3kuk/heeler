@@ -122,7 +122,9 @@ impl AssistantService {
             .into_iter()
             .filter(|s| s.chat.as_ref().is_some_and(|c| c.agent == AGENT_ASSISTANT))
             .collect();
-        sessions.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.id.cmp(&b.id)));
+        // Stable: sessions created in the same millisecond keep the registry's creation order
+        // (ULIDs of one millisecond are random, so the id cannot break the tie).
+        sessions.sort_by_key(|s| s.created_at_ms);
         Ok(sessions)
     }
 

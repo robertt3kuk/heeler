@@ -738,9 +738,13 @@ fn an_approval_card_answers_through_the_daemon_and_resolves(cx: &mut TestAppCont
         assistant_texts(&model, cx).last().map(String::as_str),
         Some("done")
     );
+    // The session's state follows the turn's last event (`session.updated` is a separate
+    // message): wait for it rather than assume it arrived with the footer.
+    pump(cx, "the session to stop needing the user", |cx| {
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).needs_you().is_empty())
+    });
     view.read_with(cx, |wb, cx| {
         assert!(wb.sessions().read(cx).approvals().is_empty());
-        assert!(wb.sessions().read(cx).needs_you().is_empty());
     });
 }
 
