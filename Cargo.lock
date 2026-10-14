@@ -2395,6 +2395,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "heeler-desktop"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "heeler-protocol"
 version = "0.1.0"
 dependencies = [
