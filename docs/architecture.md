@@ -43,6 +43,7 @@ crates/
   gateway/        direct model chat: provider trait, OpenAI-compatible, Anthropic, local endpoints (M5)
   orchestration/  tasks, dependencies, worktrees, scheduling of parallel agents (M7)
   storage/        SQLite actor, migrations, repositories
+  index/          opt-in session history index: SQLite FTS5 over Heeler blocks and agent transcripts, incremental scanner, FSEvents watcher, redaction (`docs/history-index.md`)
   security/       Keychain, permission policy evaluation, redaction
   notifications/  notification intents from domain events (daemon side)
   cli/            heeler binary
@@ -63,6 +64,7 @@ flowchart BT
   protocol --> terminal_view --> desktop
   settings --> desktop
   core --> terminal & runtime & storage & security & notifications
+  index --> daemon
   runtime --> agents
   core --> gateway
   terminal & agents & gateway & storage & security & notifications & orchestration --> daemon
@@ -176,6 +178,7 @@ Implemented by `heeler_client::Connection` (M2.2): one `heeler-client` thread wi
 - SQLite at `~/Library/Application Support/Heeler/heeler.db`, single writer thread, WAL, forward-only migrations with pre-migration backup.
 - Daemon restart: respawn terminals in saved cwd; resume agents via recorded native resume refs; otherwise sessions come back `stopped` with a restart action. Live fd handoff for upgrades is M9.
 - Implemented (M3-A): the registry writes workspaces and sessions through to the `storage` actor (`heeler-storage`); start loads them back, respawns live sessions as new terminals with the same ids, and lists ended ones as `restored`. `$HEELER_HOME/daemon.toml` `[daemon] restore_sessions = "respawn" | "stopped"`; `[workspaces] home_folder` (the Home workspace's folder, default `~/Heeler`; M12-A); `heeler daemon stop --stop-sessions --forget` leaves them out of the restore set. Semantics: `docs/protocol.md` § Persistence and restore.
+- Implemented (M17-A): the session history index lives in its own `index.sqlite` beside `heeler.db` (separate so Clear is a file delete), written by one low-priority indexer thread of `heeler-index`; off unless `daemon.toml` `[history] enabled`. Details and privacy: `docs/history-index.md`.
 
 ## Security
 - Socket dir `0700`, socket `0600`, peer UID check; no TCP listener until a remote transport ADR.

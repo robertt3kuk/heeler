@@ -17,6 +17,7 @@ use tracing::info;
 
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
+use crate::history::HistoryService;
 use crate::registry::RegistryHandle;
 use crate::terminals::TerminalHub;
 
@@ -24,6 +25,7 @@ use crate::terminals::TerminalHub;
 pub struct Router {
     registry: RegistryHandle,
     hub: Arc<TerminalHub>,
+    history: Arc<HistoryService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -36,6 +38,7 @@ impl Router {
     pub fn new(
         registry: RegistryHandle,
         hub: Arc<TerminalHub>,
+        history: Arc<HistoryService>,
         bus: Arc<EventBus>,
         shutdown: CancellationToken,
         clients: Arc<AtomicU32>,
@@ -43,6 +46,7 @@ impl Router {
         Self {
             registry,
             hub,
+            history,
             bus,
             started: Instant::now(),
             shutdown,
@@ -152,6 +156,17 @@ impl Router {
             }
             Request::AgentReport(req) => ok(&self.registry.report_agent(req).await?),
             Request::AgentRelease(req) => ok(&self.registry.release_agent(req).await?),
+            Request::HistorySearch(req) => ok(&self.history.search(req).await?),
+            Request::HistoryStatus(_) => ok(&self.history.status().await?),
+            Request::HistorySetEnabled(req) => ok(&self.history.set_enabled(req.enabled).await?),
+            Request::HistoryClear(_) => {
+                self.history.clear().await?;
+                ok(&Empty {})
+            }
+            Request::HistoryRebuild(_) => {
+                self.history.rebuild().await?;
+                ok(&Empty {})
+            }
         }
     }
 
@@ -169,6 +184,11 @@ impl Router {
     /// Drops everything the closed connection had attached.
     pub fn connection_closed(&self, conn: ConnId) {
         self.hub.connection_closed(conn);
+    }
+
+    /// Stops the history indexer, applying what it has queued; the index stays on disk.
+    pub async fn stop_history(&self) {
+        self.history.shutdown().await;
     }
 
     /// Terminates every live session (SIGHUP, then SIGKILL after the grace) and waits for

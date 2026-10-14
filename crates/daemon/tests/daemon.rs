@@ -186,7 +186,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "session.restore",
             "agent.report",
             "terminal.blocks",
-            "workspace.projects"
+            "workspace.projects",
+            "history.search"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

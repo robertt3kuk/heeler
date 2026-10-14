@@ -7,6 +7,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use tokio::sync::mpsc;
+
 use heeler_core::{Epoch, Seq};
 use heeler_protocol::messages::{Event, ResumeOutcome, ResumePoint};
 use heeler_protocol::{ControlMessage, Frame, MAX_PAYLOAD, ProtocolError};
@@ -49,6 +51,8 @@ struct Inner {
     ring: VecDeque<Entry>,
     ring_bytes: usize,
     subscribers: HashMap<ConnId, ConnHandle>,
+    /// Internal consumer of the events the history index cares about.
+    tap: Option<mpsc::Sender<Event>>,
 }
 
 #[derive(Debug)]
@@ -68,6 +72,7 @@ impl EventBus {
                 ring: VecDeque::new(),
                 ring_bytes: 0,
                 subscribers: HashMap::new(),
+                tap: None,
             }),
         }
     }
@@ -79,6 +84,12 @@ impl EventBus {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // The critical sections never leave `Inner` half-updated across a panic point.
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sends a copy of every session and terminal block event to `tap` from now on (`None`
+    /// stops). Never blocks: when the tap's queue is full the event is dropped for it.
+    pub fn set_tap(&self, tap: Option<mpsc::Sender<Event>>) {
+        self.lock().tap = tap;
     }
 
     /// Seq of the most recent event (`0` before the first).
@@ -116,6 +127,19 @@ impl EventBus {
         inner
             .subscribers
             .retain(|_, sub| sub.enqueue(Outbound::Frame(frame.clone())));
+        if matches!(
+            event,
+            Event::SessionUpdated { .. } | Event::TerminalBlock { .. }
+        ) && let Some(tap) = &inner.tap
+        {
+            match tap.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::debug!("history tap is full; dropped an event");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => inner.tap = None,
+            }
+        }
         Ok(seq)
     }
 

@@ -11,6 +11,7 @@ use heeler_protocol::blocks::{
     TerminalBlocksResult,
 };
 use heeler_protocol::control::ControlMessage;
+use heeler_protocol::history::*;
 use heeler_protocol::messages::*;
 use heeler_protocol::render::*;
 use heeler_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
@@ -383,6 +384,37 @@ fn requests() -> Vec<(&'static str, Request)> {
                 pinned: true,
             }),
         ),
+        (
+            "history_search",
+            Request::HistorySearch(HistorySearch {
+                query: "cargo test -p daemon".into(),
+                limit: 20,
+                sources: vec![HistorySource::Claude, HistorySource::Heeler],
+                roles: vec![HistoryRole::Command, HistoryRole::User],
+                project: Some("/repo".into()),
+                since_ms: Some(1_791_000_000_000),
+                until_ms: Some(1_791_900_000_000),
+            }),
+        ),
+        (
+            "history_search_minimal",
+            Request::HistorySearch(HistorySearch {
+                query: "quokka".into(),
+                limit: SEARCH_DEFAULT_LIMIT,
+                sources: vec![],
+                roles: vec![],
+                project: None,
+                since_ms: None,
+                until_ms: None,
+            }),
+        ),
+        ("history_status", Request::HistoryStatus(Empty {})),
+        (
+            "history_set_enabled",
+            Request::HistorySetEnabled(HistorySetEnabled { enabled: true }),
+        ),
+        ("history_clear", Request::HistoryClear(Empty {})),
+        ("history_rebuild", Request::HistoryRebuild(Empty {})),
     ]
 }
 
@@ -774,6 +806,72 @@ fn responses_match_fixtures() {
             .unwrap(),
         ),
         ("ack", ControlMessage::ok(4, &Empty {}).unwrap()),
+        (
+            "history_hits",
+            ControlMessage::ok(
+                7,
+                &HistoryHits {
+                    hits: vec![
+                        HistoryHit {
+                            source: HistorySource::Claude,
+                            session_key: "5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60".into(),
+                            title: Some("Scheduler stall investigation".into()),
+                            cwd: Some("/work/app".into()),
+                            role: HistoryRole::User,
+                            ts_ms: Some(1_791_894_164_332),
+                            snippet: "why does the «quokka» scheduler stall".into(),
+                            score: 4.25,
+                            matches: 3,
+                            resume_argv: Some(vec![
+                                "claude".into(),
+                                "--resume".into(),
+                                "5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60".into(),
+                            ]),
+                        },
+                        HistoryHit {
+                            source: HistorySource::Heeler,
+                            session_key: sid().to_string(),
+                            title: None,
+                            cwd: None,
+                            role: HistoryRole::Output,
+                            ts_ms: None,
+                            snippet: "test result: ok".into(),
+                            score: 1.5,
+                            matches: 1,
+                            resume_argv: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "history_status",
+            ControlMessage::ok(
+                8,
+                &HistoryStatusInfo {
+                    enabled: true,
+                    sources: vec![
+                        HistorySourceStatus {
+                            name: "claude".into(),
+                            files: 12,
+                            rows: 1790,
+                            last_indexed_ms: Some(1_791_894_164_332),
+                            errors: 0,
+                        },
+                        HistorySourceStatus {
+                            name: "heeler".into(),
+                            files: 0,
+                            rows: 4,
+                            last_indexed_ms: None,
+                            errors: 0,
+                        },
+                    ],
+                    db_bytes: 11_534_336,
+                },
+            )
+            .unwrap(),
+        ),
         (
             "agent_applied",
             ControlMessage::ok(6, &AgentApplied { applied: false }).unwrap(),

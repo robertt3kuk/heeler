@@ -12,6 +12,7 @@ use crate::ProtocolVersion;
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
+use crate::history::{HistorySearch, HistorySetEnabled};
 use crate::render::Row;
 
 /// Parameterless request body; encoded as `{}`.
@@ -96,6 +97,21 @@ pub enum Request {
     /// Capability `terminal.blocks` (protocol 0.5).
     #[serde(rename = "terminal.block_text")]
     TerminalBlockText(TerminalBlockText),
+    /// Capability `history.search` (protocol 0.8): search the session history index.
+    #[serde(rename = "history.search")]
+    HistorySearch(HistorySearch),
+    /// Capability `history.search`: index state; answered with `HistoryStatusInfo`.
+    #[serde(rename = "history.status")]
+    HistoryStatus(Empty),
+    /// Capability `history.search`: switch indexing on or off.
+    #[serde(rename = "history.set_enabled")]
+    HistorySetEnabled(HistorySetEnabled),
+    /// Capability `history.search`: delete the index and start an empty one.
+    #[serde(rename = "history.clear")]
+    HistoryClear(Empty),
+    /// Capability `history.search`: read every transcript again.
+    #[serde(rename = "history.rebuild")]
+    HistoryRebuild(Empty),
 }
 
 impl Request {

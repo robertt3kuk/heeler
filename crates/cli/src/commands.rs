@@ -20,6 +20,7 @@ use crate::error::{CliError, is_unreachable};
 
 mod agent;
 mod attach;
+mod history;
 mod integration;
 mod sessions;
 mod workspaces;
@@ -57,6 +58,8 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Restart(args) => ctx?.restart(&args.target).await,
         Command::Rename(args) => ctx?.rename(args).await,
         Command::History(args) => ctx?.history(args).await,
+        Command::Search(args) => ctx?.search(args).await,
+        Command::Index(command) => ctx?.index(command).await,
     }
 }
 

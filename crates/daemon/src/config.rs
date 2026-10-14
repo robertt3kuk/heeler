@@ -6,6 +6,17 @@
 //!
 //! [workspaces]
 //! home_folder = "~/Notes"        # the Home workspace's folder; default ~/Heeler
+//!
+//! [history]                      # session history index, off unless enabled (docs/history-index.md)
+//! enabled = false
+//! range_days = 0                 # 0 = everything, or 30, or 90
+//! heeler = true                  # per-source switches
+//! claude = true
+//! codex = true
+//! omp = true
+//!
+//! [history.roots]                # override where transcripts live (default: the agents' own dirs)
+//! claude = "/path/to/claude/projects"
 //! ```
 
 use std::io;
@@ -33,7 +44,48 @@ pub struct DaemonSettings {
     /// Absolute folder of the Home workspace; `None` uses the default
     /// ([`Paths::default_home_folder`](crate::Paths)).
     pub home_folder: Option<PathBuf>,
+    pub history: HistorySettings,
 }
+
+/// Which source directories the history index reads; `None` = the agent's default location.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct HistoryRoots {
+    pub claude: Option<PathBuf>,
+    pub codex: Option<PathBuf>,
+    pub omp: Option<PathBuf>,
+}
+
+/// `[history]` of `daemon.toml`. Nothing is read from any transcript directory unless
+/// `enabled` is true.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HistorySettings {
+    pub enabled: bool,
+    /// Index only the last N days: 0 (everything), 30, or 90.
+    pub range_days: u32,
+    pub heeler: bool,
+    pub claude: bool,
+    pub codex: bool,
+    pub omp: bool,
+    pub roots: HistoryRoots,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            range_days: 0,
+            heeler: true,
+            claude: true,
+            codex: true,
+            omp: true,
+            roots: HistoryRoots::default(),
+        }
+    }
+}
+
+/// The `range_days` values the settings accept.
+pub const RANGE_DAYS: [u32; 3] = [0, 30, 90];
 
 #[derive(Debug, Default, Deserialize)]
 struct File {
@@ -41,6 +93,8 @@ struct File {
     daemon: DaemonTable,
     #[serde(default)]
     workspaces: WorkspacesTable,
+    #[serde(default)]
+    history: HistorySettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -72,6 +126,12 @@ impl DaemonSettings {
 
     fn parse(text: &str, user_home: Option<&Path>) -> Result<Self, toml::de::Error> {
         let file: File = toml::from_str(text)?;
+        if !RANGE_DAYS.contains(&file.history.range_days) {
+            return Err(toml::de::Error::custom(format!(
+                "history.range_days must be 0, 30, or 90, not {}",
+                file.history.range_days
+            )));
+        }
         let home_folder = file
             .workspaces
             .home_folder
@@ -80,6 +140,7 @@ impl DaemonSettings {
         Ok(Self {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
+            history: file.history,
         })
     }
 }
@@ -103,6 +164,57 @@ fn expand_home_folder(folder: &str, user_home: Option<&Path>) -> Result<PathBuf,
         )));
     }
     Ok(path)
+}
+
+/// Records `[history] enabled` in `daemon.toml`, creating the file or the table when missing and
+/// leaving every other key and comment as it is. Written to a temporary file first, so a crash
+/// never leaves a half-written config.
+pub fn set_history_enabled(path: &Path, enabled: bool) -> Result<(), DaemonError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let context = |what: &str| format!("{what} {}", path.display());
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(DaemonError::io(context("reading"))(e)),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| {
+        DaemonError::io(context("parsing"))(io::Error::new(io::ErrorKind::InvalidData, e))
+    })?;
+    let history = doc
+        .entry("history")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    let Some(table) = history.as_table_like_mut() else {
+        return Err(DaemonError::io(context("updating"))(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "`history` is not a table",
+        )));
+    };
+    // Updating in place keeps the comments in front of the key.
+    match table.get_mut("enabled") {
+        Some(item) => *item = toml_edit::value(enabled),
+        None => {
+            table.insert("enabled", toml_edit::value(enabled));
+        }
+    }
+
+    let tmp = path.with_extension("toml.tmp");
+    let write = || -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(doc.to_string().as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        DaemonError::io(context("writing"))(e)
+    })
 }
 
 #[cfg(test)]
@@ -144,6 +256,65 @@ mod tests {
         let settings =
             DaemonSettings::parse("[other]\nx = 1\n[daemon]\nfuture = true\n", None).unwrap();
         assert_eq!(settings, DaemonSettings::default());
+    }
+
+    #[test]
+    fn history_is_off_by_default_and_reads_its_table() {
+        assert!(!DaemonSettings::parse("", None).unwrap().history.enabled);
+        let settings = DaemonSettings::parse(
+            "[history]\nenabled = true\nrange_days = 30\ncodex = false\n[history.roots]\nclaude = \"/tmp/c\"\n",
+            None,
+        )
+        .unwrap()
+        .history;
+        assert!(settings.enabled && settings.heeler && settings.claude && settings.omp);
+        assert!(!settings.codex);
+        assert_eq!(settings.range_days, 30);
+        assert_eq!(settings.roots.claude.as_deref(), Some(Path::new("/tmp/c")));
+        assert_eq!(settings.roots.codex, None);
+    }
+
+    #[test]
+    fn history_range_must_be_a_known_value() {
+        for days in [0, 30, 90] {
+            assert!(
+                DaemonSettings::parse(&format!("[history]\nrange_days = {days}\n"), None).is_ok()
+            );
+        }
+        let error = DaemonSettings::parse("[history]\nrange_days = 45\n", None).unwrap_err();
+        assert!(error.to_string().contains("range_days"), "{error}");
+        assert!(DaemonSettings::parse("[history]\nenabled = \"yes\"\n", None).is_err());
+    }
+
+    #[test]
+    fn enabling_history_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        set_history_enabled(&path, true).unwrap();
+        assert!(DaemonSettings::load(&path, None).unwrap().history.enabled);
+
+        std::fs::write(
+            &path,
+            "# my settings\n[daemon]\nrestore_sessions = \"stopped\"\n\n[history]\n# off for now\nenabled = false\nrange_days = 90\n",
+        )
+        .unwrap();
+        set_history_enabled(&path, true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# my settings") && text.contains("# off for now"),
+            "{text}"
+        );
+        let settings = DaemonSettings::load(&path, None).unwrap();
+        assert!(settings.history.enabled);
+        assert_eq!(settings.history.range_days, 90);
+        assert_eq!(settings.restore_sessions, RestoreMode::Stopped);
+
+        set_history_enabled(&path, false).unwrap();
+        assert!(!DaemonSettings::load(&path, None).unwrap().history.enabled);
+        assert!(!dir.path().join("daemon.toml.tmp").exists());
+
+        std::fs::write(&path, "[history\n").unwrap();
+        assert!(set_history_enabled(&path, true).is_err());
     }
 
     #[test]

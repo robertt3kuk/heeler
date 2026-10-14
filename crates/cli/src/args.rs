@@ -57,6 +57,12 @@ pub enum Command {
     /// Install, remove, or inspect the agent integrations (Codex, Claude Code, OMP)
     #[command(subcommand)]
     Integration(IntegrationCommand),
+    /// Search past sessions: Heeler terminal blocks and Claude Code, Codex and OMP transcripts
+    /// (needs `heeler index enable`)
+    Search(SearchArgs),
+    /// Manage the session history index (opt-in, local)
+    #[command(subcommand)]
+    Index(IndexCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -349,6 +355,73 @@ pub enum IntegrationTarget {
     Codex,
     Claude,
     Omp,
+}
+
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    /// Words to find (all must match); `"quoted phrases"` match as phrases
+    #[arg(required = true, value_name = "QUERY")]
+    pub query: Vec<String>,
+    /// Only this source; repeatable
+    #[arg(long, value_enum)]
+    pub source: Vec<SourceArg>,
+    /// Only rows newer than this, like `90m`, `12h`, `7d`, `2w`
+    #[arg(long, value_name = "AGE", value_parser = parse_age_ms)]
+    pub since: Option<u64>,
+    /// Most sessions listed
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub limit: u32,
+    /// Instead of listing, open hit N (1-based, as numbered by the same search) in a new
+    /// terminal session in its working directory, running the agent's resume command; attaches
+    /// when run from a terminal
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub resume: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SourceArg {
+    Heeler,
+    Claude,
+    Codex,
+    Omp,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IndexCommand {
+    /// Show whether indexing is on, what it has indexed, and the database size
+    Status,
+    /// Turn indexing on (recorded in daemon.toml) and index the existing transcripts
+    Enable,
+    /// Turn indexing off; nothing is read any more, the index stays until `clear`
+    Disable,
+    /// Delete the index; files are indexed again when they change or on `rebuild`
+    Clear,
+    /// Read every transcript again from scratch, in the background
+    Rebuild,
+}
+
+/// `90m`, `12h`, `7d`, `2w` (also `s`) as milliseconds.
+fn parse_age_ms(text: &str) -> Result<u64, String> {
+    let split = text.len().saturating_sub(1);
+    let (number, unit) = text.split_at_checked(split).ok_or("expected like 7d")?;
+    let unit_ms: u64 = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "w" => 604_800_000,
+        _ => {
+            return Err(format!(
+                "`{text}`: use s, m, h, d or w after the number, like 7d"
+            ));
+        }
+    };
+    let number: u64 = number
+        .parse()
+        .map_err(|_| format!("`{text}`: expected a number before the unit, like 7d"))?;
+    number
+        .checked_mul(unit_ms)
+        .ok_or_else(|| format!("`{text}` is too long ago"))
 }
 
 fn parse_env(text: &str) -> Result<(String, String), String> {

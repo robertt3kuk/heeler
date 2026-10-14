@@ -34,6 +34,8 @@ use crate::socket::default_socket_path;
 pub(crate) const COLORS_CAPABILITY: &str = "terminal.colors";
 /// Capability for `terminal.blocks` and `terminal.block_text` (protocol 0.5).
 pub(crate) const BLOCKS_CAPABILITY: &str = "terminal.blocks";
+/// Capability for the `history.*` requests (protocol 0.8).
+pub(crate) const HISTORY_CAPABILITY: &str = "history.search";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -41,6 +43,7 @@ const CAPABILITIES: &[&str] = &[
     "session.restore",
     "agent.report",
     BLOCKS_CAPABILITY,
+    HISTORY_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
@@ -217,6 +220,15 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == BLOCKS_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `history.search` (the `history.*` requests,
+    /// protocol 0.8).
+    pub fn supports_history(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == HISTORY_CAPABILITY)
     }
 
     /// One page of the terminal's blocks, newest first: at most `limit` (the daemon caps it),

@@ -1,6 +1,7 @@
 //! Heeler IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
 //!
 //! - [`blocks`]: terminal block DTOs (protocol 0.5).
+//! - [`history`]: session history search DTOs (protocol 0.8).
 //! - [`frame`]: length-prefixed frames and the tokio codec.
 //! - [`control`]: JSON control envelope (requests, responses, events).
 //! - [`messages`]: typed request params, results, events, and DTOs.
@@ -10,6 +11,7 @@ pub mod blocks;
 pub mod control;
 pub mod error;
 pub mod frame;
+pub mod history;
 pub mod messages;
 pub mod render;
 
@@ -21,7 +23,7 @@ pub use messages::{Event, Request};
 use serde::{Deserialize, Serialize};
 
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 7 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 8 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolVersion {

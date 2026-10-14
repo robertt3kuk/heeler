@@ -12,6 +12,7 @@ pub const SOCKET_FILE: &str = "heelerd.sock";
 pub const LOCK_FILE: &str = "heelerd.lock";
 pub const LOG_FILE: &str = "heelerd.log";
 pub const DATABASE_FILE: &str = "heeler.db";
+pub const INDEX_FILE: &str = "index.sqlite";
 pub const CONFIG_FILE: &str = "daemon.toml";
 /// Name of the Home folder created in the user's home directory (or in `HEELER_HOME`).
 pub const HOME_FOLDER_NAME: &str = "Heeler";
@@ -31,6 +32,8 @@ pub struct Paths {
     pub lock: PathBuf,
     /// SQLite database of workspaces and sessions (ADR 0006).
     pub database: PathBuf,
+    /// The session history index (own database so that Clear is a file delete), `index.sqlite`.
+    pub index_database: PathBuf,
     /// Optional daemon settings, `daemon.toml`.
     pub config_file: PathBuf,
     pub log_dir: PathBuf,
@@ -93,6 +96,7 @@ impl Paths {
             socket: base.join(SOCKET_FILE),
             lock: base.join(LOCK_FILE),
             database: base.join(DATABASE_FILE),
+            index_database: base.join(INDEX_FILE),
             config_file: base.join(CONFIG_FILE),
             log_dir,
             default_home_folder: base.join(HOME_FOLDER_NAME),
@@ -161,6 +165,7 @@ mod tests {
         assert_eq!(p.lock, Path::new("/tmp/hh/heelerd.lock"));
         assert_eq!(p.log_dir, Path::new("/tmp/hh/logs"));
         assert_eq!(p.database, Path::new("/tmp/hh/heeler.db"));
+        assert_eq!(p.index_database, Path::new("/tmp/hh/index.sqlite"));
         assert_eq!(p.config_file, Path::new("/tmp/hh/daemon.toml"));
         assert_eq!(p.log_file(), Path::new("/tmp/hh/logs/heelerd.log"));
     }

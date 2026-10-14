@@ -11,6 +11,7 @@
 //! - [`restore`]: loading durable state and the rules for what is stored.
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
+//! - [`history`]: the opt-in session history index (`heeler-index`) and the `history.*` requests.
 //! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
 
 pub mod agent;
@@ -19,6 +20,7 @@ pub mod config;
 pub mod conn;
 pub mod daemon;
 pub mod error;
+pub mod history;
 pub mod paths;
 pub mod projects;
 pub mod registry;
@@ -27,7 +29,7 @@ pub mod router;
 pub mod terminals;
 
 pub use bus::RingLimits;
-pub use config::{DaemonSettings, RestoreMode};
+pub use config::{DaemonSettings, HistorySettings, RestoreMode};
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;
 pub use paths::Paths;

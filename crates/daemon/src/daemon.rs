@@ -22,6 +22,7 @@ use crate::bus::{EventBus, RingLimits};
 use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
+use crate::history::HistoryService;
 use crate::paths::Paths;
 use crate::projects;
 use crate::registry::{self, RegistryConfig};
@@ -177,9 +178,18 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         },
         stored,
     );
+    let history = HistoryService::new(
+        paths.clone(),
+        settings.history.clone(),
+        bus.clone(),
+        hub.clone(),
+        registry.clone(),
+    );
+    history.start().await;
     let router = Router::new(
         registry,
         hub,
+        history,
         bus.clone(),
         shutdown.clone(),
         clients.clone(),
@@ -292,6 +302,8 @@ async fn accept_loop(
         }
     };
     tokio::join!(stop_sessions, drain_connections);
+    // Records from the sessions that just ended are applied before the indexer stops.
+    ctx.router.stop_history().await;
     // Everything the registry queued while stopping the sessions reaches the disk before the
     // lock is released and a successor opens the database.
     if let Err(error) = tokio::task::spawn_blocking(move || storage.close()).await {

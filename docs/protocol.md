@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.7
+# Heeler IPC Protocol — v0.8
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`. 0.7 — render DTOs carry `viewport_top` (absolute line of viewport row 0).
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`. 0.7 — render DTOs carry `viewport_top` (absolute line of viewport row 0). 0.8 — session history index (capability `history.search`): `history.search`, `history.status`, `history.set_enabled`, `history.clear`, `history.rebuild`.
 
 ## Frames
 
@@ -62,6 +62,10 @@ Milestone tag = when the method lands.
 | `terminal.block_text` | query | `{terminal_id, block_id, part: command\|output, max_bytes}` → `{text, truncated}`; capability `terminal.blocks` | M10 |
 | `agent.report` | command | `{session_id, source, agent, state: idle\|working\|blocked, message?, seq, agent_session_id?, resume_argv?: [string]}` → `{applied: bool}`; capability `agent.report` | M3 |
 | `agent.release` | command | `{session_id, source, seq}` → `{applied: bool}`; the agent behind `source` is gone | M3 |
+| `history.search` | query | `{query, limit?: 1–100 (20), sources?: [heeler\|claude\|codex\|omp], roles?: [user\|assistant\|tool\|command\|output], project?, since_ms?, until_ms?}` → `{hits: [{source, session_key, title?, cwd?, role, ts_ms?, snippet, score, matches, resume_argv?}]}`; one hit per session (its best row), best first; capability `history.search`; `invalid_state` while indexing is disabled | M17 |
+| `history.status` | query | → `{enabled, sources: [{name, files, rows, last_indexed_ms?, errors}], db_bytes}` (sources are the switched-on ones) | M17 |
+| `history.set_enabled` | command | `{enabled}` → status; starts or stops indexing and records `[history] enabled` in `daemon.toml` | M17 |
+| `history.clear` / `history.rebuild` | command | → `{}`; clear deletes the index file and starts an empty one (works while disabled), rebuild reads every transcript again in the background (`invalid_state` while disabled) | M17 |
 | `terminal.tap_output` | command | raw byte subscription (lossy, gap markers) | M7 |
 | `chat.send` | command | session id, content blocks | M4 |
 | `chat.cancel` | command | session id, turn id | M4 |
@@ -171,6 +175,16 @@ M12-A; `crates/daemon/src/{registry,projects,config}.rs`, `crates/storage` (sche
 - **Activity and counts**: `live_sessions` / `total_sessions` count the workspace's sessions (live states / all, ended and restored ones included). `last_active_ms` moves when a session is created, when input reaches one of its live terminals, and when one produces output; it changes at most once per 10 s per workspace (session creation excepted) and carries the time of the announcement when an update was held back. It is stored.
 - **Events**: `workspace.updated` carries the whole `WorkspaceInfo` after every change of any field — rename, roots, pin, position, activity, and the session counts (published right after the `session.updated` that changed them). Creation is announced the same way; `workspace.closed` stays as it was.
 - **CLI** (`crates/cli/src/commands/workspaces.rs`): `heeler ws open <path>`; `ws ls [--sort manual|recent|attention|name] [--all]` — without `--all` empty workspaces are hidden unless pinned or Home, pinned ones come first in every mode, `attention` ranks workspaces by sessions waiting for the user (a pending approval, or an agent reporting `blocked`) then by activity; `ws move <id|name> --before <id|name>|--last`; `ws pin|unpin <id|name>`; `ws recent [--limit N]`; `ws use <id|name>` prints `export HEELER_WORKSPACE=<id>`. `heeler new` creates its session in `--ws <id|name>`, else `$HEELER_WORKSPACE` (id or name), else Home; `heeler ls --ws` takes an id or a name too. A workspace target is a full id, an exact name (then ignoring case), or an id prefix of at least 4 characters; several matches are a usage error (exit 2), none a failure (exit 1). `ws new` and `ws open` send `created_by: cli`.
+
+## Session history search (protocol 0.8, capability `history.search`)
+
+Code: `crates/index` (index), `crates/daemon/src/history.rs` (requests, Heeler feed), `crates/protocol/src/history.rs` (DTOs). Sources, ranking, privacy, formats: `docs/history-index.md`.
+
+- `query` is words and `"quoted phrases"`; every one must match, and quotes, `AND`/`OR`, `*`, `:` have no special meaning. A query with no letter or digit → `bad_request`, as do `limit` outside 1–100 and `since_ms > until_ms`.
+- Hits are grouped by session: the best row (BM25 over the text and identifier columns, times a role weight: command 1.4, user 1.3, assistant 1.0, tool 0.7, output 0.6) with `matches` = rows of that session that match. `score` is higher-is-better and only comparable inside one response. `snippet` wraps matched words in `«` `»`.
+- `session_key` is the agent's own session id (`claude`: file name; `codex`: `session_meta.id`; `omp`: `session.id`, a sub-agent's hits carry its parent's id) or the Heeler session id. `resume_argv` (`claude --resume <id>`, `codex resume <id>`, `omp --resume=<id>`) passes the `agent.report` resume validation or is absent; `heeler` hits have none.
+- `project` matches sessions whose cwd is that directory or inside it. `since_ms`/`until_ms` compare the row's timestamp (rows without one carry their file's mtime).
+- Indexing is opt-in. While disabled, `history.status` says `enabled: false` with no sources, `history.search`/`rebuild` answer `invalid_state`, and no transcript file is read.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.
