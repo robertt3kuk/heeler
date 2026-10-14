@@ -12,15 +12,23 @@ median of 3 runs, release binaries, on:
 
 ## Results
 
-| # | Metric | Budget | Median of 3 | Runs | Result |
-|---|---|---|---|---|---|
-| B1 | Idle desktop RSS, 1 window, 4 terminals | ≤ 150 MB | **102.7 MB** | 102.7, 102.9, 102.7 | pass |
-| B2 | Idle daemon RSS, 10 sessions × 10k-line scrollback | ≤ 120 MB | **254.6 MB** | 254.6, 254.3, 254.6 | **miss** (below) |
-| B3 | Idle CPU, daemon + desktop, 30 s | ≤ 0.5 % | **0.46 %** | 0.44, 0.52, 0.46 | pass, at the limit (below) |
-| B4 | Keystroke → glyph on screen, p95 over 500 keys | ≤ 16 ms | **18.0 ms** | 18.0, 17.4, 18.1 | **miss** (below) |
-| B5 | 200 MB+ flood: p95 key latency in a second terminal | ≤ 50 ms | **16.9 ms** | 16.2, 16.9, 16.9 | pass |
-| B5 | 200 MB+ flood: daemon RSS growth | ≤ 50 MB | **13.6 MB** | 13.6, 13.6, 13.6 | pass |
-| B6 | Cold start → first terminal paint with its prompt | ≤ 500 ms | **213 ms** | 220, 186, 213 | pass |
+Report `target/bench/1792001491.json` (commit `8a1de1d`, ADR 0013 store; before = the M2-F table, same harness).
+
+| # | Metric | Budget | Median of 3 | Runs | Before | Result |
+|---|---|---|---|---|---|---|
+| B1 | Idle desktop RSS, 1 window, 4 terminals | ≤ 150 MB | **110.9 MB** | 110.5, 110.9, 111.8 | 102.7 MB | pass |
+| B2 | Idle daemon RSS, 10 sessions × 10k-line scrollback, 80 columns, desktop attached | ≤ 120 MB | **40.1 MB** | 40.1, 39.8, 40.1 | 254.6 MB | pass |
+| B2w | Same at 200 columns (~190-column lines), no client | ≤ 150 MB | **84.6 MB** | 84.6, 84.6, 84.9 | 538 MB (measured with the old store, B2w did not exist) | pass |
+| B3 | Idle CPU, daemon + desktop, 30 s | ≤ 0.5 % | **0.48 %** | 0.48, 0.43, 0.58 | 0.46 % | pass, at the limit |
+| B4a | Heeler path: key handled → frame with the echo submitted, p95 over 500 keys | ≤ 2 ms | **1.34 ms** | 1.17, 1.35, 1.34 | n/a (new) | pass |
+| B4b | On screen, p95 over 500 keys | ≤ 1 frame + 2 ms = 18.7 ms (60 Hz, read from the platform) | **18.50 ms** | 106.9*, 18.5, 18.0 | 18.0 ms (vs 16 ms) | pass, marginal (below) |
+| B5 | 200 MB+ flood: p95 key latency in a second terminal | ≤ 50 ms | **17.25 ms** | 17.25, 17.27, 17.21 | 16.9 ms | pass |
+| B5 | 200 MB+ flood: daemon RSS growth | ≤ 50 MB | **2.28 MB** | 2.30, 2.25, 2.28 | 13.6 MB | pass |
+| B6 | Cold start → first terminal paint with its prompt | ≤ 500 ms | **196 ms** | 179, 199, 196 | 213 ms | pass |
+
+\* the window was not being presented at the display rate during that run (see B4b below); the median is not affected, and the harness now repeats such runs (and fails instead of reporting them).
+
+A second complete run (`1792002157.json`) agrees on everything except B4b: B2 40.0 MB, B2w 84.9 MB, B4a 1.33 ms, B5 17.3 ms / 2.3 MB, B6 181 ms, B1 108.5 MB; B4b gave 18.90 ms and 18.59 ms in its two valid runs, i.e. a median **above** 18.7 ms (FAIL by 0.2 ms; the third run was spoiled and repeated 3 times, see below). B3 read 0.00 % there because the window was occluded. **B4b therefore passes or misses by a few tenths of a millisecond depending on the run**; it was not possible to produce a clean third full report (the session locked, `gpui_macos: could not create display link, code: -6661`).
 
 Other numbers behind the table (medians): B1 physical footprint 68.8 MB; daemon with the 10
 sessions before the desktop attached 208 MB; B3 desktop 0.46 %, daemon 0.00 %; B4 median latency
@@ -28,9 +36,7 @@ sessions before the desktop attached 208 MB; B3 desktop 0.46 %, daemon 0.00 %; B
 (ms after spawn): `main` 15, window opened 142, first frame 159, connected 171, first terminal text
 painted 213.
 
-`xtask bench` exits non-zero while a budget is missed, so the two misses below keep `just bench`
-red until they are fixed or the budgets are amended by ADR. The gate (`just check`) does not run
-it.
+`xtask bench` exits non-zero while a budget is missed. The gate (`just check`) does not run it.
 
 ## Method
 
@@ -40,15 +46,27 @@ scenario and run: creates a temporary `HEELER_HOME`, starts `heelerd`, seeds ses
 `desktop-state.json`, launches the desktop (the window appears, no screenshots), measures, and
 tears down. The report goes to `target/bench/<unix-time>.json` (all runs, every stage metric).
 
+- **B2w.** Same load as B2 (10 sessions × 12 000 coloured lines, 10 000-line scrollback) in 200×50
+  terminals with ~190-column lines, no client attached; daemon RSS after the sessions settle.
 - **B1/B2/B3 (one scenario).** 10 sessions each print 12 000 coloured 80-column lines (the
   10 000-line scrollback overflows) and idle in `cat`. Daemon RSS is sampled; the desktop opens a
   seeded 2×2 layout of 4 of them; after 10 s idle the desktop and daemon are sampled
   (`proc_pid_rusage`: resident size, physical footprint, user+system CPU time, idle wakeups), and
   again after 30 s. B3 is the CPU time delta of both processes over those 30 s.
-- **B4.** One `cat`-like session (`printf 'bench> '; exec cat`) in the only pane. The desktop types
+- **B4a / B4b.** One `cat`-like session (`printf 'bench> '; exec cat`) in the only pane. The desktop types
   500 keys at one key per 100 ms plus a deterministic 0–17 ms jitter (`HEELER_BENCH_INPUT`, below).
   Latency is the in-app trace: key event handled → first paint that follows the daemon frame
-  replacing the cursor row or moving the cursor. The jitter is needed: a strictly periodic injector
+  replacing the cursor row or moving the cursor. **B4b** is that whole latency. **B4a** is the same
+  minus the wait for the display tick (`echo_to_prepaint`): `key_to_sent + sent_to_echo +
+  (echo_to_paint − echo_to_prepaint)`, i.e. key handled → the frame with the echo is painted
+  (submitted to the renderer). B4b's limit is one display frame + 2 ms (ADR 0011): the desktop
+  reports `Window::refresh_interval` (GPUI's cached `maximumFramesPerSecond` of the screen the
+  window is on) in the `bench_start`/`bench_done` events, the report records it
+  (`b4_refresh_interval_ms`, `b4_refresh_hz`; 60 Hz = 16.67 ms on this run) and the run fails when it
+  is missing or changes during the run. A run whose window was inactive or not presented at the
+  display rate (median wait for the display tick > 3 frames: a locked, sleeping or occluded
+  display) is repeated up to 4 times and then fails the bench; `caffeinate -d -i` keeps the display
+  awake while the bench runs. The jitter is needed: a strictly periodic injector
   locks onto one phase of the display period and measures that phase for the whole run.
 - **B5.** Two panes: a typing session and a flooded one. The flood is six back-to-back
   `head -c 150000000 /dev/urandom | base64` (about 1.2 GB; a single 203 MB round takes only ~2 s
@@ -110,45 +128,31 @@ daemon included). Verified across three full runs: no stray `heelerd`/`heeler-de
 
 ## Misses
 
-### B2: daemon RSS 254.6 MB against 120 MB
+### B2: fixed by the compact scrollback store (ADR 0013)
 
-Root cause (measured): scrollback lives in `alacritty_terminal`'s grid, which stores every cell,
-blank or not, in 24 bytes. A 10 000-line history of an 80-column session costs
-10 000 × 80 × 24 B ≈ 19.2 MB; measured on a fresh daemon: 3.2 MB empty, then about 20.5 MB for each session printing 12 000 lines
-(`heeler new` ×4: 24.2, 44.5, 64.7, 85.2 MB).
-Ten sessions are 208 MB before any client attaches. Attaching the desktop adds 47 MB more because
-its panes are wider than 80 columns and the grid (history included) is reflowed to the pane width:
-the cost grows with terminal width (10 000 × 200 × 24 B = 48 MB per session at 200 columns, computed).
-The same rows as styled runs are tiny: the 10 000 history rows of this test encode to 2.0 runs and
-64 text bytes per row; at about 90 bytes per row in a compact binary encoding (estimate: text
-plus ~12 bytes of style per run) that is ~0.9 MB per session instead of 19.2 MB (about 20× less).
+Root cause (unchanged, measured earlier): `alacritty_terminal` stores every cell in 24 bytes, so a
+10 000-line history is 19.2 MB per session at 80 columns and 48 MB at 200. Fix: the engine keeps
+the viewport plus 256 history rows; older rows are spilled after every 2 KiB slice of output into a
+per-terminal packed store (text bytes, row index, style spans keyed by byte offset). Result: B2
+254.6 → 40.1 MB, B2w 84.6 MB (it was 538 MB with the old store). `b2_daemon_rss_detached_mb`
+(before the desktop attached) 37.8 MB; attaching no longer reflows the history, so the desktop adds
+only ~2 MB.
 
-Follow-up (needs an ADR amending 0004; not done here because it changes where scrollback lives, how
-it is reflowed on resize, and the exactness of the line bound): keep only a small hot window of
-history (≈ 1–2 screens beyond the viewport) in the engine and spill older rows into a compact
-per-terminal cold store (rows encoded as runs, newest-first indexing as today) that `terminal.history`
-reads through. Points the ADR must settle: spilling after every `feed` needs the engine's history
-cap to exceed the lines one read chunk can scroll (bounded by slicing the chunk); resize reflows the
-hot window only (cold rows keep their width; the client already renders rows of any width);
-`ESC[3J` and alternate-screen hiding apply to both parts. Acceptance: B2 ≤ 120 MB at 80 columns and
-≤ 150 MB at 200 columns, `just bench --only B2`.
+What was tried and rejected: spilling only after output pauses (cheaper during floods, but the
+engine then holds its whole history during every burst and the process keeps that memory resident:
+B2 218.9 MB, B2w 538 MB). macOS does not return freed small allocations to the resident set
+(`malloc_zone_pressure_relief` released nothing in a direct test), so the peak, not the idle
+live size, decides. Throughput of the mixed 200 MB `flood` example: 138 MB/s with the store vs
+154 MB/s before (release; peak RSS 14.9 vs 26.2 MiB).
 
-### B4: keystroke → glyph p95 18.0 ms against 16 ms
+### B4: split by ADR 0011
 
-Where the time goes (medians): key event → bytes sent 0.02 ms; sent → echo frame applied
-0.4 ms (p95 0.6); applied → start of the paint that shows it 9.2 ms (p95 16.3); paint itself
-≈ 0.5 ms. So everything except the wait for the display tick costs about 1 ms. The tick period
-observed while typing is ~17 ms, and an echo arrives at a uniformly random phase, so the p95 of
-the wait alone is ≈ 0.95 × 17 ms ≈ 16 ms before the paint is counted: with drawing locked to the
-display's vsync (GPUI on macOS draws only inside `CVDisplayLink` callbacks and has no on-demand
-frame path at the pinned revision), p95 ≤ 16 ms is not reachable at ~60 Hz. The median is
-10.1 ms, the maximum 22.8 ms. During the flood the same machine paints at ~80
-frames/s, so the cadence follows the display and load [INFERENCE: not investigated further].
-
-Follow-up: either amend the budget definition by ADR to "≤ one display frame + 1 ms at p95" (≈ 18 ms
-at 60 Hz, 11 ms at 100 Hz), or add an on-demand present path to the GPUI macOS platform layer
-(present the frame when the echo arrives instead of at the next tick); then rerun
-`just bench --only B4` on a 60 Hz and a ≥ 100 Hz display.
+Where the time goes (medians over the three runs): key event → bytes sent 0.02 ms; sent → echo
+applied 0.3–0.5 ms; applied → start of the paint 9–10 ms (waiting for the display tick); paint
+≈ 0.5 ms. B4a (Heeler path) is **1.3 ms p95**, well inside 2 ms. B4b is the display-tick wait on
+top: p95 ≈ one frame (16.7 ms) + ~1.3–2.2 ms, against a limit of one frame + 2 ms, so it sits on
+the limit: 18.0, 18.5, 18.6, 18.9 ms in the valid runs of two reports. Reducing it further needs
+the on-demand present path (roadmap backlog), not Heeler-side work.
 
 ### B3: passes, but at the limit
 

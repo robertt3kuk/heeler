@@ -28,6 +28,10 @@ use crate::stats::{median, percentile};
 const MIB: f64 = 1024.0 * 1024.0;
 /// Metric holding the refresh interval of the window's display (ms), read from the platform.
 const REFRESH_INTERVAL_MS: &str = "b4_refresh_interval_ms";
+/// 1.0 when a typing run's window was not presented at the display rate (see `typing`).
+const DISPLAY_STALLED: &str = "b4_display_stalled";
+/// Attempts per run of a scenario whose measurement the machine's display state can spoil.
+const MAX_ATTEMPTS: u32 = 4;
 
 /// A budget from `docs/vision.md` and the metric that decides it.
 #[derive(Debug, Clone, Copy)]
@@ -207,14 +211,38 @@ pub async fn run(options: Options) -> Result<()> {
     if options.sample {
         bins.sample_dir = Some(root.join("target/bench"));
     }
+    keep_display_awake();
     let machine = machine_info();
     let mut results: BTreeMap<&'static str, Vec<Metrics>> = BTreeMap::new();
     for scenario in scenarios {
         for run in 1..=options.runs {
-            eprintln!("== {} run {run}/{}", scenario.name(), options.runs);
-            let measured = tokio::select! {
-                result = run_scenario(scenario, &bins, options.key_interval_ms) => result?,
-                _ = tokio::signal::ctrl_c() => bail!("interrupted"),
+            let mut attempt = 1;
+            let measured = loop {
+                eprintln!(
+                    "== {} run {run}/{} (attempt {attempt})",
+                    scenario.name(),
+                    options.runs
+                );
+                let mut measured = tokio::select! {
+                    result = run_scenario(scenario, &bins, options.key_interval_ms) => result?,
+                    _ = tokio::signal::ctrl_c() => bail!("interrupted"),
+                };
+                let stalled = measured.get(DISPLAY_STALLED) == Some(&1.0);
+                if stalled {
+                    eprintln!(
+                        "the window was inactive or not presented at the display rate during this run (another app in front, occluded, display asleep?)"
+                    );
+                    if attempt >= MAX_ATTEMPTS {
+                        bail!(
+                            "{} run {run}: the window was not presented at the display rate in {MAX_ATTEMPTS} attempts; keep the bench window in front and the display awake",
+                            scenario.name()
+                        );
+                    }
+                    attempt += 1;
+                    continue;
+                }
+                measured.insert("attempts".into(), f64::from(attempt));
+                break measured;
             };
             results.entry(scenario.name()).or_default().push(measured);
         }
@@ -242,6 +270,19 @@ pub async fn run(options: Options) -> Result<()> {
         bail!("at least one budget missed");
     }
     Ok(())
+}
+
+/// Prevents display and idle sleep while the bench runs (`caffeinate -d -i -w <our pid>`: it
+/// exits when xtask does). A sleeping display has no display link, which spoils every latency
+/// scenario (GPUI fails with `could not create display link`). Best effort: without
+/// `caffeinate` (not macOS) the bench runs as it did.
+fn keep_display_awake() {
+    let _ = Command::new("caffeinate")
+        .args(["-d", "-i", "-w", &std::process::id().to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn unix_secs() -> u64 {
@@ -913,6 +954,14 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
     let interval_ms = display_refresh_interval_ms(&events)?;
     metrics.insert(REFRESH_INTERVAL_MS.into(), interval_ms);
     metrics.insert("b4_refresh_hz".into(), 1000.0 / interval_ms);
+    // A window that is not being presented (inactive, occluded, on a sleeping display) paints only
+    // when something else wakes it, e.g. the next key, so the echo waits ~a key interval for its
+    // paint instead of one tick. Such a run measures the machine, not Heeler: the harness repeats
+    // it, and fails rather than reporting it.
+    let waits = key_stage_ms(&events, "echo_to_prepaint_us", None);
+    let stalled = metrics.get("b4_window_active") != Some(&1.0)
+        || percentile(&waits, 50.0).is_some_and(|p50| p50 > 3.0 * interval_ms);
+    metrics.insert(DISPLAY_STALLED.into(), f64::from(u8::from(stalled)));
     Ok(metrics)
 }
 
