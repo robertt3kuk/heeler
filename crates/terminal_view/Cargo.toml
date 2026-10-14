@@ -1,0 +1,36 @@
+[package]
+name = "heeler-terminal-view"
+description = "Heeler GPUI terminal view: draws the daemon's render stream, encodes keyboard and mouse input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "heeler_terminal_view"
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+heeler-protocol.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+heeler-client.workspace = true
+heeler-core.workspace = true
+heeler-daemon.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_apple.workspace = true
+
+[[example]]
+name = "attach"
+path = "examples/attach.rs"
+
+[lints]
+workspace = true

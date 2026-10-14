@@ -44,6 +44,8 @@ vt100 = "0.16.2"
 alacritty_terminal = "=0.26.0"
 portable-pty = "=0.9.0"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false }
+# Only for terminal_view's real-font shaping test (macOS text system without a window/main thread).
+gpui_apple = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false, features = ["font-kit", "runtime_shaders"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "ef376006f32728b15e6a67706a04849cb781c812", default-features = false, features = ["font-kit", "runtime_shaders"] }
 
 [workspace.lints.rust]
