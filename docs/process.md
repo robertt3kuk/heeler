@@ -100,7 +100,7 @@ Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract chang
 
 ## Branching and commits
 
-- Trunk-based on `master`; short-lived `slice/<id>` branches; rebase before merge; `master` always passes the gate.
+- Trunk-based on `master`; short-lived `slice/<id>` branches; rebase before merge; `master` always passes the gate. Remote: `origin` = <https://github.com/robertt3kuk/heeler> (public). Push `master` after each merge + status update; slice branches stay local.
 - Conventional commits; scope = crate name or `docs`, `adr`, `ci`.
 - No commits of spike code, secrets, recorded transcripts with tokens.
 
