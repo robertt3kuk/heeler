@@ -40,22 +40,22 @@ pub enum Request {
     WorkspaceRename(WorkspaceRename),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceRef),
-    /// Capability `workspace.projects` (protocol 0.7): the workspace for a folder.
+    /// Capability `workspace.projects` (protocol 0.6): the workspace for a folder.
     #[serde(rename = "workspace.open")]
     WorkspaceOpen(WorkspaceOpen),
-    /// Capability `workspace.projects` (protocol 0.7).
+    /// Capability `workspace.projects` (protocol 0.6).
     #[serde(rename = "workspace.add_root")]
     WorkspaceAddRoot(WorkspaceRoot),
-    /// Capability `workspace.projects` (protocol 0.7).
+    /// Capability `workspace.projects` (protocol 0.6).
     #[serde(rename = "workspace.remove_root")]
     WorkspaceRemoveRoot(WorkspaceRoot),
-    /// Capability `workspace.projects` (protocol 0.7): open and remembered projects.
+    /// Capability `workspace.projects` (protocol 0.6): open and remembered projects.
     #[serde(rename = "workspace.recent")]
     WorkspaceRecent(WorkspaceRecent),
-    /// Capability `workspace.projects` (protocol 0.7): manual order.
+    /// Capability `workspace.projects` (protocol 0.6): manual order.
     #[serde(rename = "workspace.move")]
     WorkspaceMove(WorkspaceMove),
-    /// Capability `workspace.projects` (protocol 0.7).
+    /// Capability `workspace.projects` (protocol 0.6).
     #[serde(rename = "workspace.pin")]
     WorkspacePin(WorkspacePin),
     #[serde(rename = "session.create")]
@@ -164,12 +164,12 @@ pub struct WorkspaceCreate {
     pub name: String,
     #[serde(default)]
     pub roots: Vec<PathBuf>,
-    /// Who asks (protocol 0.7); absent means `user`.
+    /// Who asks (protocol 0.6); absent means `user`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<CreatedBy>,
 }
 
-/// Who created a workspace (protocol 0.7). `agent` is for programmatic callers acting for a
+/// Who created a workspace (protocol 0.6). `agent` is for programmatic callers acting for a
 /// coding agent; the daemon records what the request says and does not verify it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,7 +180,7 @@ pub enum CreatedBy {
     Agent,
 }
 
-/// What a workspace is (protocol 0.7). Exactly one workspace is `home`.
+/// What a workspace is (protocol 0.6). Exactly one workspace is `home`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -189,7 +189,7 @@ pub enum WorkspaceKind {
     Project,
 }
 
-/// `workspace.open` (protocol 0.7): finds the workspace one of whose roots contains `path`, or
+/// `workspace.open` (protocol 0.6): finds the workspace one of whose roots contains `path`, or
 /// creates one for the folder (its git repository root when inside a repository).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceOpen {
@@ -208,14 +208,14 @@ pub struct WorkspaceOpened {
     pub created: bool,
 }
 
-/// `workspace.add_root` / `workspace.remove_root` (protocol 0.7).
+/// `workspace.add_root` / `workspace.remove_root` (protocol 0.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRoot {
     pub workspace_id: WorkspaceId,
     pub path: PathBuf,
 }
 
-/// `workspace.recent` (protocol 0.7).
+/// `workspace.recent` (protocol 0.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct WorkspaceRecent {
     /// At most [`RECENT_PROJECTS_MAX_LIMIT`] are answered; absent means
@@ -245,7 +245,7 @@ pub struct RecentProjects {
     pub projects: Vec<RecentProject>,
 }
 
-/// `workspace.move` (protocol 0.7).
+/// `workspace.move` (protocol 0.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMove {
     pub workspace_id: WorkspaceId,
@@ -254,7 +254,7 @@ pub struct WorkspaceMove {
     pub before: Option<WorkspaceId>,
 }
 
-/// `workspace.pin` (protocol 0.7).
+/// `workspace.pin` (protocol 0.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspacePin {
     pub workspace_id: WorkspaceId,
@@ -477,7 +477,7 @@ pub struct WorkspaceInfo {
     pub id: WorkspaceId,
     pub name: String,
     pub roots: Vec<PathBuf>,
-    /// Protocol 0.7 (capability `workspace.projects`); the fields below default for older
+    /// Protocol 0.6 (capability `workspace.projects`); the fields below default for older
     /// daemons.
     #[serde(default)]
     pub kind: WorkspaceKind,

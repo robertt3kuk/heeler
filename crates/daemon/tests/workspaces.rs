@@ -1,4 +1,4 @@
-//! Projects and workspaces (roadmap M12-A, protocol 0.7): Home, `workspace.open` with path
+//! Projects and workspaces (roadmap M12-A, protocol 0.6): Home, `workspace.open` with path
 //! dedupe and git-root detection, roots, recent projects, order and pins, activity, and what
 //! survives a daemon restart. The daemon runs in-process on a temporary `HEELER_HOME`; every
 //! folder lives in a temporary directory.

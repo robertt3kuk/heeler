@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.7
+# Heeler IPC Protocol — v0.6
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.7 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`. 0.6 — projects and workspaces (capability `workspace.projects`): `workspace.open`, `.add_root`, `.remove_root`, `.recent`, `.move`, `.pin`; `WorkspaceInfo` gains `kind`, `pinned`, `position`, `created_by`, `last_active_ms`, `live_sessions`, `total_sessions`; `workspace.create` gains `created_by`.
 
 ## Frames
 
@@ -157,7 +157,7 @@ Block { id, prompt_line, command_line?, output_start?, end_line?, command?, exit
 - `terminal.block_text` answers plain text: soft-wrapped rows joined, trailing spaces and trailing empty lines removed, lines separated by `\n`, the first `max_bytes` bytes (clamped to 512 KiB, cut on a character boundary). `truncated` is true when the text was cut or its first lines were evicted/erased. `command` is the stored text; `output` of a running block reaches the cursor's row. Unknown block (or dropped from the 2 000) → `not_found`; `output` while the alternate screen shows → `invalid_state` (the primary rows are out of reach; `command` still works).
 - `terminal.block` carries the whole block after every change, in the order the changes happened, once for: the prompt start (`A`), its input line becoming known (`B`), the command starting (`C`), finishing (`D` or the next `A`), and each block that became `truncated`. Delivery is the usual bus (seq, replay ring); a client that missed events refetches with `terminal.blocks`.
 
-## Projects and workspaces (protocol 0.7, capability `workspace.projects`)
+## Projects and workspaces (protocol 0.6, capability `workspace.projects`)
 
 M12-A; `crates/daemon/src/{registry,projects,config}.rs`, `crates/storage` (schema v2: `workspaces.kind|pinned|created_by|last_active_ms`, table `recent_projects`).
 
