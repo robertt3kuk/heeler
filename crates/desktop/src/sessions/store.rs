@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity, Task, WeakEntity};
 use heeler_client::{Connection, ConnectionState, Notice, StoreState};
-use heeler_core::{SessionId, TerminalId, WorkspaceId};
+use heeler_core::agent::ModelInfo;
+use heeler_core::{ApprovalId, SessionId, TerminalId, WorkspaceId};
+use heeler_protocol::chat::{ApprovalInfo, ChatCreate};
 use heeler_protocol::messages::{
     RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
     SessionResult, SessionSpec, TerminalSpec, WorkspaceInfo, WorkspaceKind, WorkspaceMove,
@@ -45,6 +47,9 @@ pub struct SessionsStore {
     connected_since: Option<Instant>,
     /// The user stopped the daemon from the app; attached terminals say so.
     daemon_stopped: bool,
+    /// Permission requests this window answered, and with which option (the cards say
+    /// "answered here" for them, "answered elsewhere" for the rest).
+    answered: HashMap<ApprovalId, String>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -112,6 +117,7 @@ impl SessionsStore {
             colors: None,
             connected_since: None,
             daemon_stopped: false,
+            answered: HashMap::new(),
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -312,6 +318,45 @@ impl SessionsStore {
         self.focused
     }
 
+    // ---- approvals -------------------------------------------------------------------------
+
+    /// Permission requests of every agent chat waiting for an answer, oldest first.
+    pub fn approvals(&self) -> &[ApprovalInfo] {
+        &self.state.approvals
+    }
+
+    /// The option this window chose for `approval`, if it answered it.
+    pub fn answered_here(&self, approval: ApprovalId) -> Option<&str> {
+        self.answered.get(&approval).map(String::as_str)
+    }
+
+    /// `approval.respond`. The answer is remembered before the daemon replies (the resolved
+    /// event can overtake the reply) and forgotten again when the daemon refuses it.
+    pub fn respond_approval(
+        &mut self,
+        approval: ApprovalId,
+        option_id: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        self.answered.insert(approval, option_id.clone());
+        cx.notify();
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let answered = connection
+                .approve(approval, option_id)
+                .await
+                .map_err(|e| e.to_string());
+            if answered.is_err() {
+                this.update(cx, |this, cx| {
+                    this.answered.remove(&approval);
+                    cx.notify();
+                })
+                .ok();
+            }
+            answered
+        })
+    }
+
     /// The session that had focus most recently (still the focused one while it has focus).
     pub fn last_focused(&self) -> Option<SessionId> {
         self.focused.or(self.last_focused)
@@ -432,6 +477,47 @@ impl SessionsStore {
             spec: SessionSpec::Terminal(spec),
         });
         self.run(request, cx)
+    }
+
+    /// `chat.create`: starts an agent conversation as a session (resolves once the agent is
+    /// ready).
+    pub fn create_chat(
+        &mut self,
+        request: ChatCreate,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SessionInfo, String>> {
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let info = connection
+                .chat_create(request)
+                .await
+                .map_err(|e| e.to_string())?;
+            let remembered = info.clone();
+            this.update(cx, |this, _| {
+                if !this.state.sessions.iter().any(|s| s.id == remembered.id) {
+                    this.recent.insert(remembered.id, remembered);
+                }
+            })
+            .ok();
+            Ok(info)
+        })
+    }
+
+    /// `chat.models`: what `agent` offers.
+    pub fn chat_models(
+        &mut self,
+        agent: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<ModelInfo>, String>> {
+        let connection = self.connection.clone();
+        let agent = agent.to_owned();
+        cx.spawn(async move |_, _| {
+            connection
+                .chat_models(&agent)
+                .await
+                .map(|answer| answer.models)
+                .map_err(|e| e.to_string())
+        })
     }
 
     pub fn stop(

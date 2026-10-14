@@ -1,0 +1,1537 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
+//! The agent chat view (M4-B) against an in-process daemon whose `codex app-server` is
+//! `heeler-codex-fixture replay` over the transcripts recorded for M4-A: a new chat, sending,
+//! streamed text, command and file-change cards, approvals (answered here and from another
+//! client), reconnecting mid-turn, interrupting, and "Send to agent".
+
+mod common;
+
+use std::time::Duration;
+
+use common::chat::{ChatEnv, method, says};
+use common::{TestDaemon, draw, open_with, wait_until};
+use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use heeler_chat_view::{ApprovalState, Body, TurnOutcome};
+use heeler_core::agent::ToolStatus;
+use heeler_core::{ApprovalId, SessionId, SessionState};
+use heeler_desktop::workbench::chat::{ChatModel, ChatView, LoadStatus};
+use heeler_desktop::workbench::{Region, Workbench};
+use heeler_protocol::chat::{ApprovalInfo, ApprovalRespond};
+use heeler_protocol::messages::{Empty, Request, SessionRef};
+use heeler_settings::{SettingsPaths, SettingsStore};
+use serde_json::{Value, json};
+
+fn open<'a>(
+    cx: &'a mut TestAppContext,
+    daemon: &TestDaemon,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    open_connected(cx, daemon, daemon.connection())
+}
+
+fn open_connected<'a>(
+    cx: &'a mut TestAppContext,
+    daemon: &TestDaemon,
+    connection: heeler_client::Connection,
+) -> (Entity<Workbench>, &'a mut VisualTestContext) {
+    let (view, cx) = open_with(
+        cx,
+        SettingsStore::new(SettingsPaths::in_dir(daemon.home())),
+        connection,
+        None,
+    );
+    wait_until(cx, "the first synchronisation", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).synced() && wb.active_workspace().is_some()
+        })
+    });
+    (view, cx)
+}
+
+/// Shows the chat of `session` in the focused pane and waits until its journal is loaded.
+fn open_chat(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    session: SessionId,
+) -> (Entity<ChatView>, Entity<ChatModel>) {
+    view.update_in(cx, |wb, window, cx| wb.open_session(session, window, cx));
+    wait_until(cx, "the chat to load", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.chat_model_of(session)
+                .is_some_and(|m| *m.read(cx).status() == LoadStatus::Ready)
+                && wb.chat_view_of(session).is_some()
+        })
+    });
+    let chat = view
+        .read_with(cx, |wb, _| wb.chat_view_of(session))
+        .unwrap();
+    let model = view
+        .read_with(cx, |wb, _| wb.chat_model_of(session))
+        .unwrap();
+    (chat, model)
+}
+
+fn region(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    region: Region,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    view.read_with(cx, |wb, _| wb.region_bounds(region))
+}
+
+fn click(view: &Entity<Workbench>, cx: &mut VisualTestContext, what: Region) {
+    wait_until(cx, &format!("{what:?} to be drawn"), |cx| {
+        region(view, cx, what).is_some()
+    });
+    let bounds = region(view, cx, what).unwrap();
+    cx.simulate_click(bounds.center(), Modifiers::none());
+}
+
+/// Types `text` into the focused composer and sends it with ⌘↩.
+fn say(cx: &mut VisualTestContext, text: &str) {
+    cx.simulate_input(text);
+    cx.simulate_keystrokes("cmd-enter");
+}
+
+fn transcript<T>(
+    model: &Entity<ChatModel>,
+    cx: &VisualTestContext,
+    f: impl FnOnce(&heeler_chat_view::Transcript) -> T,
+) -> T {
+    model.read_with(cx, |m, _| f(m.transcript()))
+}
+
+fn count(model: &Entity<ChatModel>, cx: &VisualTestContext, which: fn(&Body) -> bool) -> usize {
+    transcript(model, cx, |t| {
+        t.entries().iter().filter(|e| which(&e.body)).count()
+    })
+}
+
+fn is_user(body: &Body) -> bool {
+    matches!(body, Body::User(_))
+}
+fn is_assistant(body: &Body) -> bool {
+    matches!(body, Body::Assistant(_))
+}
+fn is_tool(body: &Body) -> bool {
+    matches!(body, Body::Tool(_))
+}
+fn is_footer(body: &Body) -> bool {
+    matches!(body, Body::Footer(_))
+}
+
+fn assistant_texts(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<String> {
+    transcript(model, cx, |t| {
+        t.entries()
+            .iter()
+            .filter_map(|e| match &e.body {
+                Body::Assistant(m) => Some(m.text.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+fn pending(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<(ApprovalId, String)> {
+    transcript(model, cx, |t| {
+        t.pending_approvals()
+            .iter()
+            .map(|a| (a.id, a.title.clone()))
+            .collect()
+    })
+}
+
+fn pump(
+    cx: &mut VisualTestContext,
+    what: &str,
+    mut condition: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    wait_until(cx, what, |cx| {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        condition(cx)
+    });
+}
+
+fn session_state(daemon: &TestDaemon, id: SessionId) -> SessionState {
+    let list: heeler_protocol::messages::SessionList =
+        daemon.call(Request::SessionList(Default::default()));
+    list.sessions
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .state
+}
+
+fn pending_on_daemon(daemon: &TestDaemon) -> Vec<ApprovalInfo> {
+    let list: heeler_protocol::chat::ApprovalList = daemon.call(Request::ApprovalList(
+        heeler_protocol::chat::ApprovalListRequest::default(),
+    ));
+    list.approvals
+}
+
+// ---- send, stream, interrupt ----------------------------------------------------------------
+
+#[gpui::test]
+fn a_message_is_sent_streams_and_ends_with_a_footer(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+
+    // The chat has the keyboard focus: typing goes to the composer.
+    assert!(cx.update(|window, cx| chat.read(cx).focus_handle_is_focused(window)));
+    cx.simulate_input("Reply with the single word pong and nothing else.");
+    assert_eq!(
+        model.read_with(cx, |m, _| m.input().text().to_owned()),
+        "Reply with the single word pong and nothing else."
+    );
+    assert!(chat.read_with(cx, |c, cx| c.can_send(cx)));
+    cx.simulate_keystrokes("cmd-enter");
+    assert!(
+        model.read_with(cx, |m, _| m.input().is_empty()),
+        "the composer empties on send"
+    );
+
+    pump(cx, "the answer and the footer", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    assert_eq!(assistant_texts(&model, cx), ["pong"]);
+    assert_eq!(count(&model, cx, is_user), 1);
+    transcript(&model, cx, |t| {
+        let Body::User(user) = &t.entries()[0].body else {
+            panic!("the user's message comes first: {:?}", t.entries()[0].body);
+        };
+        assert_eq!(
+            user.text,
+            "Reply with the single word pong and nothing else."
+        );
+        let footer = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Footer(f) => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(footer.outcome, TurnOutcome::Completed);
+        assert!(
+            footer.usage.is_some_and(|u| u.total_tokens.is_some()),
+            "the footer says what the turn used"
+        );
+    });
+    // The drawn list shows the entries.
+    draw(cx);
+    for index in 0..3 {
+        assert!(
+            region(&view, cx, Region::ChatEntry(index)).is_some(),
+            "entry {index} is drawn"
+        );
+    }
+    assert_eq!(
+        env.sent_texts(),
+        ["Reply with the single word pong and nothing else."]
+    );
+    // The session is idle again and Send is offered.
+    pump(cx, "the session to be idle", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .session(info.id)
+                .is_some_and(|s| s.state == SessionState::Idle)
+        })
+    });
+    draw(cx);
+    assert!(region(&view, cx, Region::Chat("send")).is_some());
+    assert!(region(&view, cx, Region::Chat("interrupt")).is_none());
+}
+
+#[gpui::test]
+fn the_interrupt_button_stops_a_turn_that_streams(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("interrupt"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+    say(
+        cx,
+        "Write the numbers from 1 to 300, one per line, no other text.",
+    );
+
+    // The text so far is on screen while the turn runs.
+    pump(cx, "streamed text", |cx| {
+        assistant_texts(&model, cx)
+            .first()
+            .is_some_and(|t| t.starts_with("1\n2"))
+    });
+    pump(cx, "the interrupt button", |cx| {
+        draw(cx);
+        region(&view, cx, Region::Chat("interrupt")).is_some()
+    });
+    assert!(
+        region(&view, cx, Region::Chat("send")).is_none(),
+        "no Send while a turn runs"
+    );
+    assert!(transcript(&model, cx, |t| t.turn_active()));
+    assert!(!chat.read_with(cx, |c, cx| c.can_send(cx)));
+    // Typing is still possible; ⌘↩ does nothing while the turn runs.
+    cx.simulate_input("next");
+    cx.simulate_keystrokes("cmd-enter");
+    assert_eq!(
+        model.read_with(cx, |m, _| m.input().text().to_owned()),
+        "next"
+    );
+    assert!(env.sent_texts().len() == 1);
+
+    click(&view, cx, Region::Chat("interrupt"));
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    transcript(&model, cx, |t| {
+        assert!(matches!(
+            &t.entries().last().unwrap().body,
+            Body::Footer(f) if f.outcome == TurnOutcome::Cancelled
+        ));
+        assert!(!t.turn_active());
+    });
+    assert!(
+        env.received().iter().any(|(m, _)| m == "turn/interrupt"),
+        "{:?}",
+        env.received()
+    );
+    pump(cx, "Send to come back", |cx| {
+        draw(cx);
+        region(&view, cx, Region::Chat("send")).is_some()
+            && region(&view, cx, Region::Chat("interrupt")).is_none()
+    });
+}
+
+#[gpui::test]
+fn the_interrupt_key_stops_the_turn_too(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("interrupt"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "count");
+    pump(cx, "the turn to run", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .session(info.id)
+                .and_then(|s| s.chat.as_ref().map(|c| c.turn_active))
+                == Some(true)
+        })
+    });
+    cx.simulate_keystrokes("cmd-.");
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+}
+
+// ---- cards ----------------------------------------------------------------------------------
+
+/// `approval-touch` without the approval: the command runs, streams output and exits 0.
+fn command_with_output(env: &ChatEnv) -> heeler_agents::CodexConfig {
+    env.edited("approval-touch", |entries| {
+        let ids = entries
+            .iter()
+            .find(|e| {
+                method(e) == Some("item/started")
+                    && e["msg"]["params"]["item"]["type"] == "commandExecution"
+            })
+            .map(|e| {
+                (
+                    e["msg"]["params"]["threadId"].clone(),
+                    e["msg"]["params"]["turnId"].clone(),
+                    e["msg"]["params"]["item"]["id"].clone(),
+                )
+            })
+            .unwrap();
+        entries.retain(|e| {
+            let is_request = method(e) == Some("item/commandExecution/requestApproval");
+            let is_resolved = method(e) == Some("serverRequest/resolved");
+            // The client's answer to the request: a response, no method.
+            let is_answer = e["dir"] == "out" && e["msg"].get("method").is_none();
+            !(is_request || is_resolved || is_answer)
+        });
+        let at = entries
+            .iter()
+            .position(|e| {
+                method(e) == Some("item/completed")
+                    && e["msg"]["params"]["item"]["type"] == "commandExecution"
+            })
+            .unwrap();
+        entries[at]["msg"]["params"]["item"]["aggregatedOutput"] = json!("hello\nworld\n");
+        entries[at]["msg"]["params"]["item"]["exitCode"] = json!(0);
+        entries[at]["msg"]["params"]["item"]["durationMs"] = json!(12);
+        let delta = |text: &str| {
+            says(json!({
+                "method": "item/commandExecution/outputDelta",
+                "params": {"threadId": ids.0, "turnId": ids.1, "itemId": ids.2, "delta": text}
+            }))
+        };
+        entries.insert(at, delta("world\n"));
+        entries.insert(at, delta("hello\n"));
+    })
+}
+
+#[gpui::test]
+fn a_command_card_shows_the_command_its_directory_and_output(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(command_with_output(&env));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(
+        cx,
+        "Run `touch hi.txt` in a shell, then reply with the word done.",
+    );
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+
+    assert_eq!(count(&model, cx, is_tool), 1);
+    transcript(&model, cx, |t| {
+        let tool = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(tool.command(), "/bin/zsh -lc 'touch hi.txt'");
+        assert_eq!(tool.cwd(), Some("/tmp/heeler-fixture"));
+        assert_eq!(tool.status, Some(ToolStatus::Completed));
+        assert_eq!(tool.exit_code, Some(0));
+        assert_eq!(tool.output, "hello\nworld\n");
+        assert!(tool.approvals.is_empty());
+    });
+    assert_eq!(
+        assistant_texts(&model, cx),
+        ["I\u{2019}ll run `touch hi.txt` in the shell.", "done"]
+    );
+    draw(cx);
+    // The card is on screen: the command, its status and the toggle.
+    let tool_ix = transcript(&model, cx, |t| {
+        t.entries().iter().position(|e| is_tool(&e.body)).unwrap()
+    });
+    assert!(region(&view, cx, Region::ChatEntry(tool_ix)).is_some());
+    assert!(region(&view, cx, Region::ChatPart(tool_ix, 0)).is_some());
+    // The inline Markdown of the assistant's text: the card list drew every entry.
+    assert!(region(&view, cx, Region::ChatEntry(tool_ix + 1)).is_some());
+}
+
+#[gpui::test]
+fn a_command_card_expands_and_collapses_its_output(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let many = env.edited("approval-touch", |entries| {
+        entries.retain(|e| {
+            method(e) != Some("item/commandExecution/requestApproval")
+                && method(e) != Some("serverRequest/resolved")
+                && !(e["dir"] == "out" && e["msg"].get("method").is_none())
+        });
+        let at = entries
+            .iter()
+            .position(|e| {
+                method(e) == Some("item/completed")
+                    && e["msg"]["params"]["item"]["type"] == "commandExecution"
+            })
+            .unwrap();
+        let output: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+        entries[at]["msg"]["params"]["item"]["aggregatedOutput"] = json!(output);
+        entries[at]["msg"]["params"]["item"]["exitCode"] = json!(1);
+    });
+    let daemon = TestDaemon::start_with_codex(many);
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    let ix = transcript(&model, cx, |t| {
+        t.entries().iter().position(|e| is_tool(&e.body)).unwrap()
+    });
+    pump(cx, "the card", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(ix)).is_some()
+    });
+    let collapsed = region(&view, cx, Region::ChatEntry(ix))
+        .unwrap()
+        .size
+        .height;
+    click(&view, cx, Region::ChatPart(ix, 0));
+    pump(cx, "the output to be shown whole", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(ix)).is_some_and(|b| b.size.height > collapsed)
+    });
+    click(&view, cx, Region::ChatPart(ix, 0));
+    pump(cx, "the output to collapse again", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(ix)).is_some_and(|b| b.size.height <= collapsed)
+    });
+}
+
+/// `plain-turn` with the assistant's answer replaced by `text`.
+fn answering(env: &ChatEnv, text: &'static str) -> heeler_agents::CodexConfig {
+    env.edited("plain-turn", |entries| {
+        for entry in entries.iter_mut() {
+            if method(entry) == Some("item/completed")
+                && entry["msg"]["params"]["item"]["type"] == "agentMessage"
+            {
+                entry["msg"]["params"]["item"]["text"] = json!(text);
+            }
+        }
+    })
+}
+
+#[gpui::test]
+fn markdown_messages_get_a_code_block_with_a_copy_button(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let answer = "Here is **bold** and `code`:\n\n```sh\nls -la\n```\n\n- one\n- two\n\nSee [the docs](https://example.com).";
+    let daemon = TestDaemon::start_with_codex(answering(&env, answer));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "show me");
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    assert_eq!(assistant_texts(&model, cx), [answer]);
+    pump(cx, "the copy button", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatCopy(1, 0)).is_some()
+    });
+    assert!(
+        region(&view, cx, Region::ChatCopy(1, 1)).is_none(),
+        "one code block"
+    );
+    click(&view, cx, Region::ChatCopy(1, 0));
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some("ls -la")
+    );
+}
+
+#[gpui::test]
+fn reasoning_plans_and_warnings_are_cards_of_their_own(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let config = env.edited("plain-turn", |entries| {
+        let at = entries
+            .iter()
+            .position(|e| method(e) == Some("turn/started"))
+            .unwrap()
+            + 1;
+        let started = &entries[at - 1]["msg"]["params"];
+        let (thread, turn) = (started["threadId"].clone(), started["turn"]["id"].clone());
+        let item = |kind: &str, summary: Vec<&str>| {
+            json!({"type": "reasoning", "id": "rs_1", "summary": summary, "content": [], "kind": kind})
+        };
+        let inserted = vec![
+            says(json!({"method": "item/started", "params": {"item": item("start", vec![]), "threadId": thread, "turnId": turn}})),
+            says(json!({"method": "item/reasoning/summaryTextDelta", "params": {"threadId": thread, "turnId": turn, "itemId": "rs_1", "delta": "Check"}})),
+            says(json!({"method": "item/completed", "params": {"item": item("end", vec!["Check the plan"]), "threadId": thread, "turnId": turn}})),
+            says(json!({"method": "turn/plan/updated", "params": {"threadId": thread, "turnId": turn, "explanation": "two steps", "plan": [{"step": "read", "status": "completed"}, {"step": "write", "status": "inProgress"}]}})),
+            says(json!({"method": "warning", "params": {"message": "careful now"}})),
+        ];
+        for (offset, entry) in inserted.into_iter().enumerate() {
+            entries.insert(at + offset, entry);
+        }
+    });
+    let daemon = TestDaemon::start_with_codex(config);
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    transcript(&model, cx, |t| {
+        let reasoning = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Reasoning(r) => Some(r),
+                _ => None,
+            })
+            .expect("a reasoning entry");
+        assert!(reasoning.done);
+        assert_eq!(reasoning.summary, "Check the plan");
+        let plan = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Plan(p) => Some(p),
+                _ => None,
+            })
+            .expect("a plan entry");
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.explanation.as_deref(), Some("two steps"));
+        assert!(t.entries().iter().any(|e| matches!(
+            &e.body,
+            Body::Notice { message, .. } if message == "careful now"
+        )));
+    });
+    let reasoning_ix = transcript(&model, cx, |t| {
+        t.entries()
+            .iter()
+            .position(|e| matches!(e.body, Body::Reasoning(_)))
+            .unwrap()
+    });
+    // Reasoning starts folded; its header opens it.
+    pump(cx, "the reasoning card", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(reasoning_ix)).is_some()
+    });
+    let folded = region(&view, cx, Region::ChatEntry(reasoning_ix))
+        .unwrap()
+        .size
+        .height;
+    click(&view, cx, Region::ChatPart(reasoning_ix, 0));
+    pump(cx, "the summary to show", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(reasoning_ix)).is_some_and(|b| b.size.height > folded)
+    });
+}
+
+#[gpui::test]
+fn a_failed_turn_ends_with_its_error_and_the_chat_stays_usable(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("turn-failed"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "this will fail");
+    pump(cx, "the turn to fail", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    transcript(&model, cx, |t| {
+        let footer = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Footer(f) => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            matches!(&footer.outcome, TurnOutcome::Failed { message, .. } if !message.is_empty())
+        );
+        assert!(!t.turn_active());
+    });
+    pump(cx, "the session to be idle again", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .session(info.id)
+                .is_some_and(|s| s.state == SessionState::Idle)
+        })
+    });
+    cx.simulate_input("again");
+    assert!(chat.read_with(cx, |c, cx| c.can_send(cx)));
+}
+
+// ---- approvals ------------------------------------------------------------------------------
+
+#[gpui::test]
+fn an_approval_card_answers_through_the_daemon_and_resolves(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(
+        cx,
+        "Run `touch hi.txt` in a shell, then reply with the word done.",
+    );
+
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    let (approval, title) = pending(&model, cx).remove(0);
+    assert_eq!(title, "/bin/zsh -lc 'touch hi.txt'");
+    // The request sits on its tool's card, not in an entry of its own.
+    transcript(&model, cx, |t| {
+        let tool = t
+            .entries()
+            .iter()
+            .find_map(|e| match &e.body {
+                Body::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(tool.approvals, [approval]);
+        let options: Vec<_> = t
+            .approval(approval)
+            .unwrap()
+            .options
+            .iter()
+            .map(|o| o.id.as_str())
+            .collect();
+        assert_eq!(options.first(), Some(&"accept"));
+        assert_eq!(options.last(), Some(&"cancel"));
+    });
+    // Global surfacing: the session is blocked, the status bar counts it, the store lists it.
+    pump(cx, "the session to be blocked", |cx| {
+        view.read_with(cx, |wb, cx| {
+            let store = wb.sessions().read(cx);
+            store.approvals().len() == 1
+                && store
+                    .session(info.id)
+                    .is_some_and(|s| store.presentation(s).label == "blocked")
+        })
+    });
+    view.read_with(cx, |wb, cx| {
+        let store = wb.sessions().read(cx);
+        assert_eq!(store.needs_you(), [info.id]);
+        let presentation = store.presentation(store.session(info.id).unwrap());
+        assert!(presentation.needs_you);
+    });
+    draw(cx);
+    assert!(
+        region(&view, cx, Region::StatusItem("approvals"))
+            .is_some_and(|b| b.size.width > gpui::px(10.0)),
+        "the status bar counts the request"
+    );
+    assert!(region(&view, cx, Region::ChatOption(0)).is_some());
+    assert!(region(&view, cx, Region::ChatOption(2)).is_some());
+    assert!(
+        region(&view, cx, Region::ChatOption(3)).is_none(),
+        "three options offered"
+    );
+
+    // Nothing reached the agent yet.
+    assert!(!env.received().iter().any(|(m, _)| m == "response"));
+    click(&view, cx, Region::ChatOption(0));
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    transcript(&model, cx, |t| {
+        let approval = t.approval(approval).unwrap();
+        assert_eq!(
+            approval.state,
+            ApprovalState::Selected {
+                option_id: "accept".into()
+            }
+        );
+    });
+    // The daemon passed exactly the chosen decision on.
+    let answers: Vec<Value> = env
+        .received()
+        .into_iter()
+        .filter(|(m, _)| m == "response")
+        .map(|(_, msg)| msg["result"].clone())
+        .collect();
+    assert_eq!(answers, [json!({"decision": "accept"})]);
+    view.read_with(cx, |wb, cx| {
+        assert_eq!(
+            wb.sessions().read(cx).answered_here(approval),
+            Some("accept"),
+            "this window remembers it answered"
+        );
+    });
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    assert_eq!(
+        assistant_texts(&model, cx).last().map(String::as_str),
+        Some("done")
+    );
+    view.read_with(cx, |wb, cx| {
+        assert!(wb.sessions().read(cx).approvals().is_empty());
+        assert!(wb.sessions().read(cx).needs_you().is_empty());
+    });
+}
+
+#[gpui::test]
+fn the_number_keys_answer_the_oldest_request(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    // A draft in the composer keeps the digit (it is text then).
+    cx.simulate_input("a");
+    cx.simulate_keystrokes("1");
+    assert_eq!(
+        model.read_with(cx, |m, _| m.input().text().to_owned()),
+        "a1"
+    );
+    assert_eq!(pending(&model, cx).len(), 1);
+    cx.simulate_keystrokes("backspace backspace");
+    cx.simulate_keystrokes("1");
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    let answers: Vec<Value> = env
+        .received()
+        .into_iter()
+        .filter(|(m, _)| m == "response")
+        .map(|(_, msg)| msg["result"].clone())
+        .collect();
+    assert_eq!(answers, [json!({"decision": "accept"})]);
+}
+
+#[gpui::test]
+fn an_approval_answered_from_another_client_resolves_the_card_live(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    let (approval, _) = pending(&model, cx).remove(0);
+
+    // `heeler approve <id> cancel`, as the CLI sends it.
+    let _: Empty = daemon.call(Request::ApprovalRespond(ApprovalRespond {
+        approval_id: approval,
+        option_id: "cancel".into(),
+    }));
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    transcript(&model, cx, |t| {
+        assert_eq!(
+            t.approval(approval).unwrap().state,
+            ApprovalState::Selected {
+                option_id: "cancel".into()
+            }
+        );
+    });
+    view.read_with(cx, |wb, cx| {
+        let store = wb.sessions().read(cx);
+        assert_eq!(store.answered_here(approval), None, "answered elsewhere");
+        assert!(store.approvals().is_empty());
+    });
+    draw(cx);
+    assert!(
+        region(&view, cx, Region::ChatOption(0)).is_none(),
+        "the buttons are gone"
+    );
+}
+
+#[gpui::test]
+fn the_inspector_lists_the_requests_and_answers_them(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    pump(cx, "the inspector's button", |cx| {
+        draw(cx);
+        region(&view, cx, Region::InspectorOption(0)).is_some()
+    });
+    click(&view, cx, Region::InspectorOption(0));
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    assert_eq!(
+        env.received()
+            .into_iter()
+            .filter(|(m, _)| m == "response")
+            .count(),
+        1
+    );
+}
+
+#[gpui::test]
+fn review_approvals_lists_every_pending_request_across_sessions(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    pump(cx, "the store to know the request", |cx| {
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).approvals().len() == 1)
+    });
+
+    // Another tab is in front: the review shows the chat again.
+    view.update_in(cx, |wb, window, cx| wb.new_terminal(window, cx));
+    pump(cx, "the terminal tab", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.state().active_item().is_some_and(|i| {
+                matches!(
+                    i,
+                    heeler_desktop::workbench::model::ItemRef::Terminal { .. }
+                )
+            })
+        })
+    });
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("Review approvals");
+    cx.simulate_keystrokes("enter");
+    pump(cx, "the picker", |cx| {
+        view.read_with(cx, |wb, _| wb.picker().is_some())
+    });
+    let titles = view.read_with(cx, |wb, _| wb.picker_titles());
+    assert_eq!(titles.len(), 1, "{titles:?}");
+    assert!(titles[0].contains("touch hi.txt"), "{titles:?}");
+    cx.simulate_keystrokes("enter");
+    pump(cx, "the chat to be shown", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.state().active_item().is_some_and(|i| {
+                matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+            })
+        })
+    });
+    // The status bar item opens the same list.
+    view.update_in(cx, |wb, window, cx| wb.new_terminal(window, cx));
+    cx.run_until_parked();
+    draw(cx);
+    click(&view, cx, Region::StatusItem("approvals"));
+    pump(cx, "the picker", |cx| {
+        view.read_with(cx, |wb, _| wb.picker().is_some())
+    });
+    cx.simulate_keystrokes("escape");
+
+    // No request waits: the picker says so.
+    let _: Empty = daemon.call(Request::ApprovalRespond(ApprovalRespond {
+        approval_id: pending(&model, cx).remove(0).0,
+        option_id: "cancel".into(),
+    }));
+    pump(cx, "the store to be empty", |cx| {
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).approvals().is_empty())
+    });
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("Review approvals");
+    cx.simulate_keystrokes("enter");
+    pump(cx, "the empty picker", |cx| {
+        view.read_with(cx, |wb, _| wb.picker().is_some())
+    });
+    assert!(view.read_with(cx, |wb, _| wb.picker_titles().is_empty()));
+}
+
+// ---- file changes ---------------------------------------------------------------------------
+
+#[gpui::test]
+fn a_file_change_card_lists_the_files_and_expands_a_diff(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("file-change"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(
+        cx,
+        "Create a file named hello.txt containing the single line hi.",
+    );
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+
+    let (index, files) = transcript(&model, cx, |t| {
+        let (index, tool) = t
+            .entries()
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| match &e.body {
+                Body::Tool(tool) => Some((i, tool)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(tool.name, "apply_patch");
+        (index, tool.changes.clone())
+    });
+    assert_eq!(files.len(), 1);
+    assert!(files[0].path.ends_with("hello.txt"));
+    let diff = heeler_chat_view::diff::from_change(&files[0]);
+    assert_eq!((diff.added, diff.removed), (1, 0));
+    assert_eq!(diff.lines[0].text, "hi");
+
+    // A request that waits shows its diff; an answered one folds it away.
+    pump(cx, "the card with the diff", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(index)).is_some()
+    });
+    let with_diff = region(&view, cx, Region::ChatEntry(index))
+        .unwrap()
+        .size
+        .height;
+    click(&view, cx, Region::ChatOption(0));
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    pump(cx, "the diff to fold away", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(index)).is_some_and(|b| b.size.height < with_diff)
+    });
+    let folded = region(&view, cx, Region::ChatEntry(index))
+        .unwrap()
+        .size
+        .height;
+    // Clicking the file shows the diff again.
+    click(&view, cx, Region::ChatPart(index, 100));
+    pump(cx, "the diff to open", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatEntry(index)).is_some_and(|b| b.size.height > folded)
+    });
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    // The turn's own diff duplicates the card and is not drawn as another card.
+    assert!(transcript(&model, cx, |t| t
+        .entries()
+        .iter()
+        .any(|e| matches!(e.body, Body::TurnDiff(_)))));
+}
+
+// ---- reconnecting ---------------------------------------------------------------------------
+
+#[gpui::test]
+fn a_reconnect_mid_turn_continues_without_duplicates(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let mut daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let connection = daemon.proxied_connection();
+    let (view, cx) = open_connected(cx, &daemon, connection);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(
+        cx,
+        "Run `touch hi.txt` in a shell, then reply with the word done.",
+    );
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    let before = transcript(&model, cx, |t| t.len());
+
+    // The link drops and stays down while the turn goes on without this window: another
+    // client answers, the agent finishes.
+    daemon.proxy().block(true);
+    daemon.proxy().sever();
+    pump(cx, "the connection to notice", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).connection_state() != heeler_client::ConnectionState::Connected
+        })
+    });
+    let approval = pending_on_daemon(&daemon).remove(0);
+    let _: Empty = daemon.call(Request::ApprovalRespond(ApprovalRespond {
+        approval_id: approval.id,
+        option_id: "accept".into(),
+    }));
+    pump(cx, "the daemon's turn to finish", |_| {
+        session_state(&daemon, info.id) == SessionState::Idle
+    });
+    assert_eq!(
+        transcript(&model, cx, |t| t.len()),
+        before,
+        "nothing arrived while the link was down"
+    );
+
+    daemon.proxy().block(false);
+    pump(
+        cx,
+        "the connection to come back and the turn to show",
+        |cx| count(&model, cx, is_footer) == 1,
+    );
+    // Everything once: one question, one command, two assistant messages (before and after the
+    // command), one footer; the request is answered.
+    assert_eq!(count(&model, cx, is_user), 1);
+    assert_eq!(count(&model, cx, is_tool), 1);
+    assert_eq!(count(&model, cx, is_assistant), 2);
+    assert_eq!(count(&model, cx, is_footer), 1);
+    assert_eq!(
+        assistant_texts(&model, cx).last().map(String::as_str),
+        Some("done")
+    );
+    transcript(&model, cx, |t| {
+        assert!(t.pending_approvals().is_empty());
+        assert_eq!(
+            t.approval(approval.id).unwrap().state,
+            ApprovalState::Selected {
+                option_id: "accept".into()
+            }
+        );
+    });
+    // And the conversation goes on over the new connection.
+    pump(cx, "the connection", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).connection_state() == heeler_client::ConnectionState::Connected
+        })
+    });
+    assert!(!model.read_with(cx, |m, _| m.sending()));
+}
+
+#[gpui::test]
+fn a_short_reconnect_during_an_approval_keeps_the_card_and_answers_afterwards(
+    cx: &mut TestAppContext,
+) {
+    let env = ChatEnv::new();
+    let mut daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let connection = daemon.proxied_connection();
+    let (view, cx) = open_connected(cx, &daemon, connection);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    let before = transcript(&model, cx, |t| t.len());
+
+    daemon.proxy().sever();
+    pump(cx, "the connection to drop", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).connection_state() != heeler_client::ConnectionState::Connected
+        })
+    });
+    pump(cx, "the connection to return", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).connection_state() == heeler_client::ConnectionState::Connected
+        })
+    });
+    // Let the reload settle: a second Resync is harmless, the list is unchanged.
+    pump(cx, "the reload", |cx| {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        transcript(&model, cx, |t| t.len()) == before
+    });
+    assert_eq!(pending(&model, cx).len(), 1, "the request still waits");
+    assert_eq!(count(&model, cx, is_user), 1);
+    assert_eq!(count(&model, cx, is_tool), 1);
+    click(&view, cx, Region::ChatOption(0));
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    assert_eq!(count(&model, cx, is_assistant), 2);
+}
+
+// ---- new agent ------------------------------------------------------------------------------
+
+#[gpui::test]
+fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let (view, cx) = open(cx, &daemon);
+    cx.simulate_keystrokes("cmd-shift-t");
+    pump(cx, "the models", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.agent_picker()
+                .is_some_and(|p| matches!(p.models, heeler_desktop::workbench::Models::Ready(_)))
+        })
+    });
+    let (default, shown, cwd) = view.read_with(cx, |wb, _| {
+        let picker = wb.agent_picker().unwrap();
+        (
+            picker.chosen().map(|m| m.id.clone()),
+            picker.shown().len(),
+            picker.cwd.clone(),
+        )
+    });
+    assert!(default.is_some(), "the catalog's default is preselected");
+    assert!(shown >= 1);
+    // The agent is the active workspace's folder (Home here).
+    let home = view.read_with(cx, |wb, cx| {
+        wb.sessions()
+            .read(cx)
+            .home_workspace()
+            .and_then(|w| w.roots.first().cloned())
+    });
+    assert_eq!(cwd, home);
+    draw(cx);
+    assert!(region(&view, cx, Region::AgentModel(0)).is_some());
+    assert!(region(&view, cx, Region::AgentPicker("start")).is_some());
+
+    // Escape closes it without a session.
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
+    assert_eq!(
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).sessions().len()),
+        0
+    );
+
+    // Enter starts the chat with the default model; its tab opens and has the focus.
+    cx.simulate_keystrokes("cmd-shift-t");
+    pump(cx, "the models again", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.agent_picker()
+                .is_some_and(|p| matches!(p.models, heeler_desktop::workbench::Models::Ready(_)))
+        })
+    });
+    cx.simulate_keystrokes("enter");
+    pump(cx, "the chat tab", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.agent_picker().is_none()
+                && wb.state().active_item().is_some_and(|i| {
+                    matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+                })
+        })
+    });
+    let session = view
+        .read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).sessions().first().cloned()
+        })
+        .unwrap();
+    let chat = session.chat.clone().expect("a chat session");
+    assert_eq!(chat.agent, "codex");
+    assert_eq!(Some(chat.model.clone()), default);
+    assert_eq!(session.cwd, home);
+    pump(cx, "the chat to load", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.chat_model_of(session.id)
+                .is_some_and(|m| *m.read(cx).status() == LoadStatus::Ready)
+        })
+    });
+    let focused = view
+        .read_with(cx, |wb, _| wb.chat_view_of(session.id))
+        .unwrap();
+    assert!(cx.update(|window, cx| focused.read(cx).focus_handle_is_focused(window)));
+    // The sessions panel shows it as an agent that waits for input.
+    view.read_with(cx, |wb, cx| {
+        let store = wb.sessions().read(cx);
+        assert_eq!(
+            store.presentation(store.session(session.id).unwrap()).label,
+            "idle"
+        );
+    });
+}
+
+#[gpui::test]
+fn new_agent_says_why_it_cannot_start_without_a_daemon(cx: &mut TestAppContext) {
+    let (connection, settings, state) = common::offline_connection();
+    let (view, cx) = open_with(cx, settings, connection, Some(state));
+    cx.simulate_keystrokes("cmd-shift-t");
+    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
+    assert!(view.read_with(cx, |wb, _| {
+        wb.notice().is_some_and(|n| n.contains("Not connected"))
+    }));
+}
+
+// ---- the composer ---------------------------------------------------------------------------
+
+#[gpui::test]
+fn return_inserts_a_newline_and_the_keys_edit_the_draft(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    let draft = |cx: &VisualTestContext| model.read_with(cx, |m, _| m.input().text().to_owned());
+    cx.simulate_input("ab");
+    cx.simulate_keystrokes("left");
+    cx.simulate_input("X");
+    assert_eq!(draft(cx), "aXb");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("é");
+    assert_eq!(draft(cx), "aX\néb");
+    cx.simulate_keystrokes("backspace backspace");
+    assert_eq!(draft(cx), "aXb");
+    assert!(env.sent_texts().is_empty(), "Return did not send");
+    cx.simulate_keystrokes("cmd-backspace");
+    assert_eq!(draft(cx), "b");
+}
+
+#[gpui::test]
+fn send_on_enter_makes_return_send_and_shift_return_a_newline(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    std::fs::write(
+        daemon.home().join("settings.toml"),
+        "[chat]\nsend_on_enter = true\n",
+    )
+    .unwrap();
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    cx.simulate_input("one");
+    cx.simulate_keystrokes("shift-enter");
+    cx.simulate_input("two");
+    assert_eq!(
+        model.read_with(cx, |m, _| m.input().text().to_owned()),
+        "one\ntwo"
+    );
+    cx.simulate_keystrokes("enter");
+    pump(cx, "the message to arrive", |_| env.sent_texts().len() == 1);
+    assert_eq!(env.sent_texts(), ["one\ntwo"]);
+    assert!(model.read_with(cx, |m, _| m.input().is_empty()));
+}
+
+#[gpui::test]
+fn an_ended_session_disables_the_composer(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, _model) = open_chat(&view, cx, info.id);
+    assert_eq!(chat.read_with(cx, |c, cx| c.blocked_reason(cx)), None);
+    cx.simulate_input("hello");
+    assert!(chat.read_with(cx, |c, cx| c.can_send(cx)));
+
+    let _: heeler_protocol::messages::SessionResult =
+        daemon.call(Request::SessionStop(SessionRef {
+            session_id: info.id,
+        }));
+    pump(cx, "the session to stop", |cx| {
+        chat.read_with(cx, |c, cx| c.blocked_reason(cx).is_some())
+    });
+    assert!(!chat.read_with(cx, |c, cx| c.can_send(cx)));
+    pump(cx, "the restart button", |cx| {
+        draw(cx);
+        region(&view, cx, Region::Chat("restart")).is_some()
+    });
+    assert!(region(&view, cx, Region::Chat("send")).is_none());
+    cx.simulate_keystrokes("cmd-enter");
+    assert!(env.sent_texts().is_empty());
+}
+
+// ---- send to agent --------------------------------------------------------------------------
+
+fn scripted_terminal(daemon: &TestDaemon) -> heeler_protocol::messages::SessionInfo {
+    daemon.sh(
+        "i=1; while [ $i -le 3 ]; do \
+         printf '\\033]133;A\\007$ \\033]133;B\\007cmd%d\\r\\n\\033]133;C\\007out%d\\r\\n\\033]133;D;%d\\007' $i $i $((i%2)); \
+         i=$((i+1)); done; printf '\\033]133;A\\007$ \\033]133;B\\007'; sleep 600",
+    )
+}
+
+fn terminal_blocks(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    session: SessionId,
+) -> Vec<heeler_protocol::blocks::Block> {
+    view.read_with(cx, |wb, cx| {
+        wb.terminal_view_of(session)
+            .map(|v| v.read(cx).model().blocks().iter().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+#[gpui::test]
+fn send_to_agent_attaches_a_block_to_the_composer_of_the_last_chat(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let chat_info = daemon.create_chat(&env.cwd());
+    let terminal = scripted_terminal(&daemon);
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, chat_info.id);
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_session(terminal.id, window, cx)
+    });
+    pump(cx, "three finished commands", |cx| {
+        terminal_blocks(&view, cx, terminal.id)
+            .iter()
+            .filter(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+            .count()
+            == 3
+    });
+    draw(cx);
+
+    // Block 2 is `cmd2` (exit 0 for 2 % 2, 1 for the others).
+    let block = terminal_blocks(&view, cx, terminal.id)
+        .into_iter()
+        .find(|b| b.command.as_deref() == Some("cmd1"))
+        .unwrap();
+    let terminal_view = view
+        .read_with(cx, |wb, _| wb.terminal_view_of(terminal.id))
+        .unwrap();
+    assert!(
+        terminal_view.update(cx, |v, cx| v.send_block_to_agent(block.id, cx)),
+        "the block can be sent"
+    );
+    pump(cx, "the chip", |cx| {
+        model.read_with(cx, |m, _| !m.chips().is_empty())
+    });
+    let chips = model.read_with(cx, |m, _| m.chips().to_vec());
+    assert_eq!(chips.len(), 1);
+    assert_eq!(chips[0].label, "$ cmd1 · exit 1");
+    assert!(
+        chips[0].quoted.contains("$ cmd1\nout1"),
+        "{}",
+        chips[0].quoted
+    );
+    assert!(!chips[0].truncated);
+    // The chat came to the front, where the context went.
+    assert!(
+        view.read_with(cx, |wb, _| wb.state().active_item().is_some_and(
+            |i| matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+        ))
+    );
+
+    // Sending the message sends the quote in front of what was typed.
+    draw(cx);
+    assert!(region(&view, cx, Region::Chat("composer")).is_some());
+    cx.simulate_input("why did it fail?");
+    cx.simulate_keystrokes("cmd-enter");
+    pump(cx, "the message to arrive", |_| env.sent_texts().len() == 1);
+    let sent = env.sent_texts().remove(0);
+    assert!(
+        sent.starts_with("Context from my terminal (exit 1):\n```\n$ cmd1\nout1\n```"),
+        "{sent}"
+    );
+    assert!(sent.ends_with("\n\nwhy did it fail?"), "{sent}");
+    assert!(model.read_with(cx, |m, _| m.chips().is_empty()));
+}
+
+#[gpui::test]
+fn send_to_agent_cuts_long_output_at_the_setting(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let chat_info = daemon.create_chat(&env.cwd());
+    let terminal = daemon.sh(
+        "printf '\\033]133;A\\007$ \\033]133;B\\007big\\r\\n\\033]133;C\\007'; \
+         i=0; while [ $i -lt 40 ]; do printf 'line %02d\\r\\n' $i; i=$((i+1)); done; \
+         printf '\\033]133;D;0\\007\\033]133;A\\007$ \\033]133;B\\007'; sleep 600",
+    );
+    std::fs::write(
+        daemon.home().join("settings.toml"),
+        "[chat]\nattach_max_bytes = 64\n",
+    )
+    .unwrap();
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, chat_info.id);
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_session(terminal.id, window, cx)
+    });
+    pump(cx, "the finished command", |cx| {
+        terminal_blocks(&view, cx, terminal.id)
+            .iter()
+            .any(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+    });
+    let block = terminal_blocks(&view, cx, terminal.id)
+        .into_iter()
+        .find(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+        .unwrap();
+    let terminal_view = view
+        .read_with(cx, |wb, _| wb.terminal_view_of(terminal.id))
+        .unwrap();
+    assert!(terminal_view.update(cx, |v, cx| v.send_block_to_agent(block.id, cx)));
+    pump(cx, "the chip", |cx| {
+        model.read_with(cx, |m, _| !m.chips().is_empty())
+    });
+    let chip = model.read_with(cx, |m, _| m.chips()[0].clone());
+    assert!(chip.truncated);
+    assert!(chip.label.contains("cut"), "{}", chip.label);
+    assert!(chip.quoted.ends_with("(the output was cut)"));
+    assert!(chip.quoted.len() < 400, "{} bytes", chip.quoted.len());
+    assert!(chip.quoted.contains("line 00"));
+    assert!(!chip.quoted.contains("line 39"));
+}
+
+#[gpui::test]
+fn send_to_agent_without_a_chat_says_so(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let terminal = scripted_terminal(&daemon);
+    let (view, cx) = open(cx, &daemon);
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_session(terminal.id, window, cx)
+    });
+    pump(cx, "a finished command", |cx| {
+        terminal_blocks(&view, cx, terminal.id)
+            .iter()
+            .any(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+    });
+    let block = terminal_blocks(&view, cx, terminal.id)
+        .into_iter()
+        .find(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+        .unwrap();
+    let terminal_view = view
+        .read_with(cx, |wb, _| wb.terminal_view_of(terminal.id))
+        .unwrap();
+    terminal_view.update(cx, |v, cx| v.send_block_to_agent(block.id, cx));
+    cx.run_until_parked();
+    let notice = view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string));
+    assert!(
+        notice.is_some_and(|n| n.contains("No agent chat")),
+        "a notice says why"
+    );
+}
+
+// ---- the chat as a tab ----------------------------------------------------------------------
+
+#[gpui::test]
+fn a_chat_tab_follows_the_tab_rules_and_its_model_goes_with_the_last_tab(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, _model) = open_chat(&view, cx, info.id);
+    let item = heeler_desktop::workbench::model::ItemRef::Chat {
+        session: info.id.to_string(),
+    };
+    assert!(view.read_with(cx, |wb, _| wb.state().find_item(&item).is_some()));
+    // Opening it again focuses the tab instead of adding one.
+    view.update_in(cx, |wb, window, cx| wb.open_session(info.id, window, cx));
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb
+            .state()
+            .panes()
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .filter(|i| **i == item)
+            .count()),
+        1
+    );
+    // The tab is named after the session; the session's pane header icon is the agent's.
+    let title = view.read_with(cx, |wb, cx| wb.item_icon_and_title(&item, cx));
+    assert_eq!(title.0.as_ref(), "◆");
+    // A split shows the same conversation in a second view over one model.
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_session_in_split(
+            info.id,
+            heeler_desktop::workbench::model::Edge::Right,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    draw(cx);
+    // Closing every tab drops the model; opening again reads the journal again.
+    view.update_in(cx, |wb, _, cx| {
+        wb.edit_layout(cx, |s| {
+            while let Some((pane, index)) = s.find_item(&item) {
+                if s.close_item(pane, index).is_err() {
+                    break;
+                }
+            }
+        });
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |wb, _| wb.chat_model_of(info.id).is_none()));
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    assert!(model.read_with(cx, |_, _| true));
+}
+
+#[gpui::test]
+fn history_shows_after_the_tab_is_closed_and_opened_again(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "ping");
+    pump(cx, "the turn", |cx| count(&model, cx, is_footer) == 1);
+    let shown = transcript(&model, cx, |t| t.len());
+
+    let item = heeler_desktop::workbench::model::ItemRef::Chat {
+        session: info.id.to_string(),
+    };
+    view.update_in(cx, |wb, _, cx| {
+        wb.edit_layout(cx, |s| {
+            while let Some((pane, index)) = s.find_item(&item) {
+                if s.close_item(pane, index).is_err() {
+                    break;
+                }
+            }
+        });
+    });
+    cx.run_until_parked();
+    let (_chat, again) = open_chat(&view, cx, info.id);
+    assert_eq!(
+        transcript(&again, cx, |t| t.len()),
+        shown,
+        "the journal gives the same list"
+    );
+    assert_eq!(assistant_texts(&again, cx), ["pong"]);
+}

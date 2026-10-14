@@ -44,6 +44,8 @@ pub enum PickerKind {
     Projects,
     /// ⌘J: every workspace and session, hidden workspaces included.
     Jump,
+    /// ⌘K "Review approvals": the permission requests of every chat that wait for an answer.
+    Approvals,
 }
 
 /// What confirming a picker row does.
@@ -126,7 +128,7 @@ impl PickerState {
     pub fn history_query(&self) -> Option<&str> {
         match self.kind {
             PickerKind::Jump => self.query.strip_prefix('?').map(str::trim),
-            PickerKind::Projects => None,
+            PickerKind::Projects | PickerKind::Approvals => None,
         }
     }
 
@@ -872,6 +874,40 @@ impl Workbench {
         self.show_picker(PickerState::new(PickerKind::Jump, entries), window, cx);
     }
 
+    /// ⌘K "Review approvals": every pending permission request, oldest first; Enter shows the
+    /// chat it belongs to, where its card has the buttons.
+    pub fn open_approvals_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entries: Vec<PickerEntry> = {
+            let store = self.sessions.read(cx);
+            store
+                .approvals()
+                .iter()
+                .map(|approval| {
+                    let session = store.session(approval.session_id);
+                    let options: Vec<String> = approval
+                        .options
+                        .iter()
+                        .enumerate()
+                        .map(|(i, o)| format!("{} {}", i + 1, o.label))
+                        .collect();
+                    PickerEntry {
+                        icon: "●".into(),
+                        title: approval.title.clone().into(),
+                        detail: format!(
+                            "{} · {}",
+                            session.map_or("a session that is gone", |s| s.title.as_str()),
+                            options.join(" · ")
+                        )
+                        .into(),
+                        action: PickerAction::Session(approval.session_id),
+                        fixed: false,
+                    }
+                })
+                .collect()
+        };
+        self.show_picker(PickerState::new(PickerKind::Approvals, entries), window, cx);
+    }
+
     pub fn set_picker_query(&mut self, query: &str, cx: &mut Context<Self>) {
         let Some(picker) = &mut self.picker else {
             return;
@@ -1029,6 +1065,13 @@ impl Workbench {
             (false, true, false) if picker.kind == PickerKind::Projects => {
                 Some("No matching project".into())
             }
+            (false, true, false) if picker.kind == PickerKind::Approvals => {
+                Some(if picker.entries.is_empty() {
+                    "No approvals are waiting".into()
+                } else {
+                    "No approval matches".into()
+                })
+            }
             (false, true, false) => Some("Nothing matches".into()),
             (false, false, false) => None,
         };
@@ -1036,6 +1079,7 @@ impl Workbench {
             (PickerKind::Projects, _) => "Open project ›",
             (PickerKind::Jump, true) => "Search history ›",
             (PickerKind::Jump, false) => "Jump to ›",
+            (PickerKind::Approvals, _) => "Review approvals ›",
         };
 
         Some(

@@ -1,5 +1,5 @@
 //! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
-//! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`.
+//! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`, `chat`.
 //! `appearance` lives in `heeler-settings`.
 //!
 //! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
@@ -348,7 +348,7 @@ impl Setting for SessionsPanelSettings {
 pub struct InspectorPanelSettings {
     /// Tabs shown, in order: `approvals`, `changes`, `info`.
     pub tabs: Vec<String>,
-    /// Reveal the inspector when an approval arrives (applies from M4).
+    /// Reveal the inspector when an approval arrives.
     pub reveal_on_approval: bool,
 }
 
@@ -594,6 +594,31 @@ impl Setting for HistorySettings {
     const NAMESPACE: &'static str = "history";
 }
 
+/// The `chat` namespace: the agent chat view's composer and what "Send to agent" attaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ChatSettings {
+    /// Whether Return sends the message (Shift-Return then inserts a newline). Off, Return
+    /// inserts a newline and ⌘-Return sends.
+    pub send_on_enter: bool,
+    /// Most bytes of a terminal block's output that "Send to agent" attaches to the composer;
+    /// longer output is cut (the chip says so).
+    pub attach_max_bytes: u64,
+}
+
+impl Default for ChatSettings {
+    fn default() -> Self {
+        Self {
+            send_on_enter: false,
+            attach_max_bytes: 64 * 1024,
+        }
+    }
+}
+
+impl Setting for ChatSettings {
+    const NAMESPACE: &'static str = "chat";
+}
+
 /// What quitting the app does with the daemon while sessions are live (design.md § Daemon
 /// lifecycle). With no live session the daemon always stops with the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -655,6 +680,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<OverviewPanelSettings>();
     store.register::<WorkspacesSettings>();
     store.register::<HistorySettings>();
+    store.register::<ChatSettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -737,6 +763,16 @@ mod tests {
     }
 
     #[test]
+    fn chat_settings_default_to_newline_on_return_and_a_64_kib_attachment() {
+        let defaults = ChatSettings::default();
+        assert!(!defaults.send_on_enter);
+        assert_eq!(defaults.attach_max_bytes, 65_536);
+        let parsed: ChatSettings = toml::from_str("send_on_enter = true").unwrap();
+        assert!(parsed.send_on_enter);
+        assert_eq!(parsed.attach_max_bytes, 65_536);
+    }
+
+    #[test]
     fn on_quit_defaults_to_ask_and_reads_the_documented_values() {
         assert_eq!(AppSettings::default().on_quit, OnQuit::Ask);
         for mode in OnQuit::ALL {
@@ -768,6 +804,7 @@ mod tests {
             "panels.overview",
             "workspaces",
             "history",
+            "chat",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

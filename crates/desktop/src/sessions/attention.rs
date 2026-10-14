@@ -3,7 +3,8 @@
 //! `failed` (exit ≠ 0, a signal, a spawn failure) and `done` (exit 0, or a terminal
 //! notification) are *unread* until the session's view is focused; everything else is idle.
 //! A coding agent that reports through `agent.report` (M3.3) adds working / blocked / idle to
-//! running sessions; structured approvals arrive with M4/M7.
+//! running sessions; an agent chat session (M4) says the same from its own state: a turn in
+//! progress is working, a pending permission request is blocked (and needs the user).
 //!
 //! GPUI-free and unit tested: [`AttentionTracker`] watches successive session lists and
 //! remembers what the user has not seen yet.
@@ -82,6 +83,30 @@ pub fn present(info: &SessionInfo, unread: Option<Unread>) -> Presentation {
             filled: true,
             needs_you: true,
         },
+        // An agent chat: the daemon runs the agent, so its state is exact.
+        SessionState::Running | SessionState::Idle if info.chat.is_some() => {
+            let busy = info.state == SessionState::Running;
+            Presentation {
+                label: if busy { "working" } else { "idle" }.into(),
+                detail: chat_detail(info),
+                tone: if busy { Tone::Accent } else { Tone::Muted },
+                filled: busy,
+                needs_you: false,
+            }
+        }
+        SessionState::WaitingApproval if info.chat.is_some() => {
+            let pending = info.chat.as_ref().map_or(0, |chat| chat.pending_approvals);
+            Presentation {
+                label: "blocked".into(),
+                detail: match pending {
+                    0 | 1 => "approval".to_owned(),
+                    n => format!("{n} approvals"),
+                },
+                tone: Tone::Warning,
+                filled: true,
+                needs_you: true,
+            }
+        }
         // A coding agent that reports (`agent.report`) says more than a bare "idle".
         SessionState::Running | SessionState::Idle => match &info.agent {
             Some(report) => present_agent(report),
@@ -144,6 +169,14 @@ pub fn present(info: &SessionInfo, unread: Option<Unread>) -> Presentation {
             filled: false,
             needs_you: false,
         },
+    }
+}
+
+/// `codex · gpt-6.1-sol`: which agent and model a chat session runs.
+fn chat_detail(info: &SessionInfo) -> String {
+    match &info.chat {
+        Some(chat) => format!("{} · {}", chat.agent, chat.model),
+        None => String::new(),
     }
 }
 
@@ -450,6 +483,41 @@ mod tests {
             ended_text(&exited(3)).as_deref(),
             Some("The process exited with code 3")
         );
+    }
+
+    fn chat(state: SessionState, turn_active: bool, pending: u32) -> SessionInfo {
+        let mut session = info(SessionId::new(), state);
+        session.kind = heeler_core::SessionKind::Harness;
+        session.chat = Some(heeler_protocol::chat::ChatInfo {
+            agent: "codex".into(),
+            model: "gpt-6.1-sol".into(),
+            approval_policy: heeler_core::ApprovalPolicy::OnRequest,
+            sandbox: heeler_core::SandboxMode::WorkspaceWrite,
+            turn_active,
+            pending_approvals: pending,
+        });
+        session
+    }
+
+    #[test]
+    fn a_chat_session_is_working_during_a_turn_and_blocked_on_an_approval() {
+        let idle = present(&chat(SessionState::Idle, false, 0), None);
+        assert_eq!((idle.label.as_str(), idle.needs_you), ("idle", false));
+        assert_eq!(idle.detail, "codex · gpt-6.1-sol");
+        let working = present(&chat(SessionState::Running, true, 0), None);
+        assert_eq!(
+            (working.label.as_str(), working.tone, working.needs_you),
+            ("working", Tone::Accent, false)
+        );
+        assert!(working.filled);
+        let blocked = present(&chat(SessionState::WaitingApproval, true, 2), None);
+        assert_eq!(
+            (blocked.label.as_str(), blocked.tone, blocked.needs_you),
+            ("blocked", Tone::Warning, true)
+        );
+        assert_eq!(blocked.detail, "2 approvals");
+        let one = present(&chat(SessionState::WaitingApproval, true, 1), None);
+        assert_eq!(one.detail, "approval");
     }
 
     #[test]

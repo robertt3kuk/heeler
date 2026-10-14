@@ -82,6 +82,7 @@ actions!(
         ToggleHideSleepingWorkspaces,
         ToggleHideCliWorkspaces,
         SearchHistory,
+        ReviewApprovals,
     ]
 );
 
@@ -95,6 +96,12 @@ pub mod palette {
 pub mod modal {
     use gpui::actions;
     actions!(modal, [Confirm, Cancel]);
+}
+
+/// Actions of the agent chat view (`HeelerChat` key context).
+pub mod chat {
+    use gpui::actions;
+    actions!(chat, [SendMessage, InterruptTurn]);
 }
 
 /// Actions of the settings sheet (`SettingsSheet` key context).
@@ -284,7 +291,7 @@ pub fn preset_number_action(n: usize) -> Option<Box<dyn Action>> {
 pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command> {
     let mut out = vec![
         command("Session: New Terminal", NewTerminal),
-        command("Session: New Agent (arrives with M4)", NewAgent),
+        command("Session: New Agent…", NewAgent),
         command("Session: New Chat (arrives with M5)", NewChat),
         command("Session: Rename…", RenameSession),
         command("Session: Restart", RestartSession),
@@ -368,6 +375,11 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
     ]);
     out.push(command("History: Search History…", SearchHistory));
     out.extend([
+        command("Agent: Review Approvals…", ReviewApprovals),
+        command("Agent: Send Message", chat::SendMessage),
+        command("Agent: Interrupt Turn", chat::InterruptTurn),
+    ]);
+    out.extend([
         command(
             "Block: Previous Prompt",
             heeler_terminal_view::JumpToPreviousPrompt,
@@ -388,7 +400,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         ),
         command("Block: Rerun", heeler_terminal_view::RerunBlock),
         command(
-            "Block: Send to Agent (arrives with M4)",
+            "Block: Send to Agent",
             heeler_terminal_view::SendBlockToAgent,
         ),
     ]);
@@ -524,6 +536,14 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<modal::Cancel>("escape", Some("Modal")),
         bind::<sheet::Dismiss>("escape", Some("SettingsSheet")),
         bind::<palette::Dismiss>("escape", Some("DaemonPopover")),
+        bind::<chat::SendMessage>("cmd-enter", Some(super::chat::KEY_CONTEXT)),
+        bind::<chat::InterruptTurn>("cmd-.", Some(super::chat::KEY_CONTEXT)),
+        bind::<palette::SelectNext>("down", Some("AgentPicker")),
+        bind::<palette::SelectNext>("ctrl-n", Some("AgentPicker")),
+        bind::<palette::SelectPrev>("up", Some("AgentPicker")),
+        bind::<palette::SelectPrev>("ctrl-p", Some("AgentPicker")),
+        bind::<palette::Confirm>("enter", Some("AgentPicker")),
+        bind::<palette::Dismiss>("escape", Some("AgentPicker")),
         bind::<palette::SelectNext>("down", Some("Picker")),
         bind::<palette::SelectNext>("ctrl-n", Some("Picker")),
         bind::<palette::SelectPrev>("up", Some("Picker")),

@@ -35,6 +35,7 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::chat::ChatUpdate;
 use crate::client::{AutostartThrottle, COLORS_CAPABILITY, Client, ConnectOptions, Resumed};
 use crate::connection::Shared;
 use crate::error::ClientError;
@@ -594,6 +595,8 @@ impl Supervisor {
         self.state.epoch = Some(epoch);
         self.state.connection = ConnectionState::Connected;
         self.publish();
+        // Before the replayed events: a consumer reloads the journal, then folds those.
+        let _ = self.shared.chat.send(ChatUpdate::Resync { epoch });
         if let Some(old) = old_epoch {
             info!(%old, new = %epoch, "heelerd restarted; terminals are gone");
             let _ = self
@@ -610,6 +613,10 @@ impl Supervisor {
         for notice in effects.notices {
             // No receivers is fine.
             let _ = self.shared.notices.send(notice);
+        }
+        for event in effects.chat {
+            // No receivers is fine.
+            let _ = self.shared.chat.send(ChatUpdate::Event(Arc::new(event)));
         }
         self.terminals.bind(&self.state.sessions);
         for (session, terminal) in effects.session_terminals {

@@ -3,6 +3,8 @@
 //! lives in `render.rs`; session and settings behavior in sibling modules.
 
 use super::actions::{self, Command};
+use super::agents::AgentPicker;
+use super::chat::{ChatModel, ChatView};
 use super::daemon::DaemonControl;
 use super::modal::Modal;
 use super::model::{
@@ -26,7 +28,7 @@ use gpui::{
     Render, SharedString, Subscription, Task, WindowAppearance, div, prelude::*, px,
 };
 use heeler_client::Connection;
-use heeler_core::SessionId;
+use heeler_core::{ApprovalId, SessionId};
 use heeler_settings::{ChromeMode, SettingsStore, SystemAppearance, WatchGuard};
 use heeler_terminal_view::DefaultColors;
 use std::cell::RefCell;
@@ -95,6 +97,28 @@ pub enum Region {
     /// A control of the history panel, by name (`search`, `enable`, `clear`, `rebuild`,
     /// `confirm`).
     History(&'static str),
+    /// A control of the chat view, by name (`composer`, `send`, `interrupt`, `restart`,
+    /// `header`, `banner`).
+    Chat(&'static str),
+    /// Entry `index` of a chat's transcript.
+    ChatEntry(usize),
+    /// A button of a permission request that waits for an answer: `request * 8 + option`, the
+    /// requests counted oldest first.
+    ChatOption(usize),
+    /// Context chip `index` of the composer.
+    ChatChip(usize),
+    /// The control that opens or closes part `part` of entry `index` (a command's output, a
+    /// file's diff, reasoning).
+    ChatPart(usize, u32),
+    /// The Copy button of code block `n` of entry `index`.
+    ChatCopy(usize, usize),
+    /// An answer button of the inspector's approvals tab, counting the requests oldest first
+    /// like `ChatOption`.
+    InspectorOption(usize),
+    /// A control of the new-agent picker, by name (`start`, `cancel`).
+    AgentPicker(&'static str),
+    /// Model row `index` of the new-agent picker.
+    AgentModel(usize),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -187,6 +211,18 @@ pub struct Workbench {
     pub(crate) sessions: Entity<SessionsStore>,
     pub(crate) env: PanelEnv,
     pub(crate) terminals: HashMap<(PaneId, SessionId), TerminalItem>,
+    /// The transcript and composer of every chat a tab shows (see `agents.rs`).
+    pub(crate) chat_models: HashMap<SessionId, Entity<ChatModel>>,
+    pub(crate) chats: HashMap<(PaneId, SessionId), Entity<ChatView>>,
+    pub(crate) rendered_chats: std::collections::HashSet<(PaneId, SessionId)>,
+    pub(crate) pruned_chats: Vec<Entity<ChatView>>,
+    /// The chat the user looked at last: where "Send to agent" goes.
+    pub(crate) last_chat: Option<SessionId>,
+    /// Permission requests this window has already seen (a new one may reveal the inspector).
+    pub(crate) known_approvals: std::collections::HashSet<ApprovalId>,
+    /// The ⌘⇧T dialog.
+    pub(crate) agent_picker: Option<AgentPicker>,
+    pub(crate) agent_focus: FocusHandle,
     pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
     /// Folded blocks per terminal, saved with the layout (see [`persistence::CollapsedBlocks`]).
     pub(crate) collapsed_blocks: persistence::CollapsedBlocks,
@@ -307,6 +343,7 @@ impl Workbench {
         let modal_focus = cx.focus_handle();
         let sheet_focus = cx.focus_handle();
         let daemon_focus = cx.focus_handle();
+        let agent_focus = cx.focus_handle();
         window.focus(&focus_handle, cx);
         // Closing the last window starts the quit flow (the window stays until it is decided);
         // either way pending layout changes are written now instead of after the debounce.
@@ -373,6 +410,14 @@ impl Workbench {
             sessions,
             env,
             terminals: HashMap::new(),
+            chat_models: HashMap::new(),
+            chats: HashMap::new(),
+            rendered_chats: std::collections::HashSet::new(),
+            pruned_chats: Vec::new(),
+            last_chat: None,
+            known_approvals: std::collections::HashSet::new(),
+            agent_picker: None,
+            agent_focus,
             held: HashMap::new(),
             collapsed_blocks: options
                 .state_path

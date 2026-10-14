@@ -10,18 +10,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use heeler_core::TerminalId;
+use heeler_core::{ApprovalId, SessionId, TerminalId};
 use heeler_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
+use heeler_protocol::chat::{ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent};
 use heeler_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
-use heeler_protocol::messages::{Empty, Request, TerminalSize};
+use heeler_protocol::messages::{Empty, Request, SessionInfo, TerminalSize};
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::blocks::BlockList;
+use crate::chat::ChatUpdate;
 use crate::client::{Client, ConnectOptions};
 use crate::error::ClientError;
 use crate::socket::default_socket_path;
@@ -33,6 +35,8 @@ use crate::terminal::{Command, TerminalHandle, UPDATE_BUFFER, send_command};
 const THREAD_NAME: &str = "heeler-client";
 /// Notices buffered per receiver before it starts lagging.
 const NOTICE_BUFFER: usize = 256;
+/// Chat updates buffered per receiver before it starts lagging (streaming deltas are many).
+const CHAT_BUFFER: usize = 4096;
 /// Terminal commands queued for the connection task.
 const COMMAND_BUFFER: usize = 1024;
 
@@ -41,6 +45,7 @@ const COMMAND_BUFFER: usize = 1024;
 pub(crate) struct Shared {
     pub(crate) state: watch::Sender<Arc<StoreState>>,
     pub(crate) notices: broadcast::Sender<Notice>,
+    pub(crate) chat: broadcast::Sender<ChatUpdate>,
     /// The live, synchronised connection; `None` whenever disconnected.
     client: Mutex<Option<Client>>,
     commands: mpsc::Sender<Command>,
@@ -114,10 +119,12 @@ impl Connection {
         let socket = opts.socket.clone().or_else(default_socket_path);
         let (state, _) = watch::channel(Arc::new(StoreState::initial()));
         let (notices, _) = broadcast::channel(NOTICE_BUFFER);
+        let (chat, _) = broadcast::channel(CHAT_BUFFER);
         let (commands, command_rx) = mpsc::channel(COMMAND_BUFFER);
         let shared = Arc::new(Shared {
             state,
             notices,
+            chat,
             client: Mutex::new(None),
             commands,
             next_handle: AtomicU64::new(1),
@@ -158,6 +165,13 @@ impl Connection {
     /// Transient events (bell, exit, restart). A receiver that falls behind misses the oldest.
     pub fn notices(&self) -> broadcast::Receiver<Notice> {
         self.shared.notices.subscribe()
+    }
+
+    /// Chat events of every session, in order, as they arrive; see [`ChatUpdate`] for how a
+    /// consumer keeps a transcript exact across reconnects. A receiver that falls behind gets
+    /// `RecvError::Lagged` and must reload the history.
+    pub fn chat_updates(&self) -> broadcast::Receiver<ChatUpdate> {
+        self.shared.chat.subscribe()
     }
 
     /// The socket this connection dials (`ConnectOptions::socket`, else the default location).
@@ -281,6 +295,72 @@ impl Connection {
         self.call::<serde_json::Value>(Request::HistoryRebuild(Empty {}))
             .await
             .map(drop)
+    }
+
+    /// True while connected to a daemon that advertised capability `chat.codex`
+    /// ([`Client::supports_chat`]); false when disconnected.
+    pub fn supports_chat(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_chat())
+    }
+
+    /// `chat.create`: opens an agent conversation as a new session.
+    pub async fn chat_create(&self, req: ChatCreate) -> Result<SessionInfo, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_create(req).await
+    }
+
+    /// `chat.send`: the user's message; the turn's events follow on [`chat_updates`](Self::chat_updates).
+    pub async fn chat_send(
+        &self,
+        session: SessionId,
+        text: impl Into<String>,
+    ) -> Result<ChatSent, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_send(session, text).await
+    }
+
+    /// `chat.interrupt`: stops the turn in progress.
+    pub async fn chat_interrupt(&self, session: SessionId) -> Result<(), ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_interrupt(session).await
+    }
+
+    /// One page of a chat's journal, oldest first ([`Client::chat_history`]).
+    pub async fn chat_history(
+        &self,
+        session: SessionId,
+        before_seq: Option<u64>,
+        limit: u32,
+    ) -> Result<ChatHistory, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_history(session, before_seq, limit).await
+    }
+
+    /// `chat.models`: the models an agent offers.
+    pub async fn chat_models(&self, agent: &str) -> Result<ChatModels, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_models(agent).await
+    }
+
+    /// `approval.list`: permission requests waiting for an answer (of one session, or of all).
+    pub async fn approvals(
+        &self,
+        session: Option<SessionId>,
+    ) -> Result<Vec<ApprovalInfo>, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.approvals(session).await
+    }
+
+    /// `approval.respond`: answers a permission request with one of the options it offered.
+    pub async fn approve(
+        &self,
+        approval: ApprovalId,
+        option_id: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.approve(approval, option_id).await
     }
 
     /// A durable view of `terminal` that re-attaches across reconnects. Returns at once; the

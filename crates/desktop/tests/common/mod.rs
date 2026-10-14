@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod chat;
 pub mod history;
 
 use std::cell::RefCell;
@@ -123,7 +124,16 @@ impl TestDaemon {
         Self::start_with(Some(daemon_toml))
     }
 
+    /// A daemon whose `codex app-server` is `codex` (a replay of a recorded transcript).
+    pub fn start_with_codex(codex: heeler_agents::CodexConfig) -> Self {
+        Self::start_inner(None, Some(codex))
+    }
+
     fn start_with(daemon_toml: Option<&str>) -> Self {
+        Self::start_inner(daemon_toml, None)
+    }
+
+    fn start_inner(daemon_toml: Option<&str>, codex: Option<heeler_agents::CodexConfig>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
         if let Some(text) = daemon_toml {
@@ -135,9 +145,9 @@ impl TestDaemon {
             .enable_all()
             .build()
             .unwrap();
-        let daemon = runtime
-            .block_on(heeler_daemon::start(DaemonConfig::new(paths.clone())))
-            .unwrap();
+        let mut config = DaemonConfig::new(paths.clone());
+        config.codex = codex;
+        let daemon = runtime.block_on(heeler_daemon::start(config)).unwrap();
         Self {
             dir,
             paths,

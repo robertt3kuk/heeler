@@ -177,9 +177,13 @@ fn main() -> ExitCode {
             });
             window.focus(&view.focus_handle(cx), cx);
             window.set_window_title("heeler attach");
-            cx.subscribe(&view, |_, event: &TerminalViewEvent, _cx| {
-                let TerminalViewEvent::TitleChanged(title) = event;
-                eprintln!("attach: title = {title:?}");
+            cx.subscribe(&view, |_, event: &TerminalViewEvent, _cx| match event {
+                TerminalViewEvent::TitleChanged(title) => {
+                    eprintln!("attach: title = {title:?}");
+                }
+                TerminalViewEvent::SendBlockToAgent { block } => {
+                    eprintln!("attach: send block {block} to an agent (no chat here)");
+                }
             })
             .detach();
             let pumped = view.clone();

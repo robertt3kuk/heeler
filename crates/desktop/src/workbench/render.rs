@@ -69,6 +69,7 @@ impl Render for Workbench {
         let tokens = self.density.ui();
         self.regions.borrow_mut().clear();
         self.rendered_terminals.clear();
+        self.rendered_chats.clear();
 
         let left = self.render_dock(DockPosition::Left, window, cx);
         let right = self.render_dock(DockPosition::Right, window, cx);
@@ -80,6 +81,7 @@ impl Render for Workbench {
         let edge_targets = self.render_hidden_dock_targets(cx);
         let palette = self.render_palette(window, cx);
         let picker = self.render_picker(window, cx);
+        let agent_picker = self.render_agent_picker(window, cx);
         let menu = self.render_context_menu(cx);
         let modal = self.render_modal(cx);
         let daemon_popover = self.render_daemon_popover(cx);
@@ -141,6 +143,7 @@ impl Render for Workbench {
         .children(edge_targets)
         .children(palette)
         .children(picker)
+        .children(agent_picker)
         .children(menu)
         .children(sheet)
         .children(modal)
@@ -351,15 +354,23 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::NewTerminal, window, cx| {
             this.new_terminal(window, cx);
         }))
-        .on_action(cx.listener(|this, _: &actions::NewAgent, _, cx| {
-            this.set_notice("Agents arrive with M4", cx);
+        .on_action(cx.listener(|this, _: &actions::NewAgent, window, cx| {
+            this.new_agent(window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::ReviewApprovals, window, cx| {
+                this.open_approvals_picker(window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::NewChat, _, cx| {
             this.set_notice("Chats arrive with M5", cx);
         }))
         .on_action(
             cx.listener(|this, _: &heeler_terminal_view::SendBlockToAgent, _, cx| {
-                this.set_notice("Sending a block to an agent arrives with M4", cx);
+                this.set_notice(
+                    "Focus a terminal with a finished command to send it to an agent",
+                    cx,
+                );
             }),
         )
         .on_action(cx.listener(|this, _: &actions::SearchHistory, window, cx| {
@@ -478,6 +489,7 @@ impl Workbench {
             this.close_menu(window, cx);
             this.close_palette(window, cx);
             this.close_picker(window, cx);
+            this.close_agent_picker(window, cx);
             this.close_daemon_popover(window, cx);
         }))
         .on_action(cx.listener(|this, _: &actions::Quit, window, cx| {
@@ -1456,9 +1468,7 @@ impl Workbench {
                 ))
                 .into_any_element(),
             ItemRef::Terminal { session } => self.render_terminal_item(pane, session, window, cx),
-            ItemRef::Chat { session } => {
-                self.placeholder_body(format!("Chat session {session} (arrives with M5)"), cx)
-            }
+            ItemRef::Chat { session } => self.render_chat_item(pane, session, cx),
         }
     }
 
@@ -1487,6 +1497,7 @@ impl Workbench {
                 sessions: store.sessions().len(),
                 workspace: store.active_workspace().map(|w| w.name.clone()),
                 needs_you: store.needs_you().len(),
+                approvals: store.approvals().len(),
                 terminal_theme: heeler_settings::themes::resolve(
                     &self.terminal_settings.theme,
                     super::view::system_appearance(self.appearance),

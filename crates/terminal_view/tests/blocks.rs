@@ -676,6 +676,30 @@ fn rerun_types_the_command_and_enter_unless_something_runs(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn send_to_agent_asks_the_owner_and_never_the_open_prompt(cx: &mut TestAppContext) {
+    let (view, cx, _recorder) = setup(cx, TerminalViewSettings::default());
+    show(&view, cx, scenario(), Modes::default());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(
+            &view,
+            move |_, event: &heeler_terminal_view::TerminalViewEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            },
+        )
+        .detach();
+    });
+    assert!(view.update(cx, |v, cx| v.send_block_to_agent(2, cx)));
+    // The open prompt (block 3) has nothing to send.
+    assert!(!view.update(cx, |v, cx| v.send_block_to_agent(3, cx)));
+    assert_eq!(
+        *events.borrow(),
+        [heeler_terminal_view::TerminalViewEvent::SendBlockToAgent { block: 2 }]
+    );
+}
+
+#[gpui::test]
 fn hovering_a_block_offers_its_actions(cx: &mut TestAppContext) {
     let (view, cx, _recorder) = setup(cx, TerminalViewSettings::default());
     show(&view, cx, scenario(), Modes::default());
@@ -686,7 +710,7 @@ fn hovering_a_block_offers_its_actions(cx: &mut TestAppContext) {
     let actions = view
         .read_with(cx, |v, _| v.block_actions(2))
         .expect("actions for a finished block");
-    assert!(actions.copy_command && actions.copy_output && actions.rerun);
+    assert!(actions.copy_command && actions.copy_output && actions.rerun && actions.send_to_agent);
     assert_eq!(actions.folded, Some(false));
     // The open prompt has nothing to offer.
     cx.simulate_mouse_move(at(3.0, 7.0), None, Modifiers::default());

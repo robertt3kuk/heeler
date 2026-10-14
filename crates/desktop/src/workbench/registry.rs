@@ -116,6 +116,8 @@ pub struct StatusData {
     pub workspace: Option<String>,
     /// Sessions that need the user.
     pub needs_you: usize,
+    /// Permission requests of agent chats waiting for an answer.
+    pub approvals: usize,
     /// Name of the terminal theme in effect.
     pub terminal_theme: String,
 }
@@ -175,9 +177,15 @@ pub struct StatusBarLayout {
 impl Default for StatusBarLayout {
     fn default() -> Self {
         Self {
-            left: ["connection", "workspace", "sessions", "attention"]
-                .map(str::to_owned)
-                .to_vec(),
+            left: [
+                "connection",
+                "workspace",
+                "sessions",
+                "attention",
+                "approvals",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
             right: ["density", "theme", "palette_hint"]
                 .map(str::to_owned)
                 .to_vec(),

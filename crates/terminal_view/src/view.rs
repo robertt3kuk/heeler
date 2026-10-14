@@ -55,7 +55,8 @@ actions!(
         ToggleBlockCollapse,
         /// Types the current block's command into the session again and runs it.
         RerunBlock,
-        /// Sends the current block to an agent (arrives with M4).
+        /// Sends the current block to an agent chat: the view emits
+        /// [`TerminalViewEvent::SendBlockToAgent`] and its owner does the rest.
         SendBlockToAgent
     ]
 );
@@ -105,6 +106,10 @@ pub enum ViewStatus {
 pub enum TerminalViewEvent {
     /// The terminal title changed (`None` = cleared).
     TitleChanged(Option<String>),
+    /// The user asked to send block `block` (its command and output) to an agent chat. The
+    /// view has no chat to send to: the owner fetches the text (`terminal.block_text`) and
+    /// attaches it.
+    SendBlockToAgent { block: u64 },
 }
 
 /// Grid geometry from the last layout.
@@ -1235,6 +1240,8 @@ pub struct BlockActions {
     /// be folded, `None` when there is nothing to fold.
     pub folded: Option<bool>,
     pub rerun: bool,
+    /// The block has a command or output to send to an agent.
+    pub send_to_agent: bool,
 }
 
 fn shows(row: &DisplayRow, line: i64) -> bool {
@@ -1326,10 +1333,12 @@ impl TerminalView {
         } else {
             blocks::foldable(block).then_some(false)
         };
+        let copy_output = self.has_output(block);
         Some(BlockActions {
             block: id,
             copy_command: block.command.is_some(),
-            copy_output: self.has_output(block),
+            copy_output,
+            send_to_agent: block.command.is_some() || copy_output,
             folded,
             rerun: self.accepts_input()
                 && block
@@ -1498,6 +1507,18 @@ impl TerminalView {
         self.shared.update(cx, |shared, cx| {
             shared.set_block_collapsed(id, !collapsed, cx)
         })
+    }
+
+    /// Asks the owner to send block `id` to an agent chat ([`TerminalViewEvent::SendBlockToAgent`]).
+    pub fn send_block_to_agent(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        if !self
+            .block_actions(id)
+            .is_some_and(|actions| actions.send_to_agent)
+        {
+            return false;
+        }
+        cx.emit(TerminalViewEvent::SendBlockToAgent { block: id });
+        true
     }
 
     /// Types block `id`'s command into the session and presses Enter.
@@ -1844,9 +1865,11 @@ impl TerminalView {
                 ))
                 .child(button(
                     "block-agent",
-                    "Send to agent · M4".into(),
-                    false,
-                    |_, _, _| {},
+                    "Send to agent".into(),
+                    actions.send_to_agent,
+                    |this, id, cx| {
+                        this.send_block_to_agent(id, cx);
+                    },
                 ))
                 .into_any_element(),
         )
@@ -1912,6 +1935,13 @@ impl Render for TerminalView {
                     blocks::foldable(block) || this.model.get().is_collapsed(block.id)
                 });
                 if !current.is_some_and(|id| this.toggle_block_collapsed(id, cx)) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SendBlockToAgent, _window, cx| {
+                let current =
+                    this.current_block(|block| block.command.is_some() || this.has_output(block));
+                if !current.is_some_and(|id| this.send_block_to_agent(id, cx)) {
                     cx.propagate();
                 }
             }))

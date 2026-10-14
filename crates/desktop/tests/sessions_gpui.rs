@@ -888,12 +888,11 @@ fn new_terminal_starts_in_the_focused_workspace_root_or_home(cx: &mut TestAppCon
     assert_eq!(second.workspace_id, ws.id);
     assert_same_dir(second.cwd.as_deref(), root.path());
 
-    // New agent / chat stay disabled with hints.
+    // New agent asks which agent to start (chat_gpui.rs covers it); direct chats stay disabled.
     cx.simulate_keystrokes("cmd-shift-t");
-    assert_eq!(
-        view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string)),
-        Some("Agents arrive with M4".to_owned())
-    );
+    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_some()));
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
     cx.simulate_keystrokes("cmd-alt-t");
     assert_eq!(
         view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string)),

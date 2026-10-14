@@ -19,7 +19,7 @@ use gpui::{
 };
 use std::rc::Rc;
 
-pub use common::{age_label, kind_icon, tone_color};
+pub use common::{age_label, kind_icon, state_dot, tone_color};
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
     DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HeelerTarget, HistoryResume,

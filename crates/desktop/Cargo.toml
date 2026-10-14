@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
+heeler-chat-view.workspace = true
 heeler-client.workspace = true
 heeler-core.workspace = true
 heeler-protocol.workspace = true
@@ -32,6 +33,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+heeler-agents.workspace = true
 heeler-daemon.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

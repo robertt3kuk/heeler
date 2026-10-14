@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 heeler-agents = { path = "crates/agents" }
+heeler-chat-view = { path = "crates/chat_view" }
 heeler-client = { path = "crates/client" }
 heeler-core = { path = "crates/core" }
 heeler-daemon = { path = "crates/daemon" }

@@ -13,7 +13,9 @@ use gpui::{
 use heeler_core::SessionId;
 use heeler_protocol::messages::SessionInfo;
 use heeler_settings::{ChangeSet, KEYMAP_NAMESPACE};
-use heeler_terminal_view::{DefaultColors, SharedEvent, SharedTerminal, TerminalView, ViewMode};
+use heeler_terminal_view::{
+    DefaultColors, SharedEvent, SharedTerminal, TerminalView, TerminalViewEvent, ViewMode,
+};
 
 use super::actions;
 use super::modal::PromptSpec;
@@ -45,6 +47,8 @@ pub(crate) fn terminal_style(
 #[derive(Debug)]
 pub(crate) struct TerminalItem {
     pub view: Entity<TerminalView>,
+    /// What the view tells the workbench ("Send to agent").
+    pub(crate) _events: gpui::Subscription,
 }
 
 /// The session an item shows.
@@ -94,13 +98,12 @@ impl Workbench {
         // Sessions hidden in the overview's stash stay attached (paced at zero cost).
         let mut wanted: HashSet<SessionId> = items.iter().map(|(_, s)| *s).collect();
         if let Some(saved) = &self.state.stashed {
-            wanted.extend(
-                saved
-                    .center
-                    .panes()
-                    .into_iter()
-                    .flat_map(|p| p.items.iter().filter_map(session_of_item)),
-            );
+            wanted.extend(saved.center.panes().into_iter().flat_map(|p| {
+                p.items.iter().filter_map(|item| match item {
+                    ItemRef::Terminal { .. } => session_of_item(item),
+                    _ => None,
+                })
+            }));
         }
         self.held.retain(|session, _| wanted.contains(session));
         self.collapse_watch
@@ -121,6 +124,7 @@ impl Workbench {
         for session in wanted {
             self.ensure_held(session, cx);
         }
+        self.sync_chats(cx);
     }
 
     fn ensure_held(
@@ -233,8 +237,18 @@ impl Workbench {
         let view = cx.new(|cx| {
             TerminalView::with_shared(shared, backend, settings, ViewMode::Interactive, window, cx)
         });
-        self.terminals
-            .insert((pane, session), TerminalItem { view: view.clone() });
+        let events = cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
+            if let TerminalViewEvent::SendBlockToAgent { block } = event {
+                this.send_block_to_agent(session, *block, window, cx);
+            }
+        });
+        self.terminals.insert(
+            (pane, session),
+            TerminalItem {
+                view: view.clone(),
+                _events: events,
+            },
+        );
         Some(view)
     }
 
@@ -264,6 +278,11 @@ impl Workbench {
     /// Moves keyboard focus to what the focused pane shows: its terminal, else the workbench.
     pub(crate) fn focus_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let FocusTarget::Pane(_) = self.state.focus
+            && self.focus_chat(window, cx)
+        {
+            return;
+        }
+        if let FocusTarget::Pane(_) = self.state.focus
             && let Some(session) = self.focused_session()
         {
             let pane = self.state.active_pane_id();
@@ -287,14 +306,35 @@ impl Workbench {
         }) || self
             .pruned
             .iter()
-            .any(|view| view.focus_handle(cx) == focused);
+            .any(|view| view.focus_handle(cx) == focused)
+            || self.chats.iter().any(|(key, view)| {
+                !self.rendered_chats.contains(key) && view.focus_handle(cx) == focused
+            })
+            || self
+                .pruned_chats
+                .iter()
+                .any(|view| view.focus_handle(cx) == focused);
         self.pruned.clear();
+        self.pruned_chats.clear();
         if orphaned {
             self.focus_root(window, cx);
         }
     }
 
     // ---- open / new -------------------------------------------------------------------------
+
+    /// The tab kind that shows `session`: a chat for an agent conversation, a terminal else.
+    fn item_for(&self, session: SessionId, cx: &gpui::App) -> ItemRef {
+        if self.is_chat(session, cx) {
+            ItemRef::Chat {
+                session: session.to_string(),
+            }
+        } else {
+            ItemRef::Terminal {
+                session: session.to_string(),
+            }
+        }
+    }
 
     /// Shows `session` in the focused pane: focuses its tab when open, else adds a tab (a pane
     /// that only holds a placeholder gives the placeholder's place to the session).
@@ -304,9 +344,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let item = ItemRef::Terminal {
-            session: session.to_string(),
-        };
+        let item = self.item_for(session, cx);
         // A session of another workspace brings that workspace's layout along.
         self.show_workspace_of(session, cx);
         if let Some((pane, index)) = self.state.find_item(&item) {
@@ -345,9 +383,7 @@ impl Workbench {
     ) {
         self.show_workspace_of(session, cx);
         let pane = self.state.active_pane_id();
-        let item = ItemRef::Terminal {
-            session: session.to_string(),
-        };
+        let item = self.item_for(session, cx);
         self.try_mutate(cx, |s| s.split_pane(pane, edge, item));
         self.focus_root(window, cx);
     }
@@ -647,6 +683,7 @@ impl Workbench {
         } else {
             None
         };
+        self.note_focused_chat(cx);
         self.sessions.update(cx, |store, cx| {
             store.set_focused(focused, cx);
             if let Some(session) = focused {
@@ -667,6 +704,7 @@ impl Workbench {
             self.focus_root(window, cx);
         }
         self.on_daemon_state_changed(cx);
+        self.on_approvals_changed(cx);
         cx.notify();
     }
 
@@ -824,12 +862,18 @@ impl Workbench {
 
     /// Closes (detaches) every tab showing `session`.
     pub(crate) fn close_session_tabs(&mut self, session: SessionId, cx: &mut Context<Self>) {
-        let item = ItemRef::Terminal {
-            session: session.to_string(),
-        };
-        while let Some((pane, index)) = self.state.find_item(&item) {
-            if self.try_mutate(cx, |s| s.close_item(pane, index)).is_none() {
-                break;
+        for item in [
+            ItemRef::Terminal {
+                session: session.to_string(),
+            },
+            ItemRef::Chat {
+                session: session.to_string(),
+            },
+        ] {
+            while let Some((pane, index)) = self.state.find_item(&item) {
+                if self.try_mutate(cx, |s| s.close_item(pane, index)).is_none() {
+                    break;
+                }
             }
         }
     }

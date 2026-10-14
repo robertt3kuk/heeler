@@ -10,6 +10,7 @@
 //!   its methods work from any executor or plain thread.
 
 mod blocks;
+mod chat;
 mod client;
 mod connection;
 mod error;
@@ -19,6 +20,7 @@ mod supervisor;
 mod terminal;
 
 pub use blocks::BlockList;
+pub use chat::ChatUpdate;
 pub use client::{Client, ConnectOptions, Resumed};
 pub use connection::Connection;
 pub use error::ClientError;

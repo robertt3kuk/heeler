@@ -1,6 +1,8 @@
 //! The workbench: GPUI-free layout model plus the GPUI shell around it.
 
 pub mod actions;
+mod agents;
+pub mod chat;
 mod daemon;
 mod daemon_popover;
 mod history;
@@ -18,6 +20,7 @@ mod terminals;
 mod view;
 mod workspaces;
 
+pub use agents::{AgentPicker, CODEX, Models};
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};

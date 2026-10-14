@@ -2361,6 +2361,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "heeler-chat-view"
+version = "0.1.0"
+dependencies = [
+ "heeler-core",
+ "serde_json",
+]
+
+[[package]]
 name = "heeler-cli"
 version = "0.1.0"
 dependencies = [
@@ -2447,6 +2455,8 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "gpui_platform",
+ "heeler-agents",
+ "heeler-chat-view",
  "heeler-client",
  "heeler-core",
  "heeler-daemon",

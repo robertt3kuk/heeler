@@ -1,5 +1,5 @@
-//! The `inspector` panel: session info for the focused item; approvals and changes tabs arrive
-//! with M4/M7.
+//! The `inspector` panel: the permission requests of every agent chat (answered here or in the
+//! chat), and session info for the focused item; the changes tab arrives with M7.
 
 use crate::theme::DensityExt as _;
 use gpui::{
@@ -15,7 +15,9 @@ use super::common::{age_label, format_utc, panel_header, state_dot, tone_color};
 use crate::settings::InspectorPanelSettings;
 use crate::workbench::actions::{BlockRef, JumpToBlock};
 use crate::workbench::registry::PanelEnv;
+use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::view::Region;
 
 /// Blocks the info tab lists.
 const BLOCK_ROWS: usize = 20;
@@ -170,6 +172,114 @@ impl InspectorPanel {
     }
 }
 
+impl InspectorPanel {
+    /// One pending request: what is asked, in which session, and a button per offered option.
+    fn approval_row(
+        &self,
+        approval: &heeler_protocol::chat::ApprovalInfo,
+        theme: &crate::theme::Theme,
+        tokens: &crate::theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self
+            .env
+            .sessions
+            .read(cx)
+            .session(approval.session_id)
+            .map_or_else(|| "a session that is gone".to_owned(), |s| s.title.clone());
+        let session = approval.session_id.to_string();
+        let hover = theme.hover;
+        let ordinal = self
+            .env
+            .sessions
+            .read(cx)
+            .approvals()
+            .iter()
+            .position(|a| a.id == approval.id)
+            .unwrap_or(0);
+        let regions = self.env.regions.clone();
+        let buttons = approval.options.iter().enumerate().map(|(number, option)| {
+            let (id, option_id) = (approval.id, option.id.clone());
+            div()
+                .id(SharedString::from(format!(
+                    "inspector-approve-{id}-{number}"
+                )))
+                .relative()
+                .px(px(tokens.spacing * 2.0))
+                .h(px(tokens.sidebar_row))
+                .flex()
+                .items_center()
+                .rounded(px(tokens.radius - 1.0))
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let task = this.env.sessions.update(cx, |store, cx| {
+                        store.respond_approval(id, option_id.clone(), cx)
+                    });
+                    cx.spawn(async move |_, _| {
+                        if let Err(error) = task.await {
+                            tracing::warn!("could not answer a permission request: {error}");
+                        }
+                    })
+                    .detach();
+                }))
+                .child(SharedString::from(format!(
+                    "{} {}",
+                    number + 1,
+                    option.label
+                )))
+                .child(probe(
+                    &regions,
+                    Region::InspectorOption(ordinal * 8 + number),
+                ))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .p(px(tokens.spacing * 2.0))
+            .rounded(px(tokens.radius))
+            .border_1()
+            .border_color(theme.warning)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(SharedString::from(approval.title.clone())),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "inspector-open-{}",
+                        approval.id
+                    )))
+                    .text_color(theme.accent)
+                    .cursor_pointer()
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(crate::workbench::actions::OpenSession(session.clone())),
+                            cx,
+                        );
+                    })
+                    .child(SharedString::from(format!("in {title} →"))),
+            )
+            .children(approval.detail.as_ref().map(|detail| {
+                div()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(detail.clone()))
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(tokens.spacing))
+                    .children(buttons),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for InspectorPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = UiStyle::get(cx);
@@ -227,7 +337,24 @@ impl Render for InspectorPanel {
                 .into_any_element()
         };
         let body: AnyElement = match active.as_str() {
-            "approvals" => note("No pending approvals. Approval cards arrive with M4."),
+            "approvals" => {
+                let approvals = self.env.sessions.read(cx).approvals().to_vec();
+                if approvals.is_empty() {
+                    note("No pending approvals.")
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(tokens.spacing * 2.0))
+                        .p(px(tokens.spacing * 3.0))
+                        .children(
+                            approvals
+                                .iter()
+                                .map(|approval| self.approval_row(approval, &theme, &tokens, cx)),
+                        )
+                        .into_any_element()
+                }
+            }
             "changes" => note("No changes to show. Worktree changes arrive with M7."),
             "info" => match &focused {
                 None => note("Focus a session to see its details."),

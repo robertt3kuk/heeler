@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use heeler_core::{AgentNode, AgentObservation, Epoch, SessionId, TerminalId};
+use heeler_core::{AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, TerminalId};
 use heeler_protocol::blocks::Block;
 use heeler_protocol::chat::ApprovalInfo;
 use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
@@ -81,6 +81,9 @@ pub(crate) struct Effects {
     pub session_terminals: Vec<(SessionId, Option<TerminalId>)>,
     /// Terminals that disappeared together with their session.
     pub removed: Vec<TerminalId>,
+    /// Chat events folded, in order (not part of [`StoreState`]; they go to
+    /// [`Connection::chat_updates`](crate::Connection::chat_updates)).
+    pub chat: Vec<AgentEvent>,
 }
 
 impl Effects {
@@ -88,6 +91,7 @@ impl Effects {
         self.notices.extend(other.notices);
         self.session_terminals.extend(other.session_terminals);
         self.removed.extend(other.removed);
+        self.chat.extend(other.chat);
     }
 }
 
@@ -260,9 +264,9 @@ impl StoreState {
             Event::ApprovalResolved { approval_id, .. } => {
                 self.approvals.retain(|a| a.id != approval_id);
             }
-            // Chat events stream to whoever renders the chat (`Client::events`); they are not
-            // state of the sessions list.
-            Event::ChatEvent { .. } => {}
+            // Chat events are not state of the sessions list: they go to whoever renders the
+            // chat (`Connection::chat_updates`).
+            Event::ChatEvent { event, .. } => effects.chat.push(*event),
             Event::AgentTreeUpdated {
                 session_id,
                 nodes_changed,

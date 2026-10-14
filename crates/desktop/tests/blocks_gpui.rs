@@ -422,15 +422,15 @@ fn the_block_commands_are_in_the_palette(cx: &mut TestAppContext) {
         "Block: Copy Command",
         "Block: Collapse / Expand",
         "Block: Rerun",
-        "Block: Send to Agent (arrives with M4)",
+        "Block: Send to Agent",
     ] {
         assert!(titles.iter().any(|t| t == wanted), "{wanted}: {titles:?}");
     }
-    // Sending to an agent is disabled until M4: the palette command says so.
+    // With no terminal focused there is no block to send: the command says so.
     cx.dispatch_action(heeler_terminal_view::SendBlockToAgent);
     cx.run_until_parked();
     let notice = view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string));
-    assert!(notice.is_some_and(|n| n.contains("M4")));
+    assert!(notice.is_some_and(|n| n.contains("finished command")));
 }
 
 #[gpui::test]

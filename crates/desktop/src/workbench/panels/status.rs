@@ -1,4 +1,5 @@
-//! Status bar items: `connection`, `workspace`, `sessions`, `attention`, `density`, `theme`, `palette_hint`.
+//! Status bar items: `connection`, `workspace`, `sessions`, `attention`, `approvals`, `density`,
+//! `theme`, `palette_hint`.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -11,7 +12,7 @@ use heeler_client::ConnectionState;
 
 use crate::theme::DensityExt as _;
 use crate::workbench::actions::{
-    JumpToNextAttention, OpenJump, ToggleDensity, TogglePalette, daemon,
+    JumpToNextAttention, OpenJump, ReviewApprovals, ToggleDensity, TogglePalette, daemon,
 };
 use crate::workbench::registry::{StatusContext, StatusItemRegistry, StatusItemSpec, StatusSide};
 use crate::workbench::style::TextTooltip;
@@ -63,7 +64,7 @@ fn tooltip(text: String) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> AnyVie
     }
 }
 
-/// The seven built-in status items.
+/// The eight built-in status items.
 pub fn builtin_status_items() -> StatusItemRegistry {
     let mut registry = StatusItemRegistry::new();
     registry.register(StatusItemSpec {
@@ -144,6 +145,24 @@ pub fn builtin_status_items() -> StatusItemRegistry {
                     window.dispatch_action(Box::new(JumpToNextAttention), cx);
                 })
                 .child(format!("● {n} need{} you", if n == 1 { "s" } else { "" }))
+                .into_any_element()
+        }),
+    });
+    registry.register(StatusItemSpec {
+        id: "approvals",
+        default_side: StatusSide::Left,
+        render: Rc::new(|ctx: &StatusContext<'_>| {
+            let n = ctx.data.approvals;
+            if n == 0 {
+                return div().id("status-approvals").into_any_element();
+            }
+            clickable("status-approvals", ctx)
+                .text_color(ctx.theme.warning)
+                .tooltip(tooltip(
+                    "Review the permission requests of your agents".to_owned(),
+                ))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ReviewApprovals), cx))
+                .child(format!("◔ {n} approval{}", if n == 1 { "" } else { "s" }))
                 .into_any_element()
         }),
     });

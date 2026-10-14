@@ -1,0 +1,1058 @@
+//! The cards of a transcript: messages, reasoning, tool calls (commands with their output, file
+//! changes with diffs, other tools), approvals, plans, and the turn footer.
+
+use std::rc::Rc;
+
+use gpui::{
+    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+};
+use heeler_chat_view::diff::{self, DiffLine, FileDiff, LineKind, MAX_LINES};
+use heeler_chat_view::markdown::{self, Block as MdBlock};
+use heeler_chat_view::{
+    Approval, ApprovalState, Body, Entry, Footer, Message, Plan, Reasoning, Tool, Transcript,
+    TurnOutcome, TurnUsage,
+};
+use heeler_core::ApprovalId;
+use heeler_core::agent::{
+    FileChangeKind, NoticeLevel, PermissionKind, PermissionOptionKind, PlanStepStatus, ToolKind,
+    ToolStatus,
+};
+
+use super::markdown_view::{Ids, Look, blocks, code_block};
+use super::view::ChatView;
+use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
+use crate::workbench::render::probe;
+use crate::workbench::view::Region;
+
+/// The default open/closed part of a card (a command's output, a tool's arguments, reasoning).
+pub(super) const PART_BODY: u32 = 0;
+/// A file's diff in a file change card: `PART_DIFF + index`.
+pub(super) const PART_DIFF: u32 = 100;
+/// Lines of a command's output shown while it is collapsed.
+const TAIL_LINES: usize = 8;
+/// Most lines of a command's output drawn even when expanded.
+const MAX_OUTPUT_LINES: usize = 2000;
+/// The widest the conversation column grows.
+const COLUMN_WIDTH: f32 = 920.0;
+
+fn status_color(look: &Look, tool: &Tool) -> gpui::Hsla {
+    let theme = &look.theme;
+    match (tool.status, tool.interrupted) {
+        (_, true) => theme.muted,
+        (None, _) => theme.accent,
+        (Some(ToolStatus::Completed), _) => match tool.exit_code {
+            Some(code) if code != 0 => theme.error,
+            _ => theme.success,
+        },
+        (Some(ToolStatus::Failed), _) => theme.error,
+        (Some(ToolStatus::Declined), _) => theme.warning,
+    }
+}
+
+fn status_text(tool: &Tool) -> String {
+    let mut text = match (tool.status, tool.interrupted) {
+        (_, true) => "stopped".to_owned(),
+        (None, _) => "running…".to_owned(),
+        (Some(ToolStatus::Completed), _) => match tool.exit_code {
+            Some(code) => format!("exit {code}"),
+            None => "done".to_owned(),
+        },
+        (Some(ToolStatus::Failed), _) => match tool.exit_code {
+            Some(code) => format!("failed · exit {code}"),
+            None => "failed".to_owned(),
+        },
+        (Some(ToolStatus::Declined), _) => "declined".to_owned(),
+    };
+    if let Some(ms) = tool.duration_ms.filter(|ms| *ms > 0) {
+        text.push_str(&format!(" · {}", duration(ms)));
+    }
+    text
+}
+
+fn approval_heading(kind: PermissionKind) -> &'static str {
+    match kind {
+        PermissionKind::Command => "Run this command?",
+        PermissionKind::FileChange => "Apply these changes?",
+        PermissionKind::Permissions => "Grant extra permissions?",
+        PermissionKind::Other => "Allow this?",
+    }
+}
+
+fn option_kind(kind: PermissionOptionKind) -> ButtonKind {
+    match kind {
+        PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways => ButtonKind::Allow,
+        PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways => ButtonKind::Deny,
+        PermissionOptionKind::Cancel | PermissionOptionKind::Other => ButtonKind::Plain,
+    }
+}
+
+impl ChatView {
+    fn blocks_of(&mut self, entry: &Entry, text: &str) -> Rc<Vec<MdBlock>> {
+        if let Some((rev, parsed)) = self.parsed.get(&entry.id)
+            && *rev == entry.rev
+        {
+            return parsed.clone();
+        }
+        let parsed = Rc::new(markdown::parse(text));
+        self.parsed.insert(entry.id, (entry.rev, parsed.clone()));
+        parsed
+    }
+
+    /// One list item: the card of entry `index` in the conversation column.
+    pub(super) fn render_entry(
+        &mut self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let look = Look::of(cx);
+        let model = self.model.clone();
+        let transcript = model.read(cx).transcript();
+        let Some(entry) = transcript.entries().get(index) else {
+            return div().into_any_element();
+        };
+        let mut ids = Ids::new(format!("e{}", entry.id)).probing(self.regions.clone(), index);
+        let tokens = look.tokens;
+        let card = match &entry.body {
+            Body::User(message) => self.user_card(entry, message, &look, &mut ids),
+            Body::Assistant(message) => self.assistant_card(entry, message, &look, &mut ids),
+            Body::Reasoning(reasoning) => {
+                self.reasoning_card(index, entry, reasoning, &look, &mut ids, cx)
+            }
+            Body::Tool(tool) => self.tool_card(index, entry, tool, transcript, &look, &mut ids, cx),
+            Body::Approval(id) => match transcript.approval(*id) {
+                Some(approval) => self.approval_card(approval, true, &look, cx),
+                None => div().into_any_element(),
+            },
+            Body::Plan(plan) => plan_card(plan, &look),
+            Body::TurnDiff(turn_diff) => self.turn_diff_card(
+                index,
+                entry,
+                &turn_diff.patch,
+                transcript,
+                &look,
+                &mut ids,
+                cx,
+            ),
+            Body::Footer(footer) => footer_card(footer, &look),
+            Body::Notice { level, message } => notice_card(*level, message, &look),
+        };
+        div()
+            .id(("chat-entry", index))
+            .relative()
+            .w_full()
+            .px(px(tokens.spacing * 3.0))
+            .py(px(tokens.spacing * 1.25))
+            .flex()
+            .justify_center()
+            .child(div().w_full().max_w(px(COLUMN_WIDTH)).child(card))
+            .child(probe(&self.regions, Region::ChatEntry(index)))
+            .into_any_element()
+    }
+
+    // ---- messages --------------------------------------------------------------------------
+
+    fn user_card(
+        &mut self,
+        entry: &Entry,
+        message: &Message,
+        look: &Look,
+        ids: &mut Ids,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let parsed = self.blocks_of(entry, &message.text);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .px(px(tokens.spacing * 3.0))
+            .py(px(tokens.spacing * 2.0))
+            .rounded(px(tokens.radius + 2.0))
+            .bg(theme.accent.opacity(0.10))
+            .border_1()
+            .border_color(theme.accent.opacity(0.25))
+            .child(
+                div()
+                    .text_size(px(tokens.section_font_size))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted)
+                    .child("YOU"),
+            )
+            .child(blocks(&parsed, look, ids))
+            .into_any_element()
+    }
+
+    fn assistant_card(
+        &mut self,
+        entry: &Entry,
+        message: &Message,
+        look: &Look,
+        ids: &mut Ids,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let parsed = self.blocks_of(entry, &message.text);
+        let commentary = message.phase.as_deref() == Some("commentary");
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .text_color(if commentary { theme.muted } else { theme.fg })
+            .child(blocks(&parsed, look, ids))
+            .when(!message.done, |s| {
+                s.child(div().text_color(theme.accent).child("▍"))
+            })
+            .into_any_element()
+    }
+
+    fn reasoning_card(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        reasoning: &Reasoning,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let open = self.open(entry.id, PART_BODY, false);
+        let id = entry.id;
+        let label = if reasoning.done {
+            "Thought"
+        } else {
+            "Thinking…"
+        };
+        let preview = reasoning
+            .summary
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim_matches('*')
+            .to_owned();
+        let summary = (open && !reasoning.summary.is_empty())
+            .then(|| self.blocks_of(entry, &reasoning.summary));
+        let hover = theme.hover;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .text_color(theme.muted)
+            .child(
+                div()
+                    .id(ids.next("reasoning"))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 1.5))
+                    .cursor_pointer()
+                    .rounded(px(3.0))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle(index, id, PART_BODY, cx);
+                    }))
+                    .child(probe(&self.regions, Region::ChatPart(index, PART_BODY)))
+                    .child(if open { "▾" } else { "▸" })
+                    .child(SharedString::from(label))
+                    .when(!open && !preview.is_empty(), |s| {
+                        s.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(tokens.section_font_size + 1.0))
+                                .child(SharedString::from(preview.clone())),
+                        )
+                    }),
+            )
+            .children(summary.map(|parsed| {
+                div()
+                    .pl(px(tokens.spacing * 4.0))
+                    .child(blocks(&parsed, look, ids))
+            }))
+            .when(open && !reasoning.content.is_empty(), |s| {
+                s.child(
+                    div()
+                        .pl(px(tokens.spacing * 4.0))
+                        .text_size(px(tokens.section_font_size + 1.0))
+                        .child(SharedString::from(reasoning.content.clone())),
+                )
+            })
+            .into_any_element()
+    }
+
+    // ---- tool calls ------------------------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    fn tool_card(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        tool: &Tool,
+        transcript: &Transcript,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let pending = tool.approvals.iter().any(|id| {
+            transcript
+                .approval(*id)
+                .is_some_and(|a| a.state == ApprovalState::Pending)
+        });
+        let icon = match tool.kind {
+            ToolKind::Command => "$",
+            ToolKind::FileChange => "✎",
+            ToolKind::WebSearch => "⌕",
+            ToolKind::Mcp | ToolKind::Dynamic | ToolKind::Other => "⚙",
+        };
+        let color = status_color(look, tool);
+        let id = entry.id;
+        let hover = theme.hover;
+        let header_title = match tool.kind {
+            ToolKind::Command => tool.command().to_owned(),
+            _ if tool.title.is_empty() => tool.name.clone(),
+            _ => tool.title.clone(),
+        };
+        let body = match tool.kind {
+            ToolKind::Command => self.command_body(index, entry, tool, look, ids, cx),
+            ToolKind::FileChange => {
+                self.file_change_body(index, entry, tool, pending, look, ids, cx)
+            }
+            _ => self.other_body(index, entry, tool, look, ids, cx),
+        };
+        let approvals: Vec<AnyElement> = tool
+            .approvals
+            .iter()
+            .filter_map(|approval| transcript.approval(*approval))
+            .map(|approval| self.approval_card(approval, false, look, cx))
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing * 1.5))
+            .p(px(tokens.spacing * 2.0))
+            .rounded(px(tokens.radius + 2.0))
+            .border_1()
+            .border_color(if pending { theme.warning } else { theme.border })
+            .bg(theme.overlay)
+            .child(
+                div()
+                    .id(ids.next("tool-header"))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 2.0))
+                    .rounded(px(3.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle(index, id, PART_BODY, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(tokens.font_size))
+                            .text_color(theme.muted)
+                            .font_family(look.mono.clone())
+                            .child(icon),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(look.mono.clone())
+                            .child(SharedString::from(header_title)),
+                    )
+                    .child(pill(status_text(tool), color, look))
+                    .child(probe(&self.regions, Region::ChatPart(index, PART_BODY))),
+            )
+            .child(body)
+            .children(approvals)
+            .into_any_element()
+    }
+
+    fn command_body(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        tool: &Tool,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let open = self.open(entry.id, PART_BODY, false);
+        let id = entry.id;
+        let output = tool.output.trim_end_matches('\n');
+        let total = output.lines().count();
+        let (shown, hidden) = if open {
+            tail_lines(output, MAX_OUTPUT_LINES)
+        } else {
+            tail_lines(output, TAIL_LINES)
+        };
+        let hover = theme.hover;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .children(tool.cwd().map(|cwd| {
+                div()
+                    .font_family(look.mono.clone())
+                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_color(theme.muted)
+                    .truncate()
+                    .child(SharedString::from(format!("in {cwd}")))
+            }))
+            .when(!output.is_empty(), |s| {
+                s.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .rounded(px(tokens.radius))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.surface)
+                        .px(px(tokens.spacing * 2.0))
+                        .py(px(tokens.spacing * 1.5))
+                        .font_family(look.mono.clone())
+                        .text_size(px(tokens.font_size - 0.5))
+                        .when(hidden > 0, |s| {
+                            s.child(
+                                div()
+                                    .id(ids.next("output-more"))
+                                    .text_color(theme.muted)
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle(index, id, PART_BODY, cx);
+                                    }))
+                                    .child(SharedString::from(format!(
+                                        "… {hidden} earlier line{} (click to {})",
+                                        if hidden == 1 { "" } else { "s" },
+                                        if open { "collapse" } else { "show" }
+                                    ))),
+                            )
+                        })
+                        .child(div().child(SharedString::from(shown.to_owned())))
+                        .when(tool.truncated, |s| {
+                            s.child(
+                                div()
+                                    .text_color(theme.muted)
+                                    .child("… the output was cut by the daemon"),
+                            )
+                        }),
+                )
+            })
+            .when(open && hidden == 0 && total > TAIL_LINES, |s| {
+                s.child(
+                    div()
+                        .id(ids.next("output-less"))
+                        .text_color(theme.muted)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle(index, id, PART_BODY, cx);
+                        }))
+                        .child("collapse"),
+                )
+            })
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn file_change_body(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        tool: &Tool,
+        pending: bool,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let id = entry.id;
+        let hover = theme.hover;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (file, change) in tool.changes.iter().enumerate() {
+            let diff = diff::from_change(change);
+            // A request that waits for an answer shows what it would change.
+            let part = PART_DIFF + u32::try_from(file).unwrap_or(0);
+            let open = self.open(id, part, pending);
+            let label = match change.kind {
+                FileChangeKind::Add => "added",
+                FileChangeKind::Delete => "deleted",
+                FileChangeKind::Update => "edited",
+            };
+            let name = match &diff.moved_from {
+                Some(from) => format!("{from} → {}", diff.path),
+                None => diff.path.clone(),
+            };
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(tokens.spacing))
+                    .child(
+                        div()
+                            .id(ids.next("file"))
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap(px(tokens.spacing * 2.0))
+                            .rounded(px(3.0))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle(index, id, part, cx);
+                            }))
+                            .child(div().flex_none().text_color(theme.muted).child(if open {
+                                "▾"
+                            } else {
+                                "▸"
+                            }))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(look.mono.clone())
+                                    .child(SharedString::from(name)),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.muted)
+                                    .text_size(px(tokens.section_font_size + 1.0))
+                                    .child(label),
+                            )
+                            .child(counts(&diff, look))
+                            .child(probe(&self.regions, Region::ChatPart(index, part))),
+                    )
+                    .when(open, |s| s.child(diff_view(&diff, look, ids)))
+                    .into_any_element(),
+            );
+        }
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .text_color(theme.muted)
+                    .child("No file contents were reported for this change.")
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing * 1.5))
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn other_body(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        tool: &Tool,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let open = self.open(entry.id, PART_BODY, false);
+        let id = entry.id;
+        let hover = theme.hover;
+        let args: Option<String> = tool
+            .input
+            .as_ref()
+            .and_then(|input| serde_json::to_string_pretty(input).ok());
+        let output = tool.output.trim_end_matches('\n');
+        let (shown, hidden) = if open {
+            tail_lines(output, MAX_OUTPUT_LINES)
+        } else {
+            tail_lines(output, TAIL_LINES / 2)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .child(
+                div()
+                    .id(ids.next("args"))
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 1.5))
+                    .text_color(theme.muted)
+                    .cursor_pointer()
+                    .rounded(px(3.0))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle(index, id, PART_BODY, cx);
+                    }))
+                    .child(if open { "▾" } else { "▸" })
+                    .child(SharedString::from(format!("{} · arguments", tool.name))),
+            )
+            .when_some(args.filter(|_| open), |s, args| {
+                s.child(code_block(&args, Some("json"), look, ids))
+            })
+            .children(tool.updates.last().map(|update| {
+                div()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(update.clone()))
+            }))
+            .when(!output.is_empty(), |s| {
+                s.child(
+                    div()
+                        .font_family(look.mono.clone())
+                        .text_size(px(tokens.font_size - 0.5))
+                        .when(hidden > 0, |s| {
+                            s.child(
+                                div()
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(format!("… {hidden} earlier lines"))),
+                            )
+                        })
+                        .child(SharedString::from(shown.to_owned())),
+                )
+            })
+            .into_any_element()
+    }
+
+    // ---- the turn's changes ----------------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    fn turn_diff_card(
+        &mut self,
+        index: usize,
+        entry: &Entry,
+        patch: &str,
+        transcript: &Transcript,
+        look: &Look,
+        ids: &mut Ids,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        // File change cards of the same turn already show these files.
+        let covered = transcript.entries().iter().any(|other| {
+            other.turn == entry.turn
+                && matches!(&other.body, Body::Tool(t) if t.kind == ToolKind::FileChange && !t.changes.is_empty())
+        });
+        if covered {
+            return div().into_any_element();
+        }
+        let files = diff::split_patch(patch);
+        let (added, removed) = files
+            .iter()
+            .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+        let open = self.open(entry.id, PART_BODY, false);
+        let id = entry.id;
+        let hover = theme.hover;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .p(px(tokens.spacing * 2.0))
+            .rounded(px(tokens.radius + 2.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.overlay)
+            .child(
+                div()
+                    .id(ids.next("turn-diff"))
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 2.0))
+                    .cursor_pointer()
+                    .rounded(px(3.0))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle(index, id, PART_BODY, cx);
+                    }))
+                    .child(if open { "▾" } else { "▸" })
+                    .child(SharedString::from(format!(
+                        "Changes this turn · {} file{}",
+                        files.len(),
+                        if files.len() == 1 { "" } else { "s" }
+                    )))
+                    .child(
+                        div()
+                            .text_color(theme.success)
+                            .child(SharedString::from(format!("+{added}"))),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.error)
+                            .child(SharedString::from(format!("−{removed}"))),
+                    ),
+            )
+            .when(open, |s| {
+                s.children(files.iter().map(|file| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(tokens.spacing))
+                        .child(
+                            div()
+                                .font_family(look.mono.clone())
+                                .child(SharedString::from(file.path.clone())),
+                        )
+                        .child(diff_view(
+                            file,
+                            look,
+                            &mut Ids::new(format!("td{}", entry.id)),
+                        ))
+                }))
+            })
+            .into_any_element()
+    }
+
+    // ---- approvals -------------------------------------------------------------------------
+
+    pub(super) fn approval_card(
+        &self,
+        approval: &Approval,
+        show_title: bool,
+        look: &Look,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let pending = approval.state == ApprovalState::Pending;
+        let ordinal = self.pending.iter().position(|id| *id == approval.id);
+        let status: Option<(String, gpui::Hsla)> = match &approval.state {
+            ApprovalState::Pending => None,
+            ApprovalState::Selected { .. } => {
+                let option = approval.chosen();
+                let tone = match option.map(|o| o.kind) {
+                    Some(PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways) => {
+                        theme.success
+                    }
+                    Some(PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways) => {
+                        theme.error
+                    }
+                    _ => theme.muted,
+                };
+                let what = option.map_or("Answered", |o| o.label.as_str());
+                let by = if self.sessions.read(cx).answered_here(approval.id).is_some() {
+                    "answered here"
+                } else {
+                    "answered from another client"
+                };
+                Some((format!("{what} · {by}"), tone))
+            }
+            ApprovalState::Expired => Some((
+                "No answer: the turn ended or the agent withdrew the request".to_owned(),
+                theme.muted,
+            )),
+        };
+        let approval_id: ApprovalId = approval.id;
+        let buttons: Vec<AnyElement> = if pending {
+            approval
+                .options
+                .iter()
+                .enumerate()
+                .map(|(number, option)| {
+                    let option_id = option.id.clone();
+                    let region = ordinal.map_or(usize::MAX, |ordinal| ordinal * 8 + number);
+                    button(
+                        SharedString::from(format!("approve-{}-{number}", approval.id)),
+                        format!("{} {}", number + 1, option.label),
+                        option_kind(option.kind),
+                        true,
+                        look,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.answer(approval_id, option_id.clone(), cx);
+                    }))
+                    .child(probe(&self.regions, Region::ChatOption(region)))
+                    .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing * 1.5))
+            .p(px(tokens.spacing * 2.0))
+            .rounded(px(tokens.radius + 2.0))
+            .border_1()
+            .border_color(if pending { theme.warning } else { theme.border })
+            .bg(if pending {
+                theme.warning.opacity(0.08)
+            } else {
+                theme.surface
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 1.5))
+                    .child(
+                        div()
+                            .text_color(if pending { theme.warning } else { theme.muted })
+                            .child(if pending { "●" } else { "○" }),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(approval_heading(approval.kind)),
+                    ),
+            )
+            .when(show_title, |s| {
+                s.child(
+                    div()
+                        .font_family(look.mono.clone())
+                        .child(SharedString::from(approval.title.clone())),
+                )
+            })
+            .children(approval.detail.as_ref().map(|detail| {
+                div()
+                    .text_color(theme.muted)
+                    .text_size(px(tokens.section_font_size + 1.0))
+                    .child(SharedString::from(detail.clone()))
+            }))
+            .when(pending, |s| {
+                s.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(tokens.spacing * 2.0))
+                        .children(buttons),
+                )
+            })
+            .children(
+                status.map(|(text, color)| div().text_color(color).child(SharedString::from(text))),
+            )
+            .into_any_element()
+    }
+}
+
+// ---- pieces without state -------------------------------------------------------------------
+
+fn counts(diff: &FileDiff, look: &Look) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
+    div()
+        .flex()
+        .flex_none()
+        .gap(px(tokens.spacing))
+        .text_size(px(tokens.section_font_size + 1.0))
+        .child(
+            div()
+                .text_color(theme.success)
+                .child(SharedString::from(format!("+{}", diff.added))),
+        )
+        .child(
+            div()
+                .text_color(theme.error)
+                .child(SharedString::from(format!("−{}", diff.removed))),
+        )
+        .into_any_element()
+}
+
+/// A unified diff: line numbers, a sign and the text; additions and removals tinted
+/// green and red.
+fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
+    let number = |n: Option<u32>| {
+        div()
+            .flex_none()
+            .w(px(tokens.font_size * 3.2))
+            .text_right()
+            .pr(px(tokens.spacing))
+            .text_color(theme.muted)
+            .child(SharedString::from(
+                n.map_or(String::new(), |n| n.to_string()),
+            ))
+    };
+    let row = |line: &DiffLine| {
+        let (sign, tint, text_color) = match line.kind {
+            LineKind::Add => ("+", Some(theme.success.opacity(0.16)), theme.fg),
+            LineKind::Remove => ("−", Some(theme.error.opacity(0.16)), theme.fg),
+            LineKind::Context => (" ", None, theme.fg),
+            LineKind::Hunk => ("", Some(theme.accent.opacity(0.10)), theme.muted),
+            LineKind::Note => ("", None, theme.muted),
+        };
+        let shown = if matches!(line.kind, LineKind::Hunk) {
+            line.text.clone()
+        } else {
+            line.text.replace('\t', "    ")
+        };
+        div()
+            .flex()
+            .min_w_full()
+            .when_some(tint, |s, tint| s.bg(tint))
+            .text_color(text_color)
+            .child(number(line.old))
+            .child(number(line.new))
+            .child(div().flex_none().w(px(tokens.font_size)).child(sign))
+            .child(div().flex_none().child(SharedString::from(shown)))
+    };
+    let shown = diff.lines.len().min(MAX_LINES);
+    let hidden = diff.lines.len() - shown;
+    div()
+        .id(ids.next("diff"))
+        .overflow_x_scroll()
+        .rounded(px(tokens.radius))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface)
+        .font_family(look.mono.clone())
+        .text_size(px(tokens.font_size - 0.5))
+        .whitespace_nowrap()
+        .py(px(tokens.spacing))
+        .children(diff.lines.iter().take(shown).map(row))
+        .when(hidden > 0, |s| {
+            s.child(
+                div()
+                    .px(px(tokens.spacing * 2.0))
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!(
+                        "… {hidden} more lines (the whole diff is in `heeler chat log`)"
+                    ))),
+            )
+        })
+        .when(diff.lines.is_empty(), |s| {
+            s.child(
+                div()
+                    .px(px(tokens.spacing * 2.0))
+                    .text_color(theme.muted)
+                    .child("No text to show (a binary file or a mode change)."),
+            )
+        })
+        .into_any_element()
+}
+
+fn plan_card(plan: &Plan, look: &Look) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(tokens.spacing))
+        .p(px(tokens.spacing * 2.0))
+        .rounded(px(tokens.radius + 2.0))
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .text_size(px(tokens.section_font_size))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted)
+                .child("PLAN"),
+        )
+        .children(plan.explanation.as_ref().map(|text| {
+            div()
+                .text_color(theme.muted)
+                .child(SharedString::from(text.clone()))
+        }))
+        .children(plan.steps.iter().map(|step| {
+            let (mark, color) = match step.status {
+                PlanStepStatus::Pending => ("☐", theme.muted),
+                PlanStepStatus::InProgress => ("◐", theme.accent),
+                PlanStepStatus::Completed => ("☑", theme.success),
+            };
+            div()
+                .flex()
+                .gap(px(tokens.spacing * 2.0))
+                .child(div().flex_none().text_color(color).child(mark))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .when(step.status == PlanStepStatus::Completed, |s| {
+                            s.text_color(theme.muted).line_through()
+                        })
+                        .child(SharedString::from(step.text.clone())),
+                )
+        }))
+        .children(
+            plan.text
+                .as_ref()
+                .map(|text| div().child(SharedString::from(text.clone()))),
+        )
+        .into_any_element()
+}
+
+fn usage_text(usage: &TurnUsage) -> String {
+    let mut parts = Vec::new();
+    if let Some(total) = usage.total_tokens {
+        parts.push(format!("{} tokens", tokens(total)));
+    }
+    let mut detail = Vec::new();
+    if let Some(input) = usage.input_tokens {
+        let cached = usage
+            .cached_input_tokens
+            .filter(|c| *c > 0)
+            .map(|c| format!(" ({} cached)", tokens(c)))
+            .unwrap_or_default();
+        detail.push(format!("in {}{cached}", tokens(input)));
+    }
+    if let Some(output) = usage.output_tokens {
+        detail.push(format!("out {}", tokens(output)));
+    }
+    if !detail.is_empty() {
+        parts.push(detail.join(" · "));
+    }
+    if let (Some(used), Some(window)) = (usage.conversation_tokens, usage.context_window) {
+        parts.push(format!("context {} / {}", tokens(used), tokens(window)));
+    }
+    parts.join(" · ")
+}
+
+fn footer_card(footer: &Footer, look: &Look) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
+    let (mark, color, text) = match &footer.outcome {
+        TurnOutcome::Completed => ("✓", theme.success, "done".to_owned()),
+        TurnOutcome::Failed { message, .. } => ("✗", theme.error, format!("failed: {message}")),
+        TurnOutcome::Cancelled => ("■", theme.muted, "interrupted".to_owned()),
+    };
+    let mut line = vec![text];
+    if let Some(ms) = footer.duration_ms {
+        line.push(duration(ms));
+    }
+    if let Some(usage) = footer
+        .usage
+        .as_ref()
+        .map(usage_text)
+        .filter(|u| !u.is_empty())
+    {
+        line.push(usage);
+    }
+    div()
+        .flex()
+        .gap(px(tokens.spacing * 1.5))
+        .text_color(theme.muted)
+        .text_size(px(tokens.section_font_size + 1.0))
+        .child(div().flex_none().text_color(color).child(mark))
+        .child(
+            div()
+                .min_w_0()
+                .when(matches!(footer.outcome, TurnOutcome::Failed { .. }), |s| {
+                    s.text_color(theme.error)
+                })
+                .child(SharedString::from(line.join(" · "))),
+        )
+        .into_any_element()
+}
+
+fn notice_card(level: NoticeLevel, message: &str, look: &Look) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
+    let (mark, color) = match level {
+        NoticeLevel::Info => ("ⓘ", theme.muted),
+        NoticeLevel::Warning => ("⚠", theme.warning),
+        NoticeLevel::Error => ("✗", theme.error),
+    };
+    div()
+        .flex()
+        .gap(px(tokens.spacing * 1.5))
+        .text_color(color)
+        .child(div().flex_none().child(mark))
+        .child(
+            div()
+                .min_w_0()
+                .child(SharedString::from(message.to_owned())),
+        )
+        .into_any_element()
+}
