@@ -171,6 +171,17 @@ fn requests() -> Vec<(&'static str, Request)> {
                 count: 100,
             }),
         ),
+        (
+            "terminal_set_colors",
+            Request::TerminalSetColors(TerminalSetColors {
+                terminal_id: TID,
+                colors: TerminalColors {
+                    foreground: (212, 212, 212),
+                    background: (30, 30, 30),
+                    cursor: (212, 212, 212),
+                },
+            }),
+        ),
     ]
 }
 

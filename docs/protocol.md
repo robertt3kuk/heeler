@@ -1,6 +1,8 @@
-# Heeler IPC Protocol — v0 (draft)
+# Heeler IPC Protocol — v0.2
 
-Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate is the source of truth once it exists, and this document must match it.
+Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
+
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`).
 
 ## Frames
 
@@ -50,6 +52,7 @@ Milestone tag = when the method lands.
 | `terminal.resize` | command | terminal id, cols, rows, px size | M1 |
 | `terminal.ack` | command | terminal id, frame | M1 |
 | `terminal.history` | query | terminal id, from_line, count → styled rows | M1 |
+| `terminal.set_colors` | command | terminal id, `{foreground, background, cursor}` RGB → `{}`; daemon answers OSC 10/11/12 with them; last writer wins; capability `terminal.colors` | M2 |
 | `terminal.tap_output` | command | raw byte subscription (lossy, gap markers) | M7 |
 | `chat.send` | command | session id, content blocks | M4 |
 | `chat.cancel` | command | session id, turn id | M4 |

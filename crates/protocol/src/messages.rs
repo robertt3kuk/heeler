@@ -61,6 +61,9 @@ pub enum Request {
     TerminalAck(TerminalAck),
     #[serde(rename = "terminal.history")]
     TerminalHistory(TerminalHistory),
+    /// Capability `terminal.colors` (protocol 0.2).
+    #[serde(rename = "terminal.set_colors")]
+    TerminalSetColors(TerminalSetColors),
 }
 
 impl Request {
@@ -229,6 +232,22 @@ pub struct TerminalHistory {
     /// 0 = the scrollback line directly above the viewport; larger = older.
     pub from_line: u32,
     pub count: u32,
+}
+
+/// The client's default terminal colors, used by the daemon to answer OSC 10/11/12 queries so
+/// applications see the theme the user sees. Shared by all clients of the terminal, last writer
+/// wins (like `terminal.resize`). Answered with `Empty`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSetColors {
+    pub terminal_id: TerminalId,
+    pub colors: TerminalColors,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalColors {
+    pub foreground: (u8, u8, u8),
+    pub background: (u8, u8, u8),
+    pub cursor: (u8, u8, u8),
 }
 
 // ---------------------------------------------------------------------------------------------
