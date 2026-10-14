@@ -154,6 +154,8 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 
 - **B-1 Session environment like a real terminal emulator.** New sessions get a fresh login environment instead of inheriting `heelerd`'s environment (which depends on whoever started the daemon: CLI, desktop, launchd): start from the user's launchd environment (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`/`LC_*`, `PATH` via `path_helper`), then the login shell builds the rest (`-l`). Configurable in settings and applied at session start: `terminal.shell` (override the account login shell), `terminal.env` (extra variables), `terminal.env_inherit = "login" | "daemon"`, with workspace overrides (`<repo>/.heeler/settings.toml`). Clients pass the resolved shell/env in `session.create` (`TerminalSpec.command`/`env` already exist); daemon-managed `HEELER_*` still win. Already done: the default shell is the account's login shell (`getpwuid`), not the daemon's `$SHELL`.
 - **B-2** → scheduled as M2.7. **B-3** → resolved by ADR 0011.
+- **B-4 History hits carry their origin.** `HistoryHit` gains optional `path` (external transcript file, for "Reveal file") and `block_id` (+ `terminal_id`) for Heeler block hits so "Open block" is exact instead of matching `ts_ms` (gap found in M17-B). Additive protocol change.
+- **B-5 OpenCode history adapter** once its v1/v2 schemas settle (deferred in M17-A).
 
 ## Risk register
 
