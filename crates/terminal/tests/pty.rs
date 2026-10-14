@@ -206,6 +206,27 @@ async fn color_and_window_size_queries_reach_the_child() {
 }
 
 #[tokio::test]
+async fn set_default_colors_changes_the_osc_11_reply_a_running_child_gets() {
+    // The child announces READY, then queries OSC 11 with both terminators and shows the raw
+    // replies with `cat -v`; the colours are changed while it waits.
+    let reply = "\x1b]11;rgb:1212/3434/5656\x07\x1b]11;rgb:1212/3434/5656\x1b\\";
+    let script = format!(
+        r#"stty raw -echo; printf READY; sleep 1; printf '\033]11;?\007\033]11;?\033\\'; dd bs=1 count={} 2>/dev/null | cat -v; printf '\nDONE\n'"#,
+        reply.len()
+    );
+    let term = Terminal::spawn(config(&["/bin/sh", "-c", &script])).expect("spawn");
+    wait_for(&term, "ready", |s| text(s).contains("READY")).await;
+    term.set_default_colors(DefaultColors {
+        background: (0x12, 0x34, 0x56),
+        ..DefaultColors::default()
+    });
+    let snapshot = wait_for(&term, "replies", |s| text(s).contains("DONE")).await;
+    let want = "^[]11;rgb:1212/3434/5656^G^[]11;rgb:1212/3434/5656^[\\";
+    let screen = text(&snapshot);
+    assert!(screen.replace('\n', "").contains(want), "screen:\n{screen}");
+}
+
+#[tokio::test]
 async fn exit_reports_the_code_or_the_raw_signal_number() {
     for (script, code, signal) in [
         ("exit 3", Some(3), None),

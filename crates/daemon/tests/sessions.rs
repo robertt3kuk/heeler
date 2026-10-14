@@ -17,8 +17,8 @@ use heeler_protocol::ErrorCode;
 use heeler_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
     SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSnapshot, TerminalAck,
-    TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalResize, WorkspaceCreate,
-    WorkspaceInfo, WorkspaceList, WorkspaceRef,
+    TerminalColors, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalResize,
+    TerminalSetColors, WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRef,
 };
 use heeler_protocol::render::TerminalRender;
 use tokio::time::{sleep, timeout};
@@ -1301,6 +1301,62 @@ async fn restart_falls_back_to_the_spec_cwd_when_the_reported_directory_is_gone(
         s.contains("NOW-IN=/")
     })
     .await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_colors_changes_the_osc_11_reply_and_unknown_terminals_are_not_found() {
+    let t = TestDaemon::start().await;
+    let client = t.connect().await;
+    assert!(
+        client
+            .welcome()
+            .capabilities
+            .iter()
+            .any(|c| c == "terminal.colors")
+    );
+
+    let reply_len = "\x1b]11;rgb:1234/5678/9abc\x07".len();
+    // The child waits for a byte (sent after the colors), queries OSC 11 and shows the raw
+    // reply with `cat -v`.
+    let script = format!(
+        r"stty raw -echo; printf READY; dd bs=1 count=1 2>/dev/null; printf '\033]11;?\007'; dd bs=1 count={reply_len} 2>/dev/null | cat -v; printf '\nDONE\n'"
+    );
+    let session = create(&client, sh(&script)).await;
+    let tid = terminal_of(&session);
+    let mut view = View::attach(&client, tid, None).await;
+    view.wait_for("ready", |s| s.contains("READY")).await;
+
+    client
+        .call::<Empty>(Request::TerminalSetColors(TerminalSetColors {
+            terminal_id: tid,
+            colors: TerminalColors {
+                foreground: (0x10, 0x20, 0x30),
+                background: (0x12, 0x56, 0x9a),
+                cursor: (0xff, 0xff, 0xff),
+            },
+        }))
+        .await
+        .unwrap();
+    client.send_input(tid, b"g").await.unwrap();
+    view.wait_for("the reply", |s| s.contains("DONE")).await;
+    assert!(
+        view.screen.contains("^[]11;rgb:1212/5656/9a9a^G"),
+        "screen:\n{}",
+        view.screen.text()
+    );
+
+    let ghost = client
+        .call::<Empty>(Request::TerminalSetColors(TerminalSetColors {
+            terminal_id: TerminalId(4242),
+            colors: TerminalColors {
+                foreground: (0, 0, 0),
+                background: (0, 0, 0),
+                cursor: (0, 0, 0),
+            },
+        }))
+        .await;
+    assert_eq!(remote_code(ghost), ErrorCode::NotFound);
     t.stop().await;
 }
 

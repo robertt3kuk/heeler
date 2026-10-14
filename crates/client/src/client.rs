@@ -27,8 +27,10 @@ use tracing::{debug, warn};
 use crate::error::ClientError;
 use crate::socket::default_socket_path;
 
+/// Capability for `terminal.set_colors`; the client sends colors only to daemons advertising it.
+pub(crate) const COLORS_CAPABILITY: &str = "terminal.colors";
 /// Capabilities this client understands, offered in `hello`.
-const CAPABILITIES: &[&str] = &["terminal.render.v1"];
+const CAPABILITIES: &[&str] = &["terminal.render.v1", COLORS_CAPABILITY];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
 const AUTOSTART_POLL: Duration = Duration::from_millis(25);

@@ -376,6 +376,12 @@ impl Terminal {
         Ok(())
     }
 
+    /// Changes the colours answering OSC 10/11/12 queries (see
+    /// [`Emulator::set_default_colors`]). Takes effect for queries read after this returns.
+    pub fn set_default_colors(&self, colors: DefaultColors) {
+        self.core.engine.lock().set_default_colors(colors);
+    }
+
     pub fn size(&self) -> TerminalSize {
         self.core.engine.lock().size()
     }

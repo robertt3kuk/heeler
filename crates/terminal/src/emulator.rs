@@ -189,6 +189,12 @@ impl Emulator {
         self
     }
 
+    /// Changes the colours reported for OSC 10/11/12 queries from now on; colours the
+    /// application set itself still win.
+    pub fn set_default_colors(&mut self, colors: DefaultColors) {
+        self.default_colors = colors;
+    }
+
     pub fn size(&self) -> TerminalSize {
         self.size
     }

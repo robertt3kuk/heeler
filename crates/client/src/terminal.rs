@@ -1,7 +1,7 @@
 //! Durable terminal attachments: [`TerminalHandle`] outlives individual connections.
 
 use heeler_core::TerminalId;
-use heeler_protocol::messages::TerminalSize;
+use heeler_protocol::messages::{TerminalColors, TerminalSize};
 use heeler_protocol::render::TerminalRender;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -58,6 +58,11 @@ pub(crate) enum Command {
         terminal: TerminalId,
         size: TerminalSize,
     },
+    SetColors {
+        handle: u64,
+        terminal: TerminalId,
+        colors: TerminalColors,
+    },
 }
 
 impl Command {
@@ -69,6 +74,7 @@ impl Command {
             Command::Ack { .. } => "ack",
             Command::Input { .. } => "input",
             Command::Resize { .. } => "resize",
+            Command::SetColors { .. } => "set_colors",
         }
     }
 }
@@ -139,6 +145,17 @@ impl TerminalHandle {
             handle: self.id,
             terminal: self.terminal,
             size,
+        });
+    }
+
+    /// Sets the colors the daemon answers OSC 10/11/12 queries with. The colors are remembered
+    /// and sent again with every re-attach; daemons without capability `terminal.colors` never
+    /// see them.
+    pub fn set_colors(&self, colors: TerminalColors) {
+        self.send(Command::SetColors {
+            handle: self.id,
+            terminal: self.terminal,
+            colors,
         });
     }
 

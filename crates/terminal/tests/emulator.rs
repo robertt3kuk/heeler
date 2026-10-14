@@ -245,6 +245,33 @@ fn configured_default_colors_answer_osc_queries_until_the_app_overrides_them() {
 }
 
 #[test]
+fn set_default_colors_changes_later_osc_replies_but_not_application_overrides() {
+    let mut em = emulator(10, 3);
+    em.set_default_colors(DefaultColors {
+        foreground: (1, 2, 3),
+        background: (0xab, 0xcd, 0xef),
+        cursor: (7, 8, 9),
+    });
+    // Each reply ends with the terminator its query used.
+    em.feed(b"\x1b]11;?\x07\x1b]11;?\x1b\\");
+    assert_eq!(
+        String::from_utf8_lossy(&em.drain_replies()),
+        "\x1b]11;rgb:abab/cdcd/efef\x07\x1b]11;rgb:abab/cdcd/efef\x1b\\"
+    );
+    em.feed(b"\x1b]10;rgb:11/22/33\x07");
+    em.set_default_colors(DefaultColors {
+        foreground: (9, 9, 9),
+        background: (0, 0, 0),
+        cursor: (7, 8, 9),
+    });
+    em.feed(b"\x1b]10;?\x07\x1b]11;?\x07");
+    assert_eq!(
+        String::from_utf8_lossy(&em.drain_replies()),
+        "\x1b]10;rgb:1111/2222/3333\x07\x1b]11;rgb:0000/0000/0000\x07"
+    );
+}
+
+#[test]
 fn a_flood_of_queries_is_answered_within_a_bounded_reply_buffer() {
     let mut em = emulator(10, 3);
     for _ in 0..4 {

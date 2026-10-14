@@ -22,7 +22,8 @@ use heeler_core::{Epoch, Seq, SessionId, TerminalId};
 use heeler_protocol::ErrorCode;
 use heeler_protocol::messages::{
     Empty, Event, Request, ResumeOutcome, ResumePoint, SessionInfo, SessionSnapshot, Subscribed,
-    TerminalAck, TerminalAttach, TerminalAttached, TerminalRef, TerminalResize, TerminalSize,
+    TerminalAck, TerminalAttach, TerminalAttached, TerminalColors, TerminalRef, TerminalResize,
+    TerminalSetColors, TerminalSize,
 };
 use heeler_protocol::render::TerminalRender;
 use tokio::sync::{broadcast, mpsc};
@@ -31,7 +32,7 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::client::{AutostartThrottle, Client, ConnectOptions, Resumed};
+use crate::client::{AutostartThrottle, COLORS_CAPABILITY, Client, ConnectOptions, Resumed};
 use crate::connection::Shared;
 use crate::error::ClientError;
 use crate::store::{ConnectionState, Effects, Notice, StoreState};
@@ -117,6 +118,8 @@ struct Attachment {
     handle: u64,
     updates: mpsc::Sender<TerminalUpdate>,
     size: Option<TerminalSize>,
+    /// The colors last set through the handle, sent again after every re-attach.
+    colors: Option<TerminalColors>,
     /// The session known to run this terminal, once the state has seen it.
     session: Option<SessionId>,
     live: Option<Live>,
@@ -184,6 +187,7 @@ impl Terminals {
                     .iter()
                     .find(|s| s.terminal_id == Some(terminal))
                     .map(|s| s.id),
+                colors: None,
                 live: None,
             },
         );
@@ -298,6 +302,17 @@ impl Terminals {
                     && attachment.handle == handle
                 {
                     attachment.size = Some(size);
+                }
+            }
+            Command::SetColors {
+                handle,
+                terminal,
+                colors,
+            } => {
+                if let Some(attachment) = self.map.get_mut(&terminal)
+                    && attachment.handle == handle
+                {
+                    attachment.colors = Some(colors);
                 }
             }
         }
@@ -724,6 +739,19 @@ impl Supervisor {
                 }
                 Ok(())
             }
+            Command::SetColors {
+                handle,
+                terminal,
+                colors,
+            } => {
+                if let Some(attachment) = self.terminals.map.get_mut(&terminal)
+                    && attachment.handle == handle
+                {
+                    attachment.colors = Some(colors);
+                    send_colors(client, terminal, colors)?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -756,7 +784,12 @@ impl Supervisor {
             size: attachment.size,
         });
         match timeout(STEP_TIMEOUT, client.call::<TerminalAttached>(request)).await {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(_)) => {
+                if let Some(colors) = attachment.colors {
+                    send_colors(client, terminal, colors)?;
+                }
+                Ok(())
+            }
             Ok(Err(ClientError::Remote(error))) if error.code == ErrorCode::NotFound => {
                 self.terminals.gone(terminal, GoneReason::NotFound);
                 Ok(())
@@ -794,6 +827,26 @@ impl Terminals {
             live.stop.cancel();
         }
     }
+}
+
+/// Tells the daemon the terminal's default colors, if it understands `terminal.set_colors`.
+fn send_colors(
+    client: &Client,
+    terminal: TerminalId,
+    colors: TerminalColors,
+) -> Result<(), ClientError> {
+    if client
+        .welcome()
+        .capabilities
+        .iter()
+        .any(|c| c == COLORS_CAPABILITY)
+    {
+        client.notify(&Request::TerminalSetColors(TerminalSetColors {
+            terminal_id: terminal,
+            colors,
+        }))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

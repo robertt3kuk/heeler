@@ -124,11 +124,10 @@ impl Router {
                 ok(&Empty {})
             }
             Request::TerminalHistory(req) => ok(&self.hub.history(req)?),
-            // Implemented by slice M2-E2; until then the capability is not advertised.
-            Request::TerminalSetColors(_) => Err(ErrorBody::new(
-                ErrorCode::InvalidState,
-                "terminal.set_colors is not available in this build",
-            )),
+            Request::TerminalSetColors(req) => {
+                self.hub.set_colors(req)?;
+                ok(&Empty {})
+            }
         }
     }
 

@@ -20,10 +20,11 @@ use heeler_core::TerminalId;
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
     TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize,
+    TerminalSetColors,
 };
 use heeler_protocol::render::TerminalRender;
 use heeler_protocol::{Frame, MAX_PAYLOAD};
-use heeler_terminal::{RenderTracker, Terminal, TerminalError};
+use heeler_terminal::{DefaultColors, RenderTracker, Terminal, TerminalError};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -285,6 +286,17 @@ impl TerminalHub {
             .terminal
             .resize(req.size)
             .map_err(|e| terminal_error(&e))
+    }
+
+    /// The colors OSC 10/11/12 queries are answered with; the last writer wins.
+    pub fn set_colors(&self, req: TerminalSetColors) -> Result<(), ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        entry.terminal.set_default_colors(DefaultColors {
+            foreground: req.colors.foreground,
+            background: req.colors.background,
+            cursor: req.colors.cursor,
+        });
+        Ok(())
     }
 
     /// Scrollback rows for a client. One call answers at most [`HISTORY_MAX_ROWS`] rows and stops

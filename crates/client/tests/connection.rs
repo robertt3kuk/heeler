@@ -11,7 +11,9 @@ use common::*;
 use heeler_client::{Connection, ConnectionState, GoneReason, Notice, TerminalUpdate};
 use heeler_core::SessionState;
 use heeler_daemon::bus::RingLimits;
-use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionRef, SessionResult};
+use heeler_protocol::messages::{
+    DaemonStatusInfo, Empty, Request, SessionRef, SessionResult, TerminalColors,
+};
 use tokio::time::{sleep, timeout};
 
 /// Blocking wait for a plain thread or `futures::executor::block_on` (no Tokio timers there).
@@ -352,6 +354,56 @@ async fn terminal_handle_survives_a_sever_and_input_still_reaches_the_pty() {
     })
     .await;
     assert!(!view.screen.contains("lost"), "{}", view.screen.text());
+    connection.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn colors_set_while_disconnected_are_sent_again_after_the_reattach() {
+    let env = Env::start().await;
+    let connection = connect(&env);
+    let mut state = connection.state();
+    wait_connected(&mut state).await;
+
+    // The child waits for a byte, queries OSC 11 and shows the raw reply with `cat -v`.
+    let reply_len = "\x1b]11;rgb:aaaa/bbbb/cccc\x07".len();
+    let script = format!(
+        r"stty raw -echo; printf READY; dd bs=1 count=1 2>/dev/null; printf '\033]11;?\007'; dd bs=1 count={reply_len} 2>/dev/null | cat -v; printf '\nDONE\n'"
+    );
+    let direct = env.direct().await;
+    let session = create_session(&direct, spec(&["sh", "-c", &script])).await;
+    let mut view = View::new(connection.attach(terminal_of(&session), Some(size(80, 10))));
+    view.wait_screen("ready", |s| s.contains("READY")).await;
+
+    let colors = |background| TerminalColors {
+        foreground: (1, 2, 3),
+        background,
+        cursor: (4, 5, 6),
+    };
+    view.handle.set_colors(colors((0x11, 0x22, 0x33)));
+
+    env.proxy.block();
+    env.proxy.sever();
+    view.wait_update("reconnecting", |u| {
+        matches!(u, TerminalUpdate::Reconnecting).then_some(())
+    })
+    .await;
+    wait_reconnecting(&mut state).await;
+    // Remembered while nothing is connected; the daemon still holds the older colors.
+    view.handle.set_colors(colors((0xaa, 0xbb, 0xcc)));
+
+    env.proxy.unblock();
+    wait_connected(&mut state).await;
+    let snapshots = view.screen.snapshots;
+    view.wait_screen("snapshot after reconnect", |s| s.snapshots == snapshots + 1)
+        .await;
+    // Sent on the same connection after the colors, so the child's query sees them.
+    view.handle.input(b"g".to_vec());
+    view.wait_screen("the reply", |s| s.contains("DONE")).await;
+    assert!(
+        view.screen.contains("^[]11;rgb:aaaa/bbbb/cccc^G"),
+        "{}",
+        view.screen.text()
+    );
     connection.shutdown();
 }
 

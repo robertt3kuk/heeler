@@ -177,7 +177,10 @@ async fn handshake_then_status_reports_epoch_and_pid() {
     assert_eq!(client.epoch(), t.daemon.epoch());
     let welcome = client.welcome();
     assert_eq!(welcome.protocol, PROTOCOL_VERSION);
-    assert_eq!(welcome.capabilities, ["terminal.render.v1"]);
+    assert_eq!(
+        welcome.capabilities,
+        ["terminal.render.v1", "terminal.colors"]
+    );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);
 
     let status: DaemonStatusInfo = client.call(Request::DaemonStatus(Empty {})).await.unwrap();
