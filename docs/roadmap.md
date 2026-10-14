@@ -45,10 +45,10 @@ Exit demo: run OMP and Codex TUI in the GPUI app with correct input/rendering; m
 
 Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `desktop` workbench core), **M2-C** (M2.3, `terminal_view`), **M2-D** (M2.4 engine, `settings`); wave 2 — **M2-E** (M2.5 panels + wiring + settings UI); wave 3 — **M2-F** (M2.6, orchestrator).
 
-- [ ] M2.1 Workbench core: native chrome (transparent titlebar, vibrancy left dock), docks L/R/B hosting panel stacks, center split tree with per-pane tabs, drag & drop (tab → split edge / dock, panel → dock), resize, zoom, focus navigation, action registry + ⌘K palette skeleton, `PanelRegistry`/`StatusItemRegistry`, layout state persistence, presets
-- [ ] M2.2 `client::Connection`: reconnect with backoff, replay/snapshot reconciliation into a state store, terminal handles that re-attach after reconnect, usable from GPUI's executor
-- [ ] M2.3 `terminal_view`: grid rendering with shaped-row cache, cursor, selection/copy/paste, scrollback viewing, IME + non-Latin layouts, key (legacy + kitty) and mouse (SGR) encoding, resize from font metrics, theme colors reported to the daemon
-- [ ] M2.4 Settings: layered TOML (defaults < user < workspace < runtime), typed namespaces with schemas, hot reload, keymap file, theme + density tokens
+- [x] M2.1 Workbench core: native chrome (transparent titlebar, tinted blurred left dock), docks L/R/B hosting panel stacks, center split tree with per-pane tabs, drag & drop (tab → split edge / dock, panel → dock), resize, zoom, focus navigation, action registry + ⌘K palette, `PanelRegistry`/`StatusItemRegistry`, layout persistence, presets with exact overview round-trip (merged `75d9c55`)
+- [x] M2.2 `client::Connection`: reconnect with backoff, replay/snapshot reconciliation into a state store, terminal handles that re-attach after reconnect, usable from GPUI's executor (merged `3f94df0`)
+- [x] M2.3 `terminal_view`: grid rendering on the cell grid, cursor, selection/copy/paste, scrollback viewing, IME + Russian layout, key (legacy + kitty 1/8) and mouse (SGR/legacy) encoding, resize from font metrics, ack after paint (merged `fa7babc`); theme colors to daemon via protocol 0.2 `terminal.set_colors` (M2-E2)
+- [x] M2.4 Settings engine: layered TOML (defaults < user < workspace < runtime), typed namespaces with schemas, hot reload, keymap file, theme + density tokens (merged `ecf304b`); wiring in M2-E1
 - [ ] M2.5 Panels and wiring: sessions sidebar (Needs you, workspaces, configurable rows), status bar items, overview board (live previews, attention sort), inspector (session info now; approvals/changes later), session create/stop/restart/rename, generated settings UI (⌘,), CLI and GUI concurrently on one session
 - [ ] M2.6 Performance pass against budgets + M2 demo
 
