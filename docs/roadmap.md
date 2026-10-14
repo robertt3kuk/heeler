@@ -76,7 +76,7 @@ Exit demo: open a Codex chat session, stream reply, see tool calls and diffs, ap
 - [x] M4.1 `agents::codex` adapter over `codex app-server` stdio JSON-RPC (pin supported Codex range; schema fixtures generated from the installed binary)
 - [x] M4.2 Unified `AgentEvent` model in `core` + protocol events (`chat.delta`, `agent.tool_call`, `approval.required`, …)
 - [x] M4.3 Approval engine in daemon (policy + pending decisions + audit rows)
-- [ ] M4.4 Chat view in GPUI: messages, streaming, tool call cards, diff view, approval UI
+- [x] M4.4 Chat view in GPUI: messages, streaming, tool call cards, diff view, approval UI
 - [x] M4.5 Conversation persistence
 
 ## M5 — Direct model chat
@@ -156,6 +156,7 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - **B-2** → scheduled as M2.7. **B-3** → resolved by ADR 0011.
 - **B-4 History hits carry their origin.** `HistoryHit` gains optional `path` (external transcript file, for "Reveal file") and `block_id` (+ `terminal_id`) for Heeler block hits so "Open block" is exact instead of matching `ts_ms` (gap found in M17-B). Additive protocol change.
 - **B-5 OpenCode history adapter** once its v1/v2 schemas settle (deferred in M17-A).
+- **B-6 Approval provenance on the wire.** `approval.resolved` / `PermissionResolved` carry `decided_by` (ui/cli/client id) so a chat can show who answered (gap found in M4-B; already in the audit table). Journal streaming deltas or a coalesced partial so a window opened mid-stream sees the full text; "Load earlier" paging in the chat view.
 
 ## Risk register
 
