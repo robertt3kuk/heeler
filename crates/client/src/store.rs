@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use heeler_core::{Epoch, SessionId, TerminalId};
+use heeler_protocol::blocks::Block;
 use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,12 @@ pub enum Notice {
         terminal: TerminalId,
         title: Option<String>,
         body: String,
+    },
+    /// A block of the terminal started, changed state or was truncated (`terminal.block`,
+    /// protocol 0.5). Fold it into a [`BlockList`](crate::BlockList).
+    TerminalBlock {
+        terminal: TerminalId,
+        block: Block,
     },
 }
 
@@ -168,6 +175,12 @@ impl StoreState {
                 title,
                 body,
             }),
+            Event::TerminalBlock { terminal_id, block } => {
+                effects.notices.push(Notice::TerminalBlock {
+                    terminal: terminal_id,
+                    block,
+                });
+            }
             Event::TerminalTitle { .. } => {}
         }
         effects
@@ -316,6 +329,36 @@ mod tests {
             ]
         );
         assert_eq!(state.sessions, vec![restarted, later]);
+    }
+
+    #[test]
+    fn block_events_become_notices() {
+        use heeler_protocol::blocks::BlockState;
+        let mut state = StoreState::initial();
+        let block = Block {
+            id: 3,
+            prompt_line: 10,
+            command_line: Some(10),
+            output_start: Some(11),
+            end_line: None,
+            command: Some("make".into()),
+            exit_code: None,
+            started_at_ms: 5,
+            finished_at_ms: None,
+            cwd: None,
+            state: BlockState::Running,
+        };
+        let effects = state.apply(Event::TerminalBlock {
+            terminal_id: TerminalId(4),
+            block: block.clone(),
+        });
+        assert_eq!(
+            effects.notices,
+            vec![Notice::TerminalBlock {
+                terminal: TerminalId(4),
+                block
+            }]
+        );
     }
 
     #[test]

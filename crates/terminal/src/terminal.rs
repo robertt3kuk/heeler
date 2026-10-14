@@ -20,12 +20,14 @@ use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use heeler_protocol::blocks::{Block, BlockPart};
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::{Row, TerminalFrame, TerminalRender, TerminalSnapshot};
 use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
+use crate::blocks::{BlockText, BlockTextError};
 use crate::emulator::{DefaultColors, Emulator};
 use crate::error::TerminalError;
 use crate::render::RenderTracker;
@@ -455,12 +457,30 @@ impl Terminal {
             .history_while(from_line, count, keep)
     }
 
+    /// Blocks newest first: at most `limit`, only ids below `before_id` when given; with the
+    /// absolute line number of the viewport's first row at the same instant.
+    pub fn blocks(&self, before_id: Option<u64>, limit: usize) -> (Vec<Block>, u64) {
+        let engine = self.core.engine.lock();
+        (engine.blocks(before_id, limit), engine.viewport_top())
+    }
+
+    /// Plain text of a block's command or output, at most `max_bytes` (see
+    /// [`Emulator::block_text`]).
+    pub fn block_text(
+        &self,
+        id: u64,
+        part: BlockPart,
+        max_bytes: usize,
+    ) -> Result<BlockText, BlockTextError> {
+        self.core.engine.lock().block_text(id, part, max_bytes)
+    }
+
     /// Generation counter bumped whenever visible state changed; coalescing (watch semantics).
     pub fn damage(&self) -> watch::Receiver<u64> {
         self.core.damage.subscribe()
     }
 
-    /// Title, bell, notification, cwd and prompt-mark events. Lagging receivers lose the
+    /// Title, bell, notification, cwd, prompt-mark and block events. Lagging receivers lose the
     /// oldest events (broadcast semantics).
     pub fn metadata(&self) -> broadcast::Receiver<TerminalMeta> {
         self.core.meta.subscribe()

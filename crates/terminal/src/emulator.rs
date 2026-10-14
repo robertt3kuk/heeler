@@ -16,17 +16,19 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     CursorShape as EngineCursorShape, Processor, Rgb as EngineRgb,
 };
+use heeler_protocol::blocks::{Block, BlockPart};
 use heeler_protocol::messages::TerminalSize;
 use heeler_protocol::render::{
     Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, TerminalFrame, TerminalSnapshot,
 };
 use parking_lot::Mutex;
 
+use crate::blocks::{BlockIndex, BlockText, BlockTextError, MAX_COMMAND_BYTES, now_ms};
 use crate::error::TerminalError;
-use crate::queries::{CellSizeScanner, Rgb, xterm_color};
+use crate::queries::{CellSizeScanner, HistoryClearScanner, Rgb, xterm_color};
 use crate::render::{LinkTable, RenderTracker, RowScratch, row_text};
 use crate::scrollback::ScrollbackStore;
-use crate::sniffer::{OscSniffer, TerminalMeta};
+use crate::sniffer::{OscSniffer, PromptMark, Signal, TerminalMeta};
 
 /// Replies produced by one `feed` call beyond this are dropped (a hostile stream of queries
 /// must not grow memory without bound).
@@ -43,6 +45,16 @@ const HOT_MARGIN: usize = 256;
 /// are spilled, i.e. the transient size of the grid (and of the process's resident set, which
 /// the allocator does not give back).
 const SLICE_BYTES: usize = 2048;
+/// Rows the engine may hold beyond `scrollback_lines` between two settles. The engine must never
+/// reach its own cap, or it would recycle rows unseen and the absolute line numbers of the
+/// block index could not be counted: one 2 KiB slice scrolls at most ~2 000 lines with plain
+/// line feeds (a hostile stream of `CSI n S` can exceed it; the numbering is then too low by
+/// the rows the cap swallowed).
+const ENGINE_HEADROOM: usize = 4096;
+/// Marks held back while a DEC 2026 batch hides the engine's progress; later ones are dropped.
+const MAX_DEFERRED_SIGNALS: usize = 1024;
+/// Most rows read for one command text.
+const MAX_COMMAND_ROWS: u64 = 64;
 /// Cell flag (bit 15, unused by the engine) set on the oldest hot history row while the cold
 /// store is not empty: its disappearance means the engine cleared its history.
 const MARK: Flags = Flags::from_bits_retain(1 << 15);
@@ -165,6 +177,34 @@ pub struct Emulator {
     scratch: RowScratch,
     /// The terminal was resized while the alternate screen hid the primary grid.
     resized_in_alt: bool,
+    /// The engine's own history cap (`scrollback_lines` + [`ENGINE_HEADROOM`]).
+    engine_cap: usize,
+    clear_scanner: HistoryClearScanner,
+    /// Prompt, command and output units (M10).
+    blocks: BlockIndex,
+    /// Absolute line number of the viewport's first row on the primary screen: the rows ever
+    /// scrolled into the history. Only grows, except by a resize that pulls history rows into
+    /// a taller viewport.
+    abs_top: u64,
+    /// Rows in the engine's history when `abs_top` was last brought up to date.
+    acct_hot: usize,
+    /// Marks seen while a synchronized batch hid what the engine had executed; applied once it
+    /// ended, at the cursor it left.
+    deferred: Vec<Signal>,
+}
+
+/// Why the engine is run up to an offset of the fed bytes.
+enum Break {
+    /// A colour query that is answered now.
+    Reply,
+    /// `CSI 16 t`.
+    CellSize,
+    /// A prompt mark or working directory for the block index.
+    Signal(Signal),
+    /// Just before `CSI 3 J` / `ESC c`: rows scrolled so far must be counted first.
+    EraseStart,
+    /// Just after them.
+    Erased { reset: bool },
 }
 
 impl std::fmt::Debug for Emulator {
@@ -193,9 +233,9 @@ impl Emulator {
         let sink = Sink::default();
         let config = Config {
             kitty_keyboard: true,
-            // The engine's own cap is the real bound: it can never lose a row the line bound
-            // keeps, however much one parser call scrolls (ADR 0013).
-            scrolling_history: scrollback_lines,
+            // The engine's cap is above the line bound (`settle` enforces that one) so it
+            // never recycles a row unseen (ADR 0013, `ENGINE_HEADROOM`).
+            scrolling_history: scrollback_lines.saturating_add(ENGINE_HEADROOM),
             ..Config::default()
         };
         Ok(Self {
@@ -216,6 +256,12 @@ impl Emulator {
             hot_margin,
             scratch: RowScratch::default(),
             resized_in_alt: false,
+            engine_cap: scrollback_lines.saturating_add(ENGINE_HEADROOM),
+            clear_scanner: HistoryClearScanner::new(),
+            blocks: BlockIndex::new(),
+            abs_top: 0,
+            acct_hot: 0,
+            deferred: Vec::new(),
         })
     }
 
@@ -255,25 +301,53 @@ impl Emulator {
         // colour query sees the colours as they were at that point) and its reply is queued
         // before the next query is handled. CSI 16 t is not known to the engine; its reply is
         // produced here.
-        let mut breaks: Vec<(usize, bool)> = Vec::new();
+        let mut breaks: Vec<(usize, Break)> = Vec::new();
         let mut color_queries = Vec::new();
-        self.sniffer.feed(bytes, &mut self.meta, &mut color_queries);
-        breaks.extend(color_queries.into_iter().map(|end| (end, false)));
+        let mut signals = Vec::new();
+        self.sniffer
+            .feed(bytes, &mut self.meta, &mut color_queries, &mut signals);
+        breaks.extend(color_queries.into_iter().map(|end| (end, Break::Reply)));
+        breaks.extend(
+            signals
+                .into_iter()
+                .map(|(end, signal)| (end, Break::Signal(signal))),
+        );
         let mut cell_size_queries = Vec::new();
         self.cell_size_scanner.feed(bytes, &mut cell_size_queries);
-        breaks.extend(cell_size_queries.into_iter().map(|end| (end, true)));
-        breaks.sort_unstable();
+        breaks.extend(
+            cell_size_queries
+                .into_iter()
+                .map(|end| (end, Break::CellSize)),
+        );
+        let mut erases = Vec::new();
+        self.clear_scanner.feed(bytes, &mut erases);
+        for erase in erases {
+            breaks.push((erase.start, Break::EraseStart));
+            breaks.push((erase.end, Break::Erased { reset: erase.reset }));
+        }
+        // Equal offsets: whatever ended there first, then the start of an erase.
+        breaks.sort_by_key(|(end, brk)| (*end, matches!(brk, Break::EraseStart)));
         let mut done = 0;
-        for (end, cell_size) in breaks {
+        for (end, brk) in breaks {
             self.advance(&bytes[done..end]);
             self.resolve_requests();
-            if cell_size {
-                self.push_reply(&cell_size_report(self.size));
+            match brk {
+                Break::Reply | Break::EraseStart => {}
+                Break::CellSize => self.push_reply(&cell_size_report(self.size)),
+                Break::Signal(signal) => self.signal(signal),
+                Break::Erased { reset } => {
+                    // `ESC c` also wipes the screen, which no scrolling accounts for.
+                    if reset && !self.sync_pending() && !self.on_alt_screen() {
+                        self.blocks.truncate_all();
+                    }
+                }
             }
             done = end;
         }
         self.advance(&bytes[done..]);
         self.resolve_requests();
+        self.flush_deferred();
+        self.flush_blocks();
         self.collect_bell();
         self.apply_titles(meta_start);
         let withheld = self.parser.sync_bytes_count();
@@ -307,6 +381,8 @@ impl Emulator {
         self.parser.stop_sync(&mut self.term);
         self.settle();
         self.resolve_requests();
+        self.flush_deferred();
+        self.flush_blocks();
         self.collect_bell();
         self.generation += 1;
     }
@@ -324,12 +400,23 @@ impl Emulator {
 
     pub fn resize(&mut self, size: TerminalSize) -> Result<(), TerminalError> {
         let dims = validate(size)?;
+        // The first engine row keeps its line number through a resize; rows are reflowed from
+        // there on (cold rows and their numbers are untouched).
+        let first_hot = self.abs_top.saturating_sub(self.acct_hot as u64);
+        let reflowed = size.cols != self.size.cols;
+        let on_alt = self.on_alt_screen();
+        let wraps_before =
+            (reflowed && !on_alt && self.blocks.reaches(first_hot)).then(|| self.region_wraps());
         // Only the hot margin reflows (it already is the only history in the engine).
         self.term.resize(dims);
         self.size = size;
         self.generation += 1;
-        if self.on_alt_screen() {
+        if on_alt {
             self.resized_in_alt = true;
+            if reflowed {
+                // The hidden rows were reflowed and cannot be read to follow the blocks.
+                self.blocks.invalidate_from(first_hot);
+            }
         } else {
             // The reflow may have moved the marker; restore it before `settle` looks for it. A
             // window enlarged by more rows than the hot window holds pulled all of it into the
@@ -340,9 +427,18 @@ impl Emulator {
             } else if !self.cold.is_empty() {
                 self.mark_oldest_hot(hot);
             }
+            self.abs_top = first_hot + hot as u64;
+            self.acct_hot = hot;
+            if let Some(before) = wraps_before {
+                let after = self.region_wraps();
+                self.blocks.remap(first_hot, |line| {
+                    remap_reflowed(line - first_hot, &before, &after) + first_hot
+                });
+            }
             // `settle` also spills what narrowing pushed past the margin.
             self.settle();
         }
+        self.flush_blocks();
         Ok(())
     }
 
@@ -612,14 +708,248 @@ impl Emulator {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
+    // Blocks ----------------------------------------------------------------------------------
+
+    /// Blocks newest first: at most `limit`, only ids below `before_id` when it is given.
+    pub fn blocks(&self, before_id: Option<u64>, limit: usize) -> Vec<Block> {
+        self.blocks.page(before_id, limit)
+    }
+
+    /// Absolute line number of the viewport's first row: rows ever scrolled into the history.
+    /// The `from_line` row of [`Self::history`] has the number `viewport_top() - from_line - 1`.
+    pub fn viewport_top(&self) -> u64 {
+        self.abs_top
+    }
+
+    /// Text of a block's command or output as plain text (soft wraps joined, trailing spaces
+    /// and trailing empty lines removed), at most `max_bytes` long (cut on a character
+    /// boundary, the start is kept). The output of a running block reaches the cursor's row.
+    pub fn block_text(
+        &mut self,
+        id: u64,
+        part: BlockPart,
+        max_bytes: usize,
+    ) -> Result<BlockText, BlockTextError> {
+        let block = self.blocks.get(id).ok_or(BlockTextError::NotFound)?.clone();
+        let (mut text, mut truncated) = match part {
+            BlockPart::Command => (block.command.unwrap_or_default(), false),
+            BlockPart::Output => {
+                let Some(start) = block.output_start else {
+                    return Ok(BlockText {
+                        text: String::new(),
+                        truncated: false,
+                    });
+                };
+                if self.on_alt_screen() {
+                    return Err(BlockTextError::Unavailable);
+                }
+                let end = match block.end_line {
+                    Some(end) => end,
+                    None => self.cursor_abs().0 + 1,
+                };
+                self.output_text(start, end, max_bytes)
+            }
+        };
+        if text.len() > max_bytes {
+            let mut cut = max_bytes;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+            truncated = true;
+        }
+        Ok(BlockText { text, truncated })
+    }
+
+    /// The lines `start..end` that are still retained, as text; the flag says the first ones
+    /// are gone or the text was cut at `max_bytes`.
+    fn output_text(&mut self, start: u64, end: u64, max_bytes: usize) -> (String, bool) {
+        let hot = self.term.history_size();
+        let retained = (hot + self.cold.len()) as u64;
+        let first_retained = self.abs_top.saturating_sub(retained);
+        let lost = start < first_retained;
+        let from = start.max(first_retained) - first_retained;
+        let to = end.saturating_sub(first_retained);
+        let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+            return (String::new(), lost);
+        };
+        let mut text = String::new();
+        let mut cut = false;
+        for (index, line) in self.logical_range(from, to).enumerate() {
+            if index > 0 {
+                text.push('\n');
+            }
+            text.push_str(&line.text);
+            if text.len() > max_bytes {
+                cut = true;
+                break;
+            }
+        }
+        let kept = text.trim_end_matches('\n').len();
+        text.truncate(kept);
+        (text, lost || cut)
+    }
+
+    /// Absolute line and column of the cursor on the primary screen.
+    fn cursor_abs(&self) -> (u64, u16) {
+        let point = self.term.grid().cursor.point;
+        (
+            self.abs_top + u64::try_from(point.line.0.max(0)).unwrap_or(0),
+            u16::try_from(point.column.0).unwrap_or(u16::MAX),
+        )
+    }
+
+    /// Grid line holding absolute line `abs`, if the engine still has that row.
+    fn grid_line(&self, abs: u64) -> Option<Line> {
+        let relative = i64::try_from(abs).ok()? - i64::try_from(self.abs_top).ok()?;
+        let hot = i64::try_from(self.term.history_size()).ok()?;
+        let lines = i64::try_from(self.term.screen_lines()).ok()?;
+        (relative >= -hot && relative < lines).then_some(Line(relative as i32))
+    }
+
+    /// The text typed between the end of the prompt (`from`) and the cursor (`end_line`,
+    /// `end_col`): rows joined along soft wraps, hard line breaks kept.
+    fn command_text(&self, from: (u64, u16), end_line: u64, end_col: u16) -> Option<String> {
+        let last = if end_col == 0 {
+            end_line.checked_sub(1)?
+        } else {
+            end_line
+        };
+        if last < from.0 {
+            return None;
+        }
+        let cols = self.term.columns();
+        let grid = self.term.grid();
+        let mut text = String::new();
+        let mut line_text = String::new();
+        for abs in from.0..=last.min(from.0 + MAX_COMMAND_ROWS) {
+            let Some(line) = self.grid_line(abs) else {
+                if abs == from.0 {
+                    return None;
+                }
+                break;
+            };
+            let row = &grid[line];
+            let first = if abs == from.0 {
+                usize::from(from.1)
+            } else {
+                0
+            };
+            for cell in &row[Column(first.min(cols))..Column(cols.min(row.len()))] {
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                line_text.push(if cell.c == '\t' { ' ' } else { cell.c });
+                if let Some(extra) = cell.zerowidth() {
+                    line_text.extend(extra);
+                }
+            }
+            let wrapped = cols > 0
+                && row.len() >= cols
+                && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+            if !wrapped {
+                text.push_str(line_text.trim_end_matches(' '));
+                text.push('\n');
+                line_text.clear();
+            }
+        }
+        text.push_str(line_text.trim_end_matches(' '));
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let mut end = text.len().min(MAX_COMMAND_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Some(text[..end].to_owned())
+    }
+
+    /// Soft-wrap flag of every engine row, history rows (oldest first) then the viewport.
+    fn region_wraps(&self) -> Vec<bool> {
+        let cols = self.term.columns();
+        let grid = self.term.grid();
+        let hot = i32::try_from(self.term.history_size()).unwrap_or(i32::MAX);
+        let lines = i32::try_from(self.term.screen_lines()).unwrap_or(i32::MAX);
+        (-hot..lines)
+            .map(|line| {
+                let row = &grid[Line(line)];
+                cols > 0
+                    && row.len() >= cols
+                    && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE)
+            })
+            .collect()
+    }
+
+    /// Hands a mark to the block index once the engine ran every byte before it; while a
+    /// synchronized batch hides that, it waits for the batch to end.
+    fn signal(&mut self, signal: Signal) {
+        self.flush_deferred();
+        if self.sync_pending() {
+            if self.deferred.len() < MAX_DEFERRED_SIGNALS {
+                self.deferred.push(signal);
+            }
+        } else {
+            self.apply_signal(signal);
+        }
+    }
+
+    fn flush_deferred(&mut self) {
+        if !self.deferred.is_empty() && !self.sync_pending() {
+            for signal in std::mem::take(&mut self.deferred) {
+                self.apply_signal(signal);
+            }
+        }
+    }
+
+    fn apply_signal(&mut self, signal: Signal) {
+        let mark = match signal {
+            Signal::Cwd(cwd) => {
+                self.blocks.set_cwd(cwd);
+                return;
+            }
+            // The alternate screen is a program drawing, not the shell's prompt.
+            Signal::Mark(_) if self.on_alt_screen() => return,
+            Signal::Mark(mark) => mark,
+        };
+        let (line, col) = self.cursor_abs();
+        // Output that ends mid-line includes that line.
+        let end = if col > 0 { line + 1 } else { line };
+        let now = now_ms();
+        match mark {
+            PromptMark::A => self.blocks.prompt(line, end, now),
+            PromptMark::B => self.blocks.input(line, col, now),
+            PromptMark::C => {
+                let command = self
+                    .blocks
+                    .input_at()
+                    .and_then(|from| self.command_text(from, line, col));
+                self.blocks.run(line, command, now);
+            }
+            PromptMark::D { exit_code } => self.blocks.finish(exit_code, end, now),
+        }
+    }
+
+    /// Queues the blocks that changed as metadata events.
+    fn flush_blocks(&mut self) {
+        let changed = self.blocks.take_events();
+        self.meta
+            .extend(changed.into_iter().map(TerminalMeta::Block));
+    }
+
     /// Brings the cold store in line with the engine after it ran: notices a cleared history
-    /// (`ESC[3J`, `ESC c`), spills the rows beyond the hot margin and enforces the line bound.
+    /// (`ESC[3J`, `ESC c`), counts the rows that scrolled, spills the rows beyond the hot
+    /// margin, enforces the line bound and retires the blocks whose lines are gone.
     fn settle(&mut self) {
         if self.on_alt_screen() {
             // The primary grid (hot window) is out of reach; nothing is exposed meanwhile.
             return;
         }
         let hot = self.term.history_size();
+        let mut cleared = false;
         if !self.cold.is_empty() && (hot == 0 || !self.oldest_hot_is_marked(hot)) {
             if hot > 0 && self.resized_in_alt {
                 // A resize inside the alternate screen reflowed the hidden grid and lost the
@@ -628,10 +958,30 @@ impl Emulator {
             } else {
                 // The engine cleared its history (or recycled all of it at its cap).
                 self.cold.clear();
+                cleared = true;
             }
+        } else if hot < self.acct_hot && !self.resized_in_alt {
+            cleared = true;
         }
         self.resized_in_alt = false;
+        // Rows that entered the history since the last count; after an erase, the rows that
+        // scrolled once it was done (the erase itself is run on its own, see `feed`).
+        let scrolled = if cleared {
+            hot as i64
+        } else {
+            hot as i64 - self.acct_hot as i64
+        };
+        self.abs_top = self.abs_top.saturating_add_signed(scrolled);
+        if hot > self.scrollback_lines {
+            let grid = self.term.grid_mut();
+            grid.update_history(self.scrollback_lines);
+            grid.update_history(self.engine_cap);
+        }
         self.spill();
+        self.acct_hot = self.term.history_size();
+        let retained = (self.acct_hot + self.cold.len()) as u64;
+        self.blocks
+            .truncate_below(self.abs_top.saturating_sub(retained));
     }
 
     fn oldest_hot_is_marked(&self, hot: usize) -> bool {
@@ -662,7 +1012,7 @@ impl Emulator {
             // Shrinking drops the oldest rows; the second call restores the engine's own cap.
             let grid = self.term.grid_mut();
             grid.update_history(keep);
-            grid.update_history(self.scrollback_lines);
+            grid.update_history(self.engine_cap);
         }
         let hot = self.term.history_size();
         self.cold
@@ -695,6 +1045,15 @@ impl Emulator {
             total: cold_len + hot + viewport,
             next: 0,
         }
+    }
+
+    /// Logical lines of the rows `from..to`, counted from the oldest retained row through the
+    /// history and on into the viewport.
+    fn logical_range(&mut self, from: usize, to: usize) -> LogicalLines<'_> {
+        let mut lines = self.logical_lines(LineScope::HistoryAndViewport);
+        lines.next = from.min(lines.total);
+        lines.total = to.min(lines.total);
+        lines
     }
 
     fn collect_bell(&mut self) {
@@ -770,6 +1129,31 @@ fn cell_size_report(size: TerminalSize) -> Vec<u8> {
     let cell_height = size.pixel_height.checked_div(size.rows).unwrap_or(0);
     let cell_width = size.pixel_width.checked_div(size.cols).unwrap_or(0);
     format!("\x1b[6;{cell_height};{cell_width}t").into_bytes()
+}
+
+/// Row index inside the engine's rows after a reflow for the row `index` before it: the same
+/// row of the same logical line (clamped to the line's new length). `before` and `after` are the
+/// soft-wrap flags of the rows (see `Emulator::region_wraps`).
+fn remap_reflowed(index: u64, before: &[bool], after: &[bool]) -> u64 {
+    let index = usize::try_from(index).unwrap_or(usize::MAX);
+    if index >= before.len() {
+        // Past the last row (the line after the cursor's): keep the distance to the end.
+        return (after.len() + (index - before.len())) as u64;
+    }
+    let starts = |wraps: &[bool]| -> Vec<usize> {
+        (0..wraps.len())
+            .filter(|&row| row == 0 || !wraps[row - 1])
+            .collect()
+    };
+    let old = starts(before);
+    let new = starts(after);
+    let line = old.partition_point(|&start| start <= index) - 1;
+    let offset = index - old[line];
+    let Some(&start) = new.get(line) else {
+        return after.len().saturating_sub(1) as u64;
+    };
+    let end = new.get(line + 1).copied().unwrap_or(after.len());
+    (start + offset.min((end - start).saturating_sub(1))) as u64
 }
 
 /// Which rows [`Emulator::logical_lines`] covers.

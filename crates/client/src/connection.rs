@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use heeler_core::TerminalId;
+use heeler_protocol::blocks::{
+    BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
+};
 use heeler_protocol::messages::{Request, TerminalSize};
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
@@ -185,6 +188,38 @@ impl Connection {
     ) -> Result<T, ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
         client.call(req).await
+    }
+
+    /// One page of `terminal`'s blocks, newest first (see [`Client::terminal_blocks`]).
+    pub async fn terminal_blocks(
+        &self,
+        terminal: TerminalId,
+        before_id: Option<u64>,
+        limit: u32,
+    ) -> Result<TerminalBlocksResult, ClientError> {
+        self.call(Request::TerminalBlocks(TerminalBlocks {
+            terminal_id: terminal,
+            before_id,
+            limit,
+        }))
+        .await
+    }
+
+    /// Plain text of a block's command or output (see [`Client::terminal_block_text`]).
+    pub async fn terminal_block_text(
+        &self,
+        terminal: TerminalId,
+        block_id: u64,
+        part: BlockPart,
+        max_bytes: u32,
+    ) -> Result<TerminalBlockTextResult, ClientError> {
+        self.call(Request::TerminalBlockText(TerminalBlockText {
+            terminal_id: terminal,
+            block_id,
+            part,
+            max_bytes,
+        }))
+        .await
     }
 
     /// A durable view of `terminal` that re-attaches across reconnects. Returns at once; the

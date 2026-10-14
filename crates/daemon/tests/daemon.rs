@@ -183,7 +183,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "terminal.render.v1",
             "terminal.colors",
             "session.restore",
-            "agent.report"
+            "agent.report",
+            "terminal.blocks"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

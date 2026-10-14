@@ -273,7 +273,7 @@ async fn metadata_events_are_broadcast() {
     .expect("write");
     let mut seen = Vec::new();
     timeout(LIMIT, async {
-        while seen.len() < 4 {
+        while seen.last() != Some(&TerminalMeta::Bell) {
             match meta.recv().await {
                 Ok(event) => seen.push(event),
                 Err(error) => panic!("metadata channel: {error}"),
@@ -282,6 +282,12 @@ async fn metadata_events_are_broadcast() {
     })
     .await
     .expect("metadata in time");
+    // The prompt mark also starts a block (`Block` event, covered by the block tests).
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, TerminalMeta::Block(block) if block.id == 1))
+    );
+    seen.retain(|event| !matches!(event, TerminalMeta::Block(_)));
     assert_eq!(
         seen,
         [

@@ -33,6 +33,7 @@ pub const CAPABILITIES: &[&str] = &[
     "terminal.colors",
     "session.restore",
     "agent.report",
+    "terminal.blocks",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

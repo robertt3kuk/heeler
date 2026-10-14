@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use heeler_protocol::blocks::{
+    Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
+    TerminalBlocksResult,
+};
 use heeler_protocol::control::ControlMessage;
 use heeler_protocol::messages::*;
 use heeler_protocol::render::*;
@@ -43,6 +47,38 @@ fn session_info() -> SessionInfo {
         created_at_ms: 1_791_894_164_332,
         agent: None,
         restored: false,
+    }
+}
+
+fn finished_block() -> Block {
+    Block {
+        id: 12,
+        prompt_line: 1500,
+        command_line: Some(1500),
+        output_start: Some(1501),
+        end_line: Some(1504),
+        command: Some("cargo test".into()),
+        exit_code: Some(101),
+        started_at_ms: 1_791_894_170_000,
+        finished_at_ms: Some(1_791_894_171_250),
+        cwd: Some("/repo".into()),
+        state: BlockState::Finished,
+    }
+}
+
+fn prompt_block() -> Block {
+    Block {
+        id: 13,
+        prompt_line: 1504,
+        command_line: None,
+        output_start: None,
+        end_line: None,
+        command: None,
+        exit_code: None,
+        started_at_ms: 1_791_894_171_300,
+        finished_at_ms: None,
+        cwd: Some("/repo".into()),
+        state: BlockState::Prompt,
     }
 }
 
@@ -230,6 +266,31 @@ fn requests() -> Vec<(&'static str, Request)> {
                 seq: 1_791_894_164_999_000_000,
             }),
         ),
+        (
+            "terminal_blocks",
+            Request::TerminalBlocks(TerminalBlocks {
+                terminal_id: TID,
+                before_id: Some(13),
+                limit: 50,
+            }),
+        ),
+        (
+            "terminal_blocks_newest",
+            Request::TerminalBlocks(TerminalBlocks {
+                terminal_id: TID,
+                before_id: None,
+                limit: 500,
+            }),
+        ),
+        (
+            "terminal_block_text",
+            Request::TerminalBlockText(TerminalBlockText {
+                terminal_id: TID,
+                block_id: 12,
+                part: BlockPart::Output,
+                max_bytes: 65536,
+            }),
+        ),
     ]
 }
 
@@ -300,6 +361,20 @@ fn events() -> Vec<(&'static str, Event)> {
                     }),
                     ..session_info()
                 },
+            },
+        ),
+        (
+            "terminal_block",
+            Event::TerminalBlock {
+                terminal_id: TID,
+                block: finished_block(),
+            },
+        ),
+        (
+            "terminal_block_prompt",
+            Event::TerminalBlock {
+                terminal_id: TID,
+                block: prompt_block(),
             },
         ),
     ]
@@ -524,6 +599,28 @@ fn responses_match_fixtures() {
                 &TerminalHistoryRows {
                     from_line: 0,
                     rows: vec![styled_row()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "terminal_blocks",
+            ControlMessage::ok(
+                6,
+                &TerminalBlocksResult {
+                    blocks: vec![prompt_block(), finished_block()],
+                    viewport_top: 1480,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "terminal_block_text",
+            ControlMessage::ok(
+                7,
+                &TerminalBlockTextResult {
+                    text: "running 3 tests\ntest result: FAILED".into(),
+                    truncated: false,
                 },
             )
             .unwrap(),

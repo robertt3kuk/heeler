@@ -9,6 +9,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
+use heeler_protocol::blocks::Block;
+
 use crate::queries::is_color_query;
 
 /// Longest OSC payload that is buffered; longer strings are discarded when they end.
@@ -40,6 +42,17 @@ pub enum TerminalMeta {
     Cwd(PathBuf),
     /// OSC 133 A/B/C/D.
     PromptMark(PromptMark),
+    /// A block of the block index changed (`terminal.block` event, protocol 0.5): the whole
+    /// block as it is now, in the order the changes happened.
+    Block(Block),
+}
+
+/// What the block index needs from the byte stream, with the stream offset just past the byte
+/// that ended the sequence (see [`OscSniffer::feed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Signal {
+    Mark(PromptMark),
+    Cwd(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +81,13 @@ impl OscSniffer {
     /// Scans `bytes`, appending any complete metadata events to `out` and, for every colour
     /// query (OSC 4/10/11/12 with a `?`), the offset just past the byte that ended it to
     /// `color_queries`: the engine has handled the query once it consumed `bytes[..offset]`.
+    /// Prompt marks and working directories also go to `signals`, each with its end offset.
     pub(crate) fn feed(
         &mut self,
         bytes: &[u8],
         out: &mut Vec<TerminalMeta>,
         color_queries: &mut Vec<usize>,
+        signals: &mut Vec<(usize, Signal)>,
     ) {
         let mut i = 0;
         while i < bytes.len() {
@@ -104,11 +119,11 @@ impl OscSniffer {
                     i += 1;
                     match b {
                         0x07 | 0x18 | 0x1a => {
-                            self.finish(out, color_queries, i);
+                            self.finish(out, color_queries, signals, i);
                             self.state = State::Ground;
                         }
                         0x1b => {
-                            self.finish(out, color_queries, i);
+                            self.finish(out, color_queries, signals, i);
                             self.state = State::Escape;
                         }
                         0x00..=0x06 | 0x08..=0x17 | 0x19 | 0x1c..=0x1f => {}
@@ -121,9 +136,20 @@ impl OscSniffer {
     }
 
     /// Completes the OSC string that ended just before offset `end`.
-    fn finish(&mut self, out: &mut Vec<TerminalMeta>, color_queries: &mut Vec<usize>, end: usize) {
+    fn finish(
+        &mut self,
+        out: &mut Vec<TerminalMeta>,
+        color_queries: &mut Vec<usize>,
+        signals: &mut Vec<(usize, Signal)>,
+        end: usize,
+    ) {
         if !self.overflow {
             if let Some(meta) = parse_osc(&self.buf) {
+                match &meta {
+                    TerminalMeta::PromptMark(mark) => signals.push((end, Signal::Mark(*mark))),
+                    TerminalMeta::Cwd(cwd) => signals.push((end, Signal::Cwd(cwd.clone()))),
+                    _ => {}
+                }
                 out.push(meta);
             }
             if is_color_query(&self.buf) {
@@ -220,7 +246,7 @@ mod tests {
         let mut sniffer = OscSniffer::new();
         let mut out = Vec::new();
         for chunk in chunks {
-            sniffer.feed(chunk, &mut out, &mut Vec::new());
+            sniffer.feed(chunk, &mut out, &mut Vec::new(), &mut Vec::new());
         }
         out
     }

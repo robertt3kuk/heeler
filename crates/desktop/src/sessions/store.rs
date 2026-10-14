@@ -161,9 +161,12 @@ impl SessionsStore {
                     cx.notify();
                 }
             }
-            // Exits are read off the session state; bells are not attention in M2.
-            Notice::SessionExited { .. } | Notice::Bell { .. } | Notice::DaemonRestarted { .. } => {
-            }
+            // Exits are read off the session state; bells are not attention in M2; blocks have
+            // no UI yet (M10-C).
+            Notice::SessionExited { .. }
+            | Notice::Bell { .. }
+            | Notice::DaemonRestarted { .. }
+            | Notice::TerminalBlock { .. } => {}
         }
     }
 

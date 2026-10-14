@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.4
+# Heeler IPC Protocol — v0.5
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`.
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`. 0.4 — agent reporting (capability `agent.report`): `agent.report`, `agent.release`, `SessionInfo.agent`. 0.5 — terminal blocks (capability `terminal.blocks`): `terminal.blocks`, `terminal.block_text`, event `terminal.block`.
 
 ## Frames
 
@@ -53,6 +53,8 @@ Milestone tag = when the method lands.
 | `terminal.ack` | command | terminal id, frame | M1 |
 | `terminal.history` | query | terminal id, from_line, count → styled rows | M1 |
 | `terminal.set_colors` | command | terminal id, `{foreground, background, cursor}` RGB → `{}`; daemon answers OSC 10/11/12 with them; last writer wins; capability `terminal.colors` | M2 |
+| `terminal.blocks` | query | `{terminal_id, before_id?, limit ≤ 500}` → `{blocks: [Block], viewport_top}` newest first; capability `terminal.blocks` | M10 |
+| `terminal.block_text` | query | `{terminal_id, block_id, part: command\|output, max_bytes}` → `{text, truncated}`; capability `terminal.blocks` | M10 |
 | `agent.report` | command | `{session_id, source, agent, state: idle\|working\|blocked, message?, seq, agent_session_id?, resume_argv?: [string]}` → `{applied: bool}`; capability `agent.report` | M3 |
 | `agent.release` | command | `{session_id, source, seq}` → `{applied: bool}`; the agent behind `source` is gone | M3 |
 | `terminal.tap_output` | command | raw byte subscription (lossy, gap markers) | M7 |
@@ -73,6 +75,7 @@ Milestone tag = when the method lands.
 | `session.updated` | session (state, title, cwd, attention, `restored`, `agent`) | M1 |
 | `session.exited` | session id, exit code/signal | M1 |
 | `terminal.bell` / `terminal.title` / `terminal.notification` | from OSC sniffer | M1 |
+| `terminal.block` | `{terminal_id, block}`: a block started, changed state or was truncated (capability `terminal.blocks`) | M10 |
 | `chat.delta` | session, turn, item, text/blocks | M4 |
 | `agent.item` | `AgentEvent` (tool call, diff, plan, usage, …) | M4 |
 | `agent.state_changed` | attention state | M4 |
@@ -131,6 +134,23 @@ Agent reporting (M3-B; capability `agent.report`, protocol 0.4; `crates/daemon/s
 - `agent.release` clears the report if it came from `source`, and the resume reference if it was stored by `source`; `applied` says whether anything was cleared. It consumes `seq` like a report.
 - The agent is forgotten without a release when the session's process ends (report and resume reference are dropped; a daemon shutdown keeps the reference for the next start), when a restart begins, and — safety net for agents that die without saying so — when the shell prompts again (OSC 133 `A` from the shell integration) while a report is set.
 - `SessionInfo.agent` is absent from the wire when no agent has reported; after a daemon restart it is absent until the resumed agent reports again.
+
+## Terminal blocks (protocol 0.5, capability `terminal.blocks`)
+
+The daemon turns the shell's OSC 133 marks (`docs/shell-integration.md`) into **blocks**: one prompt, its command and its output. Code: `crates/terminal/src/{blocks,emulator}.rs` (index), `crates/daemon/src/terminals.rs` (requests), `crates/protocol/src/blocks.rs` (DTOs), `crates/client/src/blocks.rs` (`BlockList`).
+
+```
+Block { id, prompt_line, command_line?, output_start?, end_line?, command?, exit_code?,
+        started_at_ms, finished_at_ms?, cwd?, state: prompt | running | finished | truncated }
+```
+
+- **Lines are absolute**: line 0 is the first row the terminal ever scrolled into its history; numbers only grow, never change when older lines are evicted or erased, and are counted over the primary screen only. `viewport_top` in the `terminal.blocks` answer is the number of the viewport's first row; the row `n` above it (`terminal.history` `from_line = n - 1`) has the number `viewport_top - n`. Numbers are exact as long as the engine runs the stream in order: an `ESC[3J`/`ESC c` inside a DEC 2026 batch, a `CSI n S` flood of more than ~4 000 scrolled rows in one 2 KiB slice, and a column change while the alternate screen is shown (the affected blocks become `truncated`) are the exceptions.
+- `prompt_line` = row of `A`; `command_line` = row of `B`; `output_start` = row of `C`; `end_line` is exclusive: the output is the rows `output_start..end_line` (`end_line` is the row after the cursor's when the output ended without a newline). `command` is the text between `B` and `C` read from the screen (soft wraps joined, hard breaks as `\n`, ≤ 4 KiB). `started_at_ms` is the prompt's start (`A`) and becomes the command's start at `C`; `finished_at_ms` is `D`. `cwd` is the shell's last OSC 7 before the prompt (an OSC 7 after `A` but before `C` replaces it).
+- States: `prompt` (A seen), `running` (C seen), `finished` (D seen, or the next prompt started without one: no `exit_code`), `truncated` (the prompt line was evicted from the scrollback or erased by `ESC[3J`/`ESC c`; the fields keep what was known and a later `D` still fills exit code and times). A prompt that is drawn again (resize, Ctrl-L) or abandoned with an empty Enter reuses its block. Marks while the alternate screen is active are ignored, so a block's output ends where the program left it. Marks inside a DEC 2026 synchronized batch are applied when the batch ends, at the cursor it left.
+- At most 2 000 blocks per terminal are kept; the oldest are dropped (ids stay monotonic per terminal, starting at 1). A terminal restart creates a new terminal with its own blocks.
+- `terminal.blocks` answers newest first, ids below `before_id` when given (page with the last id), `limit` clamped to 500, and stops early before the block that would take the JSON encoding past 2 MiB (the first block is always included).
+- `terminal.block_text` answers plain text: soft-wrapped rows joined, trailing spaces and trailing empty lines removed, lines separated by `\n`, the first `max_bytes` bytes (clamped to 512 KiB, cut on a character boundary). `truncated` is true when the text was cut or its first lines were evicted/erased. `command` is the stored text; `output` of a running block reaches the cursor's row. Unknown block (or dropped from the 2 000) → `not_found`; `output` while the alternate screen shows → `invalid_state` (the primary rows are out of reach; `command` still works).
+- `terminal.block` carries the whole block after every change, in the order the changes happened, once for: the prompt start (`A`), its input line becoming known (`B`), the command starting (`C`), finishing (`D` or the next `A`), and each block that became `truncated`. Delivery is the usual bus (seq, replay ring); a client that missed events refetches with `terminal.blocks`.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.

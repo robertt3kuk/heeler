@@ -118,6 +118,112 @@ impl CellSizeScanner {
     }
 }
 
+/// A sequence that erases the scrollback, found by [`HistoryClearScanner`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HistoryClear {
+    /// Offset of its `ESC` in the scanned bytes (0 when it began in an earlier call).
+    pub(crate) start: usize,
+    /// Offset just past its last byte.
+    pub(crate) end: usize,
+    /// `ESC c` (full reset: the screen is erased too) rather than `CSI 3 J`.
+    pub(crate) reset: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClearParam {
+    Empty,
+    Three,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClearState {
+    Ground,
+    /// After `ESC`; `start` is its offset in the current call, `None` when it was read earlier.
+    Escape {
+        start: Option<usize>,
+    },
+    Csi {
+        start: Option<usize>,
+        param: ClearParam,
+    },
+}
+
+/// Finds `CSI 3 J` (erase saved lines) and `ESC c` (full reset) in a byte stream, so the engine
+/// can be run up to just before and just after them: the absolute line numbering of the block
+/// index needs the rows scrolled before the erase counted separately from those after it.
+#[derive(Debug)]
+pub(crate) struct HistoryClearScanner {
+    state: ClearState,
+}
+
+impl HistoryClearScanner {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: ClearState::Ground,
+        }
+    }
+
+    /// Appends every erase completed in `bytes` to `found`, in stream order.
+    pub(crate) fn feed(&mut self, bytes: &[u8], found: &mut Vec<HistoryClear>) {
+        for (offset, &byte) in bytes.iter().enumerate() {
+            self.state = match (self.state, byte) {
+                (_, 0x18 | 0x1a) => ClearState::Ground,
+                (_, 0x1b) => ClearState::Escape {
+                    start: Some(offset),
+                },
+                (ClearState::Ground, _) => ClearState::Ground,
+                (ClearState::Escape { start }, b'[') => ClearState::Csi {
+                    start,
+                    param: ClearParam::Empty,
+                },
+                (ClearState::Escape { start }, b'c') => {
+                    found.push(HistoryClear {
+                        start: start.unwrap_or(0),
+                        end: offset + 1,
+                        reset: true,
+                    });
+                    ClearState::Ground
+                }
+                (ClearState::Escape { .. }, _) => ClearState::Ground,
+                (
+                    ClearState::Csi {
+                        start,
+                        param: ClearParam::Empty,
+                    },
+                    b'3',
+                ) => ClearState::Csi {
+                    start,
+                    param: ClearParam::Three,
+                },
+                (ClearState::Csi { start, .. }, b'0'..=b'9' | 0x20..=0x3f) => ClearState::Csi {
+                    start,
+                    param: ClearParam::Other,
+                },
+                (ClearState::Csi { start, param }, b'J') => {
+                    if param == ClearParam::Three {
+                        found.push(HistoryClear {
+                            start: start.unwrap_or(0),
+                            end: offset + 1,
+                            reset: false,
+                        });
+                    }
+                    ClearState::Ground
+                }
+                (ClearState::Csi { .. }, 0x40..=0x7e) => ClearState::Ground,
+                // Other C0 controls and DEL are executed inside a sequence without ending it.
+                (state, _) => state,
+            };
+        }
+        // Whatever is still open began before the next call's first byte.
+        self.state = match self.state {
+            ClearState::Escape { .. } => ClearState::Escape { start: None },
+            ClearState::Csi { param, .. } => ClearState::Csi { start: None, param },
+            ClearState::Ground => ClearState::Ground,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +298,52 @@ mod tests {
         assert_eq!(xterm_color(231), (255, 255, 255));
         assert_eq!(xterm_color(232), (8, 8, 8));
         assert_eq!(xterm_color(255), (238, 238, 238));
+    }
+
+    fn clears(chunks: &[&[u8]]) -> Vec<HistoryClear> {
+        let mut scanner = HistoryClearScanner::new();
+        let mut found = Vec::new();
+        for chunk in chunks {
+            let mut here = Vec::new();
+            scanner.feed(chunk, &mut here);
+            found.extend(here);
+        }
+        found
+    }
+
+    #[test]
+    fn finds_erase_saved_lines_and_reset() {
+        let found = clears(&[b"ab\x1b[3Jcd\x1bcef\x1b[2J\x1b[?3J\x1b[13J\x1b[3;J"]);
+        assert_eq!(
+            found,
+            [
+                HistoryClear {
+                    start: 2,
+                    end: 6,
+                    reset: false
+                },
+                HistoryClear {
+                    start: 8,
+                    end: 10,
+                    reset: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sequence_split_across_reads_starts_at_zero_of_its_last_read() {
+        let found = clears(&[b"x\x1b", b"[3", b"Jy"]);
+        assert_eq!(
+            found,
+            [HistoryClear {
+                start: 0,
+                end: 1,
+                reset: false
+            }]
+        );
+        let found = clears(&[b"\x1bc"]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].reset);
     }
 }

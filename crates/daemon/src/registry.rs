@@ -965,6 +965,10 @@ impl SessionRegistry {
                     self.persist_session(index);
                 }
             }
+            TerminalMeta::Block(block) => self.emit(&Event::TerminalBlock {
+                terminal_id: terminal,
+                block,
+            }),
             TerminalMeta::PromptMark(_) => {}
         }
     }

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use heeler_protocol::messages::TerminalSize;
-use heeler_terminal::{Emulator, RenderTracker};
+use heeler_terminal::{Emulator, RenderTracker, TerminalMeta};
 use serde_json::Value;
 
 fn corpus_dir() -> PathBuf {
@@ -71,7 +71,14 @@ fn replay(stream: &[u8], size: TerminalSize, chunk: usize) -> Outcome {
     for piece in stream.chunks(chunk.max(1)) {
         emulator.feed(piece);
         replies.extend(emulator.drain_replies());
-        meta.extend(emulator.drain_meta().into_iter().map(|m| format!("{m:?}")));
+        // The block index derives its events from the marks; the corpus pins the marks.
+        meta.extend(
+            emulator
+                .drain_meta()
+                .into_iter()
+                .filter(|m| !matches!(m, TerminalMeta::Block(_)))
+                .map(|m| format!("{m:?}")),
+        );
     }
     Outcome {
         emulator,

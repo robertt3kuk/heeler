@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
+use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::render::Row;
@@ -71,6 +72,12 @@ pub enum Request {
     /// Capability `agent.report` (protocol 0.4): the agent exited; forget its report.
     #[serde(rename = "agent.release")]
     AgentRelease(AgentReleaseRequest),
+    /// Capability `terminal.blocks` (protocol 0.5).
+    #[serde(rename = "terminal.blocks")]
+    TerminalBlocks(TerminalBlocks),
+    /// Capability `terminal.blocks` (protocol 0.5).
+    #[serde(rename = "terminal.block_text")]
+    TerminalBlockText(TerminalBlockText),
 }
 
 impl Request {
@@ -469,6 +476,13 @@ pub enum Event {
         title: Option<String>,
         body: String,
     },
+    /// Capability `terminal.blocks` (protocol 0.5): a block started, changed state or was
+    /// truncated; `block` is the whole block as it is now.
+    #[serde(rename = "terminal.block")]
+    TerminalBlock {
+        terminal_id: TerminalId,
+        block: Block,
+    },
 }
 
 impl Event {
@@ -495,6 +509,7 @@ impl Event {
         "terminal.bell",
         "terminal.title",
         "terminal.notification",
+        "terminal.block",
     ];
 }
 

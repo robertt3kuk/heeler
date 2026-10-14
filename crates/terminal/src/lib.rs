@@ -7,6 +7,9 @@
 
 #[cfg(test)]
 mod behavior;
+#[cfg(test)]
+mod block_tests;
+mod blocks;
 mod emulator;
 #[cfg(test)]
 mod equivalence;
@@ -19,6 +22,7 @@ mod sniffer;
 mod sys;
 mod terminal;
 
+pub use blocks::{BlockText, BlockTextError};
 pub use emulator::{DefaultColors, Emulator, LineScope, LogicalLine, LogicalLines};
 pub use error::TerminalError;
 pub use render::RenderTracker;

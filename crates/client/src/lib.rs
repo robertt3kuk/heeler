@@ -9,6 +9,7 @@
 //!   transient [`Notice`]s, and hands out [`TerminalHandle`]s that survive reconnects. All of
 //!   its methods work from any executor or plain thread.
 
+mod blocks;
 mod client;
 mod connection;
 mod error;
@@ -17,6 +18,7 @@ mod store;
 mod supervisor;
 mod terminal;
 
+pub use blocks::BlockList;
 pub use client::{Client, ConnectOptions, Resumed};
 pub use connection::Connection;
 pub use error::ClientError;

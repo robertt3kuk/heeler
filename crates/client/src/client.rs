@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use heeler_core::{Epoch, Seq, TerminalId};
+use heeler_protocol::blocks::{
+    BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
+};
 use heeler_protocol::messages::{
     ClientInfo, Event, Hello, Request, ResumePoint, Welcome, decode_result,
 };
@@ -29,12 +32,15 @@ use crate::socket::default_socket_path;
 
 /// Capability for `terminal.set_colors`; the client sends colors only to daemons advertising it.
 pub(crate) const COLORS_CAPABILITY: &str = "terminal.colors";
+/// Capability for `terminal.blocks` and `terminal.block_text` (protocol 0.5).
+pub(crate) const BLOCKS_CAPABILITY: &str = "terminal.blocks";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
     COLORS_CAPABILITY,
     "session.restore",
     "agent.report",
+    BLOCKS_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTOSTART_WAIT: Duration = Duration::from_secs(3);
@@ -202,6 +208,48 @@ impl Client {
             Ok(value) => Ok(decode_result(value)?),
             Err(error) => Err(ClientError::Remote(error)),
         }
+    }
+
+    /// True when the daemon advertised capability `terminal.blocks` (`terminal.blocks`,
+    /// `terminal.block_text` and `terminal.block` events; protocol 0.5).
+    pub fn supports_blocks(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == BLOCKS_CAPABILITY)
+    }
+
+    /// One page of the terminal's blocks, newest first: at most `limit` (the daemon caps it),
+    /// all with an id below `before_id` when given. Page by passing the last block's id.
+    pub async fn terminal_blocks(
+        &self,
+        terminal_id: TerminalId,
+        before_id: Option<u64>,
+        limit: u32,
+    ) -> Result<TerminalBlocksResult, ClientError> {
+        self.call(Request::TerminalBlocks(TerminalBlocks {
+            terminal_id,
+            before_id,
+            limit,
+        }))
+        .await
+    }
+
+    /// Plain text of a block's command or output, at most `max_bytes` (the daemon caps it).
+    pub async fn terminal_block_text(
+        &self,
+        terminal_id: TerminalId,
+        block_id: u64,
+        part: BlockPart,
+        max_bytes: u32,
+    ) -> Result<TerminalBlockTextResult, ClientError> {
+        self.call(Request::TerminalBlockText(TerminalBlockText {
+            terminal_id,
+            block_id,
+            part,
+            max_bytes,
+        }))
+        .await
     }
 
     /// Daemon events, each with its seq. A receiver sees events delivered after it was created

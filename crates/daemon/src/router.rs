@@ -133,6 +133,8 @@ impl Router {
                 ok(&Empty {})
             }
             Request::TerminalHistory(req) => ok(&self.hub.history(req)?),
+            Request::TerminalBlocks(req) => ok(&self.hub.blocks(req)?),
+            Request::TerminalBlockText(req) => ok(&self.hub.block_text(req)?),
             Request::TerminalSetColors(req) => {
                 self.hub.set_colors(req)?;
                 ok(&Empty {})

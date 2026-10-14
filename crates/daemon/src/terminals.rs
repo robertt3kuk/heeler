@@ -17,6 +17,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use heeler_core::TerminalId;
+use heeler_protocol::blocks::{
+    BLOCKS_MAX_LIMIT, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
+    TerminalBlocksResult,
+};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{
     TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize,
@@ -24,7 +28,7 @@ use heeler_protocol::messages::{
 };
 use heeler_protocol::render::TerminalRender;
 use heeler_protocol::{Frame, MAX_PAYLOAD};
-use heeler_terminal::{DefaultColors, RenderTracker, Terminal, TerminalError};
+use heeler_terminal::{BlockTextError, DefaultColors, RenderTracker, Terminal, TerminalError};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -39,6 +43,12 @@ const HISTORY_MAX_ROWS: u32 = 5_000;
 /// `terminal.history` stops adding rows once their JSON encoding would exceed this: half the
 /// frame limit, leaving room for the envelope.
 const HISTORY_MAX_BYTES: usize = MAX_PAYLOAD / 2;
+/// `terminal.blocks` stops adding blocks once their JSON encoding would exceed this (same
+/// budget as history rows).
+const BLOCKS_MAX_BYTES: usize = HISTORY_MAX_BYTES;
+/// Longest `text` of `terminal.block_text`, whatever `max_bytes` asks for: JSON escaping can
+/// multiply it by up to six, which must still fit one frame.
+const BLOCK_TEXT_MAX_BYTES: usize = MAX_PAYLOAD / 8;
 /// Input slices waiting per terminal before the sending connection's reader waits.
 const INPUT_QUEUE: usize = 32;
 /// Input frames are split to this size when queued, bounding the queue to
@@ -321,6 +331,54 @@ impl TerminalHub {
             from_line: req.from_line,
             rows,
         })
+    }
+
+    /// Blocks newest first. One call answers at most [`BLOCKS_MAX_LIMIT`] blocks and stops
+    /// before the block that would take the encoded blocks past [`BLOCKS_MAX_BYTES`] (the
+    /// first is always included); page with `before_id` of the last block returned.
+    pub fn blocks(&self, req: TerminalBlocks) -> Result<TerminalBlocksResult, ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        let limit = usize::try_from(req.limit.min(BLOCKS_MAX_LIMIT)).unwrap_or(0);
+        let (mut blocks, viewport_top) = entry.terminal.blocks(req.before_id, limit);
+        let mut encoded = 0usize;
+        let mut keep = 0;
+        for block in &blocks {
+            encoded = encoded.saturating_add(encoded_len(block).saturating_add(1));
+            if keep > 0 && encoded > BLOCKS_MAX_BYTES {
+                break;
+            }
+            keep += 1;
+        }
+        blocks.truncate(keep);
+        Ok(TerminalBlocksResult {
+            blocks,
+            viewport_top,
+        })
+    }
+
+    /// Plain text of a block's command or output, cut at `max_bytes` (clamped to
+    /// [`BLOCK_TEXT_MAX_BYTES`]).
+    pub fn block_text(&self, req: TerminalBlockText) -> Result<TerminalBlockTextResult, ErrorBody> {
+        let entry = self.get(req.terminal_id)?;
+        let max_bytes = usize::try_from(req.max_bytes)
+            .unwrap_or(usize::MAX)
+            .min(BLOCK_TEXT_MAX_BYTES);
+        match entry.terminal.block_text(req.block_id, req.part, max_bytes) {
+            Ok(text) => Ok(TerminalBlockTextResult {
+                text: text.text,
+                truncated: text.truncated,
+            }),
+            Err(BlockTextError::NotFound) => Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!(
+                    "block {} of terminal {} not found",
+                    req.block_id, req.terminal_id
+                ),
+            )),
+            Err(error @ BlockTextError::Unavailable) => {
+                Err(ErrorBody::new(ErrorCode::InvalidState, error.to_string()))
+            }
+        }
     }
 
     /// Queues a kind=2 frame body for the terminal. Waits while the terminal's input queue is

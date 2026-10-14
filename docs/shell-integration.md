@@ -1,6 +1,6 @@
 # Shell integration (OSC 133 + OSC 7)
 
-Heeler terminals running zsh, bash or fish emit semantic prompt marks and the working directory without any edit to the user's dotfiles. The daemon's OSC sniffer (`crates/terminal/src/sniffer.rs`) turns them into `TerminalMeta::PromptMark` / `TerminalMeta::Cwd`; the block index built on top of them is M10's next slice.
+Heeler terminals running zsh, bash or fish emit semantic prompt marks and the working directory without any edit to the user's dotfiles. The daemon's OSC sniffer (`crates/terminal/src/sniffer.rs`) turns them into `TerminalMeta::PromptMark` / `TerminalMeta::Cwd`; the block index built on top of them (`terminal.blocks`, protocol 0.5, `docs/protocol.md` § Terminal blocks) lives in the same crate (`blocks.rs`, `emulator.rs`).
 
 Code: `crates/terminal/src/shell_integration.rs` (install + injection), scripts in `crates/terminal/shell-integration/`, wiring in `crates/daemon` (`start` installs, `registry` hands the directory to every `TerminalConfig`). Behaviour is covered by `crates/terminal/tests/shell_integration.rs` (real PTYs).
 
