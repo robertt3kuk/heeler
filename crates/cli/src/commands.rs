@@ -31,9 +31,10 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Daemon(DaemonCommand::Start) => ctx.daemon_start().await,
         Command::Daemon(DaemonCommand::Status) => ctx.daemon_status().await,
-        Command::Daemon(DaemonCommand::Stop { stop_sessions }) => {
-            ctx.daemon_stop(stop_sessions).await
-        }
+        Command::Daemon(DaemonCommand::Stop {
+            stop_sessions,
+            forget,
+        }) => ctx.daemon_stop(stop_sessions, forget).await,
         Command::Daemon(DaemonCommand::Restart { stop_sessions }) => {
             ctx.daemon_restart(stop_sessions).await
         }
@@ -174,9 +175,9 @@ impl Ctx {
         self.print(&out, || out.human())
     }
 
-    async fn daemon_stop(&self, stop_sessions: bool) -> Result<(), CliError> {
+    async fn daemon_stop(&self, stop_sessions: bool, forget: bool) -> Result<(), CliError> {
         let client = self.connect().await?;
-        self.shutdown_daemon(client, stop_sessions).await?;
+        self.shutdown_daemon(client, stop_sessions, forget).await?;
         self.print(&serde_json::json!({"stopped": true}), || {
             "heelerd stopped".to_owned()
         })
@@ -184,9 +185,17 @@ impl Ctx {
 
     /// Asks the connected daemon to shut down and waits until its socket is gone, so a new
     /// daemon can start.
-    async fn shutdown_daemon(&self, client: Client, stop_sessions: bool) -> Result<(), CliError> {
+    async fn shutdown_daemon(
+        &self,
+        client: Client,
+        stop_sessions: bool,
+        forget: bool,
+    ) -> Result<(), CliError> {
         match client
-            .call::<Value>(Request::DaemonShutdown(DaemonShutdown { stop_sessions }))
+            .call::<Value>(Request::DaemonShutdown(DaemonShutdown {
+                stop_sessions,
+                forget,
+            }))
             .await
         {
             Ok(_) | Err(ClientError::Disconnected) => {}
@@ -228,7 +237,7 @@ impl Ctx {
                         )));
                     }
                 }
-                self.shutdown_daemon(client, stop_sessions).await?;
+                self.shutdown_daemon(client, stop_sessions, false).await?;
                 true
             }
             Err(CliError::Unreachable(_)) => false,

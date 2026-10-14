@@ -400,6 +400,17 @@ pub(super) fn state_text(state: &SessionState) -> String {
     }
 }
 
+/// The state column of `heeler ls`: ended sessions loaded from a previous daemon run say so,
+/// because their final screen is gone.
+fn listed_state_text(session: &SessionInfo) -> String {
+    let state = state_text(&session.state);
+    if session.restored {
+        format!("{state}, restored")
+    } else {
+        state
+    }
+}
+
 fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
     if sessions.is_empty() {
         return "no sessions".to_owned();
@@ -410,7 +421,7 @@ fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
             [
                 s.id.to_string(),
                 terminal_text(s),
-                state_text(&s.state),
+                listed_state_text(s),
                 s.title.clone(),
                 s.cwd
                     .as_ref()
@@ -481,6 +492,7 @@ mod tests {
             cwd: Some(PathBuf::from("/tmp")),
             terminal_id: Some(TerminalId(terminal)),
             created_at_ms: 0,
+            restored: false,
         }
     }
 
@@ -546,6 +558,15 @@ mod tests {
         assert_eq!(age_text(125), "2m");
         assert_eq!(age_text(7200), "2h");
         assert_eq!(age_text(200_000), "2d");
+    }
+
+    #[test]
+    fn restored_sessions_are_marked_in_the_state_column() {
+        let mut restored = session("01K7F3B5N2Q9W8E4R6T1Y0V3KM", 1, "t");
+        restored.state = SessionState::Stopped;
+        assert_eq!(listed_state_text(&restored), "stopped");
+        restored.restored = true;
+        assert_eq!(listed_state_text(&restored), "stopped, restored");
     }
 
     #[test]

@@ -175,6 +175,7 @@ Implemented by `heeler_client::Connection` (M2.2): one `heeler-client` thread wi
 ## Persistence and restore (ADR 0006, 0009)
 - SQLite at `~/Library/Application Support/Heeler/heeler.db`, single writer thread, WAL, forward-only migrations with pre-migration backup.
 - Daemon restart: respawn terminals in saved cwd; resume agents via recorded native resume refs; otherwise sessions come back `stopped` with a restart action. Live fd handoff for upgrades is M9.
+- Implemented (M3-A): the registry writes workspaces and sessions through to the `storage` actor (`heeler-storage`); start loads them back, respawns live sessions as new terminals with the same ids, and lists ended ones as `restored`. `$HEELER_HOME/daemon.toml` `[daemon] restore_sessions = "respawn" | "stopped"`; `heeler daemon stop --stop-sessions --forget` leaves them out of the restore set. Semantics: `docs/protocol.md` § Persistence and restore.
 
 ## Security
 - Socket dir `0700`, socket `0600`, peer UID check; no TCP listener until a remote transport ADR.

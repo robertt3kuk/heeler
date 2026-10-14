@@ -3,11 +3,17 @@
 //!
 //! The actor never waits on a child process. Stopping a session signals its terminal and parks
 //! the reply until the terminal's watcher task reports the exit back through the same mailbox.
+//!
+//! Every change is written through to `heeler-storage` (fire-and-forget into the writer thread,
+//! so request handling never waits for the disk), and [`spawn`] rebuilds the state from what was
+//! stored (ADR 0009 step 1): live sessions come back as new terminals with the same ids.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tokio::time::{Instant, sleep_until};
 
 use heeler_core::{SessionEvent, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use heeler_protocol::control::{ErrorBody, ErrorCode};
@@ -16,11 +22,14 @@ use heeler_protocol::messages::{
     SessionSnapshot, SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceList,
     WorkspaceRename,
 };
+use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use heeler_terminal::{ExitStatus, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, warn};
 
 use crate::bus::{EventBus, PublishError};
+use crate::config::RestoreMode;
+use crate::restore::{self, DEFAULT_WORKSPACE_KEY, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
 
 /// Commands waiting in the mailbox before senders wait their turn.
@@ -30,6 +39,9 @@ const MAILBOX_CAPACITY: usize = 256;
 pub const STOP_GRACE: Duration = Duration::from_secs(3);
 
 pub const DEFAULT_WORKSPACE_NAME: &str = "default";
+
+/// Title and cwd changes are coalesced: a session is written at most this often because of them.
+const DIRTY_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 
 type Reply<T> = oneshot::Sender<Result<T, ErrorBody>>;
 
@@ -47,8 +59,12 @@ enum Command {
     StopSession(SessionId, Reply<SessionInfo>),
     RestartSession(SessionId, Reply<SessionInfo>),
     RenameSession(SessionRename, Reply<SessionInfo>),
-    /// Answered once no session is live any more.
-    StopAll(Reply<()>),
+    /// Answered once no session is live any more. The flag removes the sessions from the
+    /// restore set (`--forget`).
+    StopAll {
+        forget: bool,
+        reply: Reply<()>,
+    },
     /// From a terminal's watcher task.
     TerminalMeta(TerminalId, TerminalMeta),
     TerminalExited(TerminalId, ExitStatus),
@@ -124,8 +140,11 @@ impl RegistryHandle {
     }
 
     /// Terminates every live session concurrently and returns once all have ended.
-    pub async fn stop_all(&self) -> Result<(), ErrorBody> {
-        self.ask(Command::StopAll).await
+    ///
+    /// The stopped sessions stay in the restore set (the next daemon respawns them) unless
+    /// `forget`, which records them as stopped.
+    pub async fn stop_all(&self, forget: bool) -> Result<(), ErrorBody> {
+        self.ask(|reply| Command::StopAll { forget, reply }).await
     }
 }
 
@@ -145,12 +164,25 @@ struct SessionEntry {
     /// A stop was requested; the next exit counts as `stopped`.
     stopping: bool,
     stop_waiters: Vec<Reply<SessionInfo>>,
+    ended_at_ms: Option<u64>,
+    /// Native resume reference (JSON) recorded by an agent integration; kept as stored.
+    resume_ref_json: Option<String>,
+    /// Command to run instead of the spec's at the next spawn (a resume reference); used once.
+    restore_argv: Option<Vec<String>>,
+    /// The daemon is shutting down and takes this session with it: the database keeps this
+    /// live state so the next daemon respawns it.
+    keep_live: Option<SessionState>,
+    /// Title or cwd changed since the last write.
+    dirty: bool,
 }
 
 impl SessionEntry {
     fn advance(&mut self, event: SessionEvent) {
         match self.info.state.transition(event) {
-            Ok(next) => self.info.state = next,
+            Ok(next) => {
+                self.info.state = next;
+                self.ended_at_ms = (!self.info.state.is_live()).then(now_ms);
+            }
             Err(error) => error!(session = %self.info.id, %error, "invalid session transition"),
         }
     }
@@ -181,41 +213,137 @@ struct SessionRegistry {
     mailbox: mpsc::WeakSender<Command>,
     default_workspace: WorkspaceId,
     workspaces: Vec<WorkspaceInfo>,
+    /// `position` for the next workspace row.
+    next_position: i64,
     sessions: Vec<SessionEntry>,
     stop_all_waiters: Vec<Reply<()>>,
+    storage: Storage,
+    /// When sessions with unwritten title/cwd changes are written next.
+    flush_at: Option<Instant>,
 }
 
-/// Starts the actor. It stops when every [`RegistryHandle`] is dropped.
+/// What [`spawn`] needs besides the shared services.
+#[derive(Debug)]
+pub struct RegistryConfig {
+    /// Exported to children as `HEELER_SOCKET`.
+    pub socket: PathBuf,
+    /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
+    pub shell_integration_dir: Option<PathBuf>,
+    pub storage: Storage,
+    pub restore: RestoreMode,
+}
+
+/// Starts the actor from the stored state. It stops when every [`RegistryHandle`] is dropped.
+///
+/// Sessions that were live when the previous daemon stopped are spawned again here (same id,
+/// title, and workspace; last known cwd) unless `config.restore` is `Stopped`. Must run inside the
+/// Tokio runtime.
 pub fn spawn(
     bus: Arc<EventBus>,
     hub: Arc<TerminalHub>,
-    socket: PathBuf,
-    shell_integration_dir: Option<PathBuf>,
+    config: RegistryConfig,
+    stored: Stored,
 ) -> RegistryHandle {
     let (tx, rx) = mpsc::channel(MAILBOX_CAPACITY);
-    let default_workspace = WorkspaceId::new();
-    let registry = SessionRegistry {
+    let (workspaces, default_workspace, next_position) =
+        restored_workspaces(&stored, &config.storage);
+    let mut registry = SessionRegistry {
         bus,
         hub,
-        socket,
-        shell_integration_dir,
+        socket: config.socket,
+        shell_integration_dir: config.shell_integration_dir,
         mailbox: tx.downgrade(),
         default_workspace,
-        workspaces: vec![WorkspaceInfo {
-            id: default_workspace,
-            name: DEFAULT_WORKSPACE_NAME.to_owned(),
-            roots: Vec::new(),
-        }],
+        workspaces,
+        next_position,
         sessions: Vec::new(),
         stop_all_waiters: Vec::new(),
+        storage: config.storage,
+        flush_at: None,
     };
+    registry.restore_sessions(stored.sessions, config.restore);
     tokio::spawn(registry.run(rx));
     RegistryHandle { tx }
 }
 
+/// The stored workspaces, the default one among them (created and stored when missing), and the
+/// next free position.
+fn restored_workspaces(
+    stored: &Stored,
+    storage: &Storage,
+) -> (Vec<WorkspaceInfo>, WorkspaceId, i64) {
+    let mut workspaces: Vec<WorkspaceInfo> = stored
+        .workspaces
+        .iter()
+        .map(|w| WorkspaceInfo {
+            id: w.id,
+            name: w.name.clone(),
+            roots: w.roots.clone(),
+        })
+        .collect();
+    let mut next_position = stored
+        .workspaces
+        .iter()
+        .map(|w| w.position)
+        .max()
+        .map_or(0, |last| last + 1);
+    let existing = stored
+        .default_workspace
+        .filter(|id| workspaces.iter().any(|w| w.id == *id));
+    let default_workspace = existing.unwrap_or_else(|| {
+        let id = WorkspaceId::new();
+        workspaces.push(WorkspaceInfo {
+            id,
+            name: DEFAULT_WORKSPACE_NAME.to_owned(),
+            roots: Vec::new(),
+        });
+        log_write(
+            storage.batch(vec![
+                Write::InsertWorkspace(WorkspaceRow {
+                    id,
+                    name: DEFAULT_WORKSPACE_NAME.to_owned(),
+                    roots: Vec::new(),
+                    created_at_ms: now_ms(),
+                    position: next_position,
+                }),
+                Write::SetMeta {
+                    key: DEFAULT_WORKSPACE_KEY.to_owned(),
+                    value: id.to_string(),
+                },
+            ]),
+            "the default workspace",
+        );
+        next_position += 1;
+        id
+    });
+    (workspaces, default_workspace, next_position)
+}
+
+/// Storage failures never take request handling down: the in-memory state stays authoritative
+/// and the next write may succeed.
+fn log_write(result: Result<(), StorageError>, what: &str) {
+    match result {
+        Ok(()) => {}
+        // The writer is closed once the daemon has finished shutting down; nothing is lost then.
+        Err(StorageError::Closed) => debug!("storage is closed; dropped a write of {what}"),
+        Err(error) => error!(%error, "could not store {what}"),
+    }
+}
+
 impl SessionRegistry {
     async fn run(mut self, mut mailbox: mpsc::Receiver<Command>) {
-        while let Some(command) = mailbox.recv().await {
+        loop {
+            let command = match self.flush_at {
+                Some(deadline) => tokio::select! {
+                    command = mailbox.recv() => command,
+                    () = sleep_until(deadline) => {
+                        self.flush_dirty();
+                        continue;
+                    }
+                },
+                None => mailbox.recv().await,
+            };
+            let Some(command) = command else { break };
             // A dropped reply means the asking connection went away; nothing to do.
             match command {
                 Command::CreateWorkspace(req, reply) => {
@@ -272,11 +400,12 @@ impl SessionRegistry {
                 Command::RenameSession(req, reply) => {
                     let _ = reply.send(self.rename_session(req));
                 }
-                Command::StopAll(reply) => self.stop_all(reply),
+                Command::StopAll { forget, reply } => self.stop_all(forget, reply),
                 Command::TerminalMeta(terminal, meta) => self.on_meta(terminal, meta),
                 Command::TerminalExited(terminal, status) => self.on_exited(terminal, &status),
             }
         }
+        self.flush_dirty();
     }
 
     fn live_count(&self) -> usize {
@@ -298,6 +427,18 @@ impl SessionRegistry {
         self.publish(&Event::WorkspaceUpdated {
             workspace: workspace.clone(),
         })?;
+        let position = self.next_position;
+        self.next_position += 1;
+        log_write(
+            self.storage.workspaces().insert(WorkspaceRow {
+                id: workspace.id,
+                name: workspace.name.clone(),
+                roots: workspace.roots.clone(),
+                created_at_ms: now_ms(),
+                position,
+            }),
+            "a new workspace",
+        );
         self.workspaces.push(workspace.clone());
         Ok(workspace)
     }
@@ -311,6 +452,12 @@ impl SessionRegistry {
             workspace: workspace.clone(),
         })?;
         self.workspaces[index] = workspace.clone();
+        log_write(
+            self.storage
+                .workspaces()
+                .rename(workspace.id, workspace.name.clone()),
+            "a workspace rename",
+        );
         Ok(workspace)
     }
 
@@ -335,6 +482,8 @@ impl SessionRegistry {
         }
         self.publish(&Event::WorkspaceClosed { workspace_id: id })?;
         self.workspaces.remove(index);
+        // The sessions' rows go with the workspace's.
+        log_write(self.storage.workspaces().delete(id), "a workspace removal");
         // Ended sessions go with their workspace, and so do their terminals.
         let hub = &self.hub;
         self.sessions.retain(|s| {
@@ -399,6 +548,7 @@ impl SessionRegistry {
             cwd: spec.cwd.clone(),
             terminal_id: None,
             created_at_ms: now_ms(),
+            restored: false,
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -412,6 +562,11 @@ impl SessionRegistry {
             terminal: None,
             stopping: false,
             stop_waiters: Vec::new(),
+            ended_at_ms: None,
+            resume_ref_json: None,
+            restore_argv: None,
+            keep_live: None,
+            dirty: false,
         });
         let index = self.sessions.len() - 1;
         self.start_terminal(index);
@@ -420,6 +575,7 @@ impl SessionRegistry {
 
     /// Spawns the process for a `Starting` session and moves it to `Running` or `Failed`.
     fn start_terminal(&mut self, index: usize) {
+        let restore_argv = self.sessions[index].restore_argv.take();
         let session = &self.sessions[index];
         let mut env: BTreeMap<String, String> = session.spec.env.clone();
         // Daemon-managed variables win over whatever the client asked for.
@@ -433,7 +589,7 @@ impl SessionRegistry {
             session.info.workspace_id.to_string(),
         );
         let mut config = TerminalConfig {
-            argv: session.spec.command.clone(),
+            argv: restore_argv.unwrap_or_else(|| session.spec.command.clone()),
             cwd: session.info.cwd.clone(),
             env,
             shell_integration_dir: self.shell_integration_dir.clone(),
@@ -467,6 +623,7 @@ impl SessionRegistry {
             }
         }
         self.emit_session(index);
+        self.persist_session(index);
     }
 
     fn stop_session(&mut self, id: SessionId, reply: Reply<SessionInfo>) {
@@ -504,6 +661,8 @@ impl SessionRegistry {
             self.hub.remove(old.id());
         }
         session.stopping = false;
+        session.keep_live = None;
+        session.info.restored = false;
         session.osc_title = None;
         session.info.terminal_id = None;
         // Restart where the program last said it was (OSC 7) when that directory still exists.
@@ -532,13 +691,20 @@ impl SessionRegistry {
         let session = &mut self.sessions[index];
         session.info = info.clone();
         session.title_locked = true;
+        self.persist_session(index);
         Ok(info)
     }
 
-    fn stop_all(&mut self, reply: Reply<()>) {
+    fn stop_all(&mut self, forget: bool, reply: Reply<()>) {
         for session in self.sessions.iter_mut().filter(|s| s.info.state.is_live()) {
+            // A session the user is already stopping stays stopped; the others die with the
+            // daemon but remain in the restore set unless the user asked to forget them.
+            if !session.stopping && !forget {
+                session.keep_live = Some(session.info.state.clone());
+            }
             session.request_stop();
         }
+        self.flush_dirty();
         self.stop_all_waiters.push(reply);
         self.settle_stop_all();
     }
@@ -584,6 +750,7 @@ impl SessionRegistry {
                 {
                     self.sessions[index].info.title = session_title;
                     self.emit_session(index);
+                    self.mark_dirty(index);
                 }
             }
             TerminalMeta::Bell => self.emit(&Event::TerminalBell {
@@ -599,6 +766,7 @@ impl SessionRegistry {
                 if session.info.cwd.as_deref() != Some(cwd.as_path()) {
                     session.info.cwd = Some(cwd);
                     self.emit_session(index);
+                    self.mark_dirty(index);
                 }
             }
             // Attention from prompt marks arrives with the agent-state work.
@@ -623,6 +791,7 @@ impl SessionRegistry {
         let info = session.info.clone();
         let waiters = std::mem::take(&mut session.stop_waiters);
         self.emit_session(index);
+        self.persist_session(index);
         self.emit(&Event::SessionExited {
             session_id: info.id,
             code,
@@ -632,6 +801,160 @@ impl SessionRegistry {
             let _ = waiter.send(Ok(info.clone()));
         }
         self.settle_stop_all();
+    }
+
+    // Storage ---------------------------------------------------------------------------------
+
+    /// Rebuilds the sessions from their rows. Live ones are spawned again (`Respawn`) or listed
+    /// as stopped; ended ones stay as they were, marked `restored` because their screen is gone.
+    fn restore_sessions(&mut self, rows: Vec<SessionRow>, mode: RestoreMode) {
+        let mut respawn = Vec::new();
+        let mut rewrite = Vec::new();
+        for row in rows {
+            if !self.workspaces.iter().any(|w| w.id == row.workspace_id) {
+                warn!(session = %row.id, "stored session has no workspace; skipping it");
+                continue;
+            }
+            let was_live = row.state.is_live();
+            let (spec, unusable) = match serde_json::from_str::<TerminalSpec>(&row.spec_json) {
+                Ok(spec) if row.kind == SessionKind::Terminal => (spec, None),
+                Ok(spec) => (
+                    spec,
+                    Some(format!("unsupported session kind {:?}", row.kind)),
+                ),
+                Err(error) => {
+                    warn!(session = %row.id, %error, "stored session spec is unreadable");
+                    (
+                        TerminalSpec::default(),
+                        Some(format!("stored spec unreadable: {error}")),
+                    )
+                }
+            };
+            let mut state = row.state.clone();
+            let mut ended_at_ms = row.ended_at_ms;
+            let mut restored = true;
+            let mut restore_argv = None;
+            let mut cwd = row.cwd.clone();
+            let mut action = None;
+            if was_live {
+                ended_at_ms = Some(now_ms());
+                match (unusable, mode) {
+                    (Some(reason), _) => {
+                        state = SessionState::Failed { reason };
+                        action = Some(false);
+                    }
+                    (None, RestoreMode::Stopped) => {
+                        state = SessionState::Stopped;
+                        action = Some(false);
+                    }
+                    (None, RestoreMode::Respawn) => {
+                        state = SessionState::Starting;
+                        ended_at_ms = None;
+                        restored = false;
+                        restore_argv = row
+                            .resume_ref_json
+                            .as_deref()
+                            .and_then(restore::resume_argv);
+                        // A directory that vanished meanwhile falls back to the spec's, then to
+                        // the shell's default.
+                        cwd = cwd
+                            .filter(|dir| dir.is_dir())
+                            .or_else(|| spec.cwd.clone().filter(|dir| dir.is_dir()));
+                        action = Some(true);
+                    }
+                }
+            }
+            let default_title = default_title(&spec);
+            self.sessions.push(SessionEntry {
+                info: SessionInfo {
+                    id: row.id,
+                    workspace_id: row.workspace_id,
+                    kind: row.kind,
+                    title: row.title,
+                    state,
+                    command: spec.command.clone(),
+                    cwd,
+                    terminal_id: None,
+                    created_at_ms: row.created_at_ms,
+                    restored,
+                },
+                spec,
+                default_title,
+                title_locked: row.title_locked,
+                osc_title: None,
+                terminal: None,
+                stopping: false,
+                stop_waiters: Vec::new(),
+                ended_at_ms,
+                resume_ref_json: row.resume_ref_json,
+                restore_argv,
+                keep_live: None,
+                dirty: false,
+            });
+            let index = self.sessions.len() - 1;
+            match action {
+                Some(true) => respawn.push(index),
+                Some(false) => rewrite.push(index),
+                None => {}
+            }
+        }
+        // `start_terminal` stores the session itself once it is running.
+        for index in respawn {
+            self.start_terminal(index);
+        }
+        for index in rewrite {
+            self.persist_session(index);
+        }
+    }
+
+    fn session_row(&self, index: usize) -> SessionRow {
+        let session = &self.sessions[index];
+        // While the daemon takes a session down with itself the row keeps saying it was alive.
+        let (state, ended_at_ms) = match &session.keep_live {
+            Some(live) => (live.clone(), None),
+            None => (session.info.state.clone(), session.ended_at_ms),
+        };
+        let spec = restore::persistable_spec(&session.spec);
+        SessionRow {
+            id: session.info.id,
+            workspace_id: session.info.workspace_id,
+            kind: session.info.kind,
+            title: session.info.title.clone(),
+            title_locked: session.title_locked,
+            spec_json: serde_json::to_string(&spec).unwrap_or_else(|error| {
+                error!(session = %session.info.id, %error, "could not encode a session spec");
+                "{}".to_owned()
+            }),
+            cwd: session.info.cwd.clone(),
+            state,
+            created_at_ms: session.info.created_at_ms,
+            ended_at_ms,
+            resume_ref_json: session.resume_ref_json.clone(),
+        }
+    }
+
+    /// Writes the whole session row now.
+    fn persist_session(&mut self, index: usize) {
+        self.sessions[index].dirty = false;
+        let row = self.session_row(index);
+        log_write(self.storage.sessions().upsert(row), "a session");
+    }
+
+    /// Title and cwd change with every prompt; they are written together at most once per
+    /// [`DIRTY_WRITE_INTERVAL`].
+    fn mark_dirty(&mut self, index: usize) {
+        self.sessions[index].dirty = true;
+        self.flush_at
+            .get_or_insert_with(|| Instant::now() + DIRTY_WRITE_INTERVAL);
+    }
+
+    fn flush_dirty(&mut self) {
+        self.flush_at = None;
+        for index in 0..self.sessions.len() {
+            if self.sessions[index].dirty {
+                self.persist_session(index);
+            }
+        }
     }
 
     // Events ----------------------------------------------------------------------------------
@@ -739,7 +1062,7 @@ fn validated_name(name: String, what: &str) -> Result<String, ErrorBody> {
     Ok(trimmed.to_owned())
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

@@ -111,7 +111,10 @@ async fn shutdown_and_wait(
     background: &BackgroundExecutor,
 ) -> Result<(), ClientError> {
     match connection
-        .call::<Value>(Request::DaemonShutdown(DaemonShutdown { stop_sessions }))
+        .call::<Value>(Request::DaemonShutdown(DaemonShutdown {
+            stop_sessions,
+            forget: false,
+        }))
         .await
     {
         Ok(_) | Err(ClientError::Disconnected) => {}

@@ -762,6 +762,7 @@ async fn shutdown_without_stop_sessions_is_refused_while_a_session_lives() {
     let refused = client
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: false,
+            forget: false,
         }))
         .await;
     assert_eq!(remote_code(refused), ErrorCode::InvalidState);
@@ -773,6 +774,7 @@ async fn shutdown_without_stop_sessions_is_refused_while_a_session_lives() {
     client
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: false,
+            forget: false,
         }))
         .await
         .unwrap();
@@ -790,6 +792,7 @@ async fn shutdown_with_stop_sessions_terminates_children_and_removes_the_socket(
     client
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: true,
+            forget: false,
         }))
         .await
         .unwrap();

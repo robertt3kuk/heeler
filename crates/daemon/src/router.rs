@@ -2,7 +2,7 @@
 //! the router decides.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -28,6 +28,8 @@ pub struct Router {
     started: Instant,
     shutdown: CancellationToken,
     clients: Arc<AtomicU32>,
+    /// The shutdown in progress asked to drop the stopped sessions from the restore set.
+    forget: AtomicBool,
 }
 
 impl Router {
@@ -45,6 +47,7 @@ impl Router {
             started: Instant::now(),
             shutdown,
             clients,
+            forget: AtomicBool::new(false),
         }
     }
 
@@ -79,7 +82,13 @@ impl Router {
                         ),
                     ));
                 }
-                info!(conn = %conn.id(), stop_sessions = params.stop_sessions, "shutdown requested by client");
+                info!(
+                    conn = %conn.id(),
+                    stop_sessions = params.stop_sessions,
+                    forget = params.forget,
+                    "shutdown requested by client"
+                );
+                self.forget.store(params.forget, Ordering::Release);
                 // The connection task queues the response before it next looks at the token,
                 // and closing connections flush their queues first.
                 self.shutdown.cancel();
@@ -146,9 +155,12 @@ impl Router {
     }
 
     /// Terminates every live session (SIGHUP, then SIGKILL after the grace) and waits for
-    /// their processes to be gone.
+    /// their processes to be gone. They stay in the restore set unless the shutdown request
+    /// asked to forget them.
     pub async fn stop_sessions(&self) -> Result<(), ErrorBody> {
-        self.registry.stop_all().await
+        self.registry
+            .stop_all(self.forget.load(Ordering::Acquire))
+            .await
     }
 }
 

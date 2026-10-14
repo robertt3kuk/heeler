@@ -231,7 +231,7 @@ impl TestDaemon {
             .unwrap();
     }
 
-    /// A new daemon on the same home: new epoch, no sessions.
+    /// A new daemon on the same home: new epoch; stored workspaces and sessions are restored.
     pub fn restart(&mut self) {
         assert!(self.daemon.is_none(), "daemon is already running");
         let paths = self.paths.clone();
@@ -421,6 +421,7 @@ impl Drop for ProcessDaemon {
                     .call::<serde_json::Value>(Request::DaemonShutdown(
                         heeler_protocol::messages::DaemonShutdown {
                             stop_sessions: true,
+                            forget: false,
                         },
                     ))
                     .await;

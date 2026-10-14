@@ -1,0 +1,132 @@
+//! Loading durable state at start and the rules for what gets stored (ADR 0006, ADR 0009).
+
+use heeler_core::WorkspaceId;
+use heeler_protocol::messages::TerminalSpec;
+use heeler_storage::{SessionRow, Storage, StorageError, WorkspaceRow};
+use serde::Deserialize;
+
+/// `app_meta` key of the workspace sessions land in when a client names none.
+pub const DEFAULT_WORKSPACE_KEY: &str = "default_workspace_id";
+
+/// Everything the registry needs to rebuild its state.
+#[derive(Debug, Default)]
+pub struct Stored {
+    pub workspaces: Vec<WorkspaceRow>,
+    pub sessions: Vec<SessionRow>,
+    pub default_workspace: Option<WorkspaceId>,
+}
+
+/// Blocking: reads the whole durable state. Run it off the async threads.
+pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
+    let default_workspace = match storage.app_meta().get(DEFAULT_WORKSPACE_KEY)? {
+        Some(text) => Some(text.parse().map_err(|_| StorageError::Corrupt {
+            what: format!("app_meta.{DEFAULT_WORKSPACE_KEY}"),
+            detail: format!("`{text}` is not a workspace id"),
+        })?),
+        None => None,
+    };
+    Ok(Stored {
+        workspaces: storage.workspaces().list()?,
+        sessions: storage.sessions().list()?,
+        default_workspace,
+    })
+}
+
+/// Native resume reference of a session, as stored in `resume_ref_json`. The agent integrations
+/// (roadmap M3.3) fill it in; until then only the argv form exists.
+#[derive(Debug, Deserialize)]
+struct ResumeRef {
+    /// Replaces the spec's command when the session is respawned after a daemon restart.
+    argv: Vec<String>,
+}
+
+/// The command a stored resume reference asks to run; `None` when absent, unreadable, or empty.
+pub fn resume_argv(resume_ref_json: &str) -> Option<Vec<String>> {
+    match serde_json::from_str::<ResumeRef>(resume_ref_json) {
+        Ok(resume) if !resume.argv.is_empty() => Some(resume.argv),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "ignoring an unreadable resume reference");
+            None
+        }
+    }
+}
+
+/// Name fragments of environment variables that must never reach the database: secrets live in
+/// the Keychain only (ADR 0008).
+const SECRET_NAME_PARTS: &[&str] = &[
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "API_KEY",
+    "APIKEY",
+    "PRIVATE_KEY",
+    "ACCESS_KEY",
+];
+
+pub fn looks_secret(env_name: &str) -> bool {
+    let upper = env_name.to_ascii_uppercase();
+    SECRET_NAME_PARTS.iter().any(|part| upper.contains(part))
+}
+
+/// The spec as it goes to the database: environment variables with secret-looking names are
+/// left out, so a restored session starts without them.
+pub fn persistable_spec(spec: &TerminalSpec) -> TerminalSpec {
+    let mut spec = spec.clone();
+    spec.env.retain(|name, _| !looks_secret(name));
+    spec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_looking_names_are_recognised() {
+        for name in [
+            "GITHUB_TOKEN",
+            "aws_secret_access_key",
+            "DB_PASSWORD",
+            "OPENAI_API_KEY",
+        ] {
+            assert!(looks_secret(name), "{name}");
+        }
+        for name in [
+            "PATH",
+            "PS1",
+            "SSH_AUTH_SOCK",
+            "KEYBOARD_LAYOUT",
+            "HEELER_SOCKET",
+        ] {
+            assert!(!looks_secret(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn stored_specs_drop_secret_env() {
+        let spec = TerminalSpec {
+            env: [
+                ("PS1".to_owned(), "$ ".to_owned()),
+                ("NPM_TOKEN".to_owned(), "abc".to_owned()),
+            ]
+            .into(),
+            ..TerminalSpec::default()
+        };
+        let stored = persistable_spec(&spec);
+        assert_eq!(stored.env.len(), 1);
+        assert!(stored.env.contains_key("PS1"));
+    }
+
+    #[test]
+    fn resume_argv_reads_only_a_usable_command() {
+        assert_eq!(
+            resume_argv(r#"{"argv":["codex","resume","abc"]}"#),
+            Some(vec!["codex".into(), "resume".into(), "abc".into()])
+        );
+        assert_eq!(resume_argv(r#"{"argv":[]}"#), None);
+        assert_eq!(resume_argv("not json"), None);
+        assert_eq!(resume_argv(r#"{"thread":"x"}"#), None);
+    }
+}

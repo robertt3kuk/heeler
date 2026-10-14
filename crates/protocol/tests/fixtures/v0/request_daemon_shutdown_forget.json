@@ -1,0 +1,1 @@
+{"id":22,"method":"daemon.shutdown","params":{"forget":true,"stop_sessions":true}}

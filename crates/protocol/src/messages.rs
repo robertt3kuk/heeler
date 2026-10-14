@@ -121,6 +121,10 @@ pub struct DaemonShutdown {
     /// Stop live sessions first; otherwise shutdown fails with `invalid_state` while any run.
     #[serde(default)]
     pub stop_sessions: bool,
+    /// Also remove the stopped sessions from the restore set (only meaningful with
+    /// `stop_sessions`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forget: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,6 +315,10 @@ pub struct SessionInfo {
     pub cwd: Option<PathBuf>,
     pub terminal_id: Option<TerminalId>,
     pub created_at_ms: u64,
+    /// The session ended before a daemon restart and its final screen is gone (true only for
+    /// ended sessions loaded from storage).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restored: bool,
 }
 
 /// Result of `session.create`, `.stop`, `.restart`, and `.rename`: the session after the change.

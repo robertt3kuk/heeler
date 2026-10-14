@@ -63,6 +63,7 @@ async fn a_stopped_daemon_stays_down_until_autostart_is_turned_on_again() {
     connection
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: true,
+            forget: false,
         }))
         .await
         .unwrap();
@@ -99,6 +100,7 @@ async fn a_stopped_daemon_stays_down_until_autostart_is_turned_on_again() {
     connection
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: true,
+            forget: false,
         }))
         .await
         .unwrap();

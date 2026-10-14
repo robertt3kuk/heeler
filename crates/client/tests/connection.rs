@@ -279,11 +279,18 @@ async fn daemon_restart_resets_state_and_ends_terminal_handles() {
     })
     .await;
     let new_epoch = restarted.epoch.unwrap();
-    assert!(restarted.sessions.is_empty(), "{:?}", restarted.sessions);
+    // The daemon restores its stored state: the same session runs again, in a new terminal (ids count from 1 per daemon).
+    assert_eq!(restarted.sessions.len(), 1, "{:?}", restarted.sessions);
+    assert_eq!(restarted.sessions[0].id, session.id);
+    assert!(
+        restarted.sessions[0].state.is_live(),
+        "{:?}",
+        restarted.sessions
+    );
     assert_eq!(
         restarted.workspaces.len(),
-        1,
-        "only the new default workspace"
+        2,
+        "the default workspace and old-world"
     );
 
     let (old, new) = wait_notice(&mut notices, "daemon restarted", |n| match n {

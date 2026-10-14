@@ -59,15 +59,20 @@ pub enum DaemonCommand {
     Start,
     /// Show whether heelerd runs, and its pid, uptime, and counts
     Status,
-    /// Ask heelerd to shut down
+    /// Ask heelerd to shut down; sessions that were alive come back at the next start
     Stop {
-        /// Stop live sessions first; otherwise shutdown is refused while any run
+        /// Stop live sessions first; otherwise shutdown is refused while any run. They are
+        /// respawned by the next heelerd unless --forget is given
         #[arg(long)]
         stop_sessions: bool,
+        /// Record the stopped sessions as stopped so the next heelerd does not respawn them
+        #[arg(long, requires = "stop_sessions")]
+        forget: bool,
     },
     /// Stop heelerd and start a new one
     Restart {
-        /// Stop live sessions first; otherwise the restart is refused while any run
+        /// Stop live sessions first; otherwise the restart is refused while any run. The new
+        /// heelerd respawns them
         #[arg(long)]
         stop_sessions: bool,
     },

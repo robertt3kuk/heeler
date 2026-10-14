@@ -1046,8 +1046,8 @@ fn status_items_follow_the_connection_through_loss_and_recovery(cx: &mut TestApp
         epoch
     );
 
-    // The daemon itself goes away and comes back with a new epoch: sessions are gone and the
-    // open item says so.
+    // The daemon itself goes away and comes back with a new epoch: it restores the session in a
+    // new terminal, so the open item (attached to the old terminal) ends.
     daemon.stop();
     wait_until(cx, "reconnecting after the daemon stopped", |cx| {
         matches!(conn(cx), ConnectionState::Reconnecting { .. })
@@ -1063,7 +1063,13 @@ fn status_items_follow_the_connection_through_loss_and_recovery(cx: &mut TestApp
                 .is_some_and(|v| matches!(v.read(cx).status(), ViewStatus::Ended(_)))
         })
     });
-    assert!(view.read_with(cx, |wb, cx| wb.sessions().read(cx).sessions().is_empty()));
+    assert!(view.read_with(cx, |wb, cx| {
+        wb.sessions()
+            .read(cx)
+            .sessions()
+            .iter()
+            .any(|s| s.id == info.id)
+    }));
 }
 
 #[gpui::test]

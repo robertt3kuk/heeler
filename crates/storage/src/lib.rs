@@ -1,0 +1,313 @@
+//! Durable storage for the daemon (ADR 0006): SQLite behind one writer thread.
+//!
+//! [`Storage`] is a cheap-to-clone handle. One dedicated OS thread owns the only connection and
+//! executes commands in the order they were submitted, so writes to one entity can never be
+//! reordered. Writes are fire-and-forget (they only wait when the bounded command queue is
+//! full); reads wait for their answer, which also proves every earlier write has been applied.
+//!
+//! The public API uses no async runtime; async callers run the blocking calls ([`Storage::open`],
+//! reads, [`Storage::flush`], [`Storage::close`]) on a blocking thread.
+
+mod error;
+mod migrate;
+mod rows;
+mod sql;
+#[cfg(test)]
+mod tests;
+
+use std::fs;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::thread::JoinHandle;
+
+use heeler_core::{Epoch, SessionId, WorkspaceId};
+use parking_lot::Mutex;
+use rusqlite::Connection;
+use tracing::{debug, error};
+
+pub use error::{Result, StorageError};
+pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
+pub use rows::{EpochRecord, SessionRow, WorkspaceRow};
+pub use sql::{EPOCH_HISTORY_KEPT, Write};
+
+/// Commands waiting for the writer before submitters wait their turn.
+const QUEUE_CAPACITY: usize = 1024;
+
+enum Cmd {
+    Write(Write),
+    /// All or nothing: one transaction.
+    Batch(Vec<Write>),
+    Read(Box<dyn FnOnce(&Connection) + Send>),
+    Shutdown,
+}
+
+struct Inner {
+    path: PathBuf,
+    tx: SyncSender<Cmd>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Storage").field("path", &self.path).finish()
+    }
+}
+
+impl Inner {
+    /// Queues a shutdown behind every pending command and waits for the thread to finish.
+    fn close(&self) {
+        let Some(thread) = self.thread.lock().take() else {
+            return;
+        };
+        // A failed send means the writer already died; joining reports nothing more.
+        let _ = self.tx.send(Cmd::Shutdown);
+        if thread.join().is_err() {
+            error!("the storage writer panicked");
+        }
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// Handle to the database and its writer thread.
+#[derive(Debug, Clone)]
+pub struct Storage {
+    inner: Arc<Inner>,
+}
+
+impl Storage {
+    /// Opens (creating when missing) the database at `path`, migrates it to the newest schema,
+    /// and starts the writer thread. A failed migration leaves the file as it was and returns an
+    /// error; callers must not continue without storage.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_migrations(path, MIGRATIONS)
+    }
+
+    /// [`open`](Self::open) with an explicit migration list (tests and tools).
+    pub fn open_with_migrations(path: impl AsRef<Path>, migrations: &[Migration]) -> Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+            && !parent.exists()
+        {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(StorageError::io(format!("creating {}", parent.display())))?;
+        }
+        let mut conn = Connection::open(path)
+            .map_err(StorageError::sqlite(format!("opening {}", path.display())))?;
+        configure(&conn)?;
+        migrate::run(&mut conn, path, migrations)?;
+        // The database holds session metadata; keep it private even under a looser umask.
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(StorageError::io(format!("securing {}", path.display())))?;
+
+        let (tx, rx) = sync_channel(QUEUE_CAPACITY);
+        let thread = std::thread::Builder::new()
+            .name("heeler-storage".to_owned())
+            .spawn(move || run_writer(conn, rx))
+            .map_err(StorageError::io("starting the storage writer"))?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                path: path.to_owned(),
+                tx,
+                thread: Mutex::new(Some(thread)),
+            }),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.inner.path
+    }
+
+    pub fn workspaces(&self) -> Workspaces<'_> {
+        Workspaces(self)
+    }
+
+    pub fn sessions(&self) -> Sessions<'_> {
+        Sessions(self)
+    }
+
+    pub fn app_meta(&self) -> AppMeta<'_> {
+        AppMeta(self)
+    }
+
+    /// Queues one write. Returns once it is queued, not once it is durable.
+    pub fn write(&self, write: Write) -> Result<()> {
+        self.send(Cmd::Write(write))
+    }
+
+    /// Queues writes that are applied in one transaction: after a crash either all of them
+    /// are there or none.
+    pub fn batch(&self, writes: Vec<Write>) -> Result<()> {
+        self.send(Cmd::Batch(writes))
+    }
+
+    /// Returns once every write queued before this call has been applied.
+    pub fn flush(&self) -> Result<()> {
+        self.read(|_| Ok(()))
+    }
+
+    /// Applies everything still queued, then stops the writer thread and closes the database.
+    /// Later writes fail with [`StorageError::Closed`]. Idempotent.
+    pub fn close(&self) {
+        self.inner.close();
+    }
+
+    fn send(&self, cmd: Cmd) -> Result<()> {
+        self.inner.tx.send(cmd).map_err(|_| StorageError::Closed)
+    }
+
+    fn read<T: Send + 'static>(
+        &self,
+        query: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (reply, answer) = sync_channel(1);
+        self.send(Cmd::Read(Box::new(move |conn| {
+            // The asker may have gone away; nothing to do then.
+            let _ = reply.send(query(conn));
+        })))?;
+        answer.recv().map_err(|_| StorageError::Closed)?
+    }
+}
+
+fn configure(conn: &Connection) -> Result<()> {
+    let context = "configuring the database";
+    let mode: String = conn
+        .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+        .map_err(StorageError::sqlite(context))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        error!(mode, "the database did not enter WAL mode");
+    }
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(StorageError::sqlite(context))?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(StorageError::sqlite(context))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(StorageError::sqlite(context))?;
+    Ok(())
+}
+
+fn run_writer(mut conn: Connection, commands: std::sync::mpsc::Receiver<Cmd>) {
+    while let Ok(cmd) = commands.recv() {
+        match cmd {
+            Cmd::Write(write) => {
+                if let Err(error) = sql::apply(&conn, &write) {
+                    error!(%error, ?write, "storage write failed");
+                }
+            }
+            Cmd::Batch(writes) => {
+                if let Err(error) = apply_batch(&mut conn, &writes) {
+                    error!(%error, count = writes.len(), "storage batch failed; none of it was applied");
+                }
+            }
+            Cmd::Read(query) => query(&conn),
+            Cmd::Shutdown => break,
+        }
+    }
+    debug!("storage writer stopped");
+}
+
+fn apply_batch(conn: &mut Connection, writes: &[Write]) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .map_err(StorageError::sqlite("starting a batch"))?;
+    for write in writes {
+        sql::apply(&tx, write)?;
+    }
+    tx.commit()
+        .map_err(StorageError::sqlite("committing a batch"))
+}
+
+/// Workspace repository.
+#[derive(Debug, Clone, Copy)]
+pub struct Workspaces<'a>(&'a Storage);
+
+impl Workspaces<'_> {
+    /// Adds a workspace (an existing id only has its name and roots refreshed).
+    pub fn insert(&self, row: WorkspaceRow) -> Result<()> {
+        self.0.write(Write::InsertWorkspace(row))
+    }
+
+    pub fn rename(&self, id: WorkspaceId, name: String) -> Result<()> {
+        self.0.write(Write::RenameWorkspace { id, name })
+    }
+
+    /// Removes the workspace and, by cascade, its sessions.
+    pub fn delete(&self, id: WorkspaceId) -> Result<()> {
+        self.0.write(Write::DeleteWorkspace(id))
+    }
+
+    /// In display order.
+    pub fn list(&self) -> Result<Vec<WorkspaceRow>> {
+        self.0.read(sql::list_workspaces)
+    }
+}
+
+/// Session repository.
+#[derive(Debug, Clone, Copy)]
+pub struct Sessions<'a>(&'a Storage);
+
+impl Sessions<'_> {
+    /// Inserts the session or replaces everything but its creation time. The workspace must
+    /// have been written before.
+    pub fn upsert(&self, row: SessionRow) -> Result<()> {
+        self.0.write(Write::UpsertSession(Box::new(row)))
+    }
+
+    pub fn delete(&self, id: SessionId) -> Result<()> {
+        self.0.write(Write::DeleteSession(id))
+    }
+
+    /// Every session, oldest first.
+    pub fn list(&self) -> Result<Vec<SessionRow>> {
+        self.0.read(|conn| sql::list_sessions(conn, None))
+    }
+
+    pub fn list_in_workspace(&self, workspace: WorkspaceId) -> Result<Vec<SessionRow>> {
+        self.0
+            .read(move |conn| sql::list_sessions(conn, Some(workspace)))
+    }
+}
+
+/// Key/value metadata: schema version, epoch history, small daemon facts.
+#[derive(Debug, Clone, Copy)]
+pub struct AppMeta<'a>(&'a Storage);
+
+impl AppMeta<'_> {
+    pub fn get(&self, key: &str) -> Result<Option<String>> {
+        let key = key.to_owned();
+        self.0.read(move |conn| sql::get_meta(conn, &key))
+    }
+
+    pub fn set(&self, key: &str, value: &str) -> Result<()> {
+        self.0.write(Write::SetMeta {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+
+    pub fn schema_version(&self) -> Result<u32> {
+        self.0.read(migrate::current_version)
+    }
+
+    /// Appends a daemon run to the epoch history (the newest [`EPOCH_HISTORY_KEPT`] are kept).
+    pub fn record_epoch(&self, epoch: Epoch, started_at_ms: u64) -> Result<()> {
+        self.0.write(Write::RecordEpoch(EpochRecord {
+            epoch,
+            started_at_ms,
+        }))
+    }
+
+    /// Oldest first.
+    pub fn epoch_history(&self) -> Result<Vec<EpochRecord>> {
+        self.0.read(sql::epoch_history)
+    }
+}

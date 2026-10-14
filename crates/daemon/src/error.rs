@@ -1,6 +1,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use heeler_storage::StorageError;
+
 use crate::paths::PathsError;
 
 /// Longest `sun_path` that fits `sockaddr_un` on macOS (104 bytes including the NUL).
@@ -23,6 +25,19 @@ pub enum DaemonError {
         #[source]
         source: io::Error,
     },
+    /// The daemon refuses to run without its database: continuing would lose sessions.
+    #[error("cannot use the database {}: {source}", path.display())]
+    Storage {
+        path: PathBuf,
+        #[source]
+        source: Box<StorageError>,
+    },
+    #[error("invalid daemon config {}: {source}", path.display())]
+    Config {
+        path: PathBuf,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
     #[error("daemon task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
 }
@@ -31,5 +46,13 @@ impl DaemonError {
     pub(crate) fn io(context: impl Into<String>) -> impl FnOnce(io::Error) -> Self {
         let context = context.into();
         move |source| Self::Io { context, source }
+    }
+
+    pub(crate) fn storage(path: impl Into<PathBuf>) -> impl FnOnce(StorageError) -> Self {
+        let path = path.into();
+        move |source| Self::Storage {
+            path,
+            source: Box::new(source),
+        }
     }
 }

@@ -179,7 +179,7 @@ async fn handshake_then_status_reports_epoch_and_pid() {
     assert_eq!(welcome.protocol, PROTOCOL_VERSION);
     assert_eq!(
         welcome.capabilities,
-        ["terminal.render.v1", "terminal.colors"]
+        ["terminal.render.v1", "terminal.colors", "session.restore"]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);
 
@@ -605,6 +605,7 @@ async fn shutdown_replies_removes_socket_and_releases_lock() {
     let reply = client
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: false,
+            forget: false,
         }))
         .await;
     assert!(reply.is_ok(), "shutdown must be acknowledged: {reply:?}");
@@ -717,6 +718,7 @@ async fn client_autostarts_heelerd_when_the_socket_is_absent() {
     client
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: false,
+            forget: false,
         }))
         .await
         .unwrap();

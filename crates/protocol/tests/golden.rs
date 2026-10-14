@@ -41,6 +41,7 @@ fn session_info() -> SessionInfo {
         cwd: Some("/repo".into()),
         terminal_id: Some(TID),
         created_at_ms: 1_791_894_164_332,
+        restored: false,
     }
 }
 
@@ -74,6 +75,7 @@ fn requests() -> Vec<(&'static str, Request)> {
             "daemon_shutdown",
             Request::DaemonShutdown(DaemonShutdown {
                 stop_sessions: true,
+                forget: false,
             }),
         ),
         ("events_subscribe", Request::EventsSubscribe(Empty {})),
@@ -182,6 +184,13 @@ fn requests() -> Vec<(&'static str, Request)> {
                 },
             }),
         ),
+        (
+            "daemon_shutdown_forget",
+            Request::DaemonShutdown(DaemonShutdown {
+                stop_sessions: true,
+                forget: true,
+            }),
+        ),
     ]
 }
 
@@ -225,6 +234,17 @@ fn events() -> Vec<(&'static str, Event)> {
                 terminal_id: TID,
                 title: Some("build".into()),
                 body: "done".into(),
+            },
+        ),
+        (
+            "session_updated_restored",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    state: SessionState::Stopped,
+                    terminal_id: None,
+                    restored: true,
+                    ..session_info()
+                },
             },
         ),
     ]

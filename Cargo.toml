@@ -14,6 +14,7 @@ heeler-core = { path = "crates/core" }
 heeler-daemon = { path = "crates/daemon" }
 heeler-protocol = { path = "crates/protocol" }
 heeler-settings = { path = "crates/settings" }
+heeler-storage = { path = "crates/storage" }
 heeler-terminal = { path = "crates/terminal" }
 heeler-terminal-view = { path = "crates/terminal_view" }
 
@@ -27,6 +28,7 @@ libc = "0.2.190"
 notify = "8.2.0"
 parking_lot = "0.12.5"
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 pub const SOCKET_FILE: &str = "heelerd.sock";
 pub const LOCK_FILE: &str = "heelerd.lock";
 pub const LOG_FILE: &str = "heelerd.log";
+pub const DATABASE_FILE: &str = "heeler.db";
+pub const CONFIG_FILE: &str = "daemon.toml";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathsError {
@@ -20,10 +22,15 @@ pub enum PathsError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    /// Directory holding the lock, the socket (unless overridden), and later the database.
+    /// Directory holding the lock, the socket (unless overridden), the database, and the
+    /// daemon config.
     pub base: PathBuf,
     pub socket: PathBuf,
     pub lock: PathBuf,
+    /// SQLite database of workspaces and sessions (ADR 0006).
+    pub database: PathBuf,
+    /// Optional daemon settings, `daemon.toml`.
+    pub config_file: PathBuf,
     pub log_dir: PathBuf,
 }
 
@@ -70,6 +77,8 @@ impl Paths {
         Self {
             socket: base.join(SOCKET_FILE),
             lock: base.join(LOCK_FILE),
+            database: base.join(DATABASE_FILE),
+            config_file: base.join(CONFIG_FILE),
             log_dir,
             base,
         }
@@ -121,6 +130,10 @@ mod tests {
             Path::new("/Users/u/Library/Application Support/Heeler/heelerd.lock")
         );
         assert_eq!(p.log_dir, Path::new("/Users/u/Library/Logs/Heeler"));
+        assert_eq!(
+            p.database,
+            Path::new("/Users/u/Library/Application Support/Heeler/heeler.db")
+        );
     }
 
     #[test]
@@ -130,6 +143,8 @@ mod tests {
         assert_eq!(p.socket, Path::new("/tmp/hh/heelerd.sock"));
         assert_eq!(p.lock, Path::new("/tmp/hh/heelerd.lock"));
         assert_eq!(p.log_dir, Path::new("/tmp/hh/logs"));
+        assert_eq!(p.database, Path::new("/tmp/hh/heeler.db"));
+        assert_eq!(p.config_file, Path::new("/tmp/hh/daemon.toml"));
         assert_eq!(p.log_file(), Path::new("/tmp/hh/logs/heelerd.log"));
     }
 
@@ -138,6 +153,11 @@ mod tests {
         let p = Paths::resolve(os("/tmp/hh"), os("/tmp/x.sock"), None).unwrap();
         assert_eq!(p.socket, Path::new("/tmp/x.sock"));
         assert_eq!(p.lock, Path::new("/tmp/hh/heelerd.lock"));
+        assert_eq!(
+            p.database,
+            Path::new("/tmp/hh/heeler.db"),
+            "the database follows the home"
+        );
     }
 
     #[test]

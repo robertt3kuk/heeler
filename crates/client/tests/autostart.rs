@@ -60,6 +60,7 @@ async fn autostarts_a_missing_daemon_at_most_once_per_interval() {
     connection
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: true,
+            forget: false,
         }))
         .await
         .unwrap();
@@ -93,6 +94,7 @@ async fn autostarts_a_missing_daemon_at_most_once_per_interval() {
     connection
         .call::<Empty>(Request::DaemonShutdown(DaemonShutdown {
             stop_sessions: true,
+            forget: false,
         }))
         .await
         .unwrap();

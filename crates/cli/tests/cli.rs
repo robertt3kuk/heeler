@@ -496,7 +496,13 @@ async fn daemon_restart_without_sessions_gives_a_new_daemon() {
     assert_eq!(second["started"], true);
     assert_ne!(second["epoch"], first["epoch"], "a new daemon epoch");
     assert_ne!(second["pid"], first["pid"], "a new daemon process");
-    assert_eq!(second["sessions"], 0, "the new daemon starts empty");
+    // The session that ended before the restart is listed again, marked as restored.
+    assert_eq!(second["sessions"], 1, "the stored session comes back");
+    let listed = run(&["ls", "--json"]).await.ok().json();
+    assert_eq!(listed["sessions"][0]["id"], id.as_str());
+    assert_eq!(listed["sessions"][0]["restored"], true, "{listed}");
+    let table = run(&["ls"]).await.ok();
+    assert!(table.stdout.contains(", restored"), "{table:?}");
 
     let status = run(&["daemon", "status", "--json"]).await.ok().json();
     assert_eq!(status["epoch"], second["epoch"]);
@@ -520,6 +526,7 @@ async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
 
     let started = run(&["daemon", "start", "--json"]).await.ok().json();
     run(&["new", "--json", "--", "sleep", "600"]).await.ok();
+    let before = run(&["ls", "--json"]).await.ok().json();
 
     let refused = run(&["daemon", "restart"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
@@ -538,6 +545,12 @@ async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
     assert_eq!(restarted["was_running"], true);
     assert_ne!(restarted["epoch"], started["epoch"]);
     assert_ne!(restarted["pid"], started["pid"]);
+    // Stopping sessions for a restart keeps them in the restore set: the new daemon runs the
+    // same session again.
     let list = run(&["ls", "--json"]).await.ok().json();
-    assert!(list["sessions"].as_array().unwrap().is_empty(), "{list}");
+    let sessions = list["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{list}");
+    assert_eq!(sessions[0]["id"], before["sessions"][0]["id"], "{list}");
+    assert_eq!(sessions[0]["state"]["state"], "running", "{list}");
+    assert!(sessions[0].get("restored").is_none(), "{list}");
 }

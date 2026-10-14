@@ -1,8 +1,8 @@
-# Heeler IPC Protocol — v0.2
+# Heeler IPC Protocol — v0.3
 
 Normative decisions: ADR 0002 (transport, framing, sequencing) and ADR 0004 (terminal render stream). This file is the message catalog; the `protocol` crate (`PROTOCOL_VERSION`) is the source of truth and this document must match it.
 
-Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`).
+Version history: 0.1 — M1 (sessions, terminals, attach). 0.2 — `terminal.set_colors` (capability `terminal.colors`). 0.3 — durable sessions (capability `session.restore`): `SessionInfo.restored`, `daemon.shutdown { forget }`.
 
 ## Frames
 
@@ -40,7 +40,7 @@ Milestone tag = when the method lands.
 |---|---|---|---|
 | `hello` | handshake | see above | M1 |
 | `daemon.status` | query | → version, uptime, epoch, counts | M1 |
-| `daemon.shutdown` | command | `{stop_sessions: bool}` | M1 |
+| `daemon.shutdown` | command | `{stop_sessions: bool, forget?: bool}`; `forget` (capability `session.restore`) drops the stopped sessions from the restore set | M1 |
 | `events.subscribe` | command | `{topics?: [...]}` → current `seq` | M1 |
 | `workspace.create` / `.list` / `.rename` / `.close` | cmd/query | name, root paths | M1 |
 | `session.create` | command | workspace, kind, command/cwd/env or agent/provider config → ids | M1 |
@@ -68,7 +68,7 @@ Milestone tag = when the method lands.
 | Event | Data | M |
 |---|---|---|
 | `workspace.updated` / `workspace.closed` | workspace | M1 |
-| `session.updated` | session (state, title, cwd, attention) | M1 |
+| `session.updated` | session (state, title, cwd, attention, `restored`) | M1 |
 | `session.exited` | session id, exit code/signal | M1 |
 | `terminal.bell` / `terminal.title` / `terminal.notification` | from OSC sniffer | M1 |
 | `chat.delta` | session, turn, item, text/blocks | M4 |
@@ -110,6 +110,15 @@ Semantics implemented by the daemon (M1-D1; `crates/daemon/src/{registry,termina
 - `session.restart` starts the process in the last directory the program reported with OSC 7 when that directory still exists, else in the spec `cwd`; `SessionInfo.cwd` reflects the directory used.
 - A connection that has not sent `hello` within 5 s of being accepted is closed (logged at debug); the timeout covers the handshake only.
 - `workspace.close`: `default` and workspaces with live sessions → `invalid_state`; ended sessions leave with their workspace. `daemon.shutdown { stop_sessions: false }` with live sessions → `invalid_state`; every shutdown (request, SIGTERM, SIGINT) hangs up all sessions concurrently and reaps them before the socket is removed.
+
+Persistence and restore (M3-A; capability `session.restore`, protocol 0.3; `crates/daemon/src/{registry,restore,config}.rs`, `crates/storage`):
+- Workspaces and sessions are written through to SQLite (`$HEELER_HOME/heeler.db`) on every change: workspace create/rename/close, session create/rename/stop/restart/exit. Title and cwd changes (OSC 0/2, OSC 7) are coalesced: a session is rewritten at most once per second because of them. Writes go to the storage writer thread and never block request handling.
+- At start the daemon loads the stored state before it listens, under the same ids: workspaces (and which one is `default`), sessions with title, workspace, creation time. A new epoch begins; clients treat it as "everything may have restarted" and re-snapshot.
+- Sessions that were live when the previous daemon stopped (or died) are spawned again as **new terminals** (new `terminal_id`, same `SessionId`) in their last known cwd (falling back to the spec `cwd`, then the shell default, when the directory is gone): `starting` → `running`, title and workspace kept, `restored: false`. A stored `resume_ref` (`{"argv": [...]}` until the agent integrations of M3.3 define more) replaces the spec command for this spawn; a restart afterwards uses the spec again. A stored session whose spec cannot be read comes back `failed`.
+- Sessions that had ended (`exited`, `failed`, `stopped`) stay listed in that state with `restored: true`: the process and its final screen are gone, so there is no terminal to attach (`terminal_id` is absent). `session.restart` yields a live, unrestored session with the same id. `restored` is `false` and omitted from the wire for every other session.
+- `daemon.toml` in the daemon's home directory: `[daemon] restore_sessions = "respawn" | "stopped"` (default `respawn`). `stopped` lists sessions that were live as `stopped` + `restored` instead of spawning them; the file is optional, an unreadable or invalid one stops the daemon from starting.
+- Stopping the daemon does not forget its sessions. `daemon.shutdown { stop_sessions: true }` (and SIGTERM/SIGINT) hang the sessions up as always but leave them in the restore set, so the next daemon respawns them; clients still see them become `stopped` before the connection closes. `forget: true` (`heeler daemon stop --stop-sessions --forget`) records them as stopped instead, so the next start lists them as ended and does not respawn them. Sessions the user stopped or that exited earlier were never in the restore set.
+- Storage is mandatory: a database that cannot be opened or migrated (including one written by a newer Heeler) stops the daemon with an error naming the file; the file is left unchanged. Before migrating an existing database the daemon copies it to `backups/heeler-<unix ms>-v<version>.db` (newest 5 kept). Environment variables in a session spec whose names look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, …) are not stored; restored sessions start without them.
 
 ## Error codes
 `bad_request`, `unsupported_version`, `unauthorized`, `not_found`, `conflict`, `invalid_state`, `option_not_offered`, `slow_consumer`, `provider_error`, `internal`.

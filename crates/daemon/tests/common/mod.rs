@@ -77,6 +77,45 @@ impl TestDaemon {
         self.daemon.shutdown();
         timeout(WAIT, self.daemon.wait()).await.unwrap().unwrap();
     }
+
+    /// Stops this daemon, then starts a new one on the same `HEELER_HOME` (a daemon restart:
+    /// new epoch, same database).
+    pub async fn restart(self) -> Self {
+        let Self {
+            _dir,
+            paths,
+            daemon,
+        } = self;
+        daemon.shutdown();
+        timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
+        let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+            .await
+            .unwrap();
+        Self {
+            _dir,
+            paths,
+            daemon,
+        }
+    }
+
+    /// Waits for a daemon that stopped itself (a `daemon.shutdown` request), then starts a new
+    /// one on the same `HEELER_HOME`.
+    pub async fn restart_after_shutdown_request(self) -> Self {
+        let Self {
+            _dir,
+            paths,
+            daemon,
+        } = self;
+        timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
+        let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+            .await
+            .unwrap();
+        Self {
+            _dir,
+            paths,
+            daemon,
+        }
+    }
 }
 
 pub fn size(cols: u16, rows: u16) -> TerminalSize {

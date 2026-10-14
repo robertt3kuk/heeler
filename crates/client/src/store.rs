@@ -197,6 +197,7 @@ mod tests {
             cwd: None,
             terminal_id: terminal.map(TerminalId),
             created_at_ms,
+            restored: false,
         }
     }
 

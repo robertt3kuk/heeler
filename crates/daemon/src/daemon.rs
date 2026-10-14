@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
 use heeler_core::Epoch;
+use heeler_storage::Storage;
 use tokio::net::UnixListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout};
@@ -17,10 +18,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::bus::{EventBus, RingLimits};
+use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::paths::Paths;
-use crate::registry;
+use crate::registry::{self, RegistryConfig};
+use crate::restore::{self, Stored};
 use crate::router::Router;
 use crate::terminals::TerminalHub;
 
@@ -107,6 +110,11 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         paths.base.display()
     )))?;
     let lock = acquire_lock(&paths.lock)?;
+    // Under the lock nobody else touches the database. A daemon that cannot read its config or
+    // open its database must not come up: it would serve an empty state and then overwrite
+    // the real one.
+    let settings = DaemonSettings::load(&paths.config_file)?;
+    let (storage, stored) = open_storage(&paths.database).await?;
     remove_stale_socket(&paths.socket)?;
     let listener = UnixListener::bind(&paths.socket).map_err(DaemonError::io(format!(
         "binding {}",
@@ -125,6 +133,9 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         .uid();
 
     let epoch = Epoch::new();
+    if let Err(error) = storage.app_meta().record_epoch(epoch, registry::now_ms()) {
+        warn!(%error, "could not record the epoch");
+    }
     let shutdown = CancellationToken::new();
     let clients = Arc::new(AtomicU32::new(0));
     let bus = Arc::new(EventBus::new(epoch, config.ring));
@@ -137,11 +148,17 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             None
         }
     };
+    let restoring = stored.sessions.len();
     let registry = registry::spawn(
         bus.clone(),
         hub.clone(),
-        paths.socket.clone(),
-        shell_integration_dir,
+        RegistryConfig {
+            socket: paths.socket.clone(),
+            shell_integration_dir,
+            storage: storage.clone(),
+            restore: settings.restore_sessions,
+        },
+        stored,
     );
     let router = Router::new(
         registry,
@@ -162,6 +179,9 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
 
     info!(
         socket = %paths.socket.display(),
+        database = %paths.database.display(),
+        restored_sessions = restoring,
+        restore_mode = ?settings.restore_sessions,
         pid = std::process::id(),
         %epoch,
         protocol = ?heeler_protocol::PROTOCOL_VERSION,
@@ -172,7 +192,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         _socket: socket_guard,
         _lock: lock,
     };
-    let task = tokio::spawn(accept_loop(listener, ctx, shutdown.clone(), held));
+    let task = tokio::spawn(accept_loop(listener, ctx, shutdown.clone(), held, storage));
     Ok(RunningDaemon {
         socket: paths.socket.clone(),
         epoch,
@@ -206,6 +226,7 @@ async fn accept_loop(
     ctx: Arc<ConnContext>,
     shutdown: CancellationToken,
     held: Held,
+    storage: Storage,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -254,8 +275,25 @@ async fn accept_loop(
         }
     };
     tokio::join!(stop_sessions, drain_connections);
+    // Everything the registry queued while stopping the sessions reaches the disk before the
+    // lock is released and a successor opens the database.
+    if let Err(error) = tokio::task::spawn_blocking(move || storage.close()).await {
+        error!(%error, "closing the database failed");
+    }
     drop(held);
     info!("heelerd stopped");
+}
+
+/// Opens (and migrates) the database and reads its content, off the async threads.
+async fn open_storage(database: &Path) -> Result<(Storage, Stored), DaemonError> {
+    let path = database.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let storage = Storage::open(&path)?;
+        let stored = restore::load(&storage)?;
+        Ok((storage, stored))
+    })
+    .await?
+    .map_err(DaemonError::storage(database))
 }
 
 fn log_connection_exit(finished: Result<(), tokio::task::JoinError>) {

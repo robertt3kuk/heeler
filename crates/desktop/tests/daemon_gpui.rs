@@ -635,7 +635,8 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
 
     // Stop with a live session in the new daemon: confirmed, then it stays down.
     let second = process.create_session(&["sleep", "600"]);
-    wait_synced(&view, cx, 1);
+    // The restarted daemon restored the first session next to the new one.
+    wait_synced(&view, cx, 2);
     open_session(&view, cx, second.id);
     wait_until(cx, "the second terminal", |cx| {
         terminal_status(&view, cx, second.id) == Some(ViewStatus::Live)

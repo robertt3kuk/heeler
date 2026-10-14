@@ -255,6 +255,7 @@ mod tests {
             cwd: None,
             terminal_id: None,
             created_at_ms: 0,
+            restored: false,
         }
     }
 

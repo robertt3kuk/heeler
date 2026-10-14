@@ -157,7 +157,7 @@ impl Env {
         timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
     }
 
-    /// Starts a new daemon on the same home (new epoch, no sessions).
+    /// Starts a new daemon on the same home (new epoch; stored workspaces and sessions are restored).
     pub async fn start_daemon(&mut self) {
         assert!(self.daemon.is_none(), "daemon is already running");
         self.daemon = Some(start_daemon(&self.paths, self.ring).await);
