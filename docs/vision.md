@@ -47,6 +47,18 @@ Inspirations and what we take from each:
 ### Terminal blocks
 - Optional block view built on shell integration (OSC 133): command + output units with exit status and duration, jump between commands, copy/collapse a block, send a block to an agent as context. Toggle `terminal.blocks`.
 
+### Projects and workspaces
+- One workspace per project (folder or repo, several repos allowed): create from a folder/recent project, switch with ⌘O, sessions/agents/layout grouped per workspace, workspace-level settings overrides. Empty workspaces (no sessions, no terminals) are hidden from the sidebar by default.
+
+### Agent and subagent monitor
+- Track every coding agent — structured (Codex app-server, ACP) and TUI agents in terminals (OMP, Claude Code, Codex, OpenCode) — with live state (working / blocked / done / idle) and their **subagents** as a tree (OMP task agents, Codex/ACP subagents): current activity, model, duration, tokens when available, jump to transcript/terminal.
+
+### Embedded browser
+- Browser items/panels inside the workbench (docs, localhost previews, PR pages) next to terminals; agents can open URLs into it.
+
+### Visualizations
+- Render rich content inline: images in terminals (kitty graphics / iTerm2 inline images), Markdown, Mermaid/SVG diagrams, charts, and agent-produced artifacts as workbench items and in chat.
+
 ### Extensibility
 - Versioned IPC protocol with published schema; CLI with `--json` everywhere.
 - ACP and MCP integration; provider adapters as crates behind traits.
@@ -54,7 +66,7 @@ Inspirations and what we take from each:
 
 ## Non-goals (until explicitly re-scoped)
 - Rich shell input editor (Warp-style) — dropped for now.
-- Embedded web browser.
+- ~~Embedded web browser~~ → re-scoped into the target (see Embedded browser).
 - Windows/Linux UI. The daemon stays portable (Unix-first); the desktop is macOS.
 - Hosting or reselling model access.
 - Reusing subscription OAuth tokens outside their official clients.

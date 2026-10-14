@@ -1,6 +1,6 @@
 # Roadmap
 
-Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Milestone numbers are IDs, not order; the agreed **execution order** is: M2 (incl. M2.7) → M10 shell integration + blocks → M3 → M4 → M5 → M6 → M11 editor → M7 → M8 → M9. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
+Milestones M0–M6 form the **first vertical slice** (spec "Initial Implementation Scope"). M7+ expand toward the target scope in `vision.md`. Milestone numbers are IDs, not order; the agreed **execution order** is: M2 (incl. M2.7–M2.9) → M10 shell integration + blocks → M3 persistence → M12 projects & workspaces → M4 → M13 agent & subagent monitor → M5 → M6 → M11 editor → M15 visualizations → M14 browser → M7 → M8 → M9. Slice IDs are stable; tick boxes as slices land. Process: `process.md`.
 
 ```mermaid
 flowchart LR
@@ -19,6 +19,10 @@ flowchart LR
   M11 --> M7
   M7 --> M8[M8 ACP/MCP + more harnesses]
   M8 --> M9[M9 Extensibility + remote]
+  M3 --> M12[M12 Projects + workspaces]
+  M4 --> M13[M13 Agent + subagent monitor]
+  M2 --> M15[M15 Visualizations]
+  M2 --> M14[M14 Embedded browser]
 ```
 
 ## M0 — Foundations
@@ -56,6 +60,7 @@ Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `de
 - [x] M2.6 Performance pass: `xtask bench` B1–B6, `docs/perf.md`, crash fix + panic hook (merged `5df8b29`); B4 redefined by ADR 0011
 - [ ] M2.7 Compact scrollback store (Warp-style flat storage for rows out of cursor reach; ADR 0013 amending ADR 0004) to meet B2; bench reports B4a/B4b per ADR 0011
 - [ ] M2.8 M2 demo (`docs/demos/M2.md`) with screenshots
+- [x] M2.9 Empty workspaces hidden: the sessions panel already lists only workspaces that have sessions (`panels/sessions.rs` skips empty groups); a setting `show_empty_workspaces` and "always show the active workspace" arrive with the workspace switcher in M12
 
 ## M3 — Persistence and restore
 Exit demo: kill `heelerd`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
@@ -107,6 +112,26 @@ Exit demo: in zsh, bash, and fish (no user config edits) commands become blocks 
 Exit demo: open a file from the sessions panel/⌘P next to a terminal; tree-sitter highlighting with the shared theme; LSP diagnostics, completion, hover, go-to-definition, rename, format (rust-analyzer, typescript-language-server); Vim mode on/off; agent edits reload the buffer.
 - Depends on the license decision (ADR 0012 options A vs B).
 - Crates per ADR 0012: `buffer`, `syntax`, `lsp_client` (servers supervised by the daemon), `code_view` (GPUI); `ItemRef::File` in the workbench; one theme for chrome/terminal/syntax.
+
+## M12 — Projects and workspaces
+Exit demo: open three projects (⌘O → folder / recent list), each with its own sessions and layout; switch between them without losing state; workspace-level settings override (`<repo>/.heeler/settings.toml`); a project with several repos; empty workspaces hidden.
+- Daemon: workspace roots (one or more repos), recent projects list, per-workspace defaults (shell, env, start cwd); persisted via M3.
+- Desktop: ⌘O project picker (recent + folder dialog), workspace switcher in the sidebar header and ⌘K, per-workspace layout state (each workspace remembers its own pane tree), new sessions start in the active workspace root.
+- CLI: `heeler ws open <path>`, `heeler ws use <id>`.
+
+## M13 — Agent and subagent monitor
+Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and Claude Code in terminals; the monitor panel shows each agent's state (working / blocked / done / idle) and its subagent tree with activity, model, duration and tokens when the agent exposes them; clicking jumps to the transcript or terminal; attention rollups include subagents.
+- Sources, best first: structured protocols (Codex app-server threads/subagents, ACP `subagents` capability, OMP RPC mode / session files), agent integration hooks reporting state (Herdr model: hooks push `working/blocked/done` + resume id), screen-detection manifests as fallback for unknown TUIs.
+- Daemon: `AgentObservation` model per session (state, subagents tree, last activity, usage), protocol events; bounded history.
+- Desktop: `agents` panel (tree, filters), badges on session rows/tabs/overview cards, notifications hook for M6.
+- Spike first: what OMP, Claude Code, Codex, OpenCode expose today (files, RPC, hooks) — evidence into `docs/spikes/`.
+
+## M14 — Embedded browser
+- Browser items/panels in the workbench (WKWebView hosted in a GPUI window region), address bar, back/forward, localhost previews, open-links-from-terminal (⌘-click) setting, agents can open URLs into it; spike on GPUI native view embedding first (ADR).
+
+## M15 — Visualizations and rich content
+- Terminal images: kitty graphics protocol and iTerm2 inline images (daemon parses, render DTOs carry image placements; ADR amending 0004).
+- Rich items: Markdown preview, Mermaid and SVG rendering, images, simple charts (CSV/JSON) as workbench items; agent artifacts open as items; reused by chat (M4) and the editor (M11).
 
 ## Backlog (agreed, not yet scheduled)
 
