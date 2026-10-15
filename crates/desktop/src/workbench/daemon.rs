@@ -1,5 +1,6 @@
 //! The daemon's lifetime as the desktop sees it (design.md § Daemon lifecycle): the quit flow
-//! driven by `app.on_quit`, the daemon controls shared by the `Daemon` menu, the status-bar
+//! (the daemon follows the app unless `app.keep_running`), what closing the last window does
+//! (`app.on_last_window_close`), the daemon controls shared by the `Daemon` menu, the status-bar
 //! popover and the palette, and the "daemon stopped" state that keeps a daemon the user
 //! stopped from being brought back until they start it again.
 
@@ -15,11 +16,11 @@ use hutan_protocol::messages::{DaemonShutdown, DaemonStatusInfo, Empty, Request}
 use serde_json::Value;
 use tokio::sync::watch;
 
-use super::modal::{Modal, ModalCheckbox, ModalChoice};
+use super::modal::{Modal, ModalChoice};
 use super::panels::{StatusTone, connection_label};
 use super::view::Workbench;
 use crate::app::DaemonMenu;
-use crate::settings::{AppSettings, OnQuit};
+use crate::settings::{AppSettings, LastWindowClose};
 
 /// Longest wait for a stopping daemon to remove its socket.
 const STOP_WAIT: Duration = Duration::from_secs(10);
@@ -184,9 +185,12 @@ impl Workbench {
         self.daemon.status.as_ref().map(|s| &s.info)
     }
 
-    /// The working mode in effect (`app.on_quit`).
-    pub fn on_quit_mode(&self) -> OnQuit {
-        self.settings.get::<AppSettings>().on_quit
+    /// What closing the last window does now: `app.on_last_window_close`, except that
+    /// `menu_bar` needs the menu bar item and quits without it.
+    pub fn last_window_close(&self) -> LastWindowClose {
+        self.settings
+            .get::<AppSettings>()
+            .effective_last_window_close()
     }
 
     /// Sessions the daemon runs right now.
@@ -225,28 +229,10 @@ impl Workbench {
         self.daemon_line(cx).0
     }
 
-    // ---- working mode ------------------------------------------------------------------------
-
-    /// Writes `app.on_quit` to `settings.toml`; every view of the setting follows through the
-    /// store's change notification.
-    pub fn set_on_quit(&mut self, mode: OnQuit, cx: &mut Context<Self>) {
-        if let Err(err) = self
-            .settings
-            .write_user("app.on_quit", toml::Value::String(mode.key().to_owned()))
-        {
-            tracing::warn!("cannot save the working mode: {err}");
-            self.set_notice(format!("Cannot save the working mode: {err}"), cx);
-            return;
-        }
-        self.sync_daemon_menu(cx);
-        cx.notify();
-    }
-
     // ---- menu bar ----------------------------------------------------------------------------
 
     fn menu_state(&self, cx: &App) -> DaemonMenu {
         DaemonMenu {
-            on_quit: self.on_quit_mode(),
             running: self.daemon_connected(cx),
             keep_running: self.keep_running_enabled(),
             keep_running_available: self.keep_running_available(),
@@ -501,15 +487,15 @@ impl Workbench {
 
     // ---- quit --------------------------------------------------------------------------------
 
-    /// ⌘Q, the app menu and closing the last window (design.md § Daemon lifecycle): the daemon
-    /// stops with the app when no session is live, else `app.on_quit` decides. While
-    /// disconnected the app quits at once.
+    /// ⌘Q, the app menu, the menu bar item's Quit and closing the last window when
+    /// `app.on_last_window_close` is `quit` (design.md § Daemon lifecycle). The daemon follows
+    /// the app: it stops with it, silently when no session is live and after a confirmation when
+    /// some are, unless keep running is active (then launchd owns it and the app just leaves).
+    /// While disconnected there is no daemon to stop and the app quits at once.
     pub fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.daemon.quitting {
             return;
         }
-        // Keep running: launchd owns the daemon. It outlives the app whatever is running, so
-        // there is nothing to ask and nothing to stop.
         if !self.daemon_connected(cx) || self.keep_running_active() {
             self.finish_quit(cx);
             return;
@@ -518,26 +504,86 @@ impl Workbench {
             self.shutdown_then_quit(false, window, cx);
             return;
         }
-        self.quit_with_live_sessions(window, cx);
+        self.open_quit_dialog(window, cx);
     }
 
-    fn quit_with_live_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.on_quit_mode() {
-            OnQuit::Ask => self.open_quit_dialog(window, cx),
-            OnQuit::KeepRunning => self.finish_quit(cx),
-            OnQuit::StopDaemon => self.shutdown_then_quit(true, window, cx),
+    /// "Quit Hutan and stop N sessions?": Stop Sessions & Quit, Keep Running in Background
+    /// (turns keep running on, so the daemon stays and starts at login), Cancel.
+    fn open_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Quitting from the menu bar item while the window is hidden: the question needs it.
+        self.show_if_hidden(window, cx);
+        let live = self.live_sessions(cx);
+        let modal = Modal {
+            title: SharedString::from(format!("Quit Hutan and stop {}?", sessions_phrase(live))),
+            message: SharedString::from(
+                "The daemon stops with Hutan, and so do its sessions. To leave them running, \
+                 keep the daemon running in the background: Hutan turns on \"Keep daemon \
+                 running after Hutan quits\" and quits.",
+            ),
+            confirm_label: "Stop Sessions & Quit".into(),
+            input: None,
+            secure_input: false,
+            choice: Some(ModalChoice {
+                label: "Keep Running in Background".into(),
+                run: Rc::new(|this, _, _, cx| this.keep_running_in_background(cx)),
+            }),
+            checkbox: None,
+            on_confirm: Rc::new(|this, _, window, cx| this.shutdown_then_quit(true, window, cx)),
+        };
+        self.open_modal(modal, window, cx);
+    }
+
+    /// The quit dialog's second choice: registers the launch agent (keep running on) and quits
+    /// leaving the daemon. Outside Hutan.app there is nothing to register: the daemon is left
+    /// running all the same. A registration the system refuses keeps the app open (the notice
+    /// says why), because the user asked for the daemon to stay and that is not settled.
+    fn keep_running_in_background(&mut self, cx: &mut Context<Self>) {
+        if self.keep_running_available() {
+            self.set_keep_running(true, cx);
+            if !self.keep_running_enabled() {
+                return;
+            }
+        }
+        self.finish_quit(cx);
+    }
+
+    /// The platform is terminating the app by a way that is not ours (the Dock's Quit, logout,
+    /// a system shutdown): there is no window to ask in. An idle daemon stops with the app, as
+    /// with ⌘Q; one with live sessions is left running with them, as after a signal. Our own
+    /// quit paths have settled the daemon already (`quitting`). The request goes out before
+    /// the process ends; the daemon answers it by itself.
+    pub fn on_platform_quit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + use<> {
+        self.flush_save();
+        let idle = !self.daemon.quitting
+            && self.daemon_connected(cx)
+            && !self.keep_running_active()
+            && self.live_sessions(cx) == 0;
+        let connection = idle.then(|| self.connection(cx));
+        async move {
+            if let Some(connection) = connection {
+                let _ = connection
+                    .call::<Value>(Request::DaemonShutdown(DaemonShutdown {
+                        stop_sessions: false,
+                        forget: false,
+                    }))
+                    .await;
+            }
         }
     }
 
-    /// SIGTERM / SIGINT / SIGHUP: save, disconnect and quit like `keep_running`; never asks
-    /// and never stops the daemon.
+    /// SIGTERM / SIGINT / SIGHUP: save, disconnect and quit; never asks and never stops the
+    /// daemon.
     pub fn quit_leaving_daemon(&mut self, cx: &mut Context<Self>) {
         self.finish_quit(cx);
     }
 
-    /// The window's close button: closing the last window quits (the same flow) and keeps the
-    /// window until it is decided; closing any other window just closes it. Returns whether
-    /// the window may close now.
+    /// The window's close button. Closing the last window does what `app.on_last_window_close`
+    /// says: `quit` runs the quit flow (the window stays until that is decided), `menu_bar`
+    /// hides the app and keeps it in the menu bar. Closing any other window just closes it.
+    /// Returns whether the window may close now.
     pub(crate) fn window_close_requested(
         &mut self,
         window: &mut Window,
@@ -547,44 +593,13 @@ impl Workbench {
         if self.daemon.quitting || cx.windows().len() > 1 {
             return true;
         }
-        self.request_quit(window, cx);
+        match self.last_window_close() {
+            LastWindowClose::Quit => self.request_quit(window, cx),
+            // The window is kept (hidden): it holds the connection, the sessions and the
+            // layout, which the menu bar item and the shortcut keep serving.
+            LastWindowClose::MenuBar => self.hide_to_menu_bar(cx),
+        }
         false
-    }
-
-    fn open_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let live = self.live_sessions(cx);
-        let message = format!(
-            "{} still running. Keep them running in the background (hutand keeps them), \
-             or stop them together with the daemon?",
-            sessions_phrase(live)
-        );
-        let modal = Modal {
-            title: "Quit Hutan?".into(),
-            message: SharedString::from(message),
-            confirm_label: "Keep sessions running".into(),
-            input: None,
-            secure_input: false,
-            choice: Some(ModalChoice {
-                label: "Stop sessions & daemon".into(),
-                run: Rc::new(|this, result, window, cx| {
-                    if result.checked {
-                        this.set_on_quit(OnQuit::StopDaemon, cx);
-                    }
-                    this.shutdown_then_quit(true, window, cx);
-                }),
-            }),
-            checkbox: Some(ModalCheckbox {
-                label: "Don't ask again".into(),
-                checked: false,
-            }),
-            on_confirm: Rc::new(|this, result, _, cx| {
-                if result.checked {
-                    this.set_on_quit(OnQuit::KeepRunning, cx);
-                }
-                this.finish_quit(cx);
-            }),
-        };
-        self.open_modal(modal, window, cx);
     }
 
     /// `daemon.shutdown`, then quit. If sessions started since the decision (the daemon refuses
@@ -603,7 +618,7 @@ impl Workbench {
             this.update_in(cx, |this, window, cx| match result {
                 Err(ClientError::Remote(body)) if body.code == ErrorCode::InvalidState => {
                     this.notice = None;
-                    this.quit_with_live_sessions(window, cx);
+                    this.open_quit_dialog(window, cx);
                 }
                 Err(error) => {
                     tracing::warn!("quitting without a clean daemon shutdown: {error}");

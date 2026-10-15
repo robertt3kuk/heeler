@@ -240,6 +240,8 @@ struct State {
     derived: Vec<SettingsError>,
     /// Registration problems (duplicate namespace with a different type, …).
     registration: Vec<SettingsError>,
+    /// Diagnostics the application raised itself (checks across several settings), by source.
+    notes: BTreeMap<&'static str, Vec<SettingsError>>,
     published_errors: Vec<SettingsError>,
     generation: u64,
 }
@@ -256,6 +258,7 @@ impl State {
         out.extend(self.workspace.errors.iter().cloned());
         out.extend(self.registration.iter().cloned());
         out.extend(self.derived.iter().cloned());
+        out.extend(self.notes.values().flatten().cloned());
         out
     }
 
@@ -548,6 +551,7 @@ impl SettingsStore {
             values: BTreeMap::new(),
             derived: Vec::new(),
             registration: Vec::new(),
+            notes: BTreeMap::new(),
             published_errors: Vec::new(),
             generation: 0,
         };
@@ -714,6 +718,19 @@ impl SettingsStore {
         let changed = state.recompute();
         self.shared.commit(&mut state, changed, false);
         Ok(())
+    }
+
+    /// Replaces the diagnostics the application raises itself under `source` (a check that
+    /// spans several settings, say); empty clears them. They appear in [`errors`](Self::errors)
+    /// next to the store's own and publish a [`ChangeSet`] with no namespaces when they change.
+    pub fn set_notes(&self, source: &'static str, notes: Vec<SettingsError>) {
+        let mut state = self.shared.state.write();
+        if notes.is_empty() {
+            state.notes.remove(source);
+        } else {
+            state.notes.insert(source, notes);
+        }
+        self.shared.commit(&mut state, BTreeSet::new(), false);
     }
 
     /// Receiver for update notifications; see [`ChangeSet`].

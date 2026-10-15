@@ -7,18 +7,19 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::rc::Rc;
 use std::time::Duration;
 
 use common::chat::ChatEnv;
+use common::mac::{Fakes, open, open_with_services};
 use common::{TestDaemon, draw, open_options, wait_until};
 use gpui::{Entity, OwnedMenuItem, TestAppContext, VisualTestContext};
 use hutan_client::{ConnectOptions, Connection};
 use hutan_core::SessionId;
 use hutan_desktop::app::start_connection;
+use hutan_desktop::macos::status_item::KEEP_RUNNING;
 use hutan_desktop::macos::{
-    FakeDock, FakeHotkey, FakeLoginItem, FakeStatusItem, LoginItemCall, LoginItemStatus, MacEvent,
-    MacServices, MenuCommand, MenuSpec, event_channel,
+    FakeLoginItem, LoginItemCall, LoginItemStatus, MacEvent, MacServices, MenuCommand, MenuSpec,
+    PresenceCall, event_channel,
 };
 use hutan_desktop::sessions::AttentionKind;
 use hutan_desktop::workbench::actions::{self, daemon as daemon_actions};
@@ -43,53 +44,6 @@ fn failing_session(
             go.display()
         ),
     )
-}
-
-/// Every fake, kept by the test while the workbench holds clones.
-struct Fakes {
-    login: FakeLoginItem,
-    item: FakeStatusItem,
-    dock: FakeDock,
-    hotkey: FakeHotkey,
-}
-
-impl Fakes {
-    fn new() -> Self {
-        Self {
-            login: FakeLoginItem::new(),
-            item: FakeStatusItem::new(),
-            dock: FakeDock::new(),
-            hotkey: FakeHotkey::new(),
-        }
-    }
-
-    fn services(&self) -> MacServices {
-        MacServices {
-            login_item: Rc::new(self.login.clone()),
-            status_item: Rc::new(self.item.clone()),
-            dock: Rc::new(self.dock.clone()),
-            hotkey: Rc::new(self.hotkey.clone()),
-            ..MacServices::inert()
-        }
-    }
-}
-
-fn open_with_services<'a>(
-    cx: &'a mut TestAppContext,
-    daemon: &TestDaemon,
-    mac: MacServices,
-) -> (Entity<Workbench>, &'a mut VisualTestContext) {
-    let settings = SettingsStore::new(SettingsPaths::in_dir(daemon.home()));
-    let options = WorkbenchOptions::builtin(settings, daemon.connection(), None).with_mac(mac);
-    open_options(cx, options)
-}
-
-fn open<'a>(
-    cx: &'a mut TestAppContext,
-    daemon: &TestDaemon,
-    fakes: &Fakes,
-) -> (Entity<Workbench>, &'a mut VisualTestContext) {
-    open_with_services(cx, daemon, fakes.services())
 }
 
 fn wait_synced(view: &Entity<Workbench>, cx: &mut VisualTestContext, sessions: usize) {
@@ -140,10 +94,10 @@ fn keep_running_menu_item(cx: &mut VisualTestContext) -> (String, bool, bool) {
                 checked,
                 disabled,
                 ..
-            } if name.starts_with("Keep Running") => Some((name.to_string(), *checked, !disabled)),
+            } if name.starts_with(KEEP_RUNNING) => Some((name.to_string(), *checked, !disabled)),
             _ => None,
         })
-        .expect("a Keep Running item in the Daemon menu")
+        .expect("a keep-running item in the Daemon menu")
 }
 
 fn login_items_menu_enabled(cx: &mut VisualTestContext) -> bool {
@@ -169,6 +123,15 @@ fn pump(
         cx.executor().advance_clock(Duration::from_millis(50));
         condition(cx)
     });
+}
+
+/// Keeps pumping GPUI for `span` so anything that would still happen does.
+fn pump_for(cx: &mut VisualTestContext, span: Duration) {
+    let until = std::time::Instant::now() + span;
+    while std::time::Instant::now() < until {
+        draw(cx);
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn report_blocked(daemon: &TestDaemon, session: SessionId) {
@@ -200,7 +163,7 @@ fn the_keep_running_toggle_registers_and_unregisters_the_launch_agent(cx: &mut T
     assert!(fakes.login.calls().is_empty());
     assert_eq!(
         keep_running_menu_item(cx),
-        ("Keep Running".to_owned(), false, true)
+        (KEEP_RUNNING.to_owned(), false, true)
     );
 
     // On (the Daemon menu's action): registered, enabled, shown as such.
@@ -213,7 +176,7 @@ fn the_keep_running_toggle_registers_and_unregisters_the_launch_agent(cx: &mut T
     );
     assert_eq!(
         keep_running_menu_item(cx),
-        ("Keep Running".to_owned(), true, true)
+        (KEEP_RUNNING.to_owned(), true, true)
     );
     assert!(!login_items_menu_enabled(cx), "nothing to approve");
     assert!(
@@ -290,7 +253,7 @@ fn requires_approval_is_shown_and_opens_login_items(cx: &mut TestAppContext) {
     assert!(keep_running_setting(&view, cx), "the toggle stays on");
     assert_eq!(
         keep_running_menu_item(cx).0,
-        "Keep Running (requires approval)"
+        format!("{KEEP_RUNNING} (requires approval)")
     );
     assert!(notice(&view, cx).is_some_and(|n| n.contains("Login Items")));
     assert!(login_items_menu_enabled(cx));
@@ -307,7 +270,7 @@ fn requires_approval_is_shown_and_opens_login_items(cx: &mut TestAppContext) {
     fakes.login.set_status(LoginItemStatus::Enabled);
     view.update(cx, |wb, cx| wb.refresh_login_status(cx));
     assert!(view.read_with(cx, |wb, _| wb.keep_running_active()));
-    assert_eq!(keep_running_menu_item(cx).0, "Keep Running");
+    assert_eq!(keep_running_menu_item(cx).0, KEEP_RUNNING);
     assert!(!login_items_menu_enabled(cx));
 }
 
@@ -361,7 +324,7 @@ fn outside_the_bundle_the_toggle_is_disabled_and_registers_nothing(cx: &mut Test
     assert_eq!(
         keep_running_menu_item(cx),
         (
-            "Keep Running (available in Hutan.app)".to_owned(),
+            format!("{KEEP_RUNNING} (available in Hutan.app)"),
             false,
             false
         )
@@ -425,7 +388,7 @@ fn quitting_still_asks_when_keep_running_is_off_or_not_approved(cx: &mut TestApp
     dispatch(cx, actions::Quit);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.modal().map(|m| m.title.to_string())),
-        Some("Quit Hutan?".to_owned()),
+        Some("Quit Hutan and stop 1 live session?".to_owned()),
         "off: the usual question"
     );
     view.update_in(cx, |wb, window, cx| wb.close_modal(window, cx));
@@ -439,7 +402,7 @@ fn quitting_still_asks_when_keep_running_is_off_or_not_approved(cx: &mut TestApp
     dispatch(cx, actions::Quit);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.modal().map(|m| m.title.to_string())),
-        Some("Quit Hutan?".to_owned()),
+        Some("Quit Hutan and stop 1 live session?".to_owned()),
         "not approved: nothing launchd-owned to leave"
     );
     assert!(!view.read_with(cx, |wb, _| wb.quitting()));
@@ -710,12 +673,7 @@ fn the_menu_bar_item_comes_and_goes_with_its_setting(cx: &mut TestAppContext) {
     assert_eq!(fakes.item.hides(), 1);
 
     // Unrelated changes do not bring it back or remove it twice.
-    set(
-        &view,
-        cx,
-        "app.on_quit",
-        toml::Value::String("keep_running".into()),
-    );
+    set(&view, cx, "app.dock_badge", toml::Value::Boolean(false));
     assert!(fakes.item.shown().is_none());
     assert_eq!(fakes.item.hides(), 1);
 
@@ -935,7 +893,15 @@ fn the_new_namespaces_and_fields_are_in_the_settings_sheet(cx: &mut TestAppConte
             .map(|f| f.dotted())
             .collect::<Vec<_>>()
     });
-    assert_eq!(app, ["on_quit", "keep_running", "menu_bar", "dock_badge"]);
+    assert_eq!(
+        app,
+        [
+            "keep_running",
+            "on_last_window_close",
+            "menu_bar",
+            "dock_badge"
+        ]
+    );
     view.update(cx, |wb, cx| wb.select_settings_namespace("assistant", cx));
     let assistant = view.read_with(cx, |wb, _| {
         wb.settings_sheet()
@@ -949,4 +915,263 @@ fn the_new_namespaces_and_fields_are_in_the_settings_sheet(cx: &mut TestAppConte
     // Drawing the sheet with the status next to the toggle must not panic.
     view.update(cx, |wb, cx| wb.select_settings_namespace("app", cx));
     draw(cx);
+}
+
+// ---- closing the last window -------------------------------------------------------------
+
+fn menu_bar_mode(daemon: &TestDaemon) {
+    write_settings(daemon, "[app]\non_last_window_close = \"menu_bar\"\n");
+}
+
+#[gpui::test]
+fn closing_the_last_window_quits_by_default_like_command_q(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    daemon.sh("sleep 600");
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 1);
+
+    assert!(
+        !cx.simulate_close(),
+        "the window is kept until it is decided"
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.modal().map(|m| m.title.to_string())),
+        Some("Quit Hutan and stop 1 live session?".to_owned()),
+        "the same question as for ⌘Q"
+    );
+    assert!(
+        fakes.presence.calls().is_empty(),
+        "the app does not go to the menu bar"
+    );
+    assert!(!view.read_with(cx, |wb, _| wb.in_menu_bar()));
+}
+
+#[gpui::test]
+fn closing_the_last_window_can_keep_hutan_in_the_menu_bar(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let session = daemon.sh("sleep 600");
+    menu_bar_mode(&daemon);
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 1);
+
+    assert!(!cx.simulate_close(), "the window is kept, hidden");
+    assert!(view.read_with(cx, |wb, _| wb.in_menu_bar()));
+    assert_eq!(
+        fakes.presence.calls(),
+        [PresenceCall::Accessory(true), PresenceCall::Hide],
+        "no Dock icon, no windows"
+    );
+    assert!(!view.read_with(cx, |wb, _| wb.quitting()));
+    assert!(
+        view.read_with(cx, |wb, _| wb.modal().is_none()),
+        "nothing is asked"
+    );
+    pump_for(cx, Duration::from_millis(300));
+    assert!(daemon.paths.socket.exists(), "the daemon keeps running");
+    assert!(daemon.session(session.id).state.is_live());
+    // The menu bar item is still there, serving.
+    assert!(fakes.item.shown().is_some());
+
+    // Closing again while hidden changes nothing.
+    assert!(!cx.simulate_close());
+    assert_eq!(fakes.presence.calls().len(), 2);
+}
+
+#[gpui::test]
+fn the_menu_bar_choices_bring_the_window_back(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    menu_bar_mode(&daemon);
+    let (tx, rx) = event_channel();
+    let fakes = Fakes::new();
+    let mut mac = fakes.services();
+    mac.events = Some(rx);
+    let (view, cx) = open_with_services(cx, &daemon, mac);
+    wait_synced(&view, cx, 0);
+
+    for (event, what) in [
+        (MacEvent::Menu(MenuCommand::OpenHutan), "Open Hutan"),
+        (MacEvent::Hotkey, "the shortcut"),
+        (MacEvent::Menu(MenuCommand::NewTerminal), "New Terminal"),
+    ] {
+        assert!(!cx.simulate_close());
+        assert!(
+            view.read_with(cx, |wb, _| wb.in_menu_bar()),
+            "{what}: hidden"
+        );
+        let before = fakes.presence.calls().len();
+        tx.try_send(event).unwrap();
+        wait_until(cx, what, |cx| !view.read_with(cx, |wb, _| wb.in_menu_bar()));
+        assert_eq!(
+            fakes.presence.calls()[before..],
+            [PresenceCall::Accessory(false), PresenceCall::Show],
+            "{what}: a Dock icon and the windows again"
+        );
+    }
+    assert!(!fakes.presence.accessory());
+}
+
+#[gpui::test]
+fn quitting_from_the_menu_bar_while_hidden_stops_an_idle_daemon_or_asks(cx: &mut TestAppContext) {
+    // Idle: silent.
+    let idle = TestDaemon::start();
+    menu_bar_mode(&idle);
+    let (tx, rx) = event_channel();
+    let fakes = Fakes::new();
+    let mut mac = fakes.services();
+    mac.events = Some(rx);
+    let (view, cx) = open_with_services(cx, &idle, mac);
+    wait_synced(&view, cx, 0);
+    assert!(!cx.simulate_close());
+    tx.try_send(MacEvent::Menu(MenuCommand::Quit)).unwrap();
+    wait_until(cx, "the quit", |cx| {
+        view.read_with(cx, |wb, _| wb.quitting())
+    });
+    wait_until(cx, "the daemon to stop", |_| !idle.paths.socket.exists());
+}
+
+#[gpui::test]
+fn quitting_from_the_menu_bar_with_live_sessions_shows_the_window_and_asks(
+    cx: &mut TestAppContext,
+) {
+    let daemon = TestDaemon::start();
+    let session = daemon.sh("sleep 600");
+    menu_bar_mode(&daemon);
+    let (tx, rx) = event_channel();
+    let fakes = Fakes::new();
+    let mut mac = fakes.services();
+    mac.events = Some(rx);
+    let (view, cx) = open_with_services(cx, &daemon, mac);
+    wait_synced(&view, cx, 1);
+    assert!(!cx.simulate_close());
+
+    tx.try_send(MacEvent::Menu(MenuCommand::Quit)).unwrap();
+    wait_until(cx, "the question", |cx| {
+        view.read_with(cx, |wb, _| wb.modal().is_some())
+    });
+    assert!(
+        !view.read_with(cx, |wb, _| wb.in_menu_bar()),
+        "the question is asked in the window, which is shown for it"
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.modal().map(|m| m.title.to_string())),
+        Some("Quit Hutan and stop 1 live session?".to_owned())
+    );
+    assert!(daemon.session(session.id).state.is_live());
+}
+
+#[gpui::test]
+fn the_menu_bar_mode_needs_the_menu_bar_item(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    write_settings(
+        &daemon,
+        "[app]\non_last_window_close = \"menu_bar\"\nmenu_bar = false\n",
+    );
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 0);
+
+    // Nothing would be left to reopen Hutan from: closing quits, and the settings say why.
+    let diagnostics = view.read_with(cx, |wb, _| wb.settings_store().errors());
+    assert!(
+        diagnostics.iter().any(|d| d.key_path == "app.on_last_window_close"
+            && d.message.contains("app.menu_bar")),
+        "{diagnostics:?}"
+    );
+    assert!(!cx.simulate_close());
+    assert!(fakes.presence.calls().is_empty());
+    wait_until(cx, "the quit", |cx| {
+        view.read_with(cx, |wb, _| wb.quitting())
+    });
+
+    // The diagnostic goes away with the contradiction.
+    set(&view, cx, "app.menu_bar", toml::Value::Boolean(true));
+    assert!(
+        view.read_with(cx, |wb, _| wb.settings_store().errors())
+            .iter()
+            .all(|d| d.key_path != "app.on_last_window_close")
+    );
+}
+
+#[gpui::test]
+fn turning_the_menu_bar_item_off_while_hidden_brings_the_window_back(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    menu_bar_mode(&daemon);
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 0);
+    assert!(!cx.simulate_close());
+    assert!(view.read_with(cx, |wb, _| wb.in_menu_bar()));
+
+    // The item that was the only way back is gone: show the window rather than strand Hutan.
+    set(&view, cx, "app.menu_bar", toml::Value::Boolean(false));
+    assert!(!view.read_with(cx, |wb, _| wb.in_menu_bar()));
+    assert!(!fakes.presence.accessory());
+    assert!(fakes.item.shown().is_none());
+}
+
+#[gpui::test]
+fn a_second_desktop_or_the_dock_brings_the_window_forward(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    menu_bar_mode(&daemon);
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 0);
+    assert!(!cx.simulate_close());
+    assert!(view.read_with(cx, |wb, _| wb.in_menu_bar()));
+
+    let reopened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let flag = reopened.clone();
+    let found =
+        cx.update(|_, cx| hutan_desktop::app::activate_main_window(cx, move |_| flag.set(true)));
+    cx.run_until_parked();
+    assert!(found);
+    assert!(
+        !reopened.get(),
+        "the window still exists: nothing is recreated"
+    );
+    assert!(!view.read_with(cx, |wb, _| wb.in_menu_bar()));
+    assert_eq!(fakes.presence.calls().last(), Some(&PresenceCall::Show));
+}
+
+#[gpui::test]
+fn without_a_window_the_activation_reopens_one(cx: &mut TestAppContext) {
+    let reopened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let flag = reopened.clone();
+    let found =
+        cx.update(|cx| hutan_desktop::app::activate_main_window(cx, move |_| flag.set(true)));
+    cx.run_until_parked();
+    assert!(!found, "there is no workbench window");
+    assert!(reopened.get(), "so the caller's reopen ran");
+}
+
+#[gpui::test]
+fn an_old_on_quit_key_is_ignored_with_a_diagnostic(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    write_settings(
+        &daemon,
+        "[app]\non_quit = \"stop_daemon\"\nkeep_running = false\n",
+    );
+    daemon.sh("sleep 600");
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 1);
+
+    let diagnostics = view.read_with(cx, |wb, _| wb.settings_store().errors());
+    let note = diagnostics
+        .iter()
+        .find(|d| d.key_path.contains("on_quit"))
+        .unwrap_or_else(|| panic!("no diagnostic for on_quit in {diagnostics:?}"));
+    assert_eq!(
+        note.severity,
+        hutan_settings::Severity::Warning,
+        "not an error"
+    );
+    // The old value changes nothing: the daemon follows the app, and asks first.
+    dispatch(cx, actions::Quit);
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.modal().map(|m| m.title.to_string())),
+        Some("Quit Hutan and stop 1 live session?".to_owned())
+    );
 }

@@ -77,6 +77,13 @@ pub struct Modal {
     pub(crate) on_confirm: ModalAction,
 }
 
+impl Modal {
+    /// The label of the second choice, if the dialog has one.
+    pub fn choice_label(&self) -> Option<&str> {
+        self.choice.as_ref().map(|choice| choice.label.as_ref())
+    }
+}
+
 impl std::fmt::Debug for Modal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Modal")

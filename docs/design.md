@@ -223,8 +223,8 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 
 ```toml
 [app]
-on_quit = "ask"               # ask | keep_running | stop_daemon (asked only while sessions are live)
-keep_running = false          # register the launch agent: hutand starts at login and outlives the app (Hutan.app only)
+keep_running = false          # keep the daemon running after Hutan quits: registers the launch agent (Hutan.app only)
+on_last_window_close = "quit" # quit | menu_bar (keep Hutan in the menu bar; needs menu_bar = true)
 menu_bar = true               # menu bar item: daemon state, count, sessions that need you
 dock_badge = true             # number of sessions that need you on the Dock icon
 
@@ -339,40 +339,50 @@ The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws t
 
 ## Daemon lifecycle
 
+**The daemon follows the app**, unless the user asks it to outlive it. The app starts `hutand` when none is running; it keeps it for as long as Hutan runs (a window is open, or Hutan sits in the menu bar); quitting stops it. One toggle changes that: `app.keep_running` ("Keep daemon running after Hutan quits", default off).
+
 ```mermaid
 flowchart TD
-  L[Launch Hutan] --> C{hutand running?}
+  L[Launch Hutan] --> I{another Hutan in this data folder?}
+  I -- yes --> F[Bring it forward, exit 0]
+  I -- no --> C{hutand running?}
   C -- yes --> A[Connect]
   C -- no --> S[Start hutand next to the app binary] --> A
-  Q[⌘Q / close last window] --> LV{live sessions?}
-  LV -- no --> X[Stop hutand, quit]
-  LV -- yes --> P{app.on_quit}
-  P -- ask --> D[Dialog: Keep running · Stop sessions & daemon · Cancel, with Don't ask again]
-  P -- keep_running --> K[Quit, hutand keeps sessions]
-  P -- stop_daemon --> X2[Stop sessions, stop hutand, quit]
-  D --> K
-  D --> X2
+  W[Close the last window] --> M{app.on_last_window_close}
+  M -- quit --> Q
+  M -- "menu_bar (needs app.menu_bar)" --> H[Hide: no Dock icon, menu bar item stays, daemon keeps running]
+  H -- "Open Hutan, shortcut, second launch" --> A
+  Q[⌘Q, menu bar Quit, Dock Quit] --> KR{keep_running active?}
+  KR -- yes --> K[Quit; launchd owns hutand, it keeps running]
+  KR -- no --> LV{live sessions?}
+  LV -- no --> X[Stop hutand silently, quit]
+  LV -- yes --> D["Quit Hutan and stop N sessions?"]
+  D -- Stop Sessions & Quit --> X2[Stop sessions, stop hutand, quit]
+  D -- Keep Running in Background --> R[Turn keep_running on: register the login item] --> K
+  D -- Cancel --> A
 ```
 
-- "Don't ask again" writes `app.on_quit`.
-- **Keep running** (`app.keep_running`) short-circuits the whole chart: while it is on *and the system has approved it*, quitting never asks and never stops the daemon, with or without live sessions (launchd owns the daemon; see § macOS integration).
-- Closing the last window quits the app (same flow). Closing a tab or pane only detaches.
+- **Closing the last window** (`app.on_last_window_close`, default `quit`): `quit` is ⌘Q (the window stays until the flow has decided). `menu_bar` keeps Hutan alive in the menu bar: the window is hidden, not destroyed (it holds the connection, the sessions and the layout the menu bar item serves), the activation policy becomes *accessory* (no Dock icon, no application menu), and the daemon keeps running until Quit. Opening Hutan from the menu bar item, the global shortcut, a notification, a second launch or the Dock brings back the window and the Dock icon. `menu_bar` needs `app.menu_bar = true` (nothing would be left to reopen Hutan from): without it closing the last window quits, and the settings show a diagnostic for `app.on_last_window_close`. Turning the menu bar item off while Hutan is hidden shows the window again. Closing any other window just closes it; closing a tab or pane only detaches.
+- **Quit** is the same flow from ⌘Q, the app menu, the menu bar item and (best effort) the Dock. With *keep running* off the daemon stops with Hutan: silently when no session is live, after the confirmation when some are (the title counts them: "Quit Hutan and stop 1 live session?"). *Keep Running in Background* turns `app.keep_running` on (registering the login item; outside Hutan.app, where there is none, it just leaves the daemon running) and quits; if the system refuses the registration Hutan stays open and says why. With keep running *active* (registered and approved) nothing is asked and nothing is stopped.
+- **The Dock's Quit, logout and shutdown** reach the app as a platform termination with no window to ask in, so the app cannot ask: an idle daemon is stopped as with ⌘Q, one with live sessions is left running with them (as after a signal). [The Dock's Quit could be routed through the confirmation by taking over `applicationShouldTerminate:` from GPUI's delegate; that is not done because the same hook decides whether logout may proceed.]
+- **SIGTERM / SIGINT / SIGHUP** quit cleanly without touching the daemon, never asking (unchanged): layout saved, connection closed, exit code 0.
+- **Single instance.** One Hutan desktop per data folder (`HUTAN_HOME`, else `~/Library/Application Support/Hutan`). `LSMultipleInstancesProhibited` makes Launch Services reactivate the running app for the Dock and Finder; the executable enforces it itself too (running the binary directly, `open -n`): it takes an exclusive `flock` on `desktop.lock` in the data folder before any window opens, and a second desktop that finds it held connects to `desktop.sock` (owned by the first, `0600`, peers of another user dropped), sends `{"cmd":"activate"}` and exits 0 at once. The first one brings its window forward (from the menu bar, from behind other apps), or opens a new one if there is none. A lock or socket left by a crashed desktop is harmless: the lock goes with the process and the lock holder replaces a stale socket file. Code: `crates/desktop/src/instance.rs`.
 - **Daemon controls** — the same set in three places: the `Daemon` menu (menu bar), a popover opened by clicking the `connection` status item, and ⌘K commands:
   - status: connected/reconnecting, daemon version + protocol, pid, uptime, sessions (live / total), clients, socket path, log path;
   - actions: Restart Daemon, Stop Daemon (both confirm when sessions are live: they stop; the app stays open and shows "daemon stopped" with a Start button), Start Daemon (when stopped), Open Logs;
-  - **working mode** selector bound to `app.on_quit`: *Ask on quit* · *Keep sessions running after quit* · *Stop daemon with the app* — changing it writes `settings.toml`;
-  - **Keep Running** checkbox bound to `app.keep_running`, with the system's status in its title when it is not plain `enabled`, and *Open Login Items* (enabled while the status is `requires approval`).
+  - the **Keep daemon running after Hutan quits** switch bound to `app.keep_running`, with the system's status in its title when it is not plain `enabled`, and *Open Login Items* (enabled while the status is `requires approval`).
 - The CLI (`hutan daemon start|status|stop|restart`) controls the same daemon; the app reflects CLI-initiated stops/restarts through its reconnect state.
 - Quitting is always clean: layout saved, connection closed, exit code 0; the daemon is stopped through `daemon.shutdown`, never killed. A desktop panic writes message + backtrace to `desktop.log` before exiting.
+- A `settings.toml` from before this model may still have `app.on_quit`: the key is gone, so it is ignored with the settings' "unknown key (ignored)" warning, not an error.
 
 ## macOS integration (M6-C)
 
 Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait with a fake) and `workbench/mac.rs` (the workbench side). `MacServices::system()` builds the real ones and only `app::run` calls it; every GPUI test uses the fakes, so no test touches `SMAppService`, `NSStatusBar`, the Dock tile or the hotkey API.
 
-- **Keep running** (`app.keep_running`, Settings → General and the `Daemon` menu). On → `SMAppService.agent(plistName: "dev.hutan.daemon.plist").register()`; off → `unregister()`; the file is the truth, so editing `settings.toml` does the same and a window opened with the setting on registers the agent. The status sits next to the toggle: `enabled`, `requires approval` (button *Open Login Items* → `SMAppService.openSystemSettingsLoginItems()`), `not registered`, `not found` (a registration that ends `not found`, or that the system refuses, is reported and the setting goes back to off). It is re-read when the window becomes active, so approving in System Settings is picked up. Only available when the executable is `*.app/Contents/MacOS/*` **and** the main bundle is `dev.hutan.Hutan`; elsewhere the toggle is disabled with "available in Hutan.app" and nothing is registered.
+- **Keep daemon running after Hutan quits** (`app.keep_running`, Settings → `app`, the `Daemon` menu, the daemon popover and the menu bar menu). On → `SMAppService.agent(plistName: "dev.hutan.daemon.plist").register()`; off → `unregister()`; the file is the truth, so editing `settings.toml` does the same and a window opened with the setting on registers the agent. The status sits next to the toggle: `enabled`, `requires approval` (button *Open Login Items* → `SMAppService.openSystemSettingsLoginItems()`), `not registered`, `not found` (a registration that ends `not found`, or that the system refuses, is reported and the setting goes back to off). It is re-read when the window becomes active, so approving in System Settings is picked up. Only available when the executable is `*.app/Contents/MacOS/*` **and** the main bundle is `dev.hutan.Hutan`; elsewhere the toggle is disabled with "available in Hutan.app" and nothing is registered.
   - *Active* means registered **and** approved (`enabled`). While active: quitting never asks and never stops the daemon (a daemon without live sessions would otherwise stop with the app), and at start the desktop does **not** spawn `hutand`: its connection is `Connection::start_held`, which only dials. If no daemon answered after 4 s (the user stopped it, or the login item has not run yet) the connection may start one as before (`launchd_grace_over`), unless the user stopped the daemon from the app.
-  - Turning it off while sessions run: the app unregisters the agent and the daemon is whatever launchd leaves running; from the next quit on, `app.on_quit` applies again. [INFERENCE: whether `unregister()` also ends the running agent is not documented by Apple; the integrator's demo checks it, `docs/packaging.md` § Keep running.]
-- **Menu bar item** (`app.menu_bar`, default on): the orangutan glyph (`assets/macos/MenuBarIcon.png` 18 px and `@2x` 36 px, black template image tinted by the system, rendered from `assets/brand/05-mascot/svg/favicon.svg` by `just menubar-icon`) and, when something needs you, its count. Menu: the daemon state (`hutand connected` / `stopped` / `reconnecting…`, or the operation in progress), `N need you` with one item per session (title — blocked / approval / failed: detail; at most 10, then "…and N more"; a click brings the window forward and shows the session, an assistant conversation in the Assistant panel), *Open Hutan*, *New Terminal*, *Keep Running* (checkbox, same rules as above), *Quit Hutan* (the usual quit flow). The item is created when the setting is on and removed when it goes off; hot reload, no restart. `StatusItemModel` is pure data (count, menu rows) derived from the attention model.
+  - Turning it off while sessions run: the app unregisters the agent and the daemon is whatever launchd leaves running; from the next quit on, the daemon follows the app again (§ Daemon lifecycle). [INFERENCE: whether `unregister()` also ends the running agent is not documented by Apple; the integrator's demo checks it, `docs/packaging.md` § Keep running.]
+- **Menu bar item** (`app.menu_bar`, default on): the orangutan glyph (`assets/macos/MenuBarIcon.png` 18 px and `@2x` 36 px, black template image tinted by the system, rendered from `assets/brand/05-mascot/svg/favicon.svg` by `just menubar-icon`) and, when something needs you, its count. Menu: the daemon state (`hutand connected` / `stopped` / `reconnecting…`, or the operation in progress), `N need you` with one item per session (title — blocked / approval / failed: detail; at most 10, then "…and N more"; a click brings the window forward and shows the session, an assistant conversation in the Assistant panel), *Open Hutan*, *New Terminal*, *Keep Daemon Running After Hutan Quits* (checkbox, same rules as above), *Quit Hutan* (the usual quit flow, with the window shown first when it has to ask). The item is created when the setting is on and removed when it goes off; hot reload, no restart. `StatusItemModel` is pure data (count, menu rows) derived from the attention model.
 - **Dock badge** (`app.dock_badge`, default on): `NSApp.dockTile.badgeLabel` is the number of sessions that need you, empty at zero. The same number as the menu bar item and the same rule: **blocked** (an agent in the session is blocked, or the session waits for an approval), **pending approvals** (a session with a permission request counts once, however many requests), and **unread failures** (exit ≠ 0, a signal or a spawn failure that the user has not looked at). A finished-and-unread session (`done`) is in the sidebar's *Needs you* but not in the badge: a badge says "go and decide" or "something broke". Opening the session marks a failure read; the count drops with it (`SessionsStore::attention_entries`, `attention::classify`).
 - **Global shortcut** (`assistant.global_shortcut`, default `alt-space`, empty turns it off): a Carbon hot key (`RegisterEventHotKey`), so no Accessibility permission is needed and it works while any app is in front. Pressing it brings the app forward and runs `OpenAssistant` (the same code as the in-app ⌥Space). Syntax: GPUI keystrokes (`alt-space`, `cmd-shift-k`, `ctrl-f12`); at least one of `cmd`, `ctrl`, `alt` is required so a bare key can never swallow typing everywhere. When registration fails (another app owns it) the window says so **once** and the setting is left as is; changing the setting tries again, other settings reloading does not. An invalid value gets its own notice. The in-app keybinding (`keymap.toml`) is independent of this setting.
 - **Events** (a menu choice, the shortcut) travel from the main-thread callbacks to the workbench over one bounded channel (`MacEvent`), drained in a GPUI task; a full queue drops the newest. Nothing is polled.

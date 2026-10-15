@@ -362,12 +362,12 @@ mod tests {
             FieldKind::Unsupported(_)
         ));
         assert_eq!(
-            kind(&fields(&store, "app"), "on_quit"),
-            FieldKind::Enum(
-                ["ask", "keep_running", "stop_daemon"]
-                    .map(str::to_owned)
-                    .to_vec()
-            )
+            kind(&fields(&store, "app"), "on_last_window_close"),
+            FieldKind::Enum(["quit", "menu_bar"].map(str::to_owned).to_vec())
+        );
+        assert_eq!(
+            kind(&fields(&store, "app"), "keep_running"),
+            FieldKind::Bool
         );
         assert_eq!(
             kind(&fields(&store, "appearance"), "density"),
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(names("panels").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);
-        assert_eq!(names("on_quit"), ["app"]);
+        assert_eq!(names("on_last_window_close"), ["app"]);
         assert!(names("zzzz").is_empty());
     }
 }

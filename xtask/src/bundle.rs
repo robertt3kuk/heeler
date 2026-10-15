@@ -303,6 +303,12 @@ mod tests {
         assert_eq!(string(&info, "LSMinimumSystemVersion"), "13.0");
         assert_eq!(string(&info, "CFBundlePackageType"), "APPL");
         assert_eq!(
+            info.get("LSMultipleInstancesProhibited")
+                .and_then(plist::Value::as_boolean),
+            Some(true),
+            "one Hutan per user: opening it again activates the running one"
+        );
+        assert_eq!(
             info.get("NSHighResolutionCapable")
                 .and_then(plist::Value::as_boolean),
             Some(true)

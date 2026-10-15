@@ -9,6 +9,7 @@ pub mod agents;
 pub mod assistant;
 pub mod chat;
 pub mod history;
+pub mod mac;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};

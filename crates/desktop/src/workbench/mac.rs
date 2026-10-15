@@ -1,6 +1,6 @@
 //! The workbench side of the macOS integration (roadmap M6.4, `crate::macos`): keep running
-//! as a login item, the menu bar status item, the Dock badge and the global Assistant
-//! shortcut.
+//! as a login item, the menu bar status item, the Dock badge, the global Assistant shortcut
+//! and living on in the menu bar after the last window closes.
 //!
 //! Each of the four is driven by settings (`app.keep_running`, `app.menu_bar`,
 //! `app.dock_badge`, `assistant.global_shortcut`) and follows the attention model. The
@@ -16,9 +16,9 @@ use hutan_client::ConnectionState;
 use super::view::Workbench;
 use crate::macos::{
     DockBadge, GlobalHotkey, LoginItem, LoginItemStatus, MacEvent, MacServices, MenuCommand,
-    Shortcut, StatusItemHost, StatusItemModel,
+    Presence, Shortcut, StatusItemHost, StatusItemModel,
 };
-use crate::settings::{AppSettings, AssistantSettings};
+use crate::settings::{AppSettings, AssistantSettings, LastWindowClose};
 use hutan_settings::ChangeSet;
 
 /// State of the macOS integration inside the workbench.
@@ -27,6 +27,9 @@ pub(crate) struct MacControl {
     status_item: Rc<dyn StatusItemHost>,
     dock: Rc<dyn DockBadge>,
     hotkey: Rc<dyn GlobalHotkey>,
+    presence: Rc<dyn Presence>,
+    /// The window is hidden and the app is an accessory: it lives in the menu bar.
+    in_menu_bar: bool,
     /// The status of the login item the last time it was read.
     login_status: LoginItemStatus,
     /// What the Dock badge shows now (`None` until it was set once).
@@ -52,6 +55,7 @@ impl MacControl {
             status_item,
             dock,
             hotkey,
+            presence,
             events,
             launchd_daemon,
             launchd_grace,
@@ -63,6 +67,8 @@ impl MacControl {
                 status_item,
                 dock,
                 hotkey,
+                presence,
+                in_menu_bar: false,
                 login_status,
                 badge: None,
                 item: None,
@@ -334,6 +340,7 @@ impl Workbench {
         self.sync_status_item(cx);
         self.sync_dock(cx);
         self.sync_hotkey(cx);
+        self.sync_last_window_close_note();
     }
 
     /// The sessions, approvals or connection changed.
@@ -342,16 +349,74 @@ impl Workbench {
         self.sync_dock(cx);
     }
 
+    /// Says in the settings diagnostics when `app.on_last_window_close` cannot take effect.
+    pub(crate) fn sync_last_window_close_note(&mut self) {
+        self.settings
+            .set_notes("app", self.settings.get::<AppSettings>().diagnostics());
+    }
+
     /// A settings reload: the namespaces this module reads.
-    pub(crate) fn on_mac_settings_changed(&mut self, changes: &ChangeSet, cx: &mut Context<Self>) {
+    pub(crate) fn on_mac_settings_changed(
+        &mut self,
+        changes: &ChangeSet,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if changes.contains("app") {
             self.sync_keep_running(cx);
             self.sync_status_item(cx);
             self.sync_dock(cx);
+            self.sync_last_window_close_note();
+            // Hidden in the menu bar with nothing left to bring it back from (the item was
+            // turned off, or closing no longer keeps the app there): show the window.
+            if self.mac.in_menu_bar && self.last_window_close() != LastWindowClose::MenuBar {
+                self.show_if_hidden(window, cx);
+            }
         }
         if changes.contains("assistant") {
             self.sync_hotkey(cx);
         }
+    }
+
+    // ---- the menu bar as a home -------------------------------------------------------------
+
+    /// The app is hidden in the menu bar (the last window was closed with
+    /// `app.on_last_window_close = "menu_bar"`).
+    pub fn in_menu_bar(&self) -> bool {
+        self.mac.in_menu_bar
+    }
+
+    /// Closing the last window with `menu_bar`: no Dock icon, no windows on screen, the
+    /// window and everything behind it kept alive for the menu bar item to serve.
+    pub(crate) fn hide_to_menu_bar(&mut self, cx: &mut Context<Self>) {
+        if self.mac.in_menu_bar {
+            return;
+        }
+        self.mac.in_menu_bar = true;
+        self.mac.presence.set_accessory(true);
+        self.mac.presence.hide_app();
+        cx.notify();
+    }
+
+    /// Brings Hutan back from the menu bar when it is there: a Dock icon again, the window
+    /// shown. Does nothing otherwise.
+    pub(crate) fn show_if_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.mac.in_menu_bar) {
+            return;
+        }
+        self.mac.presence.set_accessory(false);
+        self.mac.presence.show_app();
+        cx.activate(true);
+        window.activate_window();
+        cx.notify();
+    }
+
+    /// Brings the app and its window to the front, from wherever it is: hidden in the menu
+    /// bar, behind other apps, or minimised.
+    pub(crate) fn bring_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_if_hidden(window, cx);
+        cx.activate(true);
+        window.activate_window();
     }
 
     /// The system asked for something: a menu bar choice or the global shortcut.
@@ -366,22 +431,16 @@ impl Workbench {
         }
         match event {
             MacEvent::Hotkey => {
-                cx.activate(true);
-                window.activate_window();
+                self.bring_forward(window, cx);
                 self.open_assistant(window, cx);
             }
-            MacEvent::Menu(MenuCommand::OpenHutan) => {
-                cx.activate(true);
-                window.activate_window();
-            }
+            MacEvent::Menu(MenuCommand::OpenHutan) => self.bring_forward(window, cx),
             MacEvent::Menu(MenuCommand::NewTerminal) => {
-                cx.activate(true);
-                window.activate_window();
+                self.bring_forward(window, cx);
                 self.new_terminal(window, cx);
             }
             MacEvent::Menu(MenuCommand::FocusSession(session)) => {
-                cx.activate(true);
-                window.activate_window();
+                self.bring_forward(window, cx);
                 if self.sessions.read(cx).session(session).is_none() {
                     self.set_notice("That session no longer exists", cx);
                 } else if !self.show_assistant_session(session, window, cx) {
@@ -389,6 +448,7 @@ impl Workbench {
                 }
             }
             MacEvent::Menu(MenuCommand::ToggleKeepRunning) => self.toggle_keep_running(cx),
+            // Hidden in the menu bar, the quit question needs the window (`open_quit_dialog`).
             MacEvent::Menu(MenuCommand::Quit) => self.request_quit(window, cx),
         }
     }

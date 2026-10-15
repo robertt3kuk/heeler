@@ -2,7 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Info.plist of Hutan.app. `@VERSION@` is the workspace version; `cargo run -p xtask -- bundle`
      fills it in (docs/packaging.md). The desktop executable is `hutan-desktop`, not `Hutan`: on
-     the default case-insensitive volume `Contents/MacOS/Hutan` and the CLI `hutan` are one name. -->
+     the default case-insensitive volume `Contents/MacOS/Hutan` and the CLI `hutan` are one name.
+     `LSMultipleInstancesProhibited`: opening Hutan again (Dock, Finder) activates the running one;
+     `hutan-desktop` also enforces it by itself with a lock in the data folder (docs/packaging.md). -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
@@ -29,6 +31,8 @@
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPrincipalClass</key>

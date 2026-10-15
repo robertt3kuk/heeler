@@ -2,7 +2,7 @@
 //! status item, the Dock badge and the system-wide Assistant shortcut.
 //!
 //! Every system API sits behind a small trait ([`LoginItem`], [`StatusItemHost`],
-//! [`DockBadge`], [`GlobalHotkey`]) with a fake that records what the workbench asked for.
+//! [`DockBadge`], [`GlobalHotkey`], [`Presence`]) with a fake that records what the workbench asked for.
 //! The workbench ([`crate::workbench`], `mac.rs`) only talks to the traits, and tests only use
 //! the fakes: they never call `SMAppService`, `NSStatusBar`, the Dock tile or the hotkey API.
 //! [`MacServices::system`] builds the real ones, and only `app::run` calls it.
@@ -13,6 +13,7 @@
 pub mod dock;
 pub mod hotkey;
 pub mod login_item;
+pub mod presence;
 pub mod status_item;
 
 use std::fmt;
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 pub use dock::{DockBadge, FakeDock};
 pub use hotkey::{FakeHotkey, GlobalHotkey, HotkeyError, Shortcut};
 pub use login_item::{FakeLoginItem, LoginItem, LoginItemCall, LoginItemStatus};
+pub use presence::{FakePresence, Presence, PresenceCall};
 pub use status_item::{FakeStatusItem, MenuSpec, StatusItemHost, StatusItemModel};
 
 /// How long a desktop that expects a launchd-started daemon waits for it before it starts one
@@ -69,6 +71,7 @@ pub struct MacServices {
     pub status_item: Rc<dyn StatusItemHost>,
     pub dock: Rc<dyn DockBadge>,
     pub hotkey: Rc<dyn GlobalHotkey>,
+    pub presence: Rc<dyn Presence>,
     /// What the system asked for; the workbench takes it when it is built.
     pub events: Option<EventReceiver>,
     /// The daemon is expected to be started by launchd (keep running is on and approved): the
@@ -95,6 +98,7 @@ impl MacServices {
             status_item: Rc::new(status_item::Nothing),
             dock: Rc::new(dock::Nothing),
             hotkey: Rc::new(hotkey::Nothing),
+            presence: Rc::new(presence::Nothing),
             events: None,
             launchd_daemon: false,
             launchd_grace: LAUNCHD_GRACE,
@@ -117,6 +121,7 @@ impl MacServices {
                 status_item: Rc::new(status_item::SystemStatusItem::new(sender.clone())),
                 dock: Rc::new(dock::SystemDock),
                 hotkey: Rc::new(hotkey::SystemHotkey::new(sender)),
+                presence: Rc::new(presence::SystemPresence),
                 events: Some(receiver),
                 launchd_daemon: false,
                 launchd_grace: LAUNCHD_GRACE,

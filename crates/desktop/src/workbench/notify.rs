@@ -68,7 +68,7 @@ impl Workbench {
             .map(|info| info.state.is_live());
         match live {
             Some(true) => {
-                window.activate_window();
+                self.bring_forward(window, cx);
                 // An assistant conversation lives in the Assistant panel, in its own scope; every
                 // other session in a tab.
                 if !self.show_assistant_session(event.session_id, window, cx) {
@@ -76,7 +76,7 @@ impl Workbench {
                 }
             }
             Some(false) => {
-                window.activate_window();
+                self.bring_forward(window, cx);
                 self.set_notice("That session is no longer running", cx);
             }
             None => self.set_notice("That session no longer exists", cx),

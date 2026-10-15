@@ -9,7 +9,8 @@ Code: `xtask/src/bundle.rs`, `xtask/src/icon.rs`. Assets: `assets/macos/`, brand
 ```text
 Hutan.app/Contents/
   Info.plist                                   bundle id dev.hutan.Hutan, version of the workspace,
-                                               LSMinimumSystemVersion 13.0, NSHighResolutionCapable
+                                               LSMinimumSystemVersion 13.0, NSHighResolutionCapable,
+                                               LSMultipleInstancesProhibited true
   MacOS/hutan-desktop                         the GPUI desktop (CFBundleExecutable)
   MacOS/hutand                                the daemon (signed with the app's identifier dev.hutan.Hutan)
   MacOS/hutan                                 the CLI
@@ -54,7 +55,7 @@ Queries such as `hutan notify ls` do not start a daemon that is down.
 
 ## Tests and the gate
 
-`xtask`'s `bundle` tests run in `just test`: one assembles a bundle from the debug binaries `cargo build --workspace --bins` leaves in `target/debug` into a temporary folder, signs and verifies it, parses both plists with the `plist` crate (identifier, version, minimum system version, high-resolution flag, icon file, executable and `BundleProgram` targets, `RunAtLoad` true, `KeepAlive` a dictionary with only `Crashed`, no environment, arguments or log paths), checks the layout (executables are Mach-O, names distinct ignoring case, no `Helpers`, the icon and the scripts in `Resources`), reads the signature back (`Signature=adhoc`, `hutand` carries `Identifier=dev.hutan.Hutan`), proves verification fails after a byte of `hutand` changes, and checks that no process runs from the bundle. It takes about two seconds, so it stays in the gate; `just bundle` itself is not part of `just check`. CI notes: run `just bundle --release` as a build artifact step on macOS runners; no step may open the result.
+`xtask`'s `bundle` tests run in `just test`: one assembles a bundle from the debug binaries `cargo build --workspace --bins` leaves in `target/debug` into a temporary folder, signs and verifies it, parses both plists with the `plist` crate (identifier, version, minimum system version, high-resolution flag, `LSMultipleInstancesProhibited`, icon file, executable and `BundleProgram` targets, `RunAtLoad` true, `KeepAlive` a dictionary with only `Crashed`, no environment, arguments or log paths), checks the layout (executables are Mach-O, names distinct ignoring case, no `Helpers`, the icon and the scripts in `Resources`), reads the signature back (`Signature=adhoc`, `hutand` carries `Identifier=dev.hutan.Hutan`), proves verification fails after a byte of `hutand` changes, and checks that no process runs from the bundle. It takes about two seconds, so it stays in the gate; `just bundle` itself is not part of `just check`. CI notes: run `just bundle --release` as a build artifact step on macOS runners; no step may open the result.
 
 ## Native notifications (M6-B)
 
@@ -80,7 +81,11 @@ The agent plist, and why:
 
 While keep running is active (registered and approved) the desktop starts with a connection that only dials, waits 4 s for a launchd-started daemon, and only then starts `hutand` itself; quitting the app never touches the daemon. The race that matters is a login-time one: the desktop and launchd both starting `hutand`. The daemon's lock makes the loser exit 2, so it cannot corrupt anything, but the desktop avoids the second start altogether.
 
-**Trying it by hand** (not part of any test; needs the user at the machine; never against the real data folder unless the user wants to): `just bundle`, copy `target/bundle/Hutan.app` to a folder under the home directory, start it, turn *Keep Running* on in Settings → General or the Daemon menu, approve it in Login Items if asked, quit the app and check `launchctl print gui/$(id -u)/dev.hutan.daemon` and `hutan daemon status`; turn it off and check that the entry is gone and what happened to the running daemon.
+**Trying it by hand** (not part of any test; needs the user at the machine; never against the real data folder unless the user wants to): `just bundle`, copy `target/bundle/Hutan.app` to a folder under the home directory, start it, turn *Keep daemon running after Hutan quits* on in Settings (`app`) or the Daemon menu, approve it in Login Items if asked, quit the app and check `launchctl print gui/$(id -u)/dev.hutan.daemon` and `hutan daemon status`; turn it off and check that the entry is gone and what happened to the running daemon.
+
+## One desktop per data folder
+
+`LSMultipleInstancesProhibited` in `Info.plist` makes Launch Services reactivate the running Hutan when it is opened again (Dock, Finder, `open`); the xtask bundle test checks the key. It does not cover `open -n` or running `Contents/MacOS/hutan-desktop` directly, so `hutan-desktop` enforces it too (`crates/desktop/src/instance.rs`, behavior in `docs/design.md` § Daemon lifecycle): before any window opens it takes an exclusive `flock` on **`desktop.lock`** in the data folder (`$HUTAN_HOME`, else `~/Library/Application Support/Hutan`) and listens on **`desktop.sock`** next to it (mode `0600`, peers of another user dropped, a stale socket file from a crash replaced under the lock). A second desktop sends `{"cmd":"activate"}` to that socket and exits 0; the first one brings its window forward. Two desktops with different `HUTAN_HOME`s do not know each other, which is what tests and `just bench` rely on.
 
 ## Menu bar glyph
 

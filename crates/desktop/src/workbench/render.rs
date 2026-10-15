@@ -580,9 +580,6 @@ impl Workbench {
                 this.open_login_items(cx);
             }),
         )
-        .on_action(cx.listener(|this, a: &actions::SetOnQuit, _, cx| {
-            this.set_on_quit(a.0, cx);
-        }))
         .on_action(cx.listener(|this, _: &actions::OpenProject, window, cx| {
             if this
                 .picker()

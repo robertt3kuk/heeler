@@ -1,9 +1,10 @@
 //! Application bootstrap: keymap, menus, window options, quit routing, and the `run` entry point.
 
+use crate::instance;
 use crate::macos::status_item::keep_running_title;
 use crate::macos::{LoginItem, LoginItemStatus, MacServices};
-use crate::settings::{AppSettings, OnQuit, WorkspaceSort};
-use crate::workbench::actions::{self, ApplyPreset, SetOnQuit, daemon};
+use crate::settings::{AppSettings, WorkspaceSort};
+use crate::workbench::actions::{self, ApplyPreset, daemon};
 use crate::workbench::model::LayoutPreset;
 use crate::workbench::persistence;
 use crate::workbench::{Workbench, WorkbenchOptions};
@@ -16,11 +17,10 @@ use hutan_protocol::messages::{ClientInfo, ClientKind};
 use hutan_settings::{SettingsPaths, SettingsStore};
 use std::path::{Path, PathBuf};
 
-/// What the `Daemon` menu shows: the working mode (checked) and whether the daemon is up
-/// (Restart and Stop apply) or not (Start applies).
+/// What the `Daemon` menu shows: whether the daemon is up (Restart and Stop apply) or not
+/// (Start applies), and the keep-running checkbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonMenu {
-    pub on_quit: OnQuit,
     pub running: bool,
     /// `app.keep_running`, whether it can be used (the app runs from Hutan.app) and what the
     /// system says about the launch agent.
@@ -32,7 +32,6 @@ pub struct DaemonMenu {
 impl Default for DaemonMenu {
     fn default() -> Self {
         Self {
-            on_quit: OnQuit::Ask,
             running: true,
             keep_running: false,
             keep_running_available: false,
@@ -155,10 +154,6 @@ pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
             MenuItem::action("Start Daemon", daemon::Start).disabled(daemon_menu.running),
             MenuItem::action("Open Logs", daemon::OpenLogs),
             MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Working Mode").items(OnQuit::ALL.map(|mode| {
-                MenuItem::action(mode.label(), SetOnQuit(mode)).checked(mode == daemon_menu.on_quit)
-            }))),
-            MenuItem::separator(),
             MenuItem::action(
                 keep_running_title(
                     daemon_menu.keep_running_available,
@@ -270,6 +265,112 @@ pub fn settings_store() -> SettingsStore {
     SettingsStore::new(paths)
 }
 
+/// Wakes the app from the listener thread of [`instance`]: a second desktop asked for it.
+struct WakeApp(tokio::sync::mpsc::Sender<()>);
+
+impl instance::ActivationSink for WakeApp {
+    fn activate(&self) {
+        // A full queue already holds a request that will bring the window forward.
+        let _ = self.0.try_send(());
+    }
+}
+
+/// What starting up found out about other desktops.
+enum Startup {
+    /// This is the desktop: the claim (when single-instance could be set up) lives as long as the
+    /// app.
+    Run(Option<instance::Primary>),
+    /// Another desktop owns this data folder; it was asked to come forward. The exit code.
+    Exit(i32),
+}
+
+/// Takes the single-instance lock of the data folder before anything else opens, or asks the
+/// desktop that holds it to come forward (design.md § Single instance).
+fn claim_instance(wake: tokio::sync::mpsc::Sender<()>) -> Startup {
+    let dir = match instance::data_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!("one desktop per data folder is not enforced: {error}");
+            return Startup::Run(None);
+        }
+    };
+    match instance::claim(&dir, WakeApp(wake)) {
+        Ok(instance::Claim::Primary(primary)) => Startup::Run(Some(primary)),
+        Ok(instance::Claim::Running) => {
+            match instance::notify_running(&dir, instance::CONNECT_PATIENCE) {
+                Ok(()) => {
+                    tracing::info!("Hutan is already running; it was brought forward");
+                    Startup::Exit(0)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "hutan-desktop: Hutan is already running but did not answer: {error}"
+                    );
+                    Startup::Exit(1)
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!("one desktop per data folder is not enforced: {error}");
+            Startup::Run(None)
+        }
+    }
+}
+
+/// Builds the settings, the macOS services and the connection, and opens the workbench window.
+fn open_main(cx: &mut App) -> gpui::Result<WindowHandle<Workbench>> {
+    let settings = settings_store();
+    let mut mac = MacServices::system();
+    let (connection, launchd) =
+        start_connection(connect_options(), &settings, mac.login_item.as_ref());
+    mac.launchd_daemon = launchd;
+    let options =
+        WorkbenchOptions::builtin(settings, connection, persistence::default_state_path())
+            .with_mac(mac);
+    open_workbench(cx, options)
+}
+
+/// Brings the workbench window forward (from the menu bar, from behind other apps), or `reopen`s
+/// it when there is none. `true` when there was a window.
+pub fn activate_main_window(cx: &mut App, reopen: impl FnOnce(&mut App) + 'static) -> bool {
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<Workbench>());
+    match handle {
+        Some(handle) => {
+            cx.defer(move |cx| {
+                if let Err(error) = handle.update(cx, |workbench, window, cx| {
+                    workbench.bring_forward(window, cx);
+                }) {
+                    tracing::warn!("cannot bring the window forward: {error:#}");
+                }
+            });
+            true
+        }
+        None => {
+            cx.defer(reopen);
+            false
+        }
+    }
+}
+
+/// A second desktop asks this one to come forward, over [`instance`].
+fn watch_instance(cx: &mut App, mut requests: tokio::sync::mpsc::Receiver<()>) {
+    cx.spawn(async move |cx| {
+        while requests.recv().await.is_some() {
+            cx.update(|cx| {
+                activate_main_window(cx, |cx| {
+                    if let Err(error) = open_main(cx) {
+                        tracing::error!("cannot reopen the workbench window: {error:#}");
+                    }
+                });
+            });
+        }
+    })
+    .detach();
+}
+
 /// Binary entry point: `HUTAN_HOME=/tmp/x hutan-desktop`.
 pub fn run() {
     hutan_terminal_view::trace::startup("main");
@@ -282,26 +383,34 @@ pub fn run() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    gpui_platform::application().run(|cx: &mut App| {
-        let settings = settings_store();
-        let mut mac = MacServices::system();
-        let (connection, launchd) =
-            start_connection(connect_options(), &settings, mac.login_item.as_ref());
-        mac.launchd_daemon = launchd;
-        let options =
-            WorkbenchOptions::builtin(settings, connection, persistence::default_state_path())
-                .with_mac(mac);
+    let (wake, requests) = tokio::sync::mpsc::channel(4);
+    let _instance = match claim_instance(wake) {
+        Startup::Run(claim) => claim,
+        Startup::Exit(0) => return,
+        Startup::Exit(code) => std::process::exit(code),
+    };
+    let application = gpui_platform::application();
+    // The Dock icon was clicked while no window is on screen.
+    application.on_reopen(|cx| {
+        activate_main_window(cx, |cx| {
+            if let Err(error) = open_main(cx) {
+                tracing::error!("cannot reopen the workbench window: {error:#}");
+            }
+        });
+    });
+    application.run(move |cx: &mut App| {
         init(cx, &LayoutPreset::builtin());
         watch_signals(cx);
-        if let Err(err) = open_workbench(cx, options) {
+        watch_instance(cx, requests);
+        if let Err(err) = open_main(cx) {
             tracing::error!("cannot open the workbench window: {err:#}");
             cx.quit();
         }
     });
 }
 
-/// SIGTERM / SIGINT / SIGHUP quit like `app.on_quit = keep_running`: layout saved, connection
-/// closed, exit code 0, the daemon untouched; never a question.
+/// SIGTERM / SIGINT / SIGHUP: layout saved, connection closed, exit code 0, the daemon
+/// untouched; never a question.
 fn watch_signals(cx: &mut App) {
     match crate::signals::watch() {
         Ok(mut signals) => cx

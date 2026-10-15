@@ -557,3 +557,45 @@ fn paths_resolve_from_hutan_home_or_app_support() {
     );
     assert!(SettingsPaths::resolve(None, None).is_err());
 }
+
+#[test]
+fn application_notes_join_the_diagnostics_and_publish_a_change() {
+    let fixture = Fixture::new(None);
+    let mut changes = fixture.store.changes();
+    let before = changes.borrow_and_update().generation;
+    assert!(fixture.store.errors().is_empty());
+
+    fixture.store.set_notes(
+        "check",
+        vec![hutan_settings::SettingsError::warning(
+            None,
+            "app.on_last_window_close",
+            "needs app.menu_bar",
+        )],
+    );
+    let errors = fixture.store.errors();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].severity, Severity::Warning);
+    assert!(errors[0].message.contains("app.menu_bar"));
+    assert!(changes.has_changed().unwrap());
+    let published = changes.borrow_and_update().clone();
+    assert!(published.generation > before);
+    assert!(
+        published.namespaces.is_empty(),
+        "only the diagnostics changed"
+    );
+
+    // The same notes again change nothing; an empty list clears them.
+    fixture.store.set_notes(
+        "check",
+        vec![hutan_settings::SettingsError::warning(
+            None,
+            "app.on_last_window_close",
+            "needs app.menu_bar",
+        )],
+    );
+    assert!(!changes.has_changed().unwrap());
+    fixture.store.set_notes("check", Vec::new());
+    assert!(fixture.store.errors().is_empty());
+    assert!(changes.has_changed().unwrap());
+}

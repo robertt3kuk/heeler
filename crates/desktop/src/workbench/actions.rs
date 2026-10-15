@@ -8,7 +8,7 @@
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::panels::{HistoryResume, HutanTarget};
 use super::registry::PanelRegistry;
-use crate::settings::{OnQuit, WorkspaceSort};
+use crate::settings::WorkspaceSort;
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 use hutan_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
@@ -198,8 +198,6 @@ data_actions! {
     OpenSessionFromOverview(String);
     /// Open the settings sheet at a namespace (`terminal`, `panels.sessions`, …).
     OpenSettingsFor(String);
-    /// Set the working mode (`app.on_quit`): what quitting does with the daemon.
-    SetOnQuit(OnQuit);
     /// Scroll the terminal of the session to a block and highlight it.
     JumpToBlock(BlockRef);
     /// Show the workspace with this id (switching the center to its layout).
@@ -358,17 +356,11 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Daemon: Stop Daemon", daemon::Stop),
         command("Daemon: Start Daemon", daemon::Start),
         command("Daemon: Open Logs", daemon::OpenLogs),
-        command("Daemon: Toggle Keep Running", daemon::ToggleKeepRunning),
+        command(
+            "Daemon: Toggle Keep Daemon Running After Hutan Quits",
+            daemon::ToggleKeepRunning,
+        ),
         command("Daemon: Open Login Items", daemon::OpenLoginItems),
-        command("Daemon: Working Mode — Ask on Quit", SetOnQuit(OnQuit::Ask)),
-        command(
-            "Daemon: Working Mode — Keep Sessions Running After Quit",
-            SetOnQuit(OnQuit::KeepRunning),
-        ),
-        command(
-            "Daemon: Working Mode — Stop Daemon With the App",
-            SetOnQuit(OnQuit::StopDaemon),
-        ),
     ];
     out.extend([
         command("Workspace: Open Project…", OpenProject),

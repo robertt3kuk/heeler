@@ -687,38 +687,24 @@ impl Setting for AgentsSettings {
     const NAMESPACE: &'static str = "agents";
 }
 
-/// What quitting the app does with the daemon while sessions are live (design.md § Daemon
-/// lifecycle). With no live session the daemon always stops with the app.
+/// What closing the last window does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum OnQuit {
-    /// Ask: keep the sessions running or stop them with the daemon.
+pub enum LastWindowClose {
+    /// Quit Hutan exactly like ⌘Q.
     #[default]
-    Ask,
-    /// Quit and leave `hutand` running with its sessions.
-    KeepRunning,
-    /// Stop the sessions and `hutand`, then quit.
-    StopDaemon,
+    Quit,
+    /// Keep Hutan in the menu bar (no Dock icon) until a window is opened again or Hutan is
+    /// quit. Needs `app.menu_bar`.
+    MenuBar,
 }
 
-impl OnQuit {
-    pub const ALL: [OnQuit; 3] = [OnQuit::Ask, OnQuit::KeepRunning, OnQuit::StopDaemon];
-
+impl LastWindowClose {
     /// The value in `settings.toml`.
     pub fn key(self) -> &'static str {
         match self {
-            OnQuit::Ask => "ask",
-            OnQuit::KeepRunning => "keep_running",
-            OnQuit::StopDaemon => "stop_daemon",
-        }
-    }
-
-    /// The working mode as the daemon controls show it.
-    pub fn label(self) -> &'static str {
-        match self {
-            OnQuit::Ask => "Ask on quit",
-            OnQuit::KeepRunning => "Keep sessions running after quit",
-            OnQuit::StopDaemon => "Stop daemon with the app",
+            LastWindowClose::Quit => "quit",
+            LastWindowClose::MenuBar => "menu_bar",
         }
     }
 }
@@ -727,13 +713,15 @@ impl OnQuit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AppSettings {
-    /// What quitting does with the daemon while sessions are live: `ask`, `keep_running` or
-    /// `stop_daemon`.
-    pub on_quit: OnQuit,
-    /// Keep the daemon running in the background: registers the bundled launch agent (macOS
-    /// Login Items) so `hutand` starts at login and survives quitting the app, which then
-    /// never stops it. Only available when the app runs from Hutan.app.
+    /// Keep daemon running after Hutan quits: registers the bundled launch agent (macOS Login
+    /// Items) so `hutand` starts at login and survives quitting the app, which then never stops
+    /// it and never asks. Off, the daemon runs while Hutan runs and stops when it quits. Only
+    /// available when the app runs from Hutan.app.
     pub keep_running: bool,
+    /// When the last window closes: `quit` (Quit Hutan, like ⌘Q: asks first while sessions run
+    /// and keep running is off) or `menu_bar` (keep Hutan in the menu bar, without a Dock icon;
+    /// the daemon keeps running until you quit; needs `menu_bar`).
+    pub on_last_window_close: LastWindowClose,
     /// Show a menu bar item with the daemon state, a count of the sessions that need you and a
     /// menu to jump to them.
     pub menu_bar: bool,
@@ -745,11 +733,35 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            on_quit: OnQuit::default(),
             keep_running: false,
+            on_last_window_close: LastWindowClose::Quit,
             menu_bar: true,
             dock_badge: true,
         }
+    }
+}
+
+impl AppSettings {
+    /// What closing the last window really does: `menu_bar` needs the menu bar item (nothing
+    /// would be left to reopen Hutan from), so without it the window close quits.
+    pub fn effective_last_window_close(&self) -> LastWindowClose {
+        match self.on_last_window_close {
+            LastWindowClose::MenuBar if self.menu_bar => LastWindowClose::MenuBar,
+            _ => LastWindowClose::Quit,
+        }
+    }
+
+    /// The diagnostic for a setting that cannot take effect, if any.
+    pub fn diagnostics(&self) -> Vec<hutan_settings::SettingsError> {
+        if self.on_last_window_close == LastWindowClose::MenuBar && !self.menu_bar {
+            return vec![hutan_settings::SettingsError::warning(
+                None,
+                "app.on_last_window_close",
+                "\"menu_bar\" needs app.menu_bar = true (nothing would be left to reopen Hutan \
+                 from); closing the last window quits instead",
+            )];
+        }
+        Vec::new()
     }
 }
 
@@ -914,14 +926,34 @@ mod tests {
     }
 
     #[test]
-    fn on_quit_defaults_to_ask_and_reads_the_documented_values() {
-        assert_eq!(AppSettings::default().on_quit, OnQuit::Ask);
-        for mode in OnQuit::ALL {
+    fn closing_the_last_window_quits_by_default_and_reads_the_documented_values() {
+        assert_eq!(
+            AppSettings::default().on_last_window_close,
+            LastWindowClose::Quit
+        );
+        for mode in [LastWindowClose::Quit, LastWindowClose::MenuBar] {
             let parsed: AppSettings =
-                toml::from_str(&format!("on_quit = \"{}\"", mode.key())).unwrap();
-            assert_eq!(parsed.on_quit, mode);
+                toml::from_str(&format!("on_last_window_close = \"{}\"", mode.key())).unwrap();
+            assert_eq!(parsed.on_last_window_close, mode);
         }
-        assert!(toml::from_str::<AppSettings>("on_quit = \"sometimes\"").is_err());
+        assert!(toml::from_str::<AppSettings>("on_last_window_close = \"hide\"").is_err());
+    }
+
+    #[test]
+    fn the_menu_bar_mode_needs_the_menu_bar_item() {
+        let mut app = AppSettings {
+            on_last_window_close: LastWindowClose::MenuBar,
+            ..AppSettings::default()
+        };
+        assert_eq!(app.effective_last_window_close(), LastWindowClose::MenuBar);
+        assert!(app.diagnostics().is_empty());
+        app.menu_bar = false;
+        assert_eq!(app.effective_last_window_close(), LastWindowClose::Quit);
+        let diagnostics = app.diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("app.menu_bar"));
+        app.on_last_window_close = LastWindowClose::Quit;
+        assert!(app.diagnostics().is_empty());
     }
 
     #[test]

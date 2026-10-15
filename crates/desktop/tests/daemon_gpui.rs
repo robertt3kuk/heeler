@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
 //! GPUI tests for the daemon's lifetime (design.md § Daemon lifecycle): the quit flow and
-//! `app.on_quit`, the termination-signal path, the daemon controls (popover, palette, menu),
+//! the daemon following the app (`app.keep_running`), the termination-signal path, the daemon controls (popover, palette, menu),
 //! and the working-mode control. Daemons are in-process on a temporary `HUTAN_HOME`, or a
 //! real `hutand` process where the test starts one again.
 
@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use common::mac::{Fakes, open as open_mac};
 use common::{ProcessDaemon, TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, OwnedMenuItem, TestAppContext, VisualTestContext};
 use hutan_client::{Connection, ConnectionState};
 use hutan_core::SessionId;
-use hutan_desktop::settings::OnQuit;
+use hutan_desktop::macos::LoginItemCall;
 use hutan_desktop::workbench::actions::{self, daemon as daemon_actions, palette};
 use hutan_desktop::workbench::model::DockPosition;
 use hutan_desktop::workbench::{DaemonBusy, Region, Workbench};
@@ -118,34 +119,23 @@ fn terminal_status(
     })
 }
 
-/// Name and checked state of the items in `Daemon ▸ Working Mode`, and the enabled state of
-/// the `Daemon` menu's actions, as the menu bar holds them right now.
+/// Name and enabled state of the actions of the `Daemon` menu, as the menu bar holds them right
+/// now.
 type NamedFlags = Vec<(String, bool)>;
 
-fn daemon_menu(cx: &mut VisualTestContext) -> (NamedFlags, NamedFlags) {
+fn daemon_menu(cx: &mut VisualTestContext) -> NamedFlags {
     let menus = cx.update(|_, cx| cx.get_menus()).expect("menus are set");
     let menu = menus
         .iter()
         .find(|m| m.name.as_ref() == "Daemon")
         .expect("a Daemon menu");
-    let mut modes = Vec::new();
-    let mut actions = Vec::new();
-    for item in &menu.items {
-        match item {
-            OwnedMenuItem::Action { name, disabled, .. } => {
-                actions.push((name.clone(), !disabled));
-            }
-            OwnedMenuItem::Submenu(sub) if sub.name.as_ref() == "Working Mode" => {
-                for item in &sub.items {
-                    if let OwnedMenuItem::Action { name, checked, .. } = item {
-                        modes.push((name.clone(), *checked));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (modes, actions)
+    menu.items
+        .iter()
+        .filter_map(|item| match item {
+            OwnedMenuItem::Action { name, disabled, .. } => Some((name.clone(), !disabled)),
+            _ => None,
+        })
+        .collect()
 }
 
 // quit: no live sessions ------------------------------------------------------------------
@@ -196,7 +186,7 @@ fn closing_the_last_window_with_live_sessions_asks(cx: &mut TestAppContext) {
     wait_synced(&view, cx, 1);
 
     assert!(!cx.simulate_close());
-    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Hutan?"));
+    assert_eq!(modal_title(&view, cx).as_deref(), Some(QUIT_TITLE));
     assert!(!quitting(&view, cx));
     assert!(daemon.paths.socket.exists());
 }
@@ -217,52 +207,53 @@ fn quitting_while_disconnected_quits_at_once(cx: &mut TestAppContext) {
     assert!(!view.read_with(cx, |wb, _| wb.modal_open()));
 }
 
-// quit: live sessions, app.on_quit ---------------------------------------------------------
+// quit: live sessions ------------------------------------------------------------------------
+
+const QUIT_TITLE: &str = "Quit Hutan and stop 1 live session?";
 
 #[gpui::test]
-fn ask_keep_running_quits_and_leaves_the_sessions(cx: &mut TestAppContext) {
-    let daemon = TestDaemon::start();
-    let session = daemon.sh("sleep 600");
-    let (view, cx) = open(cx, &daemon, None);
-    wait_synced(&view, cx, 1);
-
-    dispatch(cx, actions::Quit);
-    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Hutan?"));
-    let checkbox = view.read_with(cx, |wb, _| {
-        wb.modal()
-            .and_then(|m| m.checkbox.as_ref().map(|c| c.checked))
-    });
-    assert_eq!(checkbox, Some(false), "Don't ask again starts unticked");
-    assert!(!quitting(&view, cx), "nothing happens before the choice");
-
-    confirm(&view, cx);
-    wait_until(cx, "the quit", |cx| quitting(&view, cx));
-    assert_eq!(connection_state(&view, cx), ConnectionState::Stopped);
-    assert!(daemon.paths.socket.exists(), "the daemon keeps running");
-    assert!(daemon.session(session.id).state.is_live());
-    assert_eq!(
-        read(daemon.home(), "settings.toml"),
-        "",
-        "without the checkbox nothing is written"
-    );
-}
-
-#[gpui::test]
-fn ask_stop_sessions_and_daemon_stops_everything_then_quits(cx: &mut TestAppContext) {
+fn with_live_sessions_quitting_asks_to_stop_them(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     daemon.sh("sleep 600");
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 1);
 
     dispatch(cx, actions::Quit);
-    view.update_in(cx, |wb, window, cx| wb.choose_modal_alternative(window, cx));
+    assert_eq!(modal_title(&view, cx).as_deref(), Some(QUIT_TITLE));
+    let (confirm_label, choice, checkbox) = view.read_with(cx, |wb, _| {
+        let modal = wb.modal().unwrap();
+        (
+            modal.confirm_label.to_string(),
+            modal.choice_label().map(ToOwned::to_owned),
+            modal.checkbox.is_some(),
+        )
+    });
+    assert_eq!(confirm_label, "Stop Sessions & Quit");
+    assert_eq!(choice.as_deref(), Some("Keep Running in Background"));
+    assert!(
+        !checkbox,
+        "there is nothing to remember: the toggle is the setting"
+    );
+    assert!(!quitting(&view, cx), "nothing happens before the choice");
+    assert_eq!(read(daemon.home(), "settings.toml"), "");
+}
+
+#[gpui::test]
+fn stop_sessions_and_quit_stops_everything_then_quits(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    daemon.sh("sleep 600");
+    let (view, cx) = open(cx, &daemon, None);
+    wait_synced(&view, cx, 1);
+
+    dispatch(cx, actions::Quit);
+    confirm(&view, cx);
     wait_socket_gone(cx, &daemon.paths.socket);
     wait_until(cx, "the quit", |cx| quitting(&view, cx));
     assert_eq!(connection_state(&view, cx), ConnectionState::Stopped);
 }
 
 #[gpui::test]
-fn ask_cancel_changes_nothing(cx: &mut TestAppContext) {
+fn cancelling_the_quit_changes_nothing(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     daemon.sh("sleep 600");
     let (view, cx) = open(cx, &daemon, None);
@@ -270,8 +261,6 @@ fn ask_cancel_changes_nothing(cx: &mut TestAppContext) {
 
     dispatch(cx, actions::Quit);
     assert!(view.read_with(cx, |wb, _| wb.modal_open()));
-    // Even a ticked checkbox is not remembered on Cancel.
-    view.update(cx, |wb, cx| wb.set_modal_checkbox(true, cx));
     view.update_in(cx, |wb, window, cx| wb.close_modal(window, cx));
     pump_for(cx, Duration::from_millis(300));
     assert!(!quitting(&view, cx));
@@ -281,89 +270,97 @@ fn ask_cancel_changes_nothing(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn dont_ask_again_writes_the_choice_to_settings(cx: &mut TestAppContext) {
+fn keep_running_in_background_turns_the_toggle_on_and_leaves_the_daemon(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    daemon.sh("sleep 600");
-    let (view, cx) = open(cx, &daemon, None);
+    let session = daemon.sh("sleep 600");
+    let fakes = Fakes::new();
+    let (view, cx) = open_mac(cx, &daemon, &fakes);
     wait_synced(&view, cx, 1);
 
     dispatch(cx, actions::Quit);
-    view.update(cx, |wb, cx| wb.set_modal_checkbox(true, cx));
-    confirm(&view, cx);
-    wait_until(cx, "the quit", |cx| quitting(&view, cx));
-    let text = read(daemon.home(), "settings.toml");
-    assert!(
-        text.contains("[app]") && text.contains("on_quit = \"keep_running\""),
-        "{text}"
-    );
-    assert_eq!(
-        view.read_with(cx, |wb, _| wb.on_quit_mode()),
-        OnQuit::KeepRunning
-    );
-}
-
-#[gpui::test]
-fn dont_ask_again_with_stop_remembers_stop_daemon(cx: &mut TestAppContext) {
-    let daemon = TestDaemon::start();
-    daemon.sh("sleep 600");
-    let (view, cx) = open(cx, &daemon, None);
-    wait_synced(&view, cx, 1);
-
-    dispatch(cx, actions::Quit);
-    view.update(cx, |wb, cx| wb.set_modal_checkbox(true, cx));
     view.update_in(cx, |wb, window, cx| wb.choose_modal_alternative(window, cx));
-    wait_socket_gone(cx, &daemon.paths.socket);
     wait_until(cx, "the quit", |cx| quitting(&view, cx));
-    let text = read(daemon.home(), "settings.toml");
-    assert!(text.contains("on_quit = \"stop_daemon\""), "{text}");
+    assert_eq!(fakes.login.calls(), [LoginItemCall::Register]);
+    assert!(read(daemon.home(), "settings.toml").contains("keep_running = true"));
+    assert_eq!(connection_state(&view, cx), ConnectionState::Stopped);
+    assert!(daemon.paths.socket.exists(), "the daemon keeps running");
+    assert!(daemon.session(session.id).state.is_live());
 }
 
 #[gpui::test]
-fn keep_running_quits_without_asking_and_leaves_the_daemon(cx: &mut TestAppContext) {
+fn outside_the_bundle_keeping_the_daemon_running_just_leaves_it(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    write(
-        daemon.home(),
-        "settings.toml",
-        "[app]\non_quit = \"keep_running\"\n",
-    );
     let session = daemon.sh("sleep 600");
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 1);
 
     dispatch(cx, actions::Quit);
-    assert!(!view.read_with(cx, |wb, _| wb.modal_open()), "no dialog");
+    view.update_in(cx, |wb, window, cx| wb.choose_modal_alternative(window, cx));
     wait_until(cx, "the quit", |cx| quitting(&view, cx));
+    assert_eq!(
+        read(daemon.home(), "settings.toml"),
+        "",
+        "there is no login item to register, so no setting to turn on"
+    );
     assert!(daemon.paths.socket.exists());
     assert!(daemon.session(session.id).state.is_live());
 }
 
 #[gpui::test]
-fn stop_daemon_mode_stops_sessions_and_daemon_without_asking(cx: &mut TestAppContext) {
+fn a_refused_registration_keeps_the_app_open(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    write(
-        daemon.home(),
-        "settings.toml",
-        "[app]\non_quit = \"stop_daemon\"\n",
-    );
     daemon.sh("sleep 600");
-    let (view, cx) = open(cx, &daemon, None);
+    let fakes = Fakes::new();
+    fakes.login.fail_register("Operation not permitted");
+    let (view, cx) = open_mac(cx, &daemon, &fakes);
     wait_synced(&view, cx, 1);
 
     dispatch(cx, actions::Quit);
-    assert!(!view.read_with(cx, |wb, _| wb.modal_open()), "no dialog");
-    wait_socket_gone(cx, &daemon.paths.socket);
-    wait_until(cx, "the quit", |cx| quitting(&view, cx));
+    view.update_in(cx, |wb, window, cx| wb.choose_modal_alternative(window, cx));
+    pump_for(cx, Duration::from_millis(300));
+    assert!(
+        !quitting(&view, cx),
+        "the user asked for something that did not happen"
+    );
+    assert!(view.read_with(cx, |wb, _| {
+        wb.notice()
+            .is_some_and(|n| n.contains("Operation not permitted"))
+    }));
+    assert!(!view.read_with(cx, |wb, _| wb.keep_running_enabled()));
+    assert!(daemon.paths.socket.exists());
+}
+
+#[gpui::test]
+fn a_platform_quit_stops_an_idle_daemon_and_leaves_one_with_sessions(cx: &mut TestAppContext) {
+    // The Dock's Quit, logout, shutdown: no window to ask in.
+    let idle = TestDaemon::start();
+    let (view, cx) = open(cx, &idle, None);
+    wait_synced(&view, cx, 0);
+    view.update(cx, |wb, cx| {
+        let goodbye = wb.on_platform_quit(cx);
+        cx.spawn(async move |_, _| goodbye.await).detach();
+    });
+    wait_socket_gone(cx, &idle.paths.socket);
+}
+
+#[gpui::test]
+fn a_platform_quit_leaves_a_daemon_with_live_sessions_alone(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let session = daemon.sh("sleep 600");
+    let (view, cx) = open(cx, &daemon, None);
+    wait_synced(&view, cx, 1);
+    view.update(cx, |wb, cx| {
+        let goodbye = wb.on_platform_quit(cx);
+        cx.spawn(async move |_, _| goodbye.await).detach();
+    });
+    pump_for(cx, Duration::from_millis(300));
+    assert!(daemon.paths.socket.exists());
+    assert!(daemon.session(session.id).state.is_live());
 }
 
 #[gpui::test]
 fn a_termination_signal_saves_disconnects_and_never_stops_the_daemon(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    // Even stop_daemon mode: signals behave like keep_running.
-    write(
-        daemon.home(),
-        "settings.toml",
-        "[app]\non_quit = \"stop_daemon\"\n",
-    );
     let session = daemon.sh("sleep 600");
     let state = daemon.home().join("desktop-state.json");
     let (view, cx) = open(cx, &daemon, Some(state.clone()));
@@ -489,9 +486,8 @@ fn the_palette_lists_every_daemon_command(cx: &mut TestAppContext) {
         "Daemon: Stop Daemon",
         "Daemon: Start Daemon",
         "Daemon: Open Logs",
-        "Daemon: Working Mode — Ask on Quit",
-        "Daemon: Working Mode — Keep Sessions Running After Quit",
-        "Daemon: Working Mode — Stop Daemon With the App",
+        "Daemon: Toggle Keep Daemon Running After Hutan Quits",
+        "Daemon: Open Login Items",
     ] {
         assert!(
             titles.iter().any(|t| t == expected),
@@ -542,7 +538,7 @@ fn stop_from_the_palette_confirms_with_live_sessions_and_keeps_the_app_open(
         )
     });
     // The menu offers Start, not Stop/Restart.
-    let (_, actions) = daemon_menu(cx);
+    let actions = daemon_menu(cx);
     let enabled = |name: &str| actions.iter().find(|(n, _)| n == name).map(|(_, on)| *on);
     assert_eq!(enabled("Start Daemon"), Some(true));
     assert_eq!(enabled("Stop Daemon"), Some(false));
@@ -728,60 +724,80 @@ fn start_and_restart_from_the_palette_work_on_a_stopped_daemon(cx: &mut TestAppC
     assert!(process.socket().exists());
 }
 
-// working mode ----------------------------------------------------------------------------------
+// keep running in the popover, the menu and the settings ----------------------------------------
 
 #[gpui::test]
-fn the_mode_control_writes_app_on_quit_and_follows_external_edits(cx: &mut TestAppContext) {
+fn the_popover_switch_registers_keep_running_and_follows_external_edits(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    let (view, cx) = open(cx, &daemon, None);
+    let fakes = Fakes::new();
+    let (view, cx) = open_mac(cx, &daemon, &fakes);
     wait_synced(&view, cx, 0);
-    let mode = |cx: &VisualTestContext| view.read_with(cx, |wb, _| wb.on_quit_mode());
-    assert_eq!(mode(cx), OnQuit::Ask);
-    let (modes, _) = daemon_menu(cx);
-    assert_eq!(
-        modes,
-        [
-            ("Ask on quit".to_owned(), true),
-            ("Keep sessions running after quit".to_owned(), false),
-            ("Stop daemon with the app".to_owned(), false),
-        ]
-    );
+    let on = |cx: &VisualTestContext| view.read_with(cx, |wb, _| wb.keep_running_enabled());
+    assert!(!on(cx), "off by default");
+    let checked = |cx: &mut VisualTestContext| {
+        let menus = cx.update(|_, cx| cx.get_menus()).expect("menus are set");
+        let menu = menus.iter().find(|m| m.name.as_ref() == "Daemon").unwrap();
+        menu.items
+            .iter()
+            .find_map(|item| match item {
+                OwnedMenuItem::Action { name, checked, .. }
+                    if name.starts_with("Keep Daemon Running") =>
+                {
+                    Some(*checked)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!(!checked(cx));
 
-    // The segmented control in the popover writes settings.toml.
+    // The switch in the popover writes settings.toml and registers the launch agent.
     click(&view, cx, Region::StatusItem("connection"));
     click(&view, cx, Region::Popover("keep_running"));
-    assert_eq!(mode(cx), OnQuit::KeepRunning);
-    let text = read(daemon.home(), "settings.toml");
-    assert!(text.contains("on_quit = \"keep_running\""), "{text}");
-    let (modes, _) = daemon_menu(cx);
-    assert_eq!(
-        modes.iter().find(|(_, on)| *on).map(|(n, _)| n.as_str()),
-        Some("Keep sessions running after quit")
+    assert!(on(cx));
+    assert_eq!(fakes.login.calls(), [LoginItemCall::Register]);
+    assert!(read(daemon.home(), "settings.toml").contains("keep_running = true"));
+    assert!(checked(cx));
+
+    // The palette and menu action flip it back.
+    dispatch(cx, daemon_actions::ToggleKeepRunning);
+    assert!(!on(cx));
+    assert!(read(daemon.home(), "settings.toml").contains("keep_running = false"));
+    assert!(!checked(cx));
+
+    // An external edit shows up (hot reload) in the setting, the menu and the registration.
+    write(
+        daemon.home(),
+        "settings.toml",
+        "[app]\nkeep_running = true\n",
     );
-
-    // So do the palette and menu actions.
-    dispatch(cx, actions::SetOnQuit(OnQuit::StopDaemon));
-    assert_eq!(mode(cx), OnQuit::StopDaemon);
-    assert!(read(daemon.home(), "settings.toml").contains("on_quit = \"stop_daemon\""));
-
-    // An external edit shows up (hot reload) in the setting, the menu and the popover.
-    write(daemon.home(), "settings.toml", "[app]\non_quit = \"ask\"\n");
-    // The setting store may see the edit a tick before the workbench rebuilds the menu bar.
-    wait_until(cx, "the edit to reach the menu", |cx| {
-        mode(cx) == OnQuit::Ask
-            && daemon_menu(cx)
-                .0
-                .iter()
-                .find(|(_, on)| *on)
-                .is_some_and(|(n, _)| n == "Ask on quit")
-    });
+    wait_until(cx, "the edit to reach the menu", |cx| on(cx) && checked(cx));
+    assert_eq!(
+        fakes.login.calls(),
+        [
+            LoginItemCall::Register,
+            LoginItemCall::Unregister,
+            LoginItemCall::Register
+        ]
+    );
     draw(cx);
     assert!(
         view.read_with(cx, |wb, _| wb
-            .region_bounds(Region::Popover("ask"))
+            .region_bounds(Region::Popover("keep_running"))
             .is_some()),
-        "the popover is still open and shows the segments"
+        "the popover is still open and shows the switch"
     );
+}
+
+#[gpui::test]
+fn outside_the_bundle_the_popover_switch_does_nothing(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let (view, cx) = open(cx, &daemon, None);
+    wait_synced(&view, cx, 0);
+    click(&view, cx, Region::StatusItem("connection"));
+    click(&view, cx, Region::Popover("keep_running"));
+    assert!(!view.read_with(cx, |wb, _| wb.keep_running_enabled()));
+    assert_eq!(read(daemon.home(), "settings.toml"), "");
 }
 
 #[gpui::test]
@@ -799,7 +815,12 @@ fn the_settings_sheet_lists_the_app_namespace(cx: &mut TestAppContext) {
     });
     assert_eq!(
         fields,
-        ["on_quit", "keep_running", "menu_bar", "dock_badge"]
+        [
+            "keep_running",
+            "on_last_window_close",
+            "menu_bar",
+            "dock_badge"
+        ]
     );
 }
 
@@ -808,7 +829,7 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
     let mut daemon = TestDaemon::start();
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 0);
-    let (_, actions) = daemon_menu(cx);
+    let actions = daemon_menu(cx);
     let names: Vec<&str> = actions.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
@@ -819,7 +840,7 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
             "Start Daemon",
             "Open Logs",
             // Outside Hutan.app (no login item here): present but disabled.
-            "Keep Running (available in Hutan.app)",
+            "Keep Daemon Running After Hutan Quits (available in Hutan.app)",
             "Open Login Items"
         ]
     );
@@ -829,7 +850,10 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
     assert_eq!(enabled("Stop Daemon", &actions), Some(true));
     assert_eq!(enabled("Start Daemon", &actions), Some(false));
     assert_eq!(
-        enabled("Keep Running (available in Hutan.app)", &actions),
+        enabled(
+            "Keep Daemon Running After Hutan Quits (available in Hutan.app)",
+            &actions
+        ),
         Some(false)
     );
     assert_eq!(enabled("Open Login Items", &actions), Some(false));
@@ -840,7 +864,7 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
         connection_state(&view, cx) != ConnectionState::Connected
     });
     assert!(status_line(&view, cx).starts_with("reconnecting"));
-    let (_, actions) = daemon_menu(cx);
+    let actions = daemon_menu(cx);
     assert_eq!(enabled("Stop Daemon", &actions), Some(false));
     assert_eq!(enabled("Start Daemon", &actions), Some(true));
     assert!(!view.read_with(cx, |wb, _| wb.daemon_stopped()));

@@ -1,6 +1,6 @@
 //! The daemon popover opened from the `connection` status item: status fields, the controls
 //! that the `Daemon` menu and the palette offer too (they all dispatch the same `daemon::*`
-//! actions), and the working-mode control bound to `app.on_quit`.
+//! actions), and the keep-running switch bound to `app.keep_running`.
 
 use std::time::Duration;
 
@@ -9,11 +9,12 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, div, prelude::*, px,
 };
 
-use super::actions::{SetOnQuit, daemon};
+use super::actions::daemon;
 use super::panels::StatusTone;
 use super::render::probe;
 use super::view::{Region, Workbench};
-use crate::settings::OnQuit;
+use crate::macos::LoginItemStatus;
+use crate::macos::status_item::KEEP_RUNNING;
 use crate::theme::DensityExt as _;
 
 const WIDTH: f32 = 440.0;
@@ -61,7 +62,9 @@ impl Workbench {
             .log_path
             .as_ref()
             .map(|p| p.display().to_string());
-        let mode = self.on_quit_mode();
+        let keep_running = self.keep_running_enabled();
+        let keep_available = self.keep_running_available();
+        let keep_status = self.keep_running_status();
         let hover = theme.hover;
 
         let mut fields: Vec<(&'static str, String)> = Vec::new();
@@ -132,30 +135,44 @@ impl Workbench {
             Box::new(daemon::OpenLogs),
         ));
 
-        let segment = |on: OnQuit| {
-            let selected = on == mode;
-            div()
-                .id(SharedString::from(format!("daemon-mode-{}", on.key())))
-                .relative()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(tokens.spacing * 2.0))
-                .py(px(tokens.spacing))
-                .text_center()
-                .text_size(px(tokens.font_size - 1.0))
-                .cursor_pointer()
-                .border_1()
-                .border_color(if selected { theme.accent } else { theme.border })
-                .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
-                .hover(move |s| s.bg(hover))
-                .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(SetOnQuit(on)), cx);
-                })
-                .child(on.label())
-                .child(probe(&regions, Region::Popover(on.key())))
-        };
+        // The keep-running switch: where it is, and what the system says about it.
+        let switch = div()
+            .id("daemon-keep-running")
+            .relative()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(tokens.spacing * 2.0))
+            .px(px(tokens.spacing * 2.0))
+            .py(px(tokens.spacing))
+            .rounded(px(tokens.radius - 1.0))
+            .border_1()
+            .border_color(if keep_running && keep_available {
+                theme.accent
+            } else {
+                theme.border
+            })
+            .when(keep_running && keep_available, |s| {
+                s.bg(theme.accent.opacity(0.25))
+            })
+            .when(keep_available, |s| {
+                s.cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(daemon::ToggleKeepRunning), cx);
+                    })
+            })
+            .child(KEEP_RUNNING)
+            .child(div().text_color(theme.muted).child(if keep_available {
+                format!(
+                    "{} · {}",
+                    if keep_running { "on" } else { "off" },
+                    keep_status.label()
+                )
+            } else {
+                "available in Hutan.app".to_owned()
+            }))
+            .child(probe(&regions, Region::Popover("keep_running")));
 
         Some(
             div()
@@ -236,24 +253,16 @@ impl Workbench {
                             }),
                         ))
                         .child(actions)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(tokens.spacing))
-                                .child(
-                                    div()
-                                        .text_color(theme.muted)
-                                        .text_size(px(tokens.section_font_size))
-                                        .child("WORKING MODE"),
-                                )
-                                .child(
-                                    div()
-                                        .id("daemon-working-mode")
-                                        .flex()
-                                        .gap(px(2.0))
-                                        .children(OnQuit::ALL.map(segment)),
-                                ),
+                        .child(switch)
+                        .when(
+                            keep_available && keep_status == LoginItemStatus::RequiresApproval,
+                            |s| {
+                                s.child(button(
+                                    "daemon-login-items",
+                                    "Open Login Items",
+                                    Box::new(daemon::OpenLoginItems),
+                                ))
+                            },
                         ),
                 )
                 .into_any_element(),

@@ -1,6 +1,6 @@
 //! The menu bar status item (`app.menu_bar`): the orangutan glyph as a template image, the
 //! number of sessions that need the user next to it, and a menu (daemon state, the sessions
-//! that need you, Open Hutan, New Terminal, Keep Running, Quit).
+//! that need you, Open Hutan, New Terminal, Keep Daemon Running After Hutan Quits, Quit).
 //!
 //! [`StatusItemModel`] is pure data: what the item shows and which menu it offers, derived
 //! from the attention model. [`StatusItemHost`] puts a model on the menu bar; the real host
@@ -37,7 +37,7 @@ pub struct StatusItemModel {
     pub daemon: String,
     /// The sessions that need the user, in daemon order.
     pub needs_you: Vec<AttentionEntry>,
-    /// The Keep Running checkbox: on, whether it can be used, and what the system says.
+    /// The keep-running checkbox: on, whether it can be used, and what the system says.
     pub keep_running: bool,
     pub keep_running_available: bool,
     pub keep_running_status: LoginItemStatus,
@@ -105,14 +105,16 @@ fn item(title: &str, command: MenuCommand) -> MenuSpec {
     }
 }
 
-/// `Keep Running`, with what is wrong with it when something is.
+/// The title of the keep-running checkbox, with what is wrong with it when something is.
+pub const KEEP_RUNNING: &str = "Keep Daemon Running After Hutan Quits";
+
 pub fn keep_running_title(available: bool, status: LoginItemStatus) -> String {
     if !available {
-        return "Keep Running (available in Hutan.app)".to_owned();
+        return format!("{KEEP_RUNNING} (available in Hutan.app)");
     }
     match status {
-        LoginItemStatus::Enabled | LoginItemStatus::NotRegistered => "Keep Running".to_owned(),
-        other => format!("Keep Running ({})", other.label()),
+        LoginItemStatus::Enabled | LoginItemStatus::NotRegistered => KEEP_RUNNING.to_owned(),
+        other => format!("{KEEP_RUNNING} ({})", other.label()),
     }
 }
 
@@ -515,18 +517,18 @@ mod tests {
                 .unwrap()
         };
         let mut model = model(vec![]);
-        assert_eq!(keep(&model), ("Keep Running".to_owned(), false, true));
+        assert_eq!(keep(&model), (KEEP_RUNNING.to_owned(), false, true));
         model.keep_running = true;
         model.keep_running_status = LoginItemStatus::RequiresApproval;
         assert_eq!(
             keep(&model),
-            ("Keep Running (requires approval)".to_owned(), true, true)
+            (format!("{KEEP_RUNNING} (requires approval)"), true, true)
         );
         model.keep_running_available = false;
         assert_eq!(
             keep(&model),
             (
-                "Keep Running (available in Hutan.app)".to_owned(),
+                format!("{KEEP_RUNNING} (available in Hutan.app)"),
                 true,
                 false
             )

@@ -954,7 +954,7 @@ impl Workbench {
     pub(crate) fn on_settings_changed(
         &mut self,
         changes: &ChangeSet,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if changes.contains(KEYMAP_NAMESPACE) {
@@ -977,7 +977,7 @@ impl Workbench {
         if changes.contains("app") {
             self.sync_daemon_menu(cx);
         }
-        self.on_mac_settings_changed(changes, cx);
+        self.on_mac_settings_changed(changes, window, cx);
         cx.notify();
     }
 

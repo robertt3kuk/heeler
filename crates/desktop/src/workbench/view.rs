@@ -437,10 +437,7 @@ impl Workbench {
 
         let subscriptions = vec![
             cx.observe_window_appearance(window, |_, _, cx| cx.notify()),
-            cx.on_app_quit(|this, _| {
-                this.flush_save();
-                async {}
-            }),
+            cx.on_app_quit(|this, cx| this.on_platform_quit(cx)),
             cx.observe_in(&sessions, window, |this, _, window, cx| {
                 this.on_sessions_changed(window, cx);
             }),
