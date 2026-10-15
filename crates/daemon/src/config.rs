@@ -51,6 +51,7 @@
 //! kinds = ["approval_required", "agent_blocked", "agent_finished",
 //!          "session_exited_with_error", "chat_turn_finished"]   # which intents are raised
 //! expire_secs = 3600             # a pending intent (not an approval's) lapses after this long
+//! native = true                  # also post intents to the system's notification centre (only from Hutan.app)
 //! ```
 
 use std::io;
@@ -315,6 +316,9 @@ pub struct NotifySettings {
     pub kinds: Vec<IntentKind>,
     /// How long an intent other than an approval's stays pending.
     pub expire_secs: u64,
+    /// `false` keeps intents off the system's notification centre even when the daemon could
+    /// post them (it runs from `Hutan.app`); they stay available through `notify.list`.
+    pub native: bool,
 }
 
 impl Default for NotifySettings {
@@ -324,6 +328,7 @@ impl Default for NotifySettings {
             min_turn_secs: DEFAULT_MIN_TURN_SECS,
             kinds: IntentKind::ALL.to_vec(),
             expire_secs: DEFAULT_EXPIRE_SECS,
+            native: true,
         }
     }
 }
@@ -738,6 +743,7 @@ mod tests {
         assert_eq!(notify.min_turn_secs, 20);
         assert_eq!(notify.kinds, IntentKind::ALL.to_vec());
         assert_eq!(notify.expire_secs, 3600);
+        assert!(notify.native, "native posting is on unless switched off");
     }
 
     #[test]
@@ -750,6 +756,7 @@ mod tests {
         .unwrap()
         .notify;
         assert!(!notify.enabled);
+        assert!(notify.native);
         assert_eq!(notify.min_turn_secs, 0);
         assert_eq!(notify.expire_secs, 5);
         assert_eq!(
@@ -760,5 +767,15 @@ mod tests {
         assert!(unknown.to_string().contains("gossip"), "{unknown}");
         assert!(DaemonSettings::parse("[notify]\nexpire_secs = 0\n", None).is_err());
         assert!(DaemonSettings::parse("[notify]\nenabled = \"yes\"\n", None).is_err());
+    }
+
+    #[test]
+    fn notify_native_can_be_switched_off() {
+        let notify = DaemonSettings::parse("[notify]\nnative = false\n", None)
+            .unwrap()
+            .notify;
+        assert!(!notify.native);
+        assert!(notify.enabled, "intents are still raised");
+        assert!(DaemonSettings::parse("[notify]\nnative = 1\n", None).is_err());
     }
 }

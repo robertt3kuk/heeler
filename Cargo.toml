@@ -24,12 +24,19 @@ hutan-terminal-view = { path = "crates/terminal_view" }
 
 anyhow = "1.0.104"
 bitflags = { version = "2.13.2", features = ["serde"] }
+block2 = "0.6.2"
 bytes = "1.12.1"
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = { version = "0.29.0", default-features = false }
+# Hands work to the main thread's run loop (the daemon's Cocoa side, ADR 0007).
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "alloc", "objc2"] }
 futures = "0.3.34"
 libc = "0.2.190"
 notify = "8.2.0"
+# Native notifications posted by the daemon (ADR 0007): Objective-C bindings, macOS only.
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSBundle", "NSDate", "NSError", "NSObject", "NSObjCRuntime", "NSRunLoop", "NSSet", "NSString", "NSTimer"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 parking_lot = "0.12.5"
 # Parses the bundle's property lists in the xtask bundle test (dev only).
 plist = "1.10.1"

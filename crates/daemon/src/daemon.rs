@@ -27,6 +27,7 @@ use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::history::HistoryService;
 use crate::notify::NotifyService;
+use crate::notify_native::NativePoster;
 use crate::paths::Paths;
 use crate::projects;
 use crate::providers::{GatewayConfig, ProviderService};
@@ -71,6 +72,10 @@ pub struct DaemonConfig {
     /// login environment explicit-command sessions start from. For tests, which need a
     /// deterministic one.
     pub login_shell: Option<PathBuf>,
+    /// Where intents are shown as system notifications: the real poster of a daemon that runs
+    /// from `Hutan.app` (`notify_native::system_host`), a fake in tests; `None` posts nothing.
+    /// `[notify] native = false` ignores it.
+    pub native: Option<Arc<dyn NativePoster>>,
 }
 
 impl DaemonConfig {
@@ -85,6 +90,7 @@ impl DaemonConfig {
             codex: None,
             gateway: GatewayConfig::default(),
             login_shell: None,
+            native: None,
         }
     }
 }
@@ -244,7 +250,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         history.clone(),
         storage.clone(),
     );
-    let notify = NotifyService::new(settings.notify.clone(), bus.clone(), registry.clone());
+    let notify = NotifyService::new(
+        settings.notify.clone(),
+        bus.clone(),
+        registry.clone(),
+        config.native,
+    );
     // Observes the bus until shutdown; nothing needs its handle.
     drop(notify.start(shutdown.clone()));
     let worktrees = WorktreeService::new(registry.clone(), storage.clone(), bus.clone());

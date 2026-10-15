@@ -29,9 +29,12 @@ const ICON_FILE: &str = "Hutan.icns";
 
 /// `(file name inside Contents/MacOS, binary name Cargo produces, code-signing identifier)`.
 /// The desktop is the bundle's main executable, so signing the bundle gives it the bundle id.
+/// The daemon is signed with the bundle id as well (ADR 0007): that is what lets it post
+/// notifications under the app's identity and permission; with an identifier of its own the
+/// system refuses it (`docs/spikes/2026-10-15-notifications.md` fact 2).
 const EXECUTABLES: [(&str, &str, &str); 3] = [
     ("hutan-desktop", "hutan-desktop", "dev.hutan.Hutan"),
-    ("hutand", "hutand", "dev.hutan.daemon"),
+    ("hutand", "hutand", "dev.hutan.Hutan"),
     ("hutan", "hutan", "dev.hutan.cli"),
 ];
 const PACKAGES: [&str; 3] = ["hutan-desktop", "hutan-daemon", "hutan-cli"];
@@ -343,10 +346,10 @@ mod tests {
             assert!(scripts.join(script).is_file(), "{script}");
         }
 
-        // Nothing that belongs to M6-B.
+        // No Notifier helper: the daemon posts the notifications itself (ADR 0007).
         assert!(
             !app.join("Contents/Helpers").exists(),
-            "no Notifier helper yet"
+            "no Notifier helper: the daemon posts"
         );
         let mut resources: Vec<_> = fs::read_dir(app.join("Contents/Resources"))
             .unwrap()
@@ -369,7 +372,8 @@ mod tests {
         assert!(bundle.contains("Identifier=dev.hutan.Hutan"), "{bundle}");
         let daemon = described(&macos.join("hutand"));
         assert!(daemon.contains("Signature=adhoc"), "{daemon}");
-        assert!(daemon.contains("Identifier=dev.hutan.daemon"), "{daemon}");
+        // The daemon carries the app's identifier: it shares the app's notification permission.
+        assert!(daemon.contains("Identifier=dev.hutan.Hutan"), "{daemon}");
         let status = Command::new("codesign")
             .args(["--verify", "--deep", "--strict"])
             .arg(&app)

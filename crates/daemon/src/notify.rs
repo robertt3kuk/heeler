@@ -24,8 +24,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
-use hutan_core::agent::{Delivery, MessageRole};
+use hutan_core::agent::{Delivery, MessageRole, PermissionOptionKind};
 use hutan_core::{
     AgentEventKind, AgentNode, ApprovalId, Liveness, NodeKind, NodeOutcome, NodeState, SessionId,
     WorkspaceId,
@@ -40,19 +41,25 @@ use hutan_protocol::notify::{
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use ulid::Ulid;
 
 use crate::bus::EventBus;
 use crate::config::NotifySettings;
 use crate::conn::ConnId;
+use crate::notify_native::{
+    self, NativeNotification, NativeOp, NativePoster, NativeResponse, ResponseAction,
+};
 use crate::registry::{RegistryHandle, now_ms};
 
 /// Shortest time between two intents of one session (approvals excepted).
 pub const RATE_LIMIT_MS: u64 = 10_000;
 /// Most pending intents; the oldest is dropped to make room.
 pub const MAX_PENDING: usize = 100;
+/// Expired intents are swept out at least this often (their native notifications go with them).
+const SWEEP_MAX_SECS: u64 = 30;
 /// Queue between the event bus and the service task.
 pub const OBSERVER_QUEUE: usize = 1024;
 /// Per-node memory of the agent trees is dropped when it grows past this many entries (a safety
@@ -79,6 +86,9 @@ struct Candidate {
     body: String,
     actions: Vec<IntentAction>,
     approval: Option<ApprovalId>,
+    /// The ids of the actions that refuse (an approval's deny and cancel kinds); the native
+    /// notification shows them in the destructive style.
+    destructive: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +97,7 @@ struct Entry {
     /// The dedup key's node part.
     node: String,
     approval: Option<ApprovalId>,
+    destructive: Vec<String>,
 }
 
 /// What is remembered of an agent tree node between two `agent.tree_updated` events.
@@ -107,6 +118,9 @@ struct Core {
     /// The latest finished assistant message of each chat, already redacted and bounded.
     last_message: HashMap<SessionId, String>,
     focus: HashMap<ConnId, SessionId>,
+    /// Ids of the intents that left `pending` (acknowledged, acted on, expired, resolved,
+    /// pushed out) since the service last took them: their native notifications go too.
+    withdrawn: Vec<String>,
 }
 
 impl Core {
@@ -114,6 +128,7 @@ impl Core {
         Self {
             settings,
             pending: VecDeque::new(),
+            withdrawn: Vec::new(),
             last_raised: HashMap::new(),
             nodes: HashMap::new(),
             last_message: HashMap::new(),
@@ -131,7 +146,7 @@ impl Core {
         match event {
             Event::ApprovalRequired { approval } => vec![approval_candidate(approval)],
             Event::ApprovalResolved { approval_id, .. } => {
-                self.pending.retain(|e| e.approval != Some(*approval_id));
+                self.withdraw_where(|e| e.approval == Some(*approval_id));
                 Vec::new()
             }
             Event::AgentTreeUpdated {
@@ -152,6 +167,7 @@ impl Core {
                         body: format!("The process exited with code {code}."),
                         actions: vec![open_action()],
                         approval: None,
+                        destructive: Vec::new(),
                     }],
                     _ => Vec::new(),
                 }
@@ -188,6 +204,7 @@ impl Core {
                             body,
                             actions: vec![open_action()],
                             approval: None,
+                            destructive: Vec::new(),
                         }]
                     }
                     _ => Vec::new(),
@@ -239,6 +256,7 @@ impl Core {
                         .unwrap_or_else(|| "It needs a decision from you.".to_owned()),
                     actions: vec![open_action()],
                     approval: None,
+                    destructive: Vec::new(),
                 });
             }
             // A normal stop is a finish: a plain idle (the Stop hooks, OMP `agent_end`) or an
@@ -262,6 +280,7 @@ impl Core {
                     ),
                     actions: vec![open_action()],
                     approval: None,
+                    destructive: Vec::new(),
                 });
             }
             self.nodes.insert(
@@ -290,12 +309,7 @@ impl Core {
     // Offering --------------------------------------------------------------------------------
 
     /// Applies the gate to a candidate; the intent when it passes (it is then pending).
-    fn offer(
-        &mut self,
-        candidate: Candidate,
-        meta: &SessionMeta,
-        now_ms: u64,
-    ) -> Option<NotificationIntent> {
+    fn offer(&mut self, candidate: Candidate, meta: &SessionMeta, now_ms: u64) -> Option<Entry> {
         let settings = &self.settings;
         if !settings.enabled || !settings.kinds.contains(&candidate.kind) {
             return None;
@@ -353,22 +367,37 @@ impl Core {
                     .retain(|_, last| now_ms.saturating_sub(*last) < RATE_LIMIT_MS);
             }
         }
-        self.pending.push_back(Entry {
-            intent: intent.clone(),
+        let entry = Entry {
+            intent,
             node: candidate.node,
             approval: candidate.approval,
-        });
+            destructive: candidate.destructive,
+        };
+        self.pending.push_back(entry.clone());
         while self.pending.len() > MAX_PENDING {
-            self.pending.pop_front();
+            if let Some(dropped) = self.pending.pop_front() {
+                self.withdrawn.push(dropped.intent.id);
+            }
         }
-        Some(intent)
+        Some(entry)
     }
 
     // Pending intents -------------------------------------------------------------------------
 
+    /// Takes every entry `gone` selects out of `pending`, noting it in `withdrawn`.
+    fn withdraw_where(&mut self, mut gone: impl FnMut(&Entry) -> bool) {
+        let withdrawn = &mut self.withdrawn;
+        self.pending.retain(|e| {
+            let go = gone(e);
+            if go {
+                withdrawn.push(e.intent.id.clone());
+            }
+            !go
+        });
+    }
+
     fn expire(&mut self, now_ms: u64) {
-        self.pending
-            .retain(|e| e.intent.expires_at_ms.is_none_or(|at| at > now_ms));
+        self.withdraw_where(|e| e.intent.expires_at_ms.is_some_and(|at| at <= now_ms));
     }
 
     fn list(&mut self, now_ms: u64) -> Vec<NotificationIntent> {
@@ -383,9 +412,9 @@ impl Core {
 
     /// Removes the intent; whether it was pending.
     fn remove(&mut self, id: &str) -> bool {
-        let before = self.pending.len();
-        self.pending.retain(|e| e.intent.id != id);
-        self.pending.len() != before
+        let before = self.withdrawn.len();
+        self.withdraw_where(|e| e.intent.id == id);
+        self.withdrawn.len() != before
     }
 }
 
@@ -416,6 +445,19 @@ fn approval_candidate(approval: &ApprovalInfo) -> Candidate {
             })
             .collect(),
         approval: Some(approval.id),
+        destructive: approval
+            .options
+            .iter()
+            .filter(|option| {
+                matches!(
+                    option.kind,
+                    PermissionOptionKind::RejectOnce
+                        | PermissionOptionKind::RejectAlways
+                        | PermissionOptionKind::Cancel
+                )
+            })
+            .map(|option| option.id.clone())
+            .collect(),
     }
 }
 
@@ -456,29 +498,84 @@ fn human_duration(ms: u64) -> String {
     }
 }
 
-/// Feeds [`Core`] from the event bus and answers the `notify.*` requests.
+/// The delivery task's inputs, held until [`NotifyService::start`] starts it.
+#[derive(Debug)]
+struct NativeParts {
+    poster: Arc<dyn NativePoster>,
+    ops: mpsc::Receiver<NativeOp>,
+}
+
+/// Feeds [`Core`] from the event bus and answers the `notify.*` requests; with a native poster
+/// it also shows every raised intent as a system notification, withdraws it when the intent
+/// goes, and answers its clicks like `notify.act` (`notify_native`).
 #[derive(Debug)]
 pub struct NotifyService {
     core: Mutex<Core>,
     bus: Arc<EventBus>,
     registry: RegistryHandle,
+    /// Posts and removals for the delivery task; `None` posts nothing.
+    native: Option<mpsc::Sender<NativeOp>>,
+    native_parts: Mutex<Option<NativeParts>>,
+    /// How often expired intents are swept out so that their notifications go too.
+    sweep: Duration,
 }
 
 impl NotifyService {
+    /// `poster` is the system's notification centre in a daemon that runs from `Hutan.app`;
+    /// it is ignored under `[notify] native = false`.
     pub fn new(
         settings: NotifySettings,
         bus: Arc<EventBus>,
         registry: RegistryHandle,
+        poster: Option<Arc<dyn NativePoster>>,
     ) -> Arc<Self> {
+        let poster = match poster {
+            Some(_) if !settings.native => {
+                info!("native notifications are disabled by [notify] native = false");
+                None
+            }
+            poster => poster,
+        };
+        let sweep = Duration::from_secs(settings.expire_secs.clamp(1, SWEEP_MAX_SECS));
+        let (native, native_parts) = match poster {
+            Some(poster) => {
+                let (tx, ops) = mpsc::channel(notify_native::OPS_QUEUE);
+                (Some(tx), Some(NativeParts { poster, ops }))
+            }
+            None => (None, None),
+        };
         Arc::new(Self {
             core: Mutex::new(Core::new(settings)),
             bus,
             registry,
+            native,
+            native_parts: Mutex::new(native_parts),
+            sweep,
         })
     }
 
     /// Starts watching the event bus until `shutdown`.
     pub fn start(self: &Arc<Self>, shutdown: CancellationToken) -> JoinHandle<()> {
+        if let Some(NativeParts { poster, ops }) = self.native_parts.lock().take() {
+            match poster.responses() {
+                Some(responses) => {
+                    info!("native notifications on");
+                    tokio::spawn(notify_native::run(
+                        Arc::clone(self),
+                        poster,
+                        ops,
+                        responses,
+                        shutdown.clone(),
+                    ));
+                }
+                None => warn!("the native notification poster has no responses; none are posted"),
+            }
+        }
+        let mut sweep = self.native.is_some().then(|| {
+            let mut interval = tokio::time::interval(self.sweep);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval
+        });
         let (tx, mut rx) = mpsc::channel(OBSERVER_QUEUE);
         self.bus.set_observer(Some(tx));
         let this = Arc::clone(self);
@@ -490,19 +587,58 @@ impl NotifyService {
                         Some(event) => this.handle(event).await,
                         None => break,
                     },
+                    () = async {
+                        match sweep.as_mut() {
+                            Some(interval) => { interval.tick().await; }
+                            None => std::future::pending().await,
+                        }
+                    } => this.with_core(|core| core.expire(now_ms())),
                 }
             }
             this.bus.set_observer(None);
         })
     }
 
+    /// Runs `f` on the core. What it withdrew (acknowledged, expired, resolved, pushed out) is
+    /// taken off the screen afterwards.
+    fn with_core<R>(&self, f: impl FnOnce(&mut Core) -> R) -> R {
+        let (result, withdrawn) = {
+            let mut core = self.core.lock();
+            let result = f(&mut core);
+            (result, std::mem::take(&mut core.withdrawn))
+        };
+        for id in withdrawn {
+            self.native_send(NativeOp::Remove(id));
+        }
+        result
+    }
+
+    fn native_send(&self, op: NativeOp) {
+        if let Some(native) = &self.native
+            && let Err(error) = native.try_send(op)
+        {
+            warn!(%error, "the native notification queue is full or closed; an operation was dropped");
+        }
+    }
+
     async fn handle(&self, event: Event) {
-        let candidates = self.core.lock().plan(&event, now_ms());
+        let candidates = self.with_core(|core| core.plan(&event, now_ms()));
         for candidate in candidates {
             let meta = self.meta(candidate.session).await;
-            let raised = self.core.lock().offer(candidate, &meta, now_ms());
-            if let Some(intent) = raised
-                && let Err(error) = self.bus.publish(&Event::NotifyIntent { intent })
+            // The post is queued under the core's lock: a withdrawal of this very intent can
+            // only be queued after it, never before.
+            let raised = self.with_core(|core| {
+                let entry = core.offer(candidate, &meta, now_ms())?;
+                self.native_send(NativeOp::Post(NativeNotification::from_intent(
+                    &entry.intent,
+                    &entry.destructive,
+                )));
+                Some(entry)
+            });
+            if let Some(entry) = raised
+                && let Err(error) = self.bus.publish(&Event::NotifyIntent {
+                    intent: entry.intent,
+                })
             {
                 warn!(%error, "could not publish a notification intent");
             }
@@ -533,18 +669,17 @@ impl NotifyService {
 
     /// `notify.list`.
     pub fn list(&self) -> Vec<NotificationIntent> {
-        self.core.lock().list(now_ms())
+        self.with_core(|core| core.list(now_ms()))
     }
 
     /// `notify.ack`.
     pub fn ack(&self, id: &str) -> Result<(), ErrorBody> {
-        let mut core = self.core.lock();
-        core.expire(now_ms());
-        if core.remove(id) {
-            Ok(())
-        } else {
-            Err(not_found(id))
-        }
+        self.with_core(|core| {
+            core.expire(now_ms());
+            core.remove(id)
+        })
+        .then_some(())
+        .ok_or_else(|| not_found(id))
     }
 
     /// `notify.act`.
@@ -554,9 +689,7 @@ impl NotifyService {
         req: NotifyAct,
     ) -> Result<NotifyActed, ErrorBody> {
         let entry = self
-            .core
-            .lock()
-            .find(&req.id, now_ms())
+            .with_core(|core| core.find(&req.id, now_ms()))
             .ok_or_else(|| not_found(&req.id))?;
         if !entry.intent.actions.iter().any(|a| a.id == req.action_id) {
             let offered: Vec<&str> = entry.intent.actions.iter().map(|a| a.id.as_str()).collect();
@@ -583,33 +716,82 @@ impl NotifyService {
                     // The approval is gone (answered elsewhere, its turn ended): the intent is
                     // stale, whatever the caller does about the error.
                     Err(error) if error.code == ErrorCode::NotFound => {
-                        self.core.lock().remove(&req.id);
+                        self.with_core(|core| core.remove(&req.id));
                         return Err(error);
                     }
                     Err(error) => return Err(error),
                 }
-                self.core.lock().remove(&req.id);
+                self.with_core(|core| core.remove(&req.id));
                 Ok(NotifyActed {
                     route: ActRoute::Approval,
                     desktop_clients: 0,
                 })
             }
             None => {
-                self.core.lock().remove(&req.id);
-                let reached = self.bus.subscriber_count_of(ClientKind::Desktop);
-                self.bus
-                    .publish(&Event::UiOpen {
-                        session_id: entry.intent.session_id,
-                        workspace_id: entry.intent.workspace_id,
-                        at_ms: now_ms(),
-                    })
-                    .map_err(|e| ErrorBody::new(ErrorCode::Internal, e.to_string()))?;
+                self.with_core(|core| core.remove(&req.id));
                 Ok(NotifyActed {
                     route: ActRoute::UiOpen,
-                    desktop_clients: u32::try_from(reached).unwrap_or(u32::MAX),
+                    desktop_clients: self.publish_open(&entry)?,
                 })
             }
         }
+    }
+
+    /// Publishes `ui.open` for the intent's session; how many desktop clients it reached.
+    fn publish_open(&self, entry: &Entry) -> Result<u32, ErrorBody> {
+        let reached = self.bus.subscriber_count_of(ClientKind::Desktop);
+        self.bus
+            .publish(&Event::UiOpen {
+                session_id: entry.intent.session_id,
+                workspace_id: entry.intent.workspace_id,
+                at_ms: now_ms(),
+            })
+            .map_err(|e| ErrorBody::new(ErrorCode::Internal, e.to_string()))?;
+        Ok(u32::try_from(reached).unwrap_or(u32::MAX))
+    }
+
+    /// A click on a native notification, routed like `notify.act` from a `notifier` client:
+    /// an approval's button answers the approval, *Open* (the button or the body) shows the
+    /// session, and a dismissal acknowledges the intent.
+    pub(crate) async fn native_response(&self, response: NativeResponse) {
+        let NativeResponse { intent_id, action } = response;
+        let outcome = match action {
+            ResponseAction::Action(action_id) => self
+                .act(
+                    Some(ClientKind::Notifier),
+                    NotifyAct {
+                        id: intent_id.clone(),
+                        action_id,
+                    },
+                )
+                .await
+                .map(|_| ()),
+            ResponseAction::Open => self.open(&intent_id),
+            ResponseAction::Dismiss => self.ack(&intent_id),
+        };
+        match outcome {
+            Ok(()) => {}
+            // Clicked after the intent was answered or expired: nothing to do.
+            Err(error) if error.code == ErrorCode::NotFound => {
+                debug!(intent = %intent_id, "a native notification outlived its intent");
+            }
+            Err(error) => {
+                warn!(intent = %intent_id, code = ?error.code, message = %error.message, "a native notification click was not applied");
+            }
+        }
+    }
+
+    /// *Open* on an intent. Unlike `notify.act` this is also allowed on an approval's intent
+    /// (its notification has the button next to the options): the session is shown and the
+    /// approval stays pending, to be answered there.
+    fn open(&self, id: &str) -> Result<(), ErrorBody> {
+        let entry = self
+            .with_core(|core| core.find(id, now_ms()))
+            .ok_or_else(|| not_found(id))?;
+        if entry.approval.is_none() {
+            self.with_core(|core| core.remove(id));
+        }
+        self.publish_open(&entry).map(|_| ())
     }
 
     /// `client.focus`.
@@ -745,7 +927,7 @@ mod tests {
         let meta = meta();
         core.plan(event, now)
             .into_iter()
-            .filter_map(|c| core.offer(c, &meta, now))
+            .filter_map(|c| core.offer(c, &meta, now).map(|entry| entry.intent))
             .collect()
     }
 
@@ -1336,5 +1518,116 @@ mod tests {
             2_000,
         );
         assert!(core.nodes.is_empty());
+    }
+
+    #[test]
+    fn every_way_out_of_the_pending_list_is_reported_for_the_native_notification() {
+        let mut core = core();
+        let session = SessionId::new();
+        let info = approval(session);
+        let approval_intent = raise(
+            &mut core,
+            &Event::ApprovalRequired {
+                approval: Box::new(info.clone()),
+            },
+            1_000,
+        )
+        .remove(0);
+        let exit = |code| Event::SessionExited {
+            session_id: session,
+            code: Some(code),
+            signal: None,
+        };
+        let first = raise(&mut core, &exit(1), 1_000).remove(0);
+        assert!(core.withdrawn.is_empty(), "nothing has left yet");
+
+        // Acknowledged or acted on (`remove`), and a second removal reports nothing.
+        assert!(core.remove(&first.id));
+        assert!(!core.remove(&first.id));
+        assert_eq!(core.withdrawn, std::slice::from_ref(&first.id));
+        core.withdrawn.clear();
+
+        // Expired: an intent past its time, found by any later look.
+        let second = raise(&mut core, &exit(2), 20_000).remove(0);
+        let at = second.expires_at_ms.unwrap();
+        core.withdrawn.clear();
+        core.expire(at - 1);
+        assert!(core.withdrawn.is_empty());
+        core.expire(at);
+        assert_eq!(
+            core.withdrawn,
+            std::slice::from_ref(&second.id),
+            "the approval does not expire"
+        );
+        core.withdrawn.clear();
+
+        // Resolved: the approval was answered somewhere else.
+        raise(
+            &mut core,
+            &Event::ApprovalResolved {
+                session_id: session,
+                approval_id: info.id,
+                outcome: hutan_core::agent::PermissionOutcome::Expired,
+                decided_by: None,
+            },
+            at + 1,
+        );
+        assert_eq!(core.withdrawn, [approval_intent.id]);
+    }
+
+    #[test]
+    fn an_intent_pushed_out_of_the_bounded_list_is_reported_too() {
+        let mut core = core();
+        let mut first = None;
+        for n in 0..=MAX_PENDING {
+            let raised = raise(
+                &mut core,
+                &Event::ApprovalRequired {
+                    approval: Box::new(approval(SessionId::new())),
+                },
+                1_000 + n as u64,
+            );
+            first.get_or_insert_with(|| raised[0].id.clone());
+        }
+        assert_eq!(core.withdrawn, [first.unwrap()]);
+    }
+
+    #[test]
+    fn the_refusing_options_of_an_approval_are_marked_destructive() {
+        let mut core = core();
+        let session = SessionId::new();
+        let mut info = approval(session);
+        info.options.push(PermissionOption {
+            id: "decline".to_owned(),
+            label: "Decline".to_owned(),
+            kind: PermissionOptionKind::RejectOnce,
+            provider: None,
+        });
+        info.options.push(PermissionOption {
+            id: "always".to_owned(),
+            label: "Always".to_owned(),
+            kind: PermissionOptionKind::AllowAlways,
+            provider: None,
+        });
+        let candidate = approval_candidate(&info);
+        assert_eq!(candidate.destructive, ["cancel", "decline"]);
+        let entry = core.offer(candidate, &meta(), 1_000).unwrap();
+        assert_eq!(entry.destructive, ["cancel", "decline"]);
+        let native = NativeNotification::from_intent(&entry.intent, &entry.destructive);
+        let marked: Vec<(&str, bool)> = native
+            .actions
+            .iter()
+            .map(|a| (a.id.as_str(), a.destructive))
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                ("accept", false),
+                ("cancel", true),
+                ("decline", true),
+                (notify_native::OPEN_ACTION_ID, false)
+            ],
+            "the first three options, then Open"
+        );
     }
 }

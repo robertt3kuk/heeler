@@ -24,7 +24,7 @@
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
 | Assistant | ⌥Space opens a quick chat, global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
 | History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume** |
-| Notifications (API) | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready); `hutan notify watch` prints them. Native macOS delivery is M6-B |
+| Notifications (API) | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready); `hutan notify watch` prints them. With `Hutan.app` the daemon also posts them as macOS notifications (Approve/Deny from the banner) |
 | App bundle | `just bundle` builds an ad-hoc signed `Hutan.app` (desktop, daemon, CLI) |
 
 ## Architecture

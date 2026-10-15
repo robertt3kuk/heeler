@@ -16,6 +16,8 @@ use hutan_client::Client;
 use hutan_core::Seq;
 use hutan_core::agent::PermissionOutcome;
 use hutan_core::{AgentEventKind, ApprovalPolicy, NodeKind, NodeOutcome, SandboxMode, SessionId};
+use hutan_daemon::notify_native::fake::{Authorization, Call, FakePoster};
+use hutan_daemon::notify_native::{OPEN_ACTION_ID, ResponseAction};
 use hutan_protocol::ErrorCode;
 use hutan_protocol::chat::{ApprovalRespond, ChatCreate};
 use hutan_protocol::messages::{
@@ -78,9 +80,24 @@ impl Env {
     /// A daemon with `toml` as `daemon.toml`; its codex replays the committed fixture `name`
     /// (when given).
     async fn start(toml: &str, fixture: Option<&str>) -> Self {
+        Self::start_with_poster(toml, fixture, None).await
+    }
+
+    /// As [`start`](Self::start), with `poster` standing in for the system's notification
+    /// centre.
+    async fn start_with_poster(
+        toml: &str,
+        fixture: Option<&str>,
+        poster: Option<std::sync::Arc<FakePoster>>,
+    ) -> Self {
         let work = tempfile::tempdir().unwrap();
         let config = fixture.map(|name| replay(name, &work.path().join("received.jsonl")));
-        let daemon = TestDaemon::start_with(toml, move |c| c.codex = config).await;
+        let daemon = TestDaemon::start_with(toml, move |c| {
+            c.codex = config;
+            c.native =
+                poster.map(|p| p as std::sync::Arc<dyn hutan_daemon::notify_native::NativePoster>);
+        })
+        .await;
         let (client, events) = daemon.connect_subscribed().await;
         Self {
             daemon,
@@ -819,5 +836,383 @@ async fn a_credential_cut_short_by_the_tree_never_reaches_an_intent() {
         intent.body
     );
     assert!(intent.body.starts_with("calling the API with"));
+    t.stop().await;
+}
+
+// ---- native notifications (M6-B): the daemon posts, clicks route like notify.act ---------------
+
+fn decided_by(t: &Env, session: SessionId) -> Option<String> {
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    db.query_row(
+        "SELECT decided_by FROM approvals WHERE session_id = ?1",
+        [session.to_string()],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_is_posted_natively_and_a_click_on_an_option_answers_it_as_the_notifier() {
+    let poster = FakePoster::new(Authorization::Grant);
+    let mut t = Env::start_with_poster("", Some("approval-touch"), Some(poster.clone())).await;
+    assert!(
+        poster.calls().is_empty(),
+        "nothing is asked before the first intent"
+    );
+    let created = t
+        .chat(Some(ApprovalPolicy::Untrusted), Some(SandboxMode::ReadOnly))
+        .await;
+    t.send(
+        created.id,
+        "Run `touch hi.txt` in a shell, then reply with the word done.",
+    )
+    .await;
+    let intent = t
+        .next_intent("the approval intent", |i| {
+            i.kind == IntentKind::ApprovalRequired
+        })
+        .await;
+
+    poster
+        .wait_for("the post", |calls| {
+            calls.iter().any(|c| matches!(c, Call::Post(_)))
+        })
+        .await;
+    assert_eq!(poster.authorize_calls(), 1);
+    let posted = poster.posted();
+    assert_eq!(posted.len(), 1);
+    let n = &posted[0];
+    assert_eq!(n.identifier, intent.id);
+    assert_eq!(n.thread, created.id.to_string());
+    assert_eq!(
+        (n.title.as_str(), n.body.as_str()),
+        (intent.title.as_str(), intent.body.as_str())
+    );
+    assert!(
+        n.category.starts_with("hutan.approval_required."),
+        "{}",
+        n.category
+    );
+    let actions: Vec<(&str, bool, bool)> = n
+        .actions
+        .iter()
+        .map(|a| (a.id.as_str(), a.destructive, a.foreground))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("accept", false, false),
+            ("acceptWithExecpolicyAmendment", false, false),
+            ("cancel", true, false),
+            (OPEN_ACTION_ID, false, true),
+        ],
+        "the options, the refusing one destructive, then Open"
+    );
+
+    poster.click(&intent.id, ResponseAction::Action("accept".to_owned()));
+    let (outcome, who) = wait_event(&mut t.events, "approval.resolved", |event| match event {
+        Event::ApprovalResolved {
+            outcome,
+            decided_by,
+            ..
+        } => Some((outcome.clone(), decided_by.clone())),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Selected {
+            option_id: "accept".into()
+        }
+    );
+    assert_eq!(
+        who.map(|d| d.client_kind).as_deref(),
+        Some("notifier"),
+        "the event says a notification answered"
+    );
+    t.turn_end(created.id).await;
+    assert_eq!(decided_by(&t, created.id).as_deref(), Some("notifier"));
+    poster
+        .wait_for("the removal", |calls| {
+            calls.contains(&Call::Remove(intent.id.clone()))
+        })
+        .await;
+    let received: Vec<serde_json::Value> =
+        std::fs::read_to_string(t.work.path().join("received.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["msg"].clone())
+            .filter(|msg| msg["method"].is_null())
+            .collect();
+    assert_eq!(received.len(), 1, "{received:?}");
+    assert_eq!(
+        received[0]["result"]["decision"], "accept",
+        "the agent got the chosen decision"
+    );
+    assert_eq!(
+        poster.authorize_calls(),
+        1,
+        "authorization is asked once per run"
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_action_opens_the_session_and_leaves_the_approval_pending() {
+    let poster = FakePoster::new(Authorization::Grant);
+    let mut t = Env::start_with_poster("", Some("approval-touch"), Some(poster.clone())).await;
+    let mut options = t.daemon.options();
+    options.client.kind = ClientKind::Desktop;
+    let desktop = Client::connect(options).await.unwrap();
+    let mut desktop_events = desktop.events();
+    desktop
+        .call::<hutan_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
+        .await
+        .unwrap();
+
+    let created = t.chat(Some(ApprovalPolicy::Untrusted), None).await;
+    t.send(created.id, "Run `touch hi.txt`").await;
+    let intent = t
+        .next_intent("the approval intent", |i| {
+            i.kind == IntentKind::ApprovalRequired
+        })
+        .await;
+    poster.click(
+        &intent.id,
+        hutan_daemon::notify_native::response_action(
+            hutan_daemon::notify_native::SYSTEM_DEFAULT_ACTION,
+        ),
+    );
+    let (session, workspace) = wait_event(&mut desktop_events, "ui.open", |event| match event {
+        Event::UiOpen {
+            session_id,
+            workspace_id,
+            ..
+        } => Some((*session_id, *workspace_id)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(session, created.id);
+    assert_eq!(workspace, Some(created.workspace_id));
+    assert_eq!(
+        t.client.approvals(None).await.unwrap().len(),
+        1,
+        "still pending"
+    );
+    assert_eq!(
+        t.intents().await,
+        vec![intent.clone()],
+        "to be answered where it opened"
+    );
+    assert!(
+        !poster.removed().contains(&intent.id),
+        "an unanswered approval keeps its notification"
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_and_the_default_action_of_other_kinds_publish_ui_open_and_dismiss_acknowledges() {
+    let poster = FakePoster::new(Authorization::Grant);
+    let mut t = Env::start_with_poster("", None, Some(poster.clone())).await;
+    let mut options = t.daemon.options();
+    options.client.kind = ClientKind::Desktop;
+    let desktop = Client::connect(options).await.unwrap();
+    let mut desktop_events = desktop.events();
+    desktop
+        .call::<hutan_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
+        .await
+        .unwrap();
+
+    let first = create(&t.client, sh("exit 2")).await;
+    let open = t
+        .next_intent("the first exit intent", |i| i.session_id == first.id)
+        .await;
+    let calls = poster
+        .wait_for("the post", |calls| {
+            calls.iter().any(|c| matches!(c, Call::Post(_)))
+        })
+        .await;
+    let Some(Call::Post(n)) = calls.iter().find(|c| matches!(c, Call::Post(_))) else {
+        unreachable!()
+    };
+    assert_eq!(n.category, "hutan.session_exited_with_error");
+    assert_eq!(n.actions.len(), 1);
+    assert_eq!(n.actions[0].id, OPEN_ACTION_ID);
+
+    poster.click(&open.id, ResponseAction::Open);
+    let shown = wait_event(&mut desktop_events, "ui.open", |event| match event {
+        Event::UiOpen { session_id, .. } => Some(*session_id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shown, first.id);
+    poster
+        .wait_for("the removal", |calls| {
+            calls.contains(&Call::Remove(open.id.clone()))
+        })
+        .await;
+    assert!(t.intents().await.is_empty(), "open acknowledges");
+
+    // Dismissing (swiping away) is an acknowledgement; the session is not opened.
+    let second = create(&t.client, sh("exit 3")).await;
+    let dismissed = t
+        .next_intent("the second exit intent", |i| i.session_id == second.id)
+        .await;
+    poster.click(&dismissed.id, ResponseAction::Dismiss);
+    timeout(WAIT, async {
+        while !t.intents().await.is_empty() {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the dismissed intent is acknowledged");
+    // A dismissal and a click on an intent that is gone are ignored, not errors.
+    poster.click(&dismissed.id, ResponseAction::Open);
+    poster.click(
+        "no-such-intent",
+        ResponseAction::Action("accept".to_owned()),
+    );
+    sleep(Duration::from_millis(200)).await;
+    assert!(t.intents().await.is_empty());
+    assert!(
+        desktop_events
+            .try_recv()
+            .map_or(true, |(_, e)| !matches!(e, Event::UiOpen { .. })),
+        "the late Open opened nothing"
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notification_is_removed_when_its_intent_is_acknowledged_expires_or_resolves() {
+    let poster = FakePoster::new(Authorization::Grant);
+    let mut t = Env::start_with_poster(
+        "[notify]\nexpire_secs = 1\n",
+        Some("approval-touch"),
+        Some(poster.clone()),
+    )
+    .await;
+
+    // Acknowledged: `notify.ack` (anyone, here the CLI) takes the notification down.
+    let failing = create(&t.client, sh("exit 1")).await;
+    let acked = t
+        .next_intent("the exit intent", |i| i.session_id == failing.id)
+        .await;
+    t.client.notify_ack(&acked.id).await.unwrap();
+    poster
+        .wait_for("the removal after ack", |calls| {
+            calls.contains(&Call::Remove(acked.id.clone()))
+        })
+        .await;
+
+    // Expired: nobody touches the intent; the daemon sweeps it.
+    let expiring = create(&t.client, sh("exit 4")).await;
+    let lapsed = t
+        .next_intent("the second exit intent", |i| i.session_id == expiring.id)
+        .await;
+    poster
+        .wait_for("the removal after expiry", |calls| {
+            calls.contains(&Call::Remove(lapsed.id.clone()))
+        })
+        .await;
+    assert!(t.intents().await.is_empty());
+
+    // Resolved elsewhere: an approval answered by `approval.respond`.
+    let created = t.chat(Some(ApprovalPolicy::Untrusted), None).await;
+    t.send(created.id, "Run `touch hi.txt`").await;
+    let approval_intent = t
+        .next_intent("the approval intent", |i| {
+            i.kind == IntentKind::ApprovalRequired
+        })
+        .await;
+    let approval = t.client.approvals(None).await.unwrap().remove(0);
+    assert!(!poster.removed().contains(&approval_intent.id));
+    t.client
+        .call::<Empty>(Request::ApprovalRespond(ApprovalRespond {
+            approval_id: approval.id,
+            option_id: "accept".to_owned(),
+        }))
+        .await
+        .unwrap();
+    poster
+        .wait_for("the removal after resolution", |calls| {
+            calls.contains(&Call::Remove(approval_intent.id.clone()))
+        })
+        .await;
+    assert_eq!(
+        decided_by(&t, created.id).as_deref(),
+        Some("cli"),
+        "not the notifier"
+    );
+
+    // Acted on through `notify.act`: the other route of an answer.
+    let failing = create(&t.client, sh("exit 6")).await;
+    let acted = t
+        .next_intent("the third exit intent", |i| i.session_id == failing.id)
+        .await;
+    t.client.notify_act(&acted.id, ACTION_OPEN).await.unwrap();
+    poster
+        .wait_for("the removal after act", |calls| {
+            calls.contains(&Call::Remove(acted.id.clone()))
+        })
+        .await;
+    assert_eq!(poster.authorize_calls(), 1);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_permission_stops_posting_but_intents_stay_listed() {
+    let poster = FakePoster::new(Authorization::Deny);
+    let mut t = Env::start_with_poster("", None, Some(poster.clone())).await;
+    let first = create(&t.client, sh("exit 1")).await;
+    let first = t
+        .next_intent("the first intent", |i| i.session_id == first.id)
+        .await;
+    poster
+        .wait_for("the authorization request", |calls| {
+            calls.contains(&Call::Authorize)
+        })
+        .await;
+    let second = create(&t.client, sh("exit 2")).await;
+    let second = t
+        .next_intent("the second intent", |i| i.session_id == second.id)
+        .await;
+    t.client.notify_ack(&first.id).await.unwrap();
+    // Nothing else reaches the poster: the intents are listed, but none is posted or removed.
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        poster.calls(),
+        [Call::Authorize],
+        "asked once, then silence"
+    );
+    assert_eq!(t.intents().await, vec![second]);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_false_posts_nothing_and_does_not_even_ask() {
+    let poster = FakePoster::new(Authorization::Grant);
+    let mut t =
+        Env::start_with_poster("[notify]\nnative = false\n", None, Some(poster.clone())).await;
+    let failing = create(&t.client, sh("exit 1")).await;
+    let intent = t
+        .next_intent("the intent", |i| i.session_id == failing.id)
+        .await;
+    t.client.notify_ack(&intent.id).await.unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert!(poster.calls().is_empty(), "{:?}", poster.calls());
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_without_a_poster_still_raises_intents() {
+    // The shape of a `cargo run` daemon or one that is not in Hutan.app.
+    let mut t = Env::start_with_poster("", None, None).await;
+    let failing = create(&t.client, sh("exit 1")).await;
+    let intent = t
+        .next_intent("the intent", |i| i.session_id == failing.id)
+        .await;
+    assert_eq!(t.intents().await, vec![intent]);
     t.stop().await;
 }

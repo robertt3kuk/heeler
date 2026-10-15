@@ -8,7 +8,6 @@ Rule: **daemon = execution, persistence, orchestration, security; clients = visu
 flowchart LR
   subgraph App[Hutan.app bundle]
     D[Hutan desktop<br/>GPUI]
-    N[Hutan Notifier<br/>helper, M6]
     H[(hutand)]
   end
   CLI[hutan CLI]
@@ -50,7 +49,6 @@ crates/
   settings/       layered TOML settings store, schema registry, watcher, keymap (no GPUI; ADR 0010)
   terminal_view/  GPUI terminal element/view over render DTOs, input encoding (UI crate)
   desktop/        Hutan GPUI app: workbench (docks, pane tree, panels, presets), wiring (UI crate)
-  notifier/       macOS notification helper (M6)
 xtask/            bundle, sign, schema export, corpus recording
 ```
 
@@ -60,7 +58,6 @@ flowchart BT
   protocol --> client
   client --> cli
   client --> desktop
-  client --> notifier
   protocol --> terminal_view --> desktop
   settings --> desktop
   core --> terminal & runtime & storage & security & notifications
@@ -71,7 +68,7 @@ flowchart BT
   protocol --> daemon
 ```
 
-Arrows point from dependency to dependent. Forbidden: anything depending on `daemon`; UI crates or `cli` depending on service crates; GPUI in any non-UI crate (UI crates: `desktop`, `terminal_view`, later `chat_view`, `notifier`).
+Arrows point from dependency to dependent. Forbidden: anything depending on `daemon`; UI crates or `cli` depending on service crates; GPUI in any non-UI crate (UI crates: `desktop`, `terminal_view`, later `chat_view`).
 
 ## Domain model
 
@@ -160,12 +157,12 @@ sequenceDiagram
 sequenceDiagram
   participant A as codex app-server
   participant D as hutand
-  participant N as Notifier
+  participant N as macOS notification
   participant UI as Desktop (later)
   A->>D: item/commandExecution/requestApproval
   D->>D: ApprovalEngine: policy check, persist pending
-  D-->>N: event approval.required + notification intent
-  N->>D: approval.decide(option=accept)
+  D-->>N: the daemon posts the intent (ADR 0007)
+  N->>D: click Approve: respond(option=accept, decided_by=notifier)
   D->>A: response {decision: accept}
   D-->>UI: replay/snapshot shows resolved approval on reconnect
 ```
@@ -187,7 +184,7 @@ Implemented by `hutan_client::Connection` (M2.2): one `hutan-client` thread with
 | Event log | daemon | in-memory ring per epoch |
 | Workbench layout (docks, pane tree, open items, sizes), focus, scroll, selection, window frames | desktop | `desktop-state.json` per window |
 | Settings, presets, keymap, themes | desktop | `settings.toml`, `keymap.toml`, `<repo>/.hutan/settings.toml` (ADR 0010) |
-| Notification presentation | notifier/desktop | none |
+| Notification presentation | daemon (native, from `Hutan.app`) / desktop | none |
 
 ## Persistence and restore (ADR 0006, 0009)
 - SQLite at `~/Library/Application Support/Hutan/hutan.db`, single writer thread, WAL, forward-only migrations with pre-migration backup.

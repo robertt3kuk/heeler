@@ -3,13 +3,19 @@
 //! Environment: `HUTAN_HOME` (base directory), `HUTAN_SOCKET` (socket path only),
 //! `HUTAN_LOG` or `RUST_LOG` (log filter, default `info`). Exit codes: 0 clean stop,
 //! 1 failure, 2 another daemon already holds the lock.
+//!
+//! Threads: tokio runs on a thread of its own. When the daemon runs from `Hutan.app` the main
+//! thread serves the Cocoa run loop of the native notifications (`notify_native`), because the
+//! system's notification centre delivers its callbacks there; otherwise the main thread just
+//! waits for the runtime thread.
 
 use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::process::ExitCode;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
+use hutan_daemon::notify_native::{self, NativePoster, Stopper};
 use hutan_daemon::{DaemonConfig, DaemonError, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
@@ -32,17 +38,53 @@ fn main() -> ExitCode {
     }
 }
 
+/// The runtime thread's stack: what the main thread has, where the daemon used to run.
+const RUNTIME_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     paths.prepare().context("preparing directories")?;
     init_logging(&paths)?;
 
+    // `Some` only inside Hutan.app: nothing is asked of the system before the first post.
+    let host = notify_native::system_host();
+    let poster = host.as_ref().map(notify_native::MainThreadHost::poster);
+    let stopper = host.as_ref().map(notify_native::MainThreadHost::stopper);
+    let runtime = std::thread::Builder::new()
+        .name("hutand-runtime".to_owned())
+        .stack_size(RUNTIME_STACK_BYTES)
+        .spawn(move || {
+            // However the daemon ends (a panic included), the main thread's loop must too.
+            let _stop = stopper.map(StopOnDrop);
+            run_daemon(paths, poster)
+        })
+        .context("starting the runtime thread")?;
+    if let Some(host) = host {
+        host.run();
+    }
+    runtime
+        .join()
+        .map_err(|_| anyhow::anyhow!("the runtime thread panicked"))?
+}
+
+/// Ends the main thread's run loop when dropped.
+struct StopOnDrop(Stopper);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+fn run_daemon(paths: Paths, native: Option<Arc<dyn NativePoster>>) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("starting the async runtime")?;
     runtime.block_on(async {
-        let daemon = hutan_daemon::start(DaemonConfig::new(paths)).await?;
+        let mut config = DaemonConfig::new(paths);
+        config.native = native;
+        let daemon = hutan_daemon::start(config).await?;
 
         let token = daemon.shutdown_token();
         let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
