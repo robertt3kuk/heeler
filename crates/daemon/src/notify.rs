@@ -241,9 +241,13 @@ impl Core {
                     approval: None,
                 });
             }
+            // A normal stop is a finish: a plain idle (the Stop hooks, OMP `agent_end`) or an
+            // explicit `completed`. Failures, interruptions and lost contact are not. Heeler's own
+            // Codex chats announce their turns as `chat_turn_finished` instead.
             if is_root
                 && node.state == NodeState::Idle
-                && node.outcome == Some(NodeOutcome::Completed)
+                && matches!(node.outcome, None | Some(NodeOutcome::Completed))
+                && node.source != heeler_agents::codex::TREE_SOURCE
                 && let Some(since) = before.and_then(|b| b.working_since)
                 && now_ms.saturating_sub(since) >= min_turn_ms
             {
@@ -857,41 +861,27 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_main_agent_without_an_outcome_is_not_a_finish() {
-        // An unknown outcome is not evidence that the turn completed: a plain idle report (no
-        // outcome) ends a long turn without raising, however long it was.
+    fn a_plain_idle_after_a_long_turn_is_a_finish_but_not_in_a_codex_chat() {
+        // The Stop hooks and OMP report a normal stop as a plain idle: that is a finish.
         let mut core = core();
         let session = SessionId::new();
-        raise(
-            &mut core,
-            &tree(
-                session,
-                vec![node("root", NodeKind::Main, NodeState::Working)],
-            ),
-            1_000,
-        );
+        let working = node("root", NodeKind::Main, NodeState::Working);
+        raise(&mut core, &tree(session, vec![working.clone()]), 1_000);
         let idle = node("root", NodeKind::Main, NodeState::Idle);
         assert_eq!(idle.outcome, None);
-        assert!(raise(&mut core, &tree(session, vec![idle]), 600_000).is_empty());
-        // The very same turn with its outcome reported is the positive twin.
+        let raised = raise(&mut core, &tree(session, vec![idle.clone()]), 600_000);
+        assert_eq!(raised.len(), 1);
+        assert_eq!(raised[0].kind, IntentKind::AgentFinished);
+
+        // A Heeler Codex chat raises `chat_turn_finished` for the same turn, not this.
         let mut core = self::core();
-        raise(
-            &mut core,
-            &tree(
-                session,
-                vec![node("root", NodeKind::Main, NodeState::Working)],
-            ),
-            1_000,
-        );
-        assert_eq!(
-            raise(
-                &mut core,
-                &tree(session, vec![completed("root", NodeKind::Main)]),
-                600_000,
-            )
-            .len(),
-            1
-        );
+        let chat = SessionId::new();
+        let mut working = working;
+        working.source = heeler_agents::codex::TREE_SOURCE.to_owned();
+        let mut idle = idle;
+        idle.source = working.source.clone();
+        raise(&mut core, &tree(chat, vec![working]), 1_000);
+        assert!(raise(&mut core, &tree(chat, vec![idle]), 600_000).is_empty());
     }
 
     #[test]

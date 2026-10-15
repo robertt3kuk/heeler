@@ -147,7 +147,16 @@ pub fn plan(agent: HookAgentArg, input: &Value, env: &HookEnv<'_>) -> Option<Pla
             Some(AgentStateArg::Idle),
             main_node(text(input, "model").map(str::to_owned), None),
         ),
-        "Stop" | "StopFailure" => (Some(AgentStateArg::Idle), main_node(None, None)),
+        "Stop" => (Some(AgentStateArg::Idle), main_node(None, None)),
+        // The turn ended on an API error: the main agent shows it failed (a normal Stop counts as
+        // finished for notifications), and the next prompt starts it again.
+        "StopFailure" => (
+            Some(AgentStateArg::Idle),
+            main_node(None, None).map(|node| PlanNode {
+                outcome: Some(NodeOutcome::Failed),
+                ..node
+            }),
+        ),
         "SessionEnd" => {
             return Some(Plan::Release {
                 source,
@@ -297,10 +306,9 @@ mod tests {
             Some(AgentStateArg::Working)
         );
         assert_eq!(report(claude(event("Stop"))).0, Some(AgentStateArg::Idle));
-        assert_eq!(
-            report(claude(event("StopFailure"))).0,
-            Some(AgentStateArg::Idle)
-        );
+        let (state, node) = report(claude(event("StopFailure")));
+        assert_eq!(state, Some(AgentStateArg::Idle));
+        assert_eq!(node.unwrap().outcome, Some(NodeOutcome::Failed));
         assert_eq!(
             claude(event("SessionEnd")),
             Some(Plan::Release {

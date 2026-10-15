@@ -57,7 +57,8 @@ Codex asks you to review new or changed hooks the first time it starts after an 
 | Claude Code | `SessionStart` | idle | `claude --resume <session_id>` |
 | | `UserPromptSubmit`, `PostToolUse` | working | same |
 | | `PermissionRequest` | blocked, `permission: <tool>` | same |
-| | `Stop`, `StopFailure` | idle | same |
+| | `Stop` | idle (a normal stop: raises `agent_finished` after a long turn) | same |
+| | `StopFailure` | idle + outcome `failed` on the root (no `agent_finished`); the next prompt starts it again | idle |
 | | `PreToolUse` | the tool as the node\'s activity (`Bash: <command>`); runs in the background | same |
 | | `SubagentStart` / `SubagentStop` | a subagent node keyed by `agent_id`: working / idle + completed (`agent_transcript_path` kept) | — |
 | | any tool or permission hook with an `agent_id` | that subagent\'s activity, working or blocked | — |

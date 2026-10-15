@@ -584,8 +584,8 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     let released = create(&t.client, idle_session()).await;
     let failed = create(&t.client, idle_session()).await;
     let short = create(&t.client, idle_session()).await;
-    let unknown = create(&t.client, idle_session()).await;
-    for session in [&finished, &released, &failed, &unknown] {
+    let plain = create(&t.client, idle_session()).await;
+    for session in [&finished, &released, &failed, &plain] {
         report(&t.client, main_report(session.id, AgentState::Working, 1)).await;
     }
     sleep(Duration::from_millis(1300)).await;
@@ -594,8 +594,7 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     sleep(Duration::from_millis(400)).await;
     report(&t.client, main_report(short.id, AgentState::Idle, 2)).await;
     // The long ones end: a main agent reporting idle with its outcome `completed`, a completed
-    // release, a failed release, and a plain idle whose outcome nobody said (not evidence of a
-    // finish: no intent).
+    // release, a failed release, and a plain idle (a normal stop as the Stop hooks report it).
     let mut done = sub_report(finished.id, AgentState::Idle, 2, None);
     done.node = done.node.map(|node| NodeReport {
         id: "root".into(),
@@ -605,12 +604,12 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
         ..node
     });
     report(&t.client, done).await;
-    report(&t.client, main_report(unknown.id, AgentState::Idle, 2)).await;
+    report(&t.client, main_report(plain.id, AgentState::Idle, 2)).await;
     release(&t.client, released.id, 2, Some(NodeOutcome::Completed)).await;
     release(&t.client, failed.id, 2, Some(NodeOutcome::Failed)).await;
 
     let mut raised = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         raised.push(
             t.next_intent("an agent_finished intent", |i| {
                 i.kind == IntentKind::AgentFinished
@@ -620,7 +619,7 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     }
     let mut sessions: Vec<_> = raised.iter().map(|i| i.session_id).collect();
     sessions.sort();
-    let mut expected = vec![finished.id, released.id];
+    let mut expected = vec![finished.id, released.id, plain.id];
     expected.sort();
     assert_eq!(sessions, expected);
     for intent in &raised {
@@ -633,8 +632,8 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     }
     t.no_intent(Duration::from_millis(500)).await;
     let pending = t.intents().await;
-    assert_eq!(pending.len(), 2);
-    assert!(pending.iter().all(|i| i.session_id != unknown.id));
+    assert_eq!(pending.len(), 3);
+    assert!(pending.iter().all(|i| i.session_id != failed.id));
     t.stop().await;
 }
 
