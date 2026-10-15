@@ -136,6 +136,7 @@ fn pump_for(cx: &mut VisualTestContext, span: Duration) {
 
 fn report_blocked(daemon: &TestDaemon, session: SessionId) {
     let applied: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
+        pid: None,
         session_id: session,
         source: "test".into(),
         agent: "omp".into(),
@@ -595,6 +596,7 @@ fn the_status_item_and_the_badge_follow_the_attention_model(cx: &mut TestAppCont
 
     // The agent is unblocked: nothing is left, and the badge is gone.
     let applied: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
+        pid: None,
         session_id: blocked.id,
         source: "test".into(),
         agent: "omp".into(),

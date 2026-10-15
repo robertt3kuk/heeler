@@ -11,7 +11,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -121,6 +121,8 @@ pub struct Transport {
     next_id: AtomicU64,
     kill: mpsc::Sender<()>,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    /// 0 = no live process.
+    pid: Arc<AtomicU32>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -171,11 +173,18 @@ impl Transport {
         let (exit_tx, exit_rx) = oneshot::channel();
         let pending: Pending = Arc::default();
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        let pid = Arc::new(AtomicU32::new(child.id().unwrap_or(0)));
 
         tokio::spawn(write_loop(stdin, outgoing_rx));
         tokio::spawn(read_loop(stdout, pending.clone(), incoming_tx));
         tokio::spawn(stderr_loop(stderr, stderr_tail.clone()));
-        tokio::spawn(reap(child, kill_rx, exit_tx, stderr_tail.clone()));
+        tokio::spawn(reap(
+            child,
+            kill_rx,
+            exit_tx,
+            stderr_tail.clone(),
+            pid.clone(),
+        ));
 
         Ok((
             Arc::new(Self {
@@ -185,10 +194,19 @@ impl Transport {
                 next_id: AtomicU64::new(1),
                 kill,
                 stderr: stderr_tail,
+                pid,
             }),
             incoming,
             exit_rx,
         ))
+    }
+
+    /// The process id while the process runs; `None` once it was reaped.
+    pub fn pid(&self) -> Option<u32> {
+        match self.pid.load(Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
     }
 
     /// The last lines of the process's stderr, newest last.
@@ -485,6 +503,7 @@ async fn reap(
     mut kill: mpsc::Receiver<()>,
     exit: oneshot::Sender<ExitInfo>,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    pid: Arc<AtomicU32>,
 ) {
     let status = tokio::select! {
         status = child.wait() => status,
@@ -500,6 +519,8 @@ async fn reap(
             }
         }
     };
+    // Reaped: the number may belong to someone else from here on.
+    pid.store(0, Ordering::Release);
     let (code, signal) = match status {
         Ok(status) => {
             use std::os::unix::process::ExitStatusExt;

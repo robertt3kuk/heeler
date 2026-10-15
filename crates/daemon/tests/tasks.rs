@@ -267,6 +267,7 @@ impl Env {
         let applied: AgentApplied = self
             .client
             .call(Request::AgentReport(AgentReportRequest {
+                pid: None,
                 session_id: session,
                 source: "test-agent".into(),
                 agent: "fake".into(),

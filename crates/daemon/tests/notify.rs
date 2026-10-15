@@ -190,6 +190,7 @@ async fn report(client: &Client, request: AgentReportRequest) {
 
 fn main_report(session: SessionId, state: AgentState, seq: u64) -> AgentReportRequest {
     AgentReportRequest {
+        pid: None,
         session_id: session,
         source: "test-agent".into(),
         agent: "fake".into(),
@@ -209,6 +210,7 @@ fn sub_report(
     activity: Option<&str>,
 ) -> AgentReportRequest {
     AgentReportRequest {
+        pid: None,
         node: Some(NodeReport {
             id: "explore-1".into(),
             parent: None,

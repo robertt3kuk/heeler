@@ -24,6 +24,7 @@ use tokio::time::{sleep, timeout};
 
 fn report(session: SessionId, source: &str, state: AgentState, seq: u64) -> AgentReportRequest {
     AgentReportRequest {
+        pid: None,
         session_id: session,
         source: source.into(),
         agent: "fake".into(),
@@ -597,6 +598,7 @@ fn node_request(
     node: NodeReport,
 ) -> AgentReportRequest {
     AgentReportRequest {
+        pid: None,
         node: Some(node),
         ..report(session, source, state, seq)
     }

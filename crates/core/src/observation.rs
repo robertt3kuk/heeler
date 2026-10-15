@@ -139,6 +139,11 @@ pub struct AgentNode {
     /// The agent's own transcript (a finished Claude subagent's `agent_transcript_path`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    /// The agent's own process id when it reported one (`agent.report --pid`); cleared when the
+    /// node finishes or the daemon restarts. The resource manager only acts on it while the
+    /// process is in the session's process tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 impl AgentNode {
@@ -194,6 +199,9 @@ pub struct NodeUpdate {
     pub activity: Patch<String>,
     pub usage: Option<Usage>,
     pub transcript_path: Option<String>,
+    /// The agent's own process id; kept until the node finishes. Only read from reports of
+    /// agents that run as a process of the session.
+    pub pid: Option<u32>,
     /// Only read when the node is created; default: now.
     pub started_at_ms: Option<u64>,
 }
@@ -481,6 +489,7 @@ impl ObservationTree {
             activity: None,
             usage: None,
             transcript_path: None,
+            pid: None,
         };
         self.root = Some(ROOT_NODE_ID.to_owned());
         self.placeholder_root = true;
@@ -606,6 +615,7 @@ impl ObservationTree {
             node.state = NodeState::Unknown;
             node.liveness = Liveness::Unknown;
             node.activity = None;
+            node.pid = None;
             node.last_activity_ms = now_ms;
             changes.changed(&id);
         }
@@ -702,6 +712,7 @@ fn finish_node(node: &mut AgentNode, outcome: NodeOutcome, liveness: Liveness, n
     node.outcome = Some(outcome);
     node.liveness = liveness;
     node.activity = None;
+    node.pid = None;
     node.ended_at_ms.get_or_insert(now_ms);
 }
 
@@ -725,6 +736,7 @@ fn created(id: String, parent: Option<String>, update: &NodeUpdate, now_ms: u64)
         activity: None,
         usage: update.usage.clone(),
         transcript_path: update.transcript_path.clone(),
+        pid: update.pid,
     };
     apply_state(&mut node, update, now_ms);
     node
@@ -755,6 +767,9 @@ fn merged(old: AgentNode, update: &NodeUpdate, now_ms: u64) -> AgentNode {
     }
     if let Some(path) = &update.transcript_path {
         node.transcript_path = Some(path.clone());
+    }
+    if let Some(pid) = update.pid {
+        node.pid = Some(pid);
     }
     apply_state(&mut node, update, now_ms);
     if node != old || now_ms.saturating_sub(old.last_activity_ms) >= ACTIVITY_REFRESH_MS {
@@ -801,6 +816,7 @@ fn apply_state(node: &mut AgentNode, update: &NodeUpdate, now_ms: u64) {
     // A finished node shows nothing it is doing.
     if node.is_finished() {
         node.activity = None;
+        node.pid = None;
     }
 }
 
@@ -1378,6 +1394,34 @@ mod tests {
                 NodeState::Idle
             )
         );
+    }
+
+    #[test]
+    fn a_pid_sticks_until_the_node_finishes_or_the_daemon_restarts() {
+        let mut tree = tree();
+        let mut root = main_report(NodeState::Working);
+        root.pid = Some(4242);
+        tree.apply(root, T0);
+        // A later report that names no pid keeps it.
+        tree.apply(main_report(NodeState::Working), T0 + 1);
+        assert_eq!(tree.root().unwrap().pid, Some(4242));
+        let mut worker = sub("a", None, NodeState::Working);
+        worker.pid = Some(4300);
+        tree.apply(worker, T0 + 2);
+        assert_eq!(tree.node("a").unwrap().pid, Some(4300));
+        // A new process of the same agent replaces it.
+        let mut again = sub("a", None, NodeState::Working);
+        again.pid = Some(4301);
+        tree.apply(again, T0 + 3);
+        assert_eq!(tree.node("a").unwrap().pid, Some(4301));
+        // Finished: the number may belong to another process now.
+        let mut done = sub("a", None, NodeState::Idle);
+        done.outcome = Some(NodeOutcome::Completed);
+        tree.apply(done, T0 + 4);
+        assert_eq!(tree.node("a").unwrap().pid, None);
+        // A restored daemon does not know the old process either.
+        tree.restored(T0 + 5);
+        assert_eq!(tree.root().unwrap().pid, None);
     }
 
     #[test]

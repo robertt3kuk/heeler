@@ -115,4 +115,23 @@ pub trait AgentAdapter: Send + Sync + std::fmt::Debug {
 
     /// Ends the process (politely first); the stream ends with [`AdapterMessage::Exited`].
     fn shutdown(&self) -> BoxFuture<'_, ()>;
+
+    /// The agent's own process id while it runs (the process whose descendants are the
+    /// session's processes); `None` for agents that are not a process of their own, and after
+    /// the process was reaped.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    /// Asks the agent to stop the turn in progress of one of its threads — a subagent's; the
+    /// thread is named by the node id the adapter reported for it. Fails with
+    /// [`AgentError::NoTurn`] when that thread has no turn in progress and with
+    /// [`AgentError::Unsupported`] when the agent cannot stop a single subagent.
+    fn interrupt_thread(&self, _thread_id: &str) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            Err(AgentError::Unsupported(
+                "this agent cannot stop a single subagent".to_owned(),
+            ))
+        })
+    }
 }

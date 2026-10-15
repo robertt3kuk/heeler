@@ -434,6 +434,7 @@ async fn hutan_blocks_and_agent_reports_are_indexed() {
 
     let applied: AgentApplied = client
         .call(Request::AgentReport(AgentReportRequest {
+            pid: None,
             session_id: session.id,
             source: "test".to_owned(),
             agent: "claude".to_owned(),

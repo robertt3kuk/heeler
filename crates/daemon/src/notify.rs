@@ -911,6 +911,7 @@ mod tests {
 
     fn node(id: &str, kind: NodeKind, state: NodeState) -> AgentNode {
         AgentNode {
+            pid: None,
             node_id: id.to_owned(),
             parent: (kind == NodeKind::Sub).then(|| "root".to_owned()),
             kind,
@@ -934,6 +935,7 @@ mod tests {
     /// A node that finished its turn as the daemon reports it: idle, outcome `completed`.
     fn completed(id: &str, kind: NodeKind) -> AgentNode {
         AgentNode {
+            pid: None,
             outcome: Some(NodeOutcome::Completed),
             ..node(id, kind, NodeState::Idle)
         }

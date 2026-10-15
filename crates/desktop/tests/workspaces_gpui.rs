@@ -254,6 +254,7 @@ fn sort_modes_order_the_workspace_rows_and_pins_stay_on_top(cx: &mut TestAppCont
     sleeper(&daemon, &delta);
     pin(&daemon, &delta, true);
     let applied: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
+        pid: None,
         session_id: blocked.id,
         source: "test".into(),
         agent: "omp".into(),
@@ -585,6 +586,7 @@ fn sessions_that_need_you_stay_visible_in_filtered_workspaces(cx: &mut TestAppCo
     }));
     let session = sleeper(&daemon, &scripted);
     let _: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
+        pid: None,
         session_id: session.id,
         source: "test".into(),
         agent: "omp".into(),

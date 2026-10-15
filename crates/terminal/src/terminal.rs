@@ -556,6 +556,16 @@ impl Terminal {
         self.core.terminate(grace)
     }
 
+    /// Sends SIGKILL to the child's whole process group now. Returns immediately; use
+    /// [`Self::wait_exit`] to observe the end. A child that is already gone is not an error.
+    pub fn kill(&self) -> Result<(), TerminalError> {
+        let pid = self.core.pid.load(Ordering::Acquire);
+        if pid == 0 {
+            return Ok(());
+        }
+        sys::signal_group(pid, Signal::Kill).map_err(TerminalError::Signal)
+    }
+
     /// Completes when the child has exited, been reaped (exactly once) and the PTY
     /// descriptors were released (bounded wait, see [`TEARDOWN_WAIT`]).
     pub async fn wait_exit(&self) -> ExitStatus {

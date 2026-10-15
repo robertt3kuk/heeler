@@ -153,6 +153,7 @@ impl Reporter {
     pub fn report(&self, daemon: &TestDaemon, node: Node) {
         let seq = self.next(&node.report.id);
         let applied: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
+            pid: None,
             session_id: self.session,
             source: self.source.clone(),
             agent: self.agent.clone(),

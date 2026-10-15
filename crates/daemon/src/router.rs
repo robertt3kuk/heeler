@@ -26,6 +26,7 @@ use crate::history::HistoryService;
 use crate::notify::NotifyService;
 use crate::providers::ProviderService;
 use crate::registry::RegistryHandle;
+use crate::resources::{Actor, ResourceService, audit};
 use crate::tasks::TaskService;
 use crate::terminals::TerminalHub;
 use crate::worktrees::WorktreeService;
@@ -39,6 +40,7 @@ pub struct Services {
     pub worktrees: Arc<WorktreeService>,
     pub tasks: Arc<TaskService>,
     pub accounts: Arc<AccountService>,
+    pub resources: Arc<ResourceService>,
 }
 
 #[derive(Debug)]
@@ -51,6 +53,7 @@ pub struct Router {
     worktrees: Arc<WorktreeService>,
     tasks: Arc<TaskService>,
     accounts: Arc<AccountService>,
+    resources: Arc<ResourceService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -77,6 +80,7 @@ impl Router {
             worktrees: services.worktrees,
             tasks: services.tasks,
             accounts: services.accounts,
+            resources: services.resources,
             bus,
             started: Instant::now(),
             shutdown,
@@ -155,9 +159,34 @@ impl Router {
             }),
             Request::SessionList(filter) => ok(&self.registry.list_sessions(filter).await?),
             // Stop, restart and rename answer with the session as it is afterwards.
-            Request::SessionStop(req) => ok(&SessionResult {
-                session: self.registry.stop_session(req.session_id).await?,
+            Request::SessionStop(req) => {
+                let stopped = self.registry.stop_session(req.session_id).await;
+                audit(
+                    Actor::of(conn),
+                    "session.stop",
+                    &req.session_id.to_string(),
+                    &stopped,
+                );
+                ok(&SessionResult { session: stopped? })
+            }
+            Request::SessionKill(req) => ok(&SessionResult {
+                session: self
+                    .resources
+                    .kill_session(Actor::of(conn), req.session_id)
+                    .await?,
             }),
+            Request::ProcessSignal(req) => ok(&self.resources.signal(Actor::of(conn), req).await?),
+            Request::AgentInterrupt(req) => {
+                ok(&self.resources.interrupt(Actor::of(conn), req).await?)
+            }
+            Request::ResourcesList(req) => ok(&self.resources.list(req.session_id).await?),
+            Request::ResourcesSubscribe(req) => {
+                ok(&self.resources.subscribe(conn, req.interval_ms).await?)
+            }
+            Request::ResourcesUnsubscribe(_) => {
+                self.resources.unsubscribe(conn.id());
+                ok(&Empty {})
+            }
             Request::SessionRestart(req) => ok(&SessionResult {
                 session: self.registry.restart_session(req.session_id).await?,
             }),
@@ -318,6 +347,7 @@ impl Router {
     pub fn connection_closed(&self, conn: ConnId) {
         self.hub.connection_closed(conn);
         self.notify.connection_closed(conn);
+        self.resources.unsubscribe(conn);
     }
 
     /// Stops the history indexer, applying what it has queued; the index stays on disk.

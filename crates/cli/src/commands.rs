@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::sleep;
 
-use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs};
+use crate::args::{AgentCommand, ApiArgs, Cli, Command, DaemonCommand, EventsArgs};
 use crate::error::{CliError, is_unreachable};
 
 mod accounts;
@@ -28,6 +28,7 @@ mod history;
 mod integration;
 mod notify;
 mod providers;
+mod resources;
 mod sessions;
 mod tasks;
 mod workspaces;
@@ -41,6 +42,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
     // fail on it, the integration commands do not need one.
     let ctx = Ctx::new(&cli);
     match cli.command {
+        Command::Agent(AgentCommand::Interrupt(args)) => ctx?.agent_interrupt(args).await,
         Command::Agent(command) => {
             agent::run(ctx.ok(), &command).await;
             Ok(())
@@ -56,6 +58,9 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             ctx?.daemon_restart(stop_sessions).await
         }
         Command::Agents(args) => ctx?.agents(args).await,
+        Command::Ps(args) => ctx?.ps(args).await,
+        Command::Top(args) => ctx?.top(args).await,
+        Command::Kill(args) => ctx?.kill(args).await,
         Command::Ws(command) => ctx?.ws(command).await,
         Command::Api(args) => ctx?.api(args).await,
         Command::Events(args) => ctx?.events(args).await,

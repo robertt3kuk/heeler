@@ -35,6 +35,10 @@ use hutan_protocol::provider::{
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
 use hutan_protocol::render::TerminalRender;
+use hutan_protocol::resources::{
+    AgentInterrupt, AgentInterrupted, ProcessSignal, ProcessSignaled, ResourceSample,
+    ResourcesListRequest, ResourcesSubscribe, ResourcesSubscribed, SignalName,
+};
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
     TaskStarted, TaskUpdate,
@@ -87,6 +91,9 @@ pub(crate) const TASK_CAPABILITY: &str = "task";
 pub(crate) const HARNESS_CAPABILITY: &str = "harness.acp";
 /// Capability for `account.*` and the `account.changed` event (protocol 0.17).
 pub(crate) const ACCOUNTS_CAPABILITY: &str = "accounts";
+/// Capability for `resources.*`, `session.kill`, `process.signal`, `agent.interrupt` and the
+/// `resources.updated` event (protocol 0.18).
+pub(crate) const RESOURCES_CAPABILITY: &str = "resources";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -104,6 +111,7 @@ const CAPABILITIES: &[&str] = &[
     TASK_CAPABILITY,
     HARNESS_CAPABILITY,
     ACCOUNTS_CAPABILITY,
+    RESOURCES_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -574,6 +582,81 @@ impl Client {
     /// Runs a ready task now (`task.start`): the task, its session and any warnings.
     pub async fn task_start(&self, id: TaskId) -> Result<TaskStarted, ClientError> {
         self.call(Request::TaskStart(TaskRef { id })).await
+    }
+
+    /// True when the daemon advertised capability `resources` (protocol 0.18).
+    pub fn supports_resources(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == RESOURCES_CAPABILITY)
+    }
+
+    /// One fresh sample of the processes of the live sessions (of one, or of all) and of
+    /// `hutand` (`resources.list`).
+    pub async fn resources_list(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<ResourceSample, ClientError> {
+        self.call(Request::ResourcesList(ResourcesListRequest { session_id }))
+            .await
+    }
+
+    /// Starts `resources.updated` events for this connection (`resources.subscribe`); read them
+    /// from [`Client::events`]. The answer carries the first sample.
+    pub async fn resources_subscribe(
+        &self,
+        interval_ms: Option<u32>,
+    ) -> Result<ResourcesSubscribed, ClientError> {
+        self.call(Request::ResourcesSubscribe(ResourcesSubscribe {
+            interval_ms,
+        }))
+        .await
+    }
+
+    /// Stops this connection's `resources.updated` events (`resources.unsubscribe`).
+    pub async fn resources_unsubscribe(&self) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::ResourcesUnsubscribe(Empty {}))
+            .await
+            .map(|_| ())
+    }
+
+    /// SIGKILLs a session's whole process tree now (`session.kill`).
+    pub async fn session_kill(&self, session_id: SessionId) -> Result<SessionInfo, ClientError> {
+        let result: SessionResult = self
+            .call(Request::SessionKill(SessionRef { session_id }))
+            .await?;
+        Ok(result.session)
+    }
+
+    /// Signals one process of a session (`process.signal`).
+    pub async fn process_signal(
+        &self,
+        session_id: SessionId,
+        pid: u32,
+        signal: SignalName,
+    ) -> Result<ProcessSignaled, ClientError> {
+        self.call(Request::ProcessSignal(ProcessSignal {
+            session_id,
+            pid,
+            signal,
+        }))
+        .await
+    }
+
+    /// Interrupts the main agent of a session, or one subagent (`agent.interrupt`).
+    pub async fn agent_interrupt(
+        &self,
+        session_id: SessionId,
+        node_id: Option<String>,
+        force: bool,
+    ) -> Result<AgentInterrupted, ClientError> {
+        self.call(Request::AgentInterrupt(AgentInterrupt {
+            session_id,
+            node_id,
+            force,
+        }))
+        .await
     }
 
     /// Stops the turn in progress.

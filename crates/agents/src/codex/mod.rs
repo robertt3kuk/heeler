@@ -10,6 +10,7 @@ mod mapper;
 mod nodes;
 mod wire;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -100,10 +101,15 @@ pub fn check_version(user_agent: &str) -> Result<String, AgentError> {
     Ok(version.to_owned())
 }
 
+/// Subagent threads whose running turn is remembered at most; past this the memory starts over.
+const MAX_TRACKED_THREADS: usize = 256;
+
 #[derive(Debug, Default)]
 struct TurnTracker {
     current: Option<String>,
     last_done: Option<String>,
+    /// Running turn per subagent thread.
+    threads: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -367,7 +373,10 @@ impl CodexAppServerAdapter {
         // The channel is empty, so this cannot wait.
         let locator = mapper.resume_locator(&started.model);
         let _ = events_tx.try_send(AdapterMessage::Event(Box::new(locator)));
-        let root = NodeFeed::new(started.thread_id.clone()).started(&started.model);
+        let mut root = NodeFeed::new(started.thread_id.clone()).started(&started.model);
+        // The main agent is the app-server process; its subagent threads live inside it and
+        // have no process of their own.
+        root.pid = transport.pid();
         let _ = events_tx.try_send(AdapterMessage::Node(Box::new(root)));
         let shared = Arc::new(Shared {
             transport,
@@ -468,13 +477,30 @@ async fn pump(
     let _ = events.send(AdapterMessage::Exited(info)).await;
 }
 
-/// Keeps the provider id of the turn in progress (what `turn/interrupt` needs).
+/// Keeps the provider id of the turn in progress (what `turn/interrupt` needs): of the
+/// conversation's own thread, and of each subagent thread.
 fn track_turn(shared: &Shared, method: &str, params: &Value) {
     let id = params
         .pointer("/turn/id")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let thread = params.pointer("/threadId").and_then(Value::as_str);
     let mut turn = lock(&shared.turn);
+    if let Some(thread) = thread.filter(|thread| *thread != shared.thread_id) {
+        match (method, id) {
+            ("turn/started", Some(id)) => {
+                if turn.threads.len() >= MAX_TRACKED_THREADS {
+                    turn.threads.clear();
+                }
+                turn.threads.insert(thread.to_owned(), id);
+            }
+            ("turn/completed", Some(id)) if turn.threads.get(thread) == Some(&id) => {
+                turn.threads.remove(thread);
+            }
+            _ => {}
+        }
+        return;
+    }
     match (method, id) {
         ("turn/started", Some(id)) if turn.last_done.as_deref() != Some(id.as_str()) => {
             turn.current = Some(id);
@@ -566,6 +592,35 @@ impl AgentAdapter for CodexAppServerAdapter {
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move { self.shared.transport.shutdown().await })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.shared.transport.pid()
+    }
+
+    fn interrupt_thread(&self, thread_id: &str) -> BoxFuture<'_, Result<(), AgentError>> {
+        let thread = thread_id.to_owned();
+        Box::pin(async move {
+            let shared = &self.shared;
+            if thread == shared.thread_id {
+                return self.interrupt().await;
+            }
+            let turn = lock(&shared.turn)
+                .threads
+                .get(&thread)
+                .cloned()
+                .ok_or(AgentError::NoTurn)?;
+            let _: Value = call(
+                &shared.transport,
+                "turn/interrupt",
+                &wire::TurnInterruptParams {
+                    thread_id: &thread,
+                    turn_id: &turn,
+                },
+            )
+            .await?;
+            Ok(())
+        })
     }
 }
 

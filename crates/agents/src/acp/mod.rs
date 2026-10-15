@@ -539,7 +539,10 @@ impl AcpAdapter {
         let locator = mapper.resume_locator(&model_name);
         let _ = events_tx.try_send(AdapterMessage::Event(Box::new(locator)));
         let feed = NodeFeed::new(&config.agent, opened.session_id.clone());
-        let _ = events_tx.try_send(AdapterMessage::Node(Box::new(feed.started(&model_name))));
+        let mut root = feed.started(&model_name);
+        // The main agent is the harness process (`hutan ps` marks it).
+        root.pid = transport.pid();
+        let _ = events_tx.try_send(AdapterMessage::Node(Box::new(root)));
         let models = model.as_ref().map_or_else(Vec::new, |m| m.models.clone());
         let started = Started {
             model: if model_name.is_empty() {
@@ -873,6 +876,10 @@ impl AgentAdapter for AcpAdapter {
                 provider_turn_id,
             })
         })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.shared.transport.pid()
     }
 
     fn interrupt(&self) -> BoxFuture<'_, Result<(), AgentError>> {

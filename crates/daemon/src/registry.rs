@@ -17,8 +17,8 @@ use tokio::time::{Instant, sleep_until};
 
 use hutan_agents::{CodexConfig, ExitInfo, Started};
 use hutan_core::{
-    NodeOutcome, NodeUpdate, ObservationTree, Patch, SessionEvent, SessionId, SessionKind,
-    SessionState, TerminalId, WorkspaceId,
+    AgentNode, NodeOutcome, NodeUpdate, ObservationTree, Patch, SessionEvent, SessionId,
+    SessionKind, SessionState, TerminalId, WorkspaceId,
 };
 use hutan_protocol::chat::{ChatCreate, ChatInfo};
 use hutan_protocol::control::{ErrorBody, ErrorCode};
@@ -121,6 +121,10 @@ enum Command {
     AgentReport(Box<AgentReportRequest>, Reply<AgentApplied>),
     AgentRelease(AgentReleaseRequest, Reply<AgentApplied>),
     AgentTree(Option<SessionId>, Reply<AgentTree>),
+    /// `session.kill`: SIGKILL now; answered once the session has actually ended.
+    KillSession(SessionId, Reply<SessionInfo>),
+    /// The live sessions' root processes and unfinished agents (`resources.*`).
+    ProcessTargets(Option<SessionId>, Reply<Vec<ProcessTarget>>),
     /// `chat.create` with a canonical `cwd`; answered once the agent is up (or failed).
     CreateChat(ChatCreate, Reply<SessionInfo>),
     /// From the task that started a chat agent.
@@ -203,6 +207,23 @@ impl ChatNotifier {
 pub struct SessionCounts {
     pub total: u32,
     pub live: u32,
+}
+
+/// What the resource manager needs to know about one live session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessTarget {
+    pub session_id: SessionId,
+    /// The session's terminal, when it has one.
+    pub terminal: Option<TerminalId>,
+    /// The terminal's child, or a chat session's harness process; `None` for a direct chat and
+    /// while the process is not up (or already reaped).
+    pub root_pid: Option<u32>,
+    /// A chat session (it has no terminal).
+    pub chat: bool,
+    /// The id of the main agent's node.
+    pub root_node: Option<String>,
+    /// The nodes of the session's agent tree that have not finished.
+    pub agents: Vec<AgentNode>,
 }
 
 /// Handle to the registry actor; cheap to clone.
@@ -302,6 +323,20 @@ impl RegistryHandle {
     /// session once it is `stopped`.
     pub async fn stop_session(&self, id: SessionId) -> Result<SessionInfo, ErrorBody> {
         self.ask(|r| Command::StopSession(id, r)).await
+    }
+
+    /// SIGKILLs the session's whole process group (a chat session's harness and everything
+    /// below it) and returns the session once it is `stopped`.
+    pub async fn kill_session(&self, id: SessionId) -> Result<SessionInfo, ErrorBody> {
+        self.ask(|r| Command::KillSession(id, r)).await
+    }
+
+    /// The live sessions' root processes and unfinished agents; see [`ProcessTarget`].
+    pub async fn process_targets(
+        &self,
+        session: Option<SessionId>,
+    ) -> Result<Vec<ProcessTarget>, ErrorBody> {
+        self.ask(|r| Command::ProcessTargets(session, r)).await
     }
 
     pub async fn restart_session(&self, id: SessionId) -> Result<SessionInfo, ErrorBody> {
@@ -426,6 +461,21 @@ impl SessionEntry {
         }
         if self.chat.is_some() {
             chats.stop(self.info.id);
+        }
+    }
+
+    /// SIGKILLs the session's process group (or the harness of a chat session) now; the exit
+    /// arrives later through the watcher. Unlike [`Self::request_stop`] it acts again when a
+    /// stop is already under way: that is how a stuck stop is escalated.
+    fn request_kill(&mut self, chats: &ChatManager) {
+        self.stopping = true;
+        if let Some(entry) = &self.terminal
+            && let Err(error) = entry.terminal().kill()
+        {
+            warn!(session = %self.info.id, %error, "could not kill the terminal");
+        }
+        if self.chat.is_some() {
+            chats.kill(self.info.id);
         }
     }
 
@@ -850,6 +900,10 @@ impl SessionRegistry {
                 }
                 Command::AgentTree(session, reply) => {
                     let _ = reply.send(self.agent_tree(session));
+                }
+                Command::KillSession(id, reply) => self.kill_session(id, reply),
+                Command::ProcessTargets(session, reply) => {
+                    let _ = reply.send(self.process_targets(session));
                 }
                 Command::CreateChat(req, reply) => self.create_chat(req, reply),
                 Command::ChatStarted {
@@ -1657,16 +1711,16 @@ impl SessionRegistry {
             .root()
             .is_some_and(|root| root.agent == req.agent);
         let now = now_ms();
-        session.tree.apply(
-            node_update(
-                &req.source,
-                &req.agent,
-                req.state,
-                req.node,
-                message.as_deref(),
-            ),
-            now,
+        let mut update = node_update(
+            &req.source,
+            &req.agent,
+            req.state,
+            req.node,
+            message.as_deref(),
         );
+        // A pid below 2 is no process of an agent (0, init) and above `i32::MAX` is no pid.
+        update.pid = req.pid.filter(|pid| (2..=i32::MAX as u32).contains(pid));
+        session.tree.apply(update, now);
         // The message, conversation id and resume command belong to the main agent only.
         let about_root = node_id
             .as_deref()
@@ -1894,6 +1948,64 @@ impl SessionRegistry {
             }
         }
         Ok(AgentTree { observations })
+    }
+
+    // Resource manager --------------------------------------------------------------------------
+
+    /// The live sessions that have a process, with the agents of their trees that have not
+    /// finished (`resources.*`): of one session (unknown id: `not_found`; a session that is not
+    /// running yields nothing) or of all, in creation order.
+    fn process_targets(&self, session: Option<SessionId>) -> Result<Vec<ProcessTarget>, ErrorBody> {
+        let indices: Vec<usize> = match session {
+            Some(id) => vec![self.session_index(id)?],
+            None => (0..self.sessions.len()).collect(),
+        };
+        let mut targets = Vec::new();
+        for index in indices {
+            let session = &self.sessions[index];
+            if !session.info.state.is_live() {
+                continue;
+            }
+            let root_pid = match &session.terminal {
+                Some(entry) => entry.terminal().pid(),
+                None => self.chats.harness_pid(session.info.id),
+            };
+            let tree = session.tree.tree();
+            targets.push(ProcessTarget {
+                session_id: session.info.id,
+                terminal: session.info.terminal_id,
+                root_pid,
+                chat: session.chat.is_some(),
+                root_node: tree.root_id().map(str::to_owned),
+                agents: tree
+                    .nodes()
+                    .filter(|node| !node.is_finished())
+                    .cloned()
+                    .collect(),
+            });
+        }
+        Ok(targets)
+    }
+
+    /// SIGKILL now (`session.kill`); answered once the session has ended.
+    fn kill_session(&mut self, id: SessionId, reply: Reply<SessionInfo>) {
+        let index = match self.session_index(id) {
+            Ok(index) => index,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let session = &mut self.sessions[index];
+        if !session.info.state.is_live() {
+            let _ = reply.send(Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("session {id} is not running"),
+            )));
+            return;
+        }
+        session.request_kill(&self.chats);
+        session.stop_waiters.push(reply);
     }
 
     // Chat sessions ---------------------------------------------------------------------------

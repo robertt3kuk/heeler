@@ -32,6 +32,7 @@ use hutan_protocol::notify::{
 };
 use hutan_protocol::provider::*;
 use hutan_protocol::render::*;
+use hutan_protocol::resources::*;
 use hutan_protocol::task::*;
 use hutan_protocol::tree::*;
 use hutan_protocol::worktree::*;
@@ -332,6 +333,7 @@ fn main_node() -> AgentNode {
         last_activity_ms: 1_791_894_170_000,
         activity: Some("permission: Bash".into()),
         transcript_path: None,
+        pid: Some(48_213),
         usage: None,
     }
 }
@@ -354,6 +356,7 @@ fn sub_node() -> AgentNode {
         last_activity_ms: 1_791_894_160_000,
         activity: None,
         transcript_path: Some("/h/.claude/projects/p/subagents/agent-abc123.jsonl".into()),
+        pid: None,
         usage: Some(Usage {
             kind: "claude.context".into(),
             context_tokens: Some(48_210),
@@ -376,6 +379,85 @@ fn observation() -> AgentObservation {
 
 fn sid2() -> SessionId {
     "01K7F3B5N2Q9W8E4R6T1Y0V3KN".parse().unwrap()
+}
+
+fn process_info(pid: u32, ppid: u32, name: &str, command: &str) -> ProcessInfo {
+    ProcessInfo {
+        pid,
+        ppid,
+        name: name.into(),
+        command: command.into(),
+        state: ProcessState::Sleeping,
+        cpu_percent: Some(12.5),
+        rss_bytes: 4_194_304,
+        threads: 3,
+        started_at_ms: Some(1_791_894_164_400),
+        agent_node: None,
+    }
+}
+
+fn resource_sample() -> ResourceSample {
+    let shell = process_info(48_213, 1, "zsh", "-zsh");
+    let build = ProcessInfo {
+        state: ProcessState::Running,
+        cpu_percent: Some(187.25),
+        rss_bytes: 734_003_200,
+        threads: 12,
+        agent_node: Some("root".into()),
+        ..process_info(
+            48_215,
+            48_213,
+            "cargo",
+            "cargo test --workspace --token=[REDACTED]",
+        )
+    };
+    let first = ProcessInfo {
+        cpu_percent: None,
+        started_at_ms: None,
+        ..process_info(48_216, 48_215, "rustc", "rustc --crate-name hutan")
+    };
+    ResourceSample {
+        at_ms: 1_791_894_170_000,
+        sessions: vec![
+            SessionResources {
+                session_id: sid(),
+                totals: ResourceTotals {
+                    processes: 3,
+                    cpu_percent: 199.75,
+                    rss_bytes: 4_194_304 * 2 + 734_003_200,
+                },
+                processes: vec![shell, build, first],
+                agents: vec![
+                    AgentProcess {
+                        node_id: "root".into(),
+                        parent: None,
+                        kind: NodeKind::Main,
+                        label: "omp".into(),
+                        state: NodeState::Working,
+                        pid: Some(48_215),
+                    },
+                    AgentProcess {
+                        node_id: "agent-abc123".into(),
+                        parent: Some("root".into()),
+                        kind: NodeKind::Sub,
+                        label: "Explore".into(),
+                        state: NodeState::Idle,
+                        pid: None,
+                    },
+                ],
+                truncated: false,
+            },
+            SessionResources {
+                session_id: sid2(),
+                processes: vec![],
+                totals: ResourceTotals::default(),
+                agents: vec![],
+                truncated: true,
+            },
+        ],
+        daemon: process_info(912, 1, "hutand", "hutand"),
+        truncated: false,
+    }
 }
 
 fn tid() -> TaskId {
@@ -632,6 +714,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     "5f3e1c1a-8d51-4a6e-9a0c-2b7a3c5d9e10".into(),
                 ]),
                 node: None,
+                pid: Some(48_213),
             }),
         ),
         (
@@ -646,6 +729,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 agent_session_id: None,
                 resume_argv: None,
                 node: None,
+                pid: None,
             }),
         ),
         (
@@ -889,6 +973,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                         ..Usage::default()
                     }),
                 }),
+                pid: Some(48_220),
             }),
         ),
         (
@@ -914,6 +999,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     transcript_path: None,
                     usage: None,
                 }),
+                pid: None,
             }),
         ),
         (
@@ -1292,6 +1378,58 @@ fn requests() -> Vec<(&'static str, Request)> {
             Request::AccountLogout(AccountLogout {
                 harness: "codex".into(),
                 provider: None,
+            }),
+        ),
+        (
+            "resources_list",
+            Request::ResourcesList(ResourcesListRequest { session_id: None }),
+        ),
+        (
+            "resources_list_session",
+            Request::ResourcesList(ResourcesListRequest {
+                session_id: Some(sid()),
+            }),
+        ),
+        (
+            "resources_subscribe",
+            Request::ResourcesSubscribe(ResourcesSubscribe { interval_ms: None }),
+        ),
+        (
+            "resources_subscribe_interval",
+            Request::ResourcesSubscribe(ResourcesSubscribe {
+                interval_ms: Some(5_000),
+            }),
+        ),
+        (
+            "resources_unsubscribe",
+            Request::ResourcesUnsubscribe(Empty {}),
+        ),
+        (
+            "session_kill",
+            Request::SessionKill(SessionRef { session_id: sid() }),
+        ),
+        (
+            "process_signal",
+            Request::ProcessSignal(ProcessSignal {
+                session_id: sid(),
+                pid: 48_215,
+                signal: SignalName::Kill,
+            }),
+        ),
+        (
+            "agent_interrupt",
+            Request::AgentInterrupt(AgentInterrupt {
+                session_id: sid(),
+                node_id: None,
+                force: false,
+            }),
+        ),
+        (
+            "agent_interrupt_node_force",
+            Request::AgentInterrupt(AgentInterrupt {
+                session_id: sid(),
+                node_id: Some("agent-abc123".into()),
+                force: true,
             }),
         ),
     ]
@@ -1797,6 +1935,12 @@ fn events() -> Vec<(&'static str, Event)> {
             "session_updated_chat_harness",
             Event::SessionUpdated {
                 session: harness_chat_session_info(),
+            },
+        ),
+        (
+            "resources_updated",
+            Event::ResourcesUpdated {
+                sample: Box::new(resource_sample()),
             },
         ),
     ]
@@ -2666,6 +2810,59 @@ fn responses_match_fixtures() {
                 &AccountSession {
                     session: session_info(),
                     instructions: Some("type /logout in omp".into()),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "resources_list",
+            ControlMessage::ok(34, &resource_sample()).unwrap(),
+        ),
+        (
+            "resources_subscribed",
+            ControlMessage::ok(
+                35,
+                &ResourcesSubscribed {
+                    interval_ms: 2_000,
+                    sample: resource_sample(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "process_signaled",
+            ControlMessage::ok(
+                36,
+                &ProcessSignaled {
+                    session_id: sid(),
+                    pid: 48_215,
+                    signal: SignalName::Term,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "agent_interrupted_turn",
+            ControlMessage::ok(
+                37,
+                &AgentInterrupted {
+                    session_id: sid(),
+                    node_id: None,
+                    via: InterruptVia::Turn,
+                    pid: None,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "agent_interrupted_pid",
+            ControlMessage::ok(
+                38,
+                &AgentInterrupted {
+                    session_id: sid(),
+                    node_id: Some("agent-abc123".into()),
+                    via: InterruptVia::SigintTerm,
+                    pid: Some(48_220),
                 },
             )
             .unwrap(),

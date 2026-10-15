@@ -34,6 +34,7 @@ use crate::paths::Paths;
 use crate::projects;
 use crate::providers::{GatewayConfig, ProviderService};
 use crate::registry::{self, RegistryConfig};
+use crate::resources::{ResourceService, SystemProcesses};
 use crate::restore::{self, Stored};
 use crate::router::{Router, Services};
 use crate::tasks::TaskService;
@@ -295,6 +296,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         bus.clone(),
         shutdown.clone(),
     );
+    let resources = ResourceService::new(
+        registry.clone(),
+        hub.clone(),
+        bus.clone(),
+        Arc::new(SystemProcesses),
+    );
     let router = Router::new(
         registry,
         hub,
@@ -305,6 +312,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             worktrees,
             tasks,
             accounts,
+            resources,
         },
         bus.clone(),
         shutdown.clone(),

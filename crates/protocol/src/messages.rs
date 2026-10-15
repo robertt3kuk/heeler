@@ -28,6 +28,9 @@ use crate::provider::{
     ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
 };
 use crate::render::Row;
+use crate::resources::{
+    AgentInterrupt, ProcessSignal, ResourceSample, ResourcesListRequest, ResourcesSubscribe,
+};
 use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskUpdate};
 use crate::tree::{AgentTreeRequest, NodeReport};
 use crate::worktree::{Placement, WorktreeCreate, WorktreeListRequest, WorktreeRemove};
@@ -250,6 +253,30 @@ pub enum Request {
     /// `AccountSession`.
     #[serde(rename = "account.logout")]
     AccountLogout(AccountLogout),
+    /// Capability `resources` (protocol 0.18): one fresh sample of the processes of the live
+    /// sessions and of `hutand`; answered with `ResourceSample`.
+    #[serde(rename = "resources.list")]
+    ResourcesList(ResourcesListRequest),
+    /// Capability `resources`: sample the processes while this connection listens and send it
+    /// `resources.updated` events; answered with `ResourcesSubscribed`.
+    #[serde(rename = "resources.subscribe")]
+    ResourcesSubscribe(ResourcesSubscribe),
+    /// Capability `resources`: stop the `resources.updated` events of this connection; answered
+    /// with `Empty`.
+    #[serde(rename = "resources.unsubscribe")]
+    ResourcesUnsubscribe(Empty),
+    /// Capability `resources`: SIGKILL a session's whole process group (or a chat session's
+    /// harness process and its descendants) now; answered with `SessionResult` once it ended.
+    #[serde(rename = "session.kill")]
+    SessionKill(SessionRef),
+    /// Capability `resources`: signal one process of a session; answered with
+    /// `ProcessSignaled`.
+    #[serde(rename = "process.signal")]
+    ProcessSignal(ProcessSignal),
+    /// Capability `resources`: interrupt the main agent of a session or one subagent; answered
+    /// with `AgentInterrupted`.
+    #[serde(rename = "agent.interrupt")]
+    AgentInterrupt(AgentInterrupt),
 }
 
 impl Request {
@@ -570,6 +597,11 @@ pub struct AgentReportRequest {
     /// Protocol 0.10: the node this report is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<NodeReport>,
+    /// Protocol 0.18: the process id of the agent this report is about (the main agent, or
+    /// `node`), when it runs as a process of the session. The resource manager only acts on it
+    /// while it is in the session's process tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// The agent behind `source` is gone: clears its report and its resume reference.
@@ -864,6 +896,15 @@ pub enum Event {
     /// its accounts may have changed; clients list them again.
     #[serde(rename = "account.changed")]
     AccountChanged { harness: String },
+    /// Capability `resources` (protocol 0.18): the periodic sample for a connection that
+    /// subscribed with `resources.subscribe`. Sent to that connection only, outside the replay
+    /// ring: it carries the seq of the last retained event, never advances the sequence, and is
+    /// not replayed after a reconnect.
+    #[serde(rename = "resources.updated")]
+    ResourcesUpdated {
+        #[serde(flatten)]
+        sample: Box<ResourceSample>,
+    },
 }
 
 impl Event {
@@ -901,6 +942,7 @@ impl Event {
         "task.updated",
         "task.removed",
         "account.changed",
+        "resources.updated",
     ];
 }
 

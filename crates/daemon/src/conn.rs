@@ -46,6 +46,7 @@ pub const CAPABILITIES: &[&str] = &[
     "task",
     "harness.acp",
     "accounts",
+    "resources",
 ];
 
 /// How long a closing connection may take to flush already queued messages.
@@ -102,6 +103,16 @@ impl ConnHandle {
                 self.cancel.cancel();
                 false
             }
+            Err(TrySendError::Closed(_)) => false,
+        }
+    }
+
+    /// Queues a frame of a periodic stream (`resources.updated`) without waiting; when the
+    /// queue is full the frame is dropped and the connection stays: the next sample replaces
+    /// it. Returns `false` when the connection is gone.
+    pub fn enqueue_lossy(&self, frame: Frame) -> bool {
+        match self.tx.try_send(Outbound::Frame(frame)) {
+            Ok(()) | Err(TrySendError::Full(_)) => true,
             Err(TrySendError::Closed(_)) => false,
         }
     }

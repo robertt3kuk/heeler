@@ -331,6 +331,9 @@ impl StoreState {
             Event::AccountChanged { harness } => {
                 effects.notices.push(Notice::AccountsChanged { harness });
             }
+            // A stream for one subscriber, outside the replay ring and the sequence: whoever
+            // renders it reads `Client::events` (a Resources panel subscribes for itself).
+            Event::ResourcesUpdated { .. } => {}
         }
         effects
     }

@@ -142,6 +142,17 @@ pub struct ChatManager {
     models: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
 }
 
+/// Why a subagent thread could not be interrupted.
+#[derive(Debug)]
+pub enum ThreadInterruptError {
+    /// The harness cannot stop a single subagent (direct chats, and agents whose protocol has
+    /// no per-thread interrupt).
+    Unsupported,
+    /// The thread has no turn in progress.
+    NoTurn,
+    Failed(ErrorBody),
+}
+
 fn provider_error(error: &AgentError, program: &std::path::Path) -> ErrorBody {
     let hint = match error {
         AgentError::Spawn { .. } => format!(
@@ -455,6 +466,32 @@ impl ChatManager {
         });
     }
 
+    /// Ends the session's agent now: SIGKILL for the harness process and everything below it
+    /// (a harness shares the daemon's process group, so there is no group to kill); a direct
+    /// chat has no process and just ends. The pump reports the exit.
+    pub fn kill(&self, id: SessionId) {
+        let Some(live) = lock(&self.live).get(&id).cloned() else {
+            return;
+        };
+        live.stopping.store(true, Ordering::Release);
+        match &live.backend {
+            Backend::Agent(adapter) => match adapter.pid() {
+                Some(pid) => {
+                    // Process listing is a burst of system calls: off the async threads.
+                    tokio::task::spawn_blocking(move || crate::resources::kill_tree(pid));
+                }
+                None => {
+                    let adapter = adapter.clone();
+                    tokio::spawn(async move { adapter.shutdown().await });
+                }
+            },
+            Backend::Direct(session) => {
+                let session = session.clone();
+                tokio::spawn(async move { session.shutdown().await });
+            }
+        }
+    }
+
     /// Sends the user's message; the turn's events follow on the bus.
     pub async fn send(
         &self,
@@ -532,6 +569,37 @@ impl ChatManager {
                 "no turn is in progress",
             )),
             Err(error) => Err(ErrorBody::new(ErrorCode::ProviderError, error.to_string())),
+        }
+    }
+
+    /// Asks the agent to stop the running turn of one of its subagent threads.
+    pub async fn interrupt_thread(
+        &self,
+        id: SessionId,
+        thread: &str,
+    ) -> Result<(), ThreadInterruptError> {
+        let live = self.live(id).map_err(ThreadInterruptError::Failed)?;
+        let Backend::Agent(adapter) = &live.backend else {
+            return Err(ThreadInterruptError::Unsupported);
+        };
+        match adapter.interrupt_thread(thread).await {
+            Ok(()) => Ok(()),
+            Err(AgentError::NoTurn) => Err(ThreadInterruptError::NoTurn),
+            Err(AgentError::Unsupported(_)) => Err(ThreadInterruptError::Unsupported),
+            Err(error) => Err(ThreadInterruptError::Failed(ErrorBody::new(
+                ErrorCode::ProviderError,
+                error.to_string(),
+            ))),
+        }
+    }
+
+    /// The process id of a running chat session's harness (the process whose descendants are
+    /// the session's processes); `None` for a direct chat, a session that is not running, and
+    /// an agent that has exited.
+    pub fn harness_pid(&self, id: SessionId) -> Option<u32> {
+        match &lock(&self.live).get(&id)?.backend {
+            Backend::Agent(adapter) => adapter.pid(),
+            Backend::Direct(_) => None,
         }
     }
 

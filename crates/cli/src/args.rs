@@ -41,6 +41,12 @@ pub enum Command {
     Ls(LsArgs),
     /// Show the agents and subagents the daemon observes, as a tree per session
     Agents(AgentsArgs),
+    /// Show the processes of the live sessions as a tree, with CPU and memory (and hutand)
+    Ps(PsArgs),
+    /// `ps --watch` ordered by CPU: what is busy right now
+    Top(TopArgs),
+    /// Kill a session (SIGKILL for its whole process tree), or signal one process of it
+    Kill(KillArgs),
     /// Attach this terminal to a session; detach with ctrl+\ then d
     Attach(TargetArgs),
     /// Type text into a session without attaching
@@ -717,6 +723,9 @@ pub enum AgentCommand {
     Report(AgentReportArgs),
     /// Say that the agent is gone: forgets its report and resume command
     Release(AgentReleaseArgs),
+    /// Stop what an agent is doing without ending the session: the main agent's running turn, or
+    /// one subagent (protocol 0.18)
+    Interrupt(AgentInterruptArgs),
     /// Translate one Codex or Claude Code hook event (JSON on stdin) into a report; used by the
     /// installed hook scripts
     Hook(AgentHookArgs),
@@ -769,6 +778,10 @@ pub struct AgentReportArgs {
     /// The agent's own conversation id
     #[arg(long, value_name = "ID")]
     pub agent_session_id: Option<String>,
+    /// The process id of the agent this report is about, when it runs as a process of this
+    /// session: `hutan ps` shows it and `hutan agent interrupt` can signal it (protocol 0.18)
+    #[arg(long, value_name = "PID")]
+    pub pid: Option<u32>,
     /// Command that resumes the agent after a daemon restart, after `--` (a plain command name
     /// on PATH, at most 64 words, no apostrophes)
     #[arg(last = true, value_name = "ARGV")]
@@ -799,6 +812,69 @@ pub struct AgentsArgs {
     /// Keep running and print the trees again whenever one changes
     #[arg(long)]
     pub watch: bool,
+}
+
+/// `hutan ps`: the processes of the live sessions.
+#[derive(Debug, Args)]
+pub struct PsArgs {
+    /// Only this session: id, unique id prefix, terminal id (`t:7`), or exact title
+    #[arg(value_name = "SESSION")]
+    pub target: Option<String>,
+    /// Keep running and print again every --interval milliseconds (the daemon samples only while
+    /// somebody watches)
+    #[arg(long)]
+    pub watch: bool,
+    /// Milliseconds between samples with --watch (at least 1000)
+    #[arg(long, value_name = "MS", default_value_t = 2000)]
+    pub interval: u32,
+}
+
+/// `hutan top`: `ps --watch`, busiest first.
+#[derive(Debug, Args)]
+pub struct TopArgs {
+    /// Only this session
+    #[arg(value_name = "SESSION")]
+    pub target: Option<String>,
+    /// Milliseconds between samples (at least 1000)
+    #[arg(long, value_name = "MS", default_value_t = 2000)]
+    pub interval: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SignalArg {
+    Term,
+    Kill,
+    Int,
+    Hup,
+    Stop,
+    Cont,
+}
+
+/// `hutan kill`.
+#[derive(Debug, Args)]
+pub struct KillArgs {
+    #[arg(help = TARGET_HELP)]
+    pub target: String,
+    /// Signal only this process, which must be the session's own or one of its descendants
+    /// (see `hutan ps`); without it the whole session is killed
+    #[arg(long, value_name = "PID")]
+    pub pid: Option<u32>,
+    /// With --pid: the signal to send (default term)
+    #[arg(long, value_enum, requires = "pid")]
+    pub signal: Option<SignalArg>,
+}
+
+/// `hutan agent interrupt`.
+#[derive(Debug, Args)]
+pub struct AgentInterruptArgs {
+    #[arg(help = TARGET_HELP)]
+    pub target: String,
+    /// A subagent of the session (the node id `hutan agents` shows); without it the main agent
+    #[arg(value_name = "NODE")]
+    pub node: Option<String>,
+    /// For a subagent that is a process: SIGTERM after SIGINT when it is still there 2 s later
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

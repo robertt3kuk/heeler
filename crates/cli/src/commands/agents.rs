@@ -179,6 +179,7 @@ mod tests {
 
     fn node(id: &str, parent: Option<&str>, state: NodeState) -> AgentNode {
         AgentNode {
+            pid: None,
             node_id: id.into(),
             parent: parent.map(str::to_owned),
             kind: if parent.is_some() {

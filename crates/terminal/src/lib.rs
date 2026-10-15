@@ -3,7 +3,8 @@
 //! The daemon is the only VT parser. [`Terminal`] owns a child process in a PTY and keeps the
 //! canonical screen state; clients get [`hutan_protocol::render`] DTOs produced per client
 //! through a [`RenderTracker`]. [`Emulator`] is the same engine without a PTY (corpus replay,
-//! recorder, benchmarks). Engine types never appear in this crate's public API.
+//! recorder, benchmarks). Engine types never appear in this crate's public API. [`procs`] reads
+//! and signals single processes for the resource manager.
 
 #[cfg(test)]
 mod behavior;
@@ -16,6 +17,7 @@ pub mod env;
 mod equivalence;
 mod error;
 mod login_env;
+pub mod procs;
 mod queries;
 mod render;
 mod scrollback;

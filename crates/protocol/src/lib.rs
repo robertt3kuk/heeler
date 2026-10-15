@@ -2,6 +2,8 @@
 //!
 //! - [`account`]: harness accounts (protocol 0.17, capability `accounts`); [`chat`] also takes
 //!   `chat.create` for the ACP harnesses `omp` and `claude` (capability `harness.acp`).
+//! - [`resources`]: process trees, usage, stop/kill/interrupt (protocol 0.18, capability
+//!   `resources`).
 //! - [`task`]: tasks with dependencies (protocol 0.16, capability `task`).
 //! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
 //!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
@@ -30,6 +32,7 @@ pub mod messages;
 pub mod notify;
 pub mod provider;
 pub mod render;
+pub mod resources;
 pub mod task;
 pub mod tree;
 pub mod worktree;
@@ -44,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 17,
+    minor: 18,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

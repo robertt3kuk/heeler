@@ -30,7 +30,7 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
     // Always consumed, so the agent writing it never meets a closed pipe.
     let hook_input = match command {
         AgentCommand::Hook(_) => read_hook_input(),
-        AgentCommand::Report(_) | AgentCommand::Release(_) => None,
+        AgentCommand::Report(_) | AgentCommand::Release(_) | AgentCommand::Interrupt(_) => None,
     };
     let Some(ctx) = ctx else { return };
     let Some(session) = session_from_env() else {
@@ -48,6 +48,8 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
         AgentCommand::Hook(args) => {
             hook_input.and_then(|input| hook_request(args.agent, &input, session, default_seq))
         }
+        // A user command with output and exit codes: `commands.rs` runs it, not this path.
+        AgentCommand::Interrupt(_) => None,
     };
     let Some(request) = request else { return };
     // Nothing to do with the outcome: a hook cannot act on it, and must not be noisy about it.
@@ -81,6 +83,7 @@ fn report_request(args: &AgentReportArgs, session: SessionId, default_seq: u64) 
         transcript_path: None,
     });
     Some(Request::AgentReport(AgentReportRequest {
+        pid: args.pid,
         session_id: session,
         source: args.source.clone(),
         agent: args.agent.clone(),
@@ -113,6 +116,7 @@ fn hook_request(
             resume_argv,
             node,
         } => Request::AgentReport(AgentReportRequest {
+            pid: None,
             session_id: session,
             source: source.to_owned(),
             agent: agent.to_owned(),
