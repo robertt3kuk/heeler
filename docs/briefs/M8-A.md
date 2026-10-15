@@ -1,0 +1,26 @@
+# M8-A: ACP harness chats (OMP first-class, Claude Code) and accounts (daemon + CLI)
+
+Agent: implementer   Depends on: master (protocol 0.16; this slice takes **0.17**, capability `harness.acp`, `accounts`)   Branch: slice/M8-A
+
+## Context
+Read AGENTS.md, then ADR 0015 (this slice's decision), ADR 0005, ADR 0008, `docs/agents.md` (Codex adapter, `AgentEvent`, journal, approvals, fixtures), `docs/protocol.md` § Chat sessions, § Notification intents, § Tasks. Spike facts: `omp acp` (18.11.1) `initialize` → `protocolVersion 1`, `authMethods [{id: "agent"}]`, `agentCapabilities {loadSession, mcpCapabilities {http, sse}, promptCapabilities {embeddedContext, image}, sessionCapabilities {list, fork, resume, close}}`; `omp models --json` lists models grouped by provider (here anthropic, openai-codex, opencode-go, xai-oauth). ACP spec: https://agentclientprotocol.com (v1). Reuse: `crates/agents/src/codex/*` (transport, JSON-RPC, mapper, fixtures + `hutan-codex-fixture` replay tool), `crates/daemon/src/chat.rs` (ChatManager, journal, approvals), `registry.rs`, `tasks.rs` (chat runs), `notify.rs`.
+
+## Scope (contract changes authorized)
+`crates/agents` (new `acp/` module + fixtures), `crates/core` (additive AgentEvent fields if ACP needs them), `crates/daemon` (harness registry, accounts service, chat manager wiring), `crates/protocol` (0.17), `crates/client`, `crates/cli`, docs (`docs/agents.md` § ACP harnesses, `docs/protocol.md`). **No desktop UI** (follows D-1).
+
+## Contract
+- **ACP client** (`crates/agents/src/acp/`): stdio JSON-RPC 2.0, ACP v1: `initialize` (client capabilities: fs read/write **off**, terminal **off** — the agent uses its own tools), `authenticate` with the agent's advertised method when required, `session/new {cwd, mcpServers}`, `session/load`/`resume` when advertised, `session/prompt` (text + embedded resources for attachments), `session/cancel`, `session/update` notifications (agent message/thought chunks, tool calls and updates with diffs, plans, available commands, mode/model changes) mapped to `AgentEvent`; `session/request_permission` → Hutan approval with the agent's options (only offered options can be chosen; expiry on cancel/turn end); unknown updates → opaque events; version/capability gate with a clear error.
+- **Harness registry**: `omp` (`omp acp`, first-class), `claude` (`claude-code-acp`; detected on PATH, else a clear "install …" error naming the npm package), configurable `daemon.toml [harness.<id>] bin/args/env`. `chat.create {agent: "omp" | "claude", cwd, model?, mode?}`; `chat.models {agent}` returns the harness's models (OMP: from the ACP session's model options when offered, else `omp models --json`, cached 5 min); `chat.set_model` for harness chats when the agent supports model switching.
+- **OMP first-class**: OMP session id recorded as the resume ref (`omp --resume` style for terminal resume; ACP `session/load` for chat restore); OMP subagent progress, when present in updates, feeds the agent tree (M13) like Codex subagents.
+- **Restore**: harness chats survive a daemon restart via `session/load`/`resume`; the Hutan journal stays the history source (as for Codex).
+- **Accounts**: `account.list` → `{accounts: [{harness, provider, label, plan?, status: logged_in | logged_out | unknown}]}` (OMP from `omp models --json` providers + `omp usage` when available; Codex via app-server `account/read`; Claude Code via its status command or ACP `authMethods`). Never tokens, never emails unless the harness shows them in its own status line and the user is the account owner (show plan/label only by default). `account.login {harness, provider?}` → `{session}`: starts an interactive terminal session running the harness's own login (`omp login <provider>`, `codex login`, `claude` with `/login` instructions) so the user completes it there; `account.logout` likewise or via the harness API. Event `account.changed` after a login session ends (re-list).
+- **CLI**: `hutan chat new --agent omp|claude [--model] [--cwd]`, existing `chat send/log/attach/interrupt/models` work for harness chats; `hutan account ls|login <harness> [provider]|logout`.
+- Tasks (`run: chat {agent}`) accept `omp` and `claude` too.
+
+## Acceptance
+- Fixture-driven tests with a fake ACP agent (extend the fixture tool or add `hutan-acp-fixture`): initialize/auth/new/prompt streaming/tool call with diff/permission request allow+deny+expiry/cancel/load after restart/unknown update; record a short real `omp acp` transcript with a synthetic prompt on a cheap model **only if** it needs no paid tokens beyond a trivial reply — otherwise hand-build the fixture from the spec and the `initialize` facts above; scrub it like the Codex fixtures.
+- Daemon tests: harness chat create/send/approve/interrupt/restore, model listing, accounts list/login session/changed event (fake harness binaries), tasks with `chat {agent: "omp"}`.
+- CLI end-to-end against the fake agent. Golden fixtures; docs; `just check` green; committed on `slice/M8-A`.
+
+## Rules
+Inline `HUTAN_HOME=<temp dir>`; never read or copy `~/.omp`, `~/.codex`, `~/.claude` credentials; do not run real logins. No push, no hard reset; `pgrep -x hutand` clean before finishing. Do not edit docs/status.md or docs/roadmap.md. Concurrent slices: D-1 (desktop only), M18-A (projects, protocol 0.18 — you take 0.17).

@@ -189,25 +189,57 @@ Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: t
 
 Rollups: session → workspace header → sidebar "Needs you" → status bar `attention` item → menu bar item and Dock badge (M6-C, § macOS integration) → notification (M6-B).
 
-## Visual system
+## Visual system (v2, 2026-10-15)
 
-- **Chrome**: transparent titlebar with inset traffic lights; vibrancy (blurred, translucent) sidebar dock; opaque center and right dock. Light/dark follows macOS. Accent = system accent color. GPUI support for transparent titlebar and blurred window background is verified in M2.1 `[UNVERIFIED]`.
-- **Typography**: UI = system font (SF Pro) 12 pt compact / 13 pt comfortable; section headers 10 pt semibold uppercase tracking +4 %; monospace = configurable, default `Menlo` 13 pt (SF Mono is not installed system-wide).
+**Style, not layout.** Hutan stays terminal-first with its workbench (docks, panes, presets). What changes is how everything looks: calm, crisp and warm, in the spirit of Claude Desktop — generous spacing, soft borders instead of boxes, one clear accent, readable prose. Brand colors come from `assets/brand/README.md` (orangutan orange `#E0692E`, gold `#F5B53D`).
+
+- **Typography**
+  - UI: system sans (SF Pro), 13 px body / 12 px secondary (comfortable) and 12 / 11 (compact); weights regular and medium only; section labels 11 px medium, sentence case (no all-caps, no letter-spacing tricks).
+  - Prose (assistant/agent messages, markdown in chat, notification and empty-state copy): system serif **New York** (fallback Georgia), 15 px, line height 1.6; headings in prose use the sans at medium weight.
+  - Code and terminals: monospace (`terminal.font_family`, default Menlo; JetBrains Mono / SF Mono when installed), 13 px.
+  - Numbers in counters and durations use tabular figures.
+- **Palette** (tokens in `Theme`, light / dark):
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `bg` | `#FAF9F5` | `#262624` | window and center panes |
+| `sidebar` | `#F3F1EA` | `#1F1E1D` | left dock, titlebar strip |
+| `surface` | `#FFFFFF` | `#30302E` | cards, composer, popovers, palette |
+| `surface_hover` | `#F0EEE6` | `#3A3936` | row and button hover |
+| `border` | `#E6E3D9` | `#3D3C39` | hairlines (1 px), focus rings use `accent` |
+| `fg` | `#1F1E1D` | `#F5F4EF` | primary text |
+| `muted` | `#6F6D66` | `#A6A49C` | secondary text, icons |
+| `faint` | `#A8A59C` | `#6F6D66` | placeholders, disabled |
+| `accent` | `#E0692E` | `#EA7A43` | primary buttons, selection, focus, links |
+| `accent_soft` | `#FBE9DF` | `#3E2C23` | selected row, chips, user message bubble |
+| `success` / `warning` / `danger` | `#3F8F5A` / `#C98A12` / `#C8452F` | `#6BBF85` / `#E2AE45` / `#E87562` | states |
+
+  The terminal keeps its own palette (themes `hutan-dark` / `hutan-light`); its background matches `bg` so panes do not look like holes.
+- **Shape and depth**: radius 8 px (controls), 12 px (cards, composer, popovers, palette), 999 px (pills, badges); no drop shadows inside the window except popovers/palette (one soft shadow, 0 8 24 rgba(0,0,0,.12) light / .4 dark); separators are 1 px `border` hairlines, used sparingly.
+- **Components**
+  - *Sidebar rows*: 30 px (comfortable), 8 px horizontal padding, rounded 8 px hover/selected (`surface_hover` / `accent_soft`), icon 16 px `muted`, title `fg`, second line or right side `muted`; counters as small pills.
+  - *Buttons*: primary = `accent` fill, white text; secondary = `surface` with `border`; ghost = text only with hover fill; all 28 px high, 8 px radius.
+  - *Chat*: no bubbles for agent messages (prose in serif on `bg`, max width 720 px centered in the pane); user messages in an `accent_soft` rounded bubble aligned right; tool calls as quiet collapsible cards (`surface`, 12 px radius, mono summary line, status dot); approvals as a card with the offered options as buttons, the first option primary.
+  - *Composer*: a `surface` card with 12 px radius and hairline border at the bottom of the chat, multi-line field, a row below with attach (+), context chips, model/harness picker, and a round send button (`accent`) that turns into stop while streaming.
+  - *Palette, popovers, menus*: `surface`, 12 px radius, soft shadow, 6 px inner padding, rows like sidebar rows.
+  - *Empty states*: the mascot state image (`assets/brand/05-mascot`) at 96 px, one serif sentence, one action button.
 - **Density tokens**:
 
 | Token | compact | comfortable |
 |---|---|---|
-| sidebar row | 24 px | 30 px |
-| tab height | 28 px | 32 px |
-| pane header | 28 px | 34 px |
+| sidebar row | 26 px | 30 px |
+| tab height | 30 px | 34 px |
+| pane header | 30 px | 36 px |
 | status bar | 22 px | 26 px |
 | base spacing | 4 px | 6 px |
-| corner radius | 6 px | 8 px |
-| terminal padding (all sides) | 6 px | 8 px |
+| control radius | 6 px | 8 px |
+| card radius | 10 px | 12 px |
+| terminal padding (all sides) | 8 px | 12 px |
 | block gutter bar | 3 px | 4 px |
 
-- **Themes**: one theme definition drives chrome, terminal palette, and (M11) syntax scopes; built-in `hutan-dark` (terminal bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `hutan-light`; follows system appearance unless pinned. Later: import Ghostty/Zed theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
-- **Motion**: ≤ 150 ms, ease-out; no motion on terminal content; respects Reduce Motion.
+- **Chrome**: transparent titlebar with inset traffic lights over the `sidebar` color; light/dark follows macOS unless pinned (`appearance = "system" | "light" | "dark"`). The accent is the brand orange, not the system accent.
+- **Themes**: one theme definition drives chrome tokens, terminal palette and (M11) syntax scopes; built-in `hutan-light` and `hutan-dark` per the table. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
+- **Motion**: ≤ 150 ms ease-out for hover, popovers and expanding cards; no motion on terminal content; respects Reduce Motion.
 
 ## Settings
 
