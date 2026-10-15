@@ -104,7 +104,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 ## M8 — ACP, MCP, more harnesses
 - [ ] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
 - [ ] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
-- [ ] M8-C MCP servers passed to harness sessions; Hutan as an MCP server
+- [ ] M8-C Agent control surface (ADR 0016): UI commands and layout through the daemon, origin + approval policy, `hutan ui …`, `hutan mcp` passed to harness sessions
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
 
 ## M9 — Extensibility and remote
