@@ -47,7 +47,6 @@ use ulid::Ulid;
 use crate::bus::EventBus;
 use crate::config::NotifySettings;
 use crate::conn::ConnId;
-use crate::context::{Keep, bound};
 use crate::registry::{RegistryHandle, now_ms};
 
 /// Shortest time between two intents of one session (approvals excepted).
@@ -420,14 +419,28 @@ fn approval_candidate(approval: &ApprovalInfo) -> Candidate {
 /// comes first and sees the whole text: cutting first could clip a quoted secret before its
 /// closing quote, or a URL password before its `@`, and the prefix would then pass the masks.
 fn clean(text: &str, max_chars: usize) -> String {
-    let redacted = heeler_index::redact::redact(text);
-    let line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cut = bound(&line, max_chars.saturating_sub(1), Keep::Start);
-    if cut.truncated {
-        format!("{}…", cut.text)
-    } else {
-        line
+    if max_chars == 0 {
+        return String::new();
     }
+    let redacted = heeler_index::redact::redact(text);
+    let mut words = redacted.split_whitespace();
+    let Some(first) = words.next() else {
+        return String::new();
+    };
+    let mut chars = first
+        .chars()
+        .chain(words.flat_map(|word| std::iter::once(' ').chain(word.chars())));
+    // One bounded UTF-8 buffer, including room for an ellipsis; do not normalize the whole reply.
+    let capacity = max_chars
+        .saturating_mul(4)
+        .min(redacted.len().saturating_add(2));
+    let mut line = String::with_capacity(capacity);
+    line.extend(chars.by_ref().take(max_chars));
+    if chars.next().is_some() {
+        line.pop();
+        line.push('…');
+    }
+    line
 }
 
 fn human_duration(ms: u64) -> String {
@@ -1274,19 +1287,19 @@ mod tests {
         assert_eq!(multibyte.chars().count(), 10);
     }
 
-    /// What `clean` did before: cut the source first, redact the prefix.
-    fn clean_clipping_first(text: &str, max_chars: usize) -> String {
-        let source = bound(text, 8192, Keep::Start);
-        let redacted = heeler_index::redact::redact(&source.text);
-        let line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
-        bound(&line, max_chars.saturating_sub(1), Keep::Start).text
+    #[test]
+    fn a_reply_that_exactly_fits_the_body_budget_keeps_its_last_character() {
+        let fits = format!("{}x", "é".repeat(BODY_MAX_CHARS - 1));
+        assert_eq!(clean(&fits, BODY_MAX_CHARS), fits);
+        assert_eq!(
+            clean(&format!("{fits}z"), BODY_MAX_CHARS),
+            format!("{}…", "é".repeat(BODY_MAX_CHARS - 1))
+        );
     }
 
     #[test]
     fn a_secret_that_ends_beyond_any_prefix_is_still_masked() {
-        // A quoted assignment whose closing quote lies far beyond any prefix. (The redactor now
-        // also masks a quoted value that is cut off at the end of the text, so this one no longer
-        // distinguishes the orders; the URL below does.)
+        // A quoted assignment whose closing quote lies far beyond the notification body.
         let secret = "abcdefghij".repeat(1000);
         let quoted = format!("private_key=\"{secret}\" and then some text");
         let body = clean(&quoted, BODY_MAX_CHARS);
@@ -1297,11 +1310,6 @@ mod tests {
         // A URL password whose `@` lies beyond the prefix.
         let password = "p4ssw0rdp4ss".repeat(800);
         let url = format!("fetch https://deploy:{password}@example.com/repo.git now");
-        let clipped = clean_clipping_first(&url, BODY_MAX_CHARS);
-        assert!(
-            clipped.contains("p4ssw0rdp4ss"),
-            "the fixture must leak under the old order: {clipped}"
-        );
         let body = clean(&url, BODY_MAX_CHARS);
         assert!(!body.contains("p4ssw0rdp4ss"), "{body}");
         assert!(

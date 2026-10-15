@@ -46,6 +46,9 @@ Everything resolves by location, so the bundle works wherever it is put:
 
 A unit test per crate builds a fake bundle tree (`Heeler.app/Contents/MacOS/{heeler-desktop,heelerd,heeler}`, plus a symlinked CLI) and checks each rule.
 
+CLI startup is explicit: `heeler daemon start` (and `heeler index enable`) requests autostart.
+Queries such as `heeler notify ls` do not start a daemon that is down.
+
 ## Tests and the gate
 
 `xtask`'s `bundle` tests run in `just test`: one assembles a bundle from the debug binaries `cargo build --workspace --bins` leaves in `target/debug` into a temporary folder, signs and verifies it, parses both plists with the `plist` crate (identifier, version, minimum system version, high-resolution flag, executable and `BundleProgram` targets, `KeepAlive`/`RunAtLoad` false), checks the layout (executables are Mach-O, names distinct ignoring case, no `Helpers`, no icon), reads the signature back (`Signature=adhoc`, identifiers), proves verification fails after a byte of `heelerd` changes, and checks that no process runs from the bundle. It takes about two seconds, so it stays in the gate; `just bundle` itself is not part of `just check`. CI notes: run `just bundle --release` as a build artifact step on macOS runners; no step may open the result.

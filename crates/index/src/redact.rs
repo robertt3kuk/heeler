@@ -37,7 +37,8 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     authorization: compile(r"(?i)\b(authorization\s*[:=]\s*)(?:basic|bearer|token)\s+[^\s\x22']+"),
     url_credentials: compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@"),
     assignment: compile(&format!(
-        r#"({NAME_PATTERN}["']?\s*[:=]\s*)("[^"\n]{{4,}}(?:"|\z)|'[^'\n]{{4,}}(?:'|\z)|[^\s"',;)}}\]]{{6,}})"#
+        r#"({NAME_PATTERN}["']?\s*[:=]\s*)("[^"]{{4,}}(?:"|\z)|'[^']{{4,}}(?:'|\z)|{mask}|[^\s"',;)}}\]]{{6,}})"#,
+        mask = regex::escape(REDACTED),
     )),
 });
 
@@ -191,16 +192,26 @@ mod tests {
             clean("DB_PASSWORD='p@ss w0rd and more"),
             "DB_PASSWORD=[REDACTED]"
         );
-        // Closed values still stop at their quote, and an open quote before a line break is
-        // not the end of the text.
+        // Closed values stop at their quote; an unfinished multiline value is still a secret.
         assert_eq!(
             clean(r#"api_key="abcd1234efgh" then more"#),
             "api_key=[REDACTED] then more"
         );
         assert_eq!(
             clean("note: password=\"abcdefgh\nmore"),
-            "note: password=\"abcdefgh\nmore"
+            "note: password=[REDACTED]"
         );
+        assert_eq!(
+            clean("api_key=\"first line\nsecond line\" visible"),
+            "api_key=[REDACTED] visible"
+        );
+    }
+
+    #[test]
+    fn applying_redaction_again_preserves_the_complete_marker() {
+        let once = clean(r#"api_key="abcdefghijklmnop""#);
+        assert_eq!(once, "api_key=[REDACTED]");
+        assert_eq!(clean(&once), once);
     }
 
     #[test]

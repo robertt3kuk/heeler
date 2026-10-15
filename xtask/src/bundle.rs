@@ -95,10 +95,7 @@ pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
     let app = out.join(APP_NAME);
     let contents = app.join("Contents");
     let macos = contents.join("MacOS");
-    let sources: Vec<PathBuf> = EXECUTABLES
-        .iter()
-        .map(|(_, binary, _)| bin_dir.join(binary))
-        .collect();
+    let sources = EXECUTABLES.map(|(_, binary, _)| bin_dir.join(binary));
     for source in &sources {
         ensure!(
             source.is_file(),
