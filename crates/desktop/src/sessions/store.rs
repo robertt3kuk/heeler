@@ -28,7 +28,9 @@ use hutan_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::agents::{self, AgentAttentionChanged, AgentBadge};
-use super::attention::{AttentionTracker, Presentation, Unread, present};
+use super::attention::{
+    AttentionEntry, AttentionKind, AttentionTracker, Presentation, Unread, classify, present,
+};
 use super::terminal::TerminalSession;
 
 /// Notifications that arrive this soon after (re)connecting are replays of what happened before
@@ -456,6 +458,35 @@ impl SessionsStore {
             .iter()
             .filter(|s| self.presentation(s).needs_you)
             .map(|s| s.id)
+            .collect()
+    }
+
+    /// The sessions that need the user for the menu bar item and the Dock badge: blocked
+    /// agents, pending approvals and unread failures, in daemon order. See [`classify`].
+    pub fn attention_entries(&self) -> Vec<AttentionEntry> {
+        let mut pending: HashMap<SessionId, usize> = HashMap::new();
+        for approval in &self.state.approvals {
+            *pending.entry(approval.session_id).or_default() += 1;
+        }
+        self.state
+            .sessions
+            .iter()
+            .filter_map(|info| {
+                let presentation = self.presentation(info);
+                let approvals = pending.get(&info.id).copied().unwrap_or(0);
+                let kind = classify(&presentation, approvals)?;
+                let detail = match kind {
+                    AttentionKind::Approval if approvals == 1 => String::new(),
+                    AttentionKind::Approval => format!("{approvals} requests"),
+                    AttentionKind::Blocked | AttentionKind::Failed => presentation.detail,
+                };
+                Some(AttentionEntry {
+                    session: info.id,
+                    title: info.title.clone(),
+                    kind,
+                    detail,
+                })
+            })
             .collect()
     }
 

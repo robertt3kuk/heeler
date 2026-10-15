@@ -7,6 +7,7 @@ pub mod chat;
 mod daemon;
 mod daemon_popover;
 mod history;
+mod mac;
 mod modal;
 pub mod model;
 mod monitor;

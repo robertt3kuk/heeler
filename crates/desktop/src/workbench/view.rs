@@ -6,6 +6,7 @@ use super::actions::{self, Command};
 use super::agents::AgentPicker;
 use super::chat::{ChatModel, ChatView};
 use super::daemon::DaemonControl;
+use super::mac::MacControl;
 use super::modal::Modal;
 use super::model::{
     DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource, LayoutPreset, PaneId,
@@ -19,6 +20,7 @@ use super::settings_sheet::SettingsSheet;
 use super::style::{TerminalStyle, UiStyle};
 use super::terminals::TerminalItem;
 use super::workspaces::PickerState;
+use crate::macos::MacServices;
 use crate::sessions::{SessionsStore, TerminalSession, UiOpenRequested};
 use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
 use crate::theme::{Density, DensityExt as _, Theme};
@@ -56,6 +58,9 @@ pub struct WorkbenchOptions {
     pub state_path: Option<PathBuf>,
     /// Skip loading and start from this state (tests).
     pub initial_state: Option<WorkbenchState>,
+    /// What the workbench uses to reach macOS: login item, menu bar item, Dock tile, global
+    /// shortcut. Inert unless given real services (`app::run`) or fakes (tests).
+    pub mac: MacServices,
 }
 
 impl WorkbenchOptions {
@@ -72,7 +77,14 @@ impl WorkbenchOptions {
             status_items: builtin_status_items(),
             state_path,
             initial_state: None,
+            mac: MacServices::inert(),
         }
+    }
+
+    /// The same options with these macOS services.
+    pub fn with_mac(mut self, mac: MacServices) -> Self {
+        self.mac = mac;
+        self
     }
 }
 
@@ -282,6 +294,7 @@ pub struct Workbench {
     pub(crate) sheet_focus: FocusHandle,
     pub(crate) daemon_focus: FocusHandle,
     pub(crate) daemon: DaemonControl,
+    pub(crate) mac: MacControl,
     pub(crate) palette: Option<PaletteState>,
     pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) modal: Option<Modal>,
@@ -319,6 +332,7 @@ impl Workbench {
     pub fn new(options: WorkbenchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = options.settings;
         crate::settings::register_all(&settings);
+        let (mac, mac_events) = MacControl::new(options.mac);
         let appearance_settings = settings.get::<AppearanceSettings>();
         let layout_settings = settings.get::<LayoutSettings>();
         let terminal_settings = settings.get::<TerminalSettings>();
@@ -408,6 +422,19 @@ impl Workbench {
             }
         });
 
+        let events_task = mac_events.map(|mut events| {
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(event) = events.recv().await {
+                    let alive = this.update_in(cx, |this, window, cx| {
+                        this.on_mac_event(event, window, cx);
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+
         let subscriptions = vec![
             cx.observe_window_appearance(window, |_, _, cx| cx.notify()),
             cx.on_app_quit(|this, _| {
@@ -420,6 +447,7 @@ impl Workbench {
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_active = window.is_window_active();
                 this.sync_session_focus(cx);
+                this.refresh_login_status(cx);
             }),
             cx.subscribe_in(
                 &sessions,
@@ -484,6 +512,7 @@ impl Workbench {
             sheet_focus,
             daemon_focus,
             daemon: DaemonControl::new(),
+            mac,
             palette: None,
             context_menu: None,
             modal: None,
@@ -499,9 +528,18 @@ impl Workbench {
             _tasks: vec![settings_task],
             _subscriptions: subscriptions,
         };
+        this.mac.events_task = events_task;
         this.rebind_keys(cx);
         this.refresh_menus(cx);
         this.sync_session_focus(cx);
+        this.sync_mac_all(cx);
+        if this.mac.launchd_daemon {
+            let grace = this.mac.launchd_grace;
+            this.mac.grace_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(grace).await;
+                this.update(cx, |this, cx| this.launchd_grace_over(cx)).ok();
+            }));
+        }
         this
     }
 
@@ -544,6 +582,13 @@ impl Workbench {
 
     pub fn notice(&self) -> Option<&SharedString> {
         self.notice.as_ref()
+    }
+
+    /// Dismisses the notice line.
+    pub fn clear_notice(&mut self, cx: &mut Context<Self>) {
+        if self.notice.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn panel_registry(&self) -> &PanelRegistry {

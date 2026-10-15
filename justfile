@@ -37,3 +37,7 @@ bundle *args:
 # Render assets/macos/Hutan.icns from the brand icon SVG (docs/packaging.md).
 icon:
     cargo run -p xtask --locked -- icon
+
+# Render the menu bar glyph assets/macos/MenuBarIcon.png and @2x from the brand favicon.
+menubar-icon:
+    cargo run -p xtask --locked -- menubar-icon

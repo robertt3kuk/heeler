@@ -46,6 +46,66 @@ pub struct Presentation {
     pub needs_you: bool,
 }
 
+/// Why a session counts in the menu bar item and the Dock badge (design.md § Attention
+/// model → macOS surfaces). Finished-and-unread sessions are in the sidebar's *Needs you* but
+/// not here: a badge is for what blocks someone or went wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionKind {
+    /// An agent in the session is blocked.
+    Blocked,
+    /// A permission request waits for an answer.
+    Approval,
+    /// Exited non-zero, was killed, or failed to start, and the user has not looked.
+    Failed,
+}
+
+impl AttentionKind {
+    fn word(self) -> &'static str {
+        match self {
+            AttentionKind::Blocked => "blocked",
+            AttentionKind::Approval => "approval",
+            AttentionKind::Failed => "failed",
+        }
+    }
+}
+
+/// One session that needs the user, as the macOS surfaces list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionEntry {
+    pub session: SessionId,
+    pub title: String,
+    pub kind: AttentionKind,
+    /// `exit 2`, `2 approvals`, the agent's message; empty when there is nothing to add.
+    pub detail: String,
+}
+
+impl AttentionEntry {
+    /// `claude — blocked: running tests`.
+    pub fn text(&self) -> String {
+        if self.detail.is_empty() {
+            format!("{} — {}", self.title, self.kind.word())
+        } else {
+            format!("{} — {}: {}", self.title, self.kind.word(), self.detail)
+        }
+    }
+}
+
+/// How a session that `presentation` describes, with `pending_approvals` requests waiting,
+/// counts for the macOS surfaces; `None` when it does not.
+pub fn classify(presentation: &Presentation, pending_approvals: usize) -> Option<AttentionKind> {
+    if pending_approvals > 0 {
+        return Some(AttentionKind::Approval);
+    }
+    if !presentation.needs_you {
+        return None;
+    }
+    match presentation.tone {
+        Tone::Warning => Some(AttentionKind::Blocked),
+        Tone::Error => Some(AttentionKind::Failed),
+        Tone::Success | Tone::Accent | Tone::Muted => None,
+    }
+}
+
 /// What the unread flag of a state transition should become when a live session ends.
 fn unread_for_end(state: &SessionState) -> Option<Unread> {
     match state {
@@ -325,6 +385,48 @@ mod tests {
             code: Some(code),
             signal: None,
         }
+    }
+
+    fn presentation_of(state: SessionState, unread: Option<Unread>) -> Presentation {
+        present(&info(SessionId::new(), state), unread)
+    }
+
+    #[test]
+    fn only_blocked_approval_and_failed_sessions_count_for_the_macos_surfaces() {
+        let failed = presentation_of(exited(2), Some(Unread::Failed));
+        assert_eq!(classify(&failed, 0), Some(AttentionKind::Failed));
+        let done = presentation_of(exited(0), Some(Unread::Done));
+        assert!(done.needs_you);
+        assert_eq!(
+            classify(&done, 0),
+            None,
+            "a finished session is not a badge"
+        );
+        let seen = presentation_of(exited(2), None);
+        assert_eq!(
+            classify(&seen, 0),
+            None,
+            "a failure the user looked at is over"
+        );
+        let idle = presentation_of(SessionState::Idle, None);
+        assert_eq!(classify(&idle, 0), None);
+        let waiting = presentation_of(SessionState::WaitingApproval, None);
+        assert_eq!(classify(&waiting, 0), Some(AttentionKind::Blocked));
+        assert_eq!(classify(&idle, 1), Some(AttentionKind::Approval));
+        assert_eq!(classify(&failed, 1), Some(AttentionKind::Approval));
+    }
+
+    #[test]
+    fn an_entry_reads_like_a_menu_line() {
+        let mut entry = AttentionEntry {
+            session: SessionId::new(),
+            title: "claude".into(),
+            kind: AttentionKind::Failed,
+            detail: String::new(),
+        };
+        assert_eq!(entry.text(), "claude — failed");
+        entry.detail = "exit 2".into();
+        assert_eq!(entry.text(), "claude — failed: exit 2");
     }
 
     #[test]

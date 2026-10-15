@@ -321,18 +321,38 @@ mod tests {
             "every placeholder was filled in"
         );
 
-        // The LaunchAgent: present, pointing into the bundle, and inert until registered.
+        // The LaunchAgent: present, pointing into the bundle, started at load, and restarted
+        // only after a crash (never after the clean exits of a stopped daemon); no environment.
         let agent = dictionary(&app.join("Contents/Library/LaunchAgents/dev.hutan.daemon.plist"));
         assert_eq!(string(&agent, "Label"), "dev.hutan.daemon");
         let program = string(&agent, "BundleProgram");
         assert_eq!(program, "Contents/MacOS/hutand");
         assert!(app.join(program).is_file());
-        for key in ["KeepAlive", "RunAtLoad"] {
-            assert_eq!(
-                agent.get(key).and_then(plist::Value::as_boolean),
-                Some(false),
-                "{key}"
-            );
+        assert_eq!(
+            agent.get("RunAtLoad").and_then(plist::Value::as_boolean),
+            Some(true)
+        );
+        let keep_alive = agent
+            .get("KeepAlive")
+            .and_then(plist::Value::as_dictionary)
+            .expect("KeepAlive is a dictionary, not a bare boolean");
+        assert_eq!(
+            keep_alive.get("Crashed").and_then(plist::Value::as_boolean),
+            Some(true)
+        );
+        assert_eq!(
+            keep_alive.len(),
+            1,
+            "no SuccessfulExit / NetworkState condition: a clean exit stays stopped"
+        );
+        for key in [
+            "EnvironmentVariables",
+            "ProgramArguments",
+            "WorkingDirectory",
+            "StandardErrorPath",
+            "StandardOutPath",
+        ] {
+            assert!(agent.get(key).is_none(), "{key} stays unset");
         }
 
         // Resources: the icon and the shell integration scripts.

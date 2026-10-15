@@ -1,10 +1,11 @@
 //! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets;
 //! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Hutan.app`, `-- icon` renders its
-//! icon (`docs/packaging.md`).
+//! icon and `-- menubar-icon` the menu bar glyph (`docs/packaging.md`).
 
 mod bench;
 mod bundle;
 mod icon;
+mod menubar;
 mod proc;
 mod seed;
 mod stats;
@@ -54,6 +55,8 @@ enum Command {
     },
     /// Render assets/macos/Hutan.icns from the brand icon SVG.
     Icon,
+    /// Render the menu bar glyph (assets/macos/MenuBarIcon.png and @2x) from the brand favicon.
+    MenubarIcon,
 }
 
 #[tokio::main]
@@ -85,5 +88,6 @@ async fn main() -> anyhow::Result<()> {
             bin_dir,
         }),
         Command::Icon => icon::run(&bundle::workspace_root()),
+        Command::MenubarIcon => menubar::run(&bundle::workspace_root()),
     }
 }

@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- LaunchAgent of the bundled daemon, shipped in Contents/Library/LaunchAgents. Nothing registers
-     it yet: SMAppService registration is M6-B and needs the user present. `BundleProgram` is
-     relative to the app bundle; the agent is neither started at load nor kept alive, so
-     registering it only makes the daemon launchable on demand (docs/packaging.md). -->
+<!-- LaunchAgent of the bundled daemon, shipped in Contents/Library/LaunchAgents. Inert until the
+     desktop registers it with SMAppService, which it does only while "keep running"
+     (`app.keep_running`) is on (docs/packaging.md § Keep running).
+     - `BundleProgram` is relative to the app bundle: launchd starts Contents/MacOS/hutand with
+       no arguments and an empty `HUTAN_*` environment, so the daemon uses the standard data
+       folder, socket and `hutand.log` (the daemon writes its own log; stdout and stderr stay
+       at launchd's default).
+     - `RunAtLoad`: started when the agent is registered and at every login.
+     - `KeepAlive.Crashed`: restarted only after a crash (a fatal signal). Never after a clean
+       exit: `hutan daemon stop` and "Stop Daemon" exit 0, and a daemon that finds another one
+       holding the lock exits 2; neither may bring a daemon back. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -14,9 +21,12 @@
 	<array>
 		<string>dev.hutan.Hutan</string>
 	</array>
-	<key>KeepAlive</key>
-	<false/>
 	<key>RunAtLoad</key>
-	<false/>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>Crashed</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

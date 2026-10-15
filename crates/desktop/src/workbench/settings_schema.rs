@@ -8,9 +8,9 @@ use hutan_settings::{AppearanceSettings, Setting, SettingsStore};
 use serde_json::Value as Json;
 
 use crate::settings::{
-    AgentsSettings, AppSettings, ChatSettings, HistorySettings, InspectorPanelSettings,
-    LayoutSettings, OverviewPanelSettings, SessionsPanelSettings, TerminalSettings,
-    WorkspacesSettings,
+    AgentsSettings, AppSettings, AssistantSettings, ChatSettings, HistorySettings,
+    InspectorPanelSettings, LayoutSettings, OverviewPanelSettings, SessionsPanelSettings,
+    TerminalSettings, WorkspacesSettings,
 };
 
 /// How a field is edited.
@@ -247,6 +247,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<HistorySettings>(),
         CatalogEntry::of::<ChatSettings>(),
         CatalogEntry::of::<AgentsSettings>(),
+        CatalogEntry::of::<AssistantSettings>(),
         CatalogEntry {
             namespace: "models",
             workspace_overridable: false,

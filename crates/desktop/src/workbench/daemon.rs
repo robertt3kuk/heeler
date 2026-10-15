@@ -39,7 +39,7 @@ pub enum DaemonBusy {
 }
 
 impl DaemonBusy {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             DaemonBusy::Stopping => "stopping hutand…",
             DaemonBusy::Starting => "starting hutand…",
@@ -248,6 +248,9 @@ impl Workbench {
         DaemonMenu {
             on_quit: self.on_quit_mode(),
             running: self.daemon_connected(cx),
+            keep_running: self.keep_running_enabled(),
+            keep_running_available: self.keep_running_available(),
+            keep_running_status: self.keep_running_status(),
         }
     }
 
@@ -268,6 +271,7 @@ impl Workbench {
     /// The connection changed: keep the menu, the popover data and the terminals current.
     pub(crate) fn on_daemon_state_changed(&mut self, cx: &mut Context<Self>) {
         self.sync_daemon_menu(cx);
+        self.sync_mac_surfaces(cx);
         if self.daemon.popover {
             self.refresh_daemon_status(cx);
         }
@@ -454,6 +458,7 @@ impl Workbench {
             Ok(()) if restart => self.begin_start(true, cx),
             Ok(()) => {
                 self.daemon.busy = None;
+                self.sync_status_item(cx);
                 cx.notify();
             }
         }
@@ -476,6 +481,7 @@ impl Workbench {
             let started = wait_connected(&mut state, START_WAIT).await;
             this.update(cx, |this, cx| {
                 this.daemon.busy = None;
+                this.sync_status_item(cx);
                 if !started {
                     this.set_notice("The daemon did not start; see the daemon log", cx);
                 }
@@ -489,6 +495,8 @@ impl Workbench {
         self.daemon.stopped = stopped;
         self.sessions
             .update(cx, |store, cx| store.set_daemon_stopped(stopped, cx));
+        // The menu bar item says "stopped" and "stopping…" too.
+        self.sync_status_item(cx);
     }
 
     // ---- quit --------------------------------------------------------------------------------
@@ -500,7 +508,9 @@ impl Workbench {
         if self.daemon.quitting {
             return;
         }
-        if !self.daemon_connected(cx) {
+        // Keep running: launchd owns the daemon. It outlives the app whatever is running, so
+        // there is nothing to ask and nothing to stop.
+        if !self.daemon_connected(cx) || self.keep_running_active() {
             self.finish_quit(cx);
             return;
         }

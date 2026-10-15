@@ -1,6 +1,8 @@
 //! Application bootstrap: keymap, menus, window options, quit routing, and the `run` entry point.
 
-use crate::settings::{OnQuit, WorkspaceSort};
+use crate::macos::status_item::keep_running_title;
+use crate::macos::{LoginItem, LoginItemStatus, MacServices};
+use crate::settings::{AppSettings, OnQuit, WorkspaceSort};
 use crate::workbench::actions::{self, ApplyPreset, SetOnQuit, daemon};
 use crate::workbench::model::LayoutPreset;
 use crate::workbench::persistence;
@@ -20,6 +22,11 @@ use std::path::{Path, PathBuf};
 pub struct DaemonMenu {
     pub on_quit: OnQuit,
     pub running: bool,
+    /// `app.keep_running`, whether it can be used (the app runs from Hutan.app) and what the
+    /// system says about the launch agent.
+    pub keep_running: bool,
+    pub keep_running_available: bool,
+    pub keep_running_status: LoginItemStatus,
 }
 
 impl Default for DaemonMenu {
@@ -27,6 +34,9 @@ impl Default for DaemonMenu {
         Self {
             on_quit: OnQuit::Ask,
             running: true,
+            keep_running: false,
+            keep_running_available: false,
+            keep_running_status: LoginItemStatus::NotRegistered,
         }
     }
 }
@@ -148,6 +158,18 @@ pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
             MenuItem::submenu(Menu::new("Working Mode").items(OnQuit::ALL.map(|mode| {
                 MenuItem::action(mode.label(), SetOnQuit(mode)).checked(mode == daemon_menu.on_quit)
             }))),
+            MenuItem::separator(),
+            MenuItem::action(
+                keep_running_title(
+                    daemon_menu.keep_running_available,
+                    daemon_menu.keep_running_status,
+                ),
+                daemon::ToggleKeepRunning,
+            )
+            .checked(daemon_menu.keep_running)
+            .disabled(!daemon_menu.keep_running_available),
+            MenuItem::action("Open Login Items", daemon::OpenLoginItems)
+                .disabled(daemon_menu.keep_running_status != LoginItemStatus::RequiresApproval),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", actions::MinimizeWindow),
@@ -219,6 +241,26 @@ pub fn connect_options() -> ConnectOptions {
     }
 }
 
+/// Starts the connection. With keep running on and approved, launchd starts the daemon, so the
+/// connection only dials ([`Connection::start_held`]) and the workbench lets it start `hutand`
+/// itself if none has answered after a grace period; otherwise it autostarts as always.
+/// The second value says which of the two it was.
+pub fn start_connection(
+    options: ConnectOptions,
+    settings: &SettingsStore,
+    login_item: &dyn LoginItem,
+) -> (Connection, bool) {
+    crate::settings::register_all(settings);
+    let keep_running = settings.get::<AppSettings>().keep_running
+        && login_item.available()
+        && login_item.status() == LoginItemStatus::Enabled;
+    if keep_running {
+        (Connection::start_held(options), true)
+    } else {
+        (Connection::start(options), false)
+    }
+}
+
 /// The settings store over `settings.toml` / `keymap.toml` in the Hutan home.
 pub fn settings_store() -> SettingsStore {
     let paths = SettingsPaths::from_env().unwrap_or_else(|err| {
@@ -242,9 +284,13 @@ pub fn run() {
         .init();
     gpui_platform::application().run(|cx: &mut App| {
         let settings = settings_store();
-        let connection = Connection::start(connect_options());
+        let mut mac = MacServices::system();
+        let (connection, launchd) =
+            start_connection(connect_options(), &settings, mac.login_item.as_ref());
+        mac.launchd_daemon = launchd;
         let options =
-            WorkbenchOptions::builtin(settings, connection, persistence::default_state_path());
+            WorkbenchOptions::builtin(settings, connection, persistence::default_state_path())
+                .with_mac(mac);
         init(cx, &LayoutPreset::builtin());
         watch_signals(cx);
         if let Err(err) = open_workbench(cx, options) {

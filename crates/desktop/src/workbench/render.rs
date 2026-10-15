@@ -570,6 +570,16 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::daemon::OpenLogs, _, cx| {
             this.open_daemon_logs(cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::daemon::ToggleKeepRunning, _, cx| {
+                this.toggle_keep_running(cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::daemon::OpenLoginItems, _, cx| {
+                this.open_login_items(cx);
+            }),
+        )
         .on_action(cx.listener(|this, a: &actions::SetOnQuit, _, cx| {
             this.set_on_quit(a.0, cx);
         }))

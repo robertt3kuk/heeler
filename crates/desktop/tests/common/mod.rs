@@ -398,9 +398,17 @@ pub fn open_with(
     connection: Connection,
     state_path: Option<PathBuf>,
 ) -> (Entity<Workbench>, &mut VisualTestContext) {
+    let options = WorkbenchOptions::builtin(settings, connection, state_path);
+    open_options(cx, options)
+}
+
+/// Like [`open_with`] for options built by the test (macOS services, say).
+pub fn open_options(
+    cx: &mut TestAppContext,
+    options: WorkbenchOptions,
+) -> (Entity<Workbench>, &mut VisualTestContext) {
     // Real sockets and threads wake GPUI tasks from other threads.
     cx.executor().allow_parking();
-    let options = WorkbenchOptions::builtin(settings, connection, state_path);
     let (view, cx) = cx.add_window_view(|window, cx| Workbench::new(options, window, cx));
     // A real window is active; the test platform starts windows inactive.
     cx.update(|window, _| window.activate_window());

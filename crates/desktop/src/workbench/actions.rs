@@ -121,7 +121,18 @@ pub mod sheet {
 /// and the palette all dispatch these, so there is one implementation.
 pub mod daemon {
     use gpui::actions;
-    actions!(daemon, [Status, Restart, Stop, Start, OpenLogs]);
+    actions!(
+        daemon,
+        [
+            Status,
+            Restart,
+            Stop,
+            Start,
+            OpenLogs,
+            ToggleKeepRunning,
+            OpenLoginItems
+        ]
+    );
 }
 
 macro_rules! data_actions {
@@ -347,6 +358,8 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Daemon: Stop Daemon", daemon::Stop),
         command("Daemon: Start Daemon", daemon::Start),
         command("Daemon: Open Logs", daemon::OpenLogs),
+        command("Daemon: Toggle Keep Running", daemon::ToggleKeepRunning),
+        command("Daemon: Open Login Items", daemon::OpenLoginItems),
         command("Daemon: Working Mode — Ask on Quit", SetOnQuit(OnQuit::Ask)),
         command(
             "Daemon: Working Mode — Keep Sessions Running After Quit",

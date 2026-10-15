@@ -134,6 +134,20 @@ impl Connection {
     /// 10 s) and reconnects with exponential backoff (100 ms doubling to 5 s, ±20 % jitter)
     /// until dropped or shut down.
     pub fn start(opts: ConnectOptions) -> Connection {
+        let autostart = opts.autostart.is_some();
+        Self::start_with(opts, autostart)
+    }
+
+    /// Like [`start`](Self::start), but a missing daemon is **not** started until
+    /// [`set_autostart`](Self::set_autostart) allows it: the connection only dials. For a
+    /// daemon that something else (launchd, "keep running") starts; there is no window in which
+    /// the first dial could still autostart, as there would be with `start` followed by
+    /// `set_autostart(false)`.
+    pub fn start_held(opts: ConnectOptions) -> Connection {
+        Self::start_with(opts, false)
+    }
+
+    fn start_with(opts: ConnectOptions, autostart: bool) -> Connection {
         let socket = opts.socket.clone().or_else(default_socket_path);
         let (state, _) = watch::channel(Arc::new(StoreState::initial()));
         let (notices, _) = broadcast::channel(NOTICE_BUFFER);
@@ -147,7 +161,7 @@ impl Connection {
             generation: AtomicU64::new(0),
             commands,
             next_handle: AtomicU64::new(1),
-            autostart: AtomicBool::new(opts.autostart.is_some()),
+            autostart: AtomicBool::new(autostart),
             kick: Notify::new(),
         });
         let cancel = CancellationToken::new();

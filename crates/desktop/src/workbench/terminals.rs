@@ -977,6 +977,7 @@ impl Workbench {
         if changes.contains("app") {
             self.sync_daemon_menu(cx);
         }
+        self.on_mac_settings_changed(changes, cx);
         cx.notify();
     }
 

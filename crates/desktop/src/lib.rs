@@ -4,6 +4,7 @@
 pub mod app;
 pub mod bench;
 pub mod crash;
+pub mod macos;
 pub mod sessions;
 pub mod settings;
 pub mod signals;

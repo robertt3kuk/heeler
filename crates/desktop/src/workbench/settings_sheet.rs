@@ -22,6 +22,18 @@ use super::settings_schema::{
     value_at,
 };
 use super::view::Workbench;
+use crate::macos::LoginItemStatus;
+use crate::theme::Theme;
+
+/// The color of the launch agent's status next to the Keep running toggle.
+fn status_tone(status: LoginItemStatus, theme: Theme) -> gpui::Hsla {
+    match status {
+        LoginItemStatus::Enabled => theme.success,
+        LoginItemStatus::RequiresApproval => theme.warning,
+        LoginItemStatus::NotFound => theme.error,
+        LoginItemStatus::NotRegistered => theme.muted,
+    }
+}
 
 /// A text box being edited.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,9 +230,14 @@ impl Workbench {
     }
 
     pub fn sheet_toggle(&mut self, field: &str, cx: &mut Context<Self>) {
-        if let Some((_, f, value)) = self.sheet_field(field)
+        if let Some((namespace, f, value)) = self.sheet_field(field)
             && f.kind == FieldKind::Bool
         {
+            // Keep running registers the launch agent; the workbench owns that.
+            if namespace == "app" && field == "keep_running" {
+                self.toggle_keep_running(cx);
+                return;
+            }
             let on = value.as_bool().unwrap_or(false);
             self.sheet_write(field, toml::Value::Boolean(!on), cx);
         }
@@ -514,6 +531,7 @@ impl Workbench {
         let hover = theme.hover;
         let accent = theme.accent;
         let selected = sheet.namespace;
+        let keep_running = (self.keep_running_available(), self.keep_running_status());
         let editing = sheet.edit.clone();
         let dropdown = sheet.dropdown.clone();
         let message = sheet.message.clone();
@@ -579,13 +597,65 @@ impl Workbench {
                     FieldKind::Bool => {
                         let on = value.as_bool().unwrap_or(false);
                         let k = key.clone();
-                        button(
+                        let toggle = button(
                             SharedString::from(format!("toggle-{key}")),
                             if on { "On".into() } else { "Off".into() },
                             on,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| this.sheet_toggle(&k, cx)))
-                        .into_any_element()
+                        .on_click(cx.listener(move |this, _, _, cx| this.sheet_toggle(&k, cx)));
+                        if selected == "app" && key == "keep_running" {
+                            // The toggle, what the system says about the launch agent, and
+                            // the way to approve it.
+                            let available = keep_running.0;
+                            let status = keep_running.1;
+                            let (text, tone) = if available {
+                                (status.label().to_owned(), status_tone(status, theme))
+                            } else {
+                                ("available in Hutan.app".to_owned(), theme.muted)
+                            };
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(tokens.spacing * 2.0))
+                                .when(
+                                    available && status == LoginItemStatus::RequiresApproval,
+                                    |s| {
+                                        s.child(
+                                            button(
+                                                SharedString::from("open-login-items"),
+                                                "Open Login Items".into(),
+                                                false,
+                                            )
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.open_login_items(cx);
+                                                }),
+                                            ),
+                                        )
+                                    },
+                                )
+                                .child(
+                                    div()
+                                        .id("keep-running-status")
+                                        .text_color(tone)
+                                        .child(SharedString::from(text)),
+                                )
+                                .child(if available {
+                                    toggle.into_any_element()
+                                } else {
+                                    div()
+                                        .px(px(tokens.spacing * 2.0))
+                                        .h(px(tokens.sidebar_row - 4.0))
+                                        .flex()
+                                        .items_center()
+                                        .text_color(theme.muted)
+                                        .child("Off")
+                                        .into_any_element()
+                                })
+                                .into_any_element()
+                        } else {
+                            toggle.into_any_element()
+                        }
                     }
                     FieldKind::Enum(options) => {
                         let open = dropdown.as_deref() == Some(key.as_str());

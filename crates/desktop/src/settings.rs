@@ -724,16 +724,60 @@ impl OnQuit {
 }
 
 /// The `app` namespace.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AppSettings {
     /// What quitting does with the daemon while sessions are live: `ask`, `keep_running` or
     /// `stop_daemon`.
     pub on_quit: OnQuit,
+    /// Keep the daemon running in the background: registers the bundled launch agent (macOS
+    /// Login Items) so `hutand` starts at login and survives quitting the app, which then
+    /// never stops it. Only available when the app runs from Hutan.app.
+    pub keep_running: bool,
+    /// Show a menu bar item with the daemon state, a count of the sessions that need you and a
+    /// menu to jump to them.
+    pub menu_bar: bool,
+    /// Show the number of sessions that need you (blocked, waiting for an approval, failed and
+    /// unread) as a badge on the Dock icon.
+    pub dock_badge: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            on_quit: OnQuit::default(),
+            keep_running: false,
+            menu_bar: true,
+            dock_badge: true,
+        }
+    }
 }
 
 impl Setting for AppSettings {
     const NAMESPACE: &'static str = "app";
+}
+
+/// The `assistant` namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct AssistantSettings {
+    /// System-wide shortcut that brings Hutan forward and opens the Assistant, for example
+    /// `alt-space` or `cmd-shift-space` (modifiers `cmd`, `ctrl`, `alt`, `shift`, at least one
+    /// of the first three). Empty turns it off. If another app already owns the shortcut,
+    /// Hutan says so once and leaves the setting alone; the in-app keybinding is separate.
+    pub global_shortcut: String,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            global_shortcut: "alt-space".to_owned(),
+        }
+    }
+}
+
+impl Setting for AssistantSettings {
+    const NAMESPACE: &'static str = "assistant";
 }
 
 /// Registers every namespace the desktop owns (plus `appearance`) so the schema and diagnostics
@@ -741,6 +785,7 @@ impl Setting for AppSettings {
 pub fn register_all(store: &SettingsStore) {
     store.register::<AppearanceSettings>();
     store.register::<AppSettings>();
+    store.register::<AssistantSettings>();
     store.register::<TerminalSettings>();
     store.register::<LayoutSettings>();
     store.register::<SessionsPanelSettings>();
@@ -877,6 +922,21 @@ mod tests {
             assert_eq!(parsed.on_quit, mode);
         }
         assert!(toml::from_str::<AppSettings>("on_quit = \"sometimes\"").is_err());
+    }
+
+    #[test]
+    fn the_mac_integrations_default_as_documented() {
+        let app = AppSettings::default();
+        assert!(
+            !app.keep_running,
+            "nothing is registered with the system by default"
+        );
+        assert!(app.menu_bar && app.dock_badge);
+        let parsed: AppSettings = toml::from_str("keep_running = true\nmenu_bar = false").unwrap();
+        assert!(parsed.keep_running && !parsed.menu_bar && parsed.dock_badge);
+        assert_eq!(AssistantSettings::default().global_shortcut, "alt-space");
+        let off: AssistantSettings = toml::from_str("global_shortcut = \"\"").unwrap();
+        assert!(off.global_shortcut.is_empty());
     }
 
     #[test]

@@ -9,7 +9,10 @@ mod terminal;
 pub mod workspaces;
 
 pub use agents::{AgentAttentionChanged, AgentBadge, BlockedNode};
-pub use attention::{AttentionTracker, Presentation, Tone, Unread, ended_text, present};
+pub use attention::{
+    AttentionEntry, AttentionKind, AttentionTracker, Presentation, Tone, Unread, classify,
+    ended_text, present,
+};
 pub use placement::{PlacementBadge, placement_badge};
 pub use store::{REPLAY_WINDOW, SessionsStore, UI_OPEN_MAX_AGE_MS, UiOpenRequested};
 pub use terminal::TerminalSession;
