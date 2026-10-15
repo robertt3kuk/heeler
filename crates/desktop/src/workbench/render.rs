@@ -355,6 +355,16 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::NewTerminal, window, cx| {
             this.new_terminal(window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::NewTerminalInWorktree, window, cx| {
+                this.new_terminal_in_worktree(window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::RemoveWorktree, window, cx| {
+                this.open_worktree_remove_picker(window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::NewAgent, window, cx| {
             this.new_agent(window, cx);
         }))
@@ -1378,6 +1388,7 @@ impl Workbench {
         let accent = theme.accent;
         let hover = theme.hover;
         let (icon, title) = self.item_icon_and_title(item, cx);
+        let tab_tip = self.item_tooltip(item, cx).map(SharedString::from);
         let badge = session_of_item(item).and_then(|id| {
             let badge = self.sessions.read(cx).agent_badge(id);
             super::panels::agent_badge(
@@ -1444,6 +1455,9 @@ impl Workbench {
                     this.open_menu(event.position, entries, window, cx);
                 }),
             )
+            .when_some(tab_tip, |tab, tip| {
+                tab.tooltip(move |_, cx| cx.new(|_| super::style::TextTooltip(tip.clone())).into())
+            })
             .on_drag(dragged, |dragged: &DraggedItem, _, _, cx| {
                 let style = super::style::UiStyle::get(cx);
                 let label = dragged.label.clone();

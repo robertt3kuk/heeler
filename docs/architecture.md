@@ -122,6 +122,7 @@ flowchart LR
 - Every long-lived thing is an actor owning its state, talking through **bounded** `mpsc` channels; damage/state signals use `watch`/`Notify` (coalescing, never queue growth).
 - Terminal actor: blocking reader thread → OSC sniffer → `alacritty_terminal::Term` (behind a mutex) → damage notify; per-client render tasks build `TerminalFrame`s on ack (ADR 0004). Engine replies (DA/DSR) go back through the PTY writer.
 - Agent actor: owns the adapter subprocess (via `runtime`), maps provider messages to `AgentEvent`, writes the journal, registers approvals with `ApprovalEngine`; resolves approvals only with provider-offered options (ADR 0005).
+- Worktrees (`worktree.*`, `docs/orchestration.md`) are a service beside the registry: it runs git (`worktree list|add|remove`) off the registry's mailbox, remembers the worktrees Hutan created in SQLite, and asks the registry to derive every session's `placement` again when one changes. The registry derives placement itself from the session's directory by reading `.git` and `HEAD` (no git process) and keeps `shared_with` (other live agents in the same checkout) current.
 - Task panics are contained per actor; the registry marks the session `failed` and keeps the daemon alive.
 
 ## Key flows

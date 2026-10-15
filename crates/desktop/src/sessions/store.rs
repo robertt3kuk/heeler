@@ -20,6 +20,10 @@ use hutan_protocol::messages::{
     WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
     WorkspaceRoot,
 };
+use hutan_protocol::worktree::{
+    WorktreeCreate, WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeRemove,
+    WorktreeRemoved,
+};
 use hutan_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -310,7 +314,9 @@ impl SessionsStore {
             Notice::SessionExited { .. }
             | Notice::Bell { .. }
             | Notice::DaemonRestarted { .. }
-            | Notice::NotifyIntent { .. } => {}
+            | Notice::NotifyIntent { .. }
+            // The desktop lists worktrees when a command asks for them.
+            | Notice::WorktreesChanged { .. } => {}
         }
     }
 
@@ -796,6 +802,42 @@ impl SessionsStore {
             .ok();
             Ok(info)
         })
+    }
+
+    // ---- worktree commands -----------------------------------------------------------------
+
+    /// `worktree.list`: the worktrees of the repositories of `workspace`.
+    pub fn list_worktrees(
+        &self,
+        workspace: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<WorktreeInfo>, String>> {
+        let request = Request::WorktreeList(WorktreeListRequest {
+            workspace_id: Some(workspace),
+        });
+        self.call(request, |list: WorktreeList| list.worktrees, cx)
+    }
+
+    /// `worktree.create`.
+    pub fn create_worktree(
+        &self,
+        request: WorktreeCreate,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeInfo, String>> {
+        self.call(
+            Request::WorktreeCreate(request),
+            |created: hutan_protocol::worktree::WorktreeCreated| created.worktree,
+            cx,
+        )
+    }
+
+    /// `worktree.remove`.
+    pub fn remove_worktree(
+        &self,
+        request: WorktreeRemove,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeRemoved, String>> {
+        self.call(Request::WorktreeRemove(request), |removed| removed, cx)
     }
 
     // ---- workspace commands ----------------------------------------------------------------

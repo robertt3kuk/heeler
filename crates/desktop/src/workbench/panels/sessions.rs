@@ -15,7 +15,8 @@ use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
 
 use super::common::{
-    age_label, agent_badge, kind_icon, panel_header_with, placement, state_dot, tone_color,
+    age_label, agent_badge, kind_icon, panel_header_with, placement, placement_badge, state_dot,
+    tone_color,
 };
 use crate::sessions::workspaces as order;
 use crate::settings::{GroupBy, SessionsPanelSettings, WorkspaceSort, WorkspacesSettings};
@@ -111,10 +112,13 @@ impl SessionsPanel {
             return true;
         }
         let haystack = format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             info.title,
             info.command.join(" "),
             placement(info),
+            crate::sessions::placement_badge(info)
+                .map(|badge| badge.text)
+                .unwrap_or_default(),
             info.cwd
                 .as_ref()
                 .map(|c| c.display().to_string())
@@ -622,26 +626,36 @@ impl SessionsPanel {
                             .child(SharedString::from(info.title.clone())),
                     )
                     .children(badge.take()),
-                "placement" => {
-                    let place = placement(info);
-                    if place.is_empty() {
-                        line
-                    } else {
-                        line.child(
-                            div()
-                                .flex_none()
-                                .max_w(px(80.0))
-                                .truncate()
-                                .px(px(tokens.spacing))
-                                .rounded(px(3.0))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_size(px(tokens.section_font_size))
-                                .text_color(theme.muted)
-                                .child(SharedString::from(place)),
-                        )
+                "placement" => match crate::sessions::placement_badge(info) {
+                    Some(badge) => line.child(placement_badge(
+                        &theme,
+                        &badge,
+                        BadgeSite::Row,
+                        info.id,
+                        &self.env.regions,
+                        cx,
+                    )),
+                    None => {
+                        let place = placement(info);
+                        if place.is_empty() {
+                            line
+                        } else {
+                            line.child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(80.0))
+                                    .truncate()
+                                    .px(px(tokens.spacing))
+                                    .rounded(px(3.0))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .text_size(px(tokens.section_font_size))
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(place)),
+                            )
+                        }
                     }
-                }
+                },
                 "age" => line.child(
                     div()
                         .flex_none()

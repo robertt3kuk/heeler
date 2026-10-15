@@ -29,7 +29,7 @@ parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal", "process"] }
 tokio-util.workspace = true
 toml.workspace = true
 toml_edit.workspace = true

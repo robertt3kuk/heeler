@@ -23,7 +23,7 @@ use std::rc::Rc;
 
 pub use agents::{AgentsPanel, RowView, SectionView, TICK as AGENTS_TICK};
 pub use assistant::{AssistantPanel, Choice as AssistantChoice, Failure, Opened, ScopeKey};
-pub use common::{age_label, agent_badge, kind_icon, state_dot, tone_color};
+pub use common::{age_label, agent_badge, kind_icon, placement_badge, state_dot, tone_color};
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
     DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HistoryResume, HutanTarget,

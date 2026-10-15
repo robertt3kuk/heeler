@@ -148,6 +148,8 @@ pub enum Region {
     MonitorChip(&'static str),
     /// The agent badge of a session at one of its places.
     AgentBadge(BadgeSite, SessionId),
+    /// The placement badge (`main` / `wt <branch>`) of a session at one of its places.
+    PlacementBadge(BadgeSite, SessionId),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -612,6 +614,22 @@ impl Workbench {
             ),
             ItemRef::Placeholder { title } => ("▫".into(), title.clone().into()),
         }
+    }
+
+    /// What hovering the tab of `item` says: the session's title with its placement badge
+    /// (`main` / `wt <branch>`) and the checkout. `None` for panels and for sessions outside git.
+    pub fn item_tooltip(&self, item: &ItemRef, cx: &App) -> Option<String> {
+        let (ItemRef::Terminal { session } | ItemRef::Chat { session }) = item else {
+            return None;
+        };
+        let id = session.parse::<SessionId>().ok()?;
+        let store = self.sessions.read(cx);
+        let info = store.session(id)?;
+        let badge = crate::sessions::placement_badge(info)?;
+        Some(format!(
+            "{} · {}\n{}",
+            info.title, badge.text, badge.tooltip
+        ))
     }
 
     pub fn item_title(&self, item: &ItemRef, cx: &App) -> SharedString {

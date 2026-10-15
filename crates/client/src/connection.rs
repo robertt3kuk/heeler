@@ -344,6 +344,14 @@ impl Connection {
             .is_some_and(|client| client.supports_notify())
     }
 
+    /// True while connected to a daemon that advertised capability `worktree`
+    /// ([`Client::supports_worktrees`]); false when disconnected.
+    pub fn supports_worktrees(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_worktrees())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

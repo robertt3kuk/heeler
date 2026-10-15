@@ -34,6 +34,7 @@ use crate::registry::{self, RegistryConfig};
 use crate::restore::{self, Stored};
 use crate::router::{Router, Services};
 use crate::terminals::TerminalHub;
+use crate::worktrees::WorktreeService;
 
 pub const DEFAULT_OUTBOUND_QUEUE: usize = 1024;
 
@@ -225,6 +226,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     let notify = NotifyService::new(settings.notify.clone(), bus.clone(), registry.clone());
     // Observes the bus until shutdown; nothing needs its handle.
     drop(notify.start(shutdown.clone()));
+    let worktrees = WorktreeService::new(registry.clone(), storage.clone(), bus.clone());
     let router = Router::new(
         registry,
         hub,
@@ -232,6 +234,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             history,
             assistant,
             notify,
+            worktrees,
         },
         bus.clone(),
         shutdown.clone(),

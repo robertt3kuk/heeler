@@ -23,6 +23,7 @@ pub mod style;
 mod terminals;
 mod view;
 mod workspaces;
+mod worktrees;
 
 pub use agents::{AgentPicker, CODEX, Models};
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};

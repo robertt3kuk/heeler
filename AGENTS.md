@@ -19,6 +19,7 @@ macOS-first Rust agentic development environment: `hutand` (Tokio daemon, source
 - `docs/gateway.md` — direct model chat: providers (OpenAI-compatible, Anthropic, Ollama), Keychain credentials, direct chat sessions, `hutan provider` / `hutan chat` commands, tests
 - `docs/assistant.md` — assistant chat: scopes, context attachments (shell, agent transcripts, files, search), redaction and budgets, permissions, `hutan ask`
 - `docs/agents.md` — Codex chat sessions: adapter, `AgentEvent`, approvals, journal, how to re-record the test transcripts
+- `docs/orchestration.md` — worktrees and session placement: `hutan wt`, `hutan new --worktree`, placement badges, shared-checkout warning
 - `docs/integrations.md` — agent reporting (state + resume command), `hutan agent`, `hutan integration` for Codex, Claude Code, OMP
 - `docs/packaging.md` — the signed app bundle (`just bundle`): layout, ad-hoc signing, how the executables find each other, what M6-B adds
 - `docs/process.md` — how we work, gates, testing strategy

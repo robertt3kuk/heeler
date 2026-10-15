@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::sessions::{AgentBadge, Presentation, Tone};
+use crate::sessions::{AgentBadge, PlacementBadge, Presentation, Tone};
 use crate::theme::Theme;
 use crate::workbench::actions::OpenSettingsFor;
 use crate::workbench::render::probe;
@@ -86,6 +86,42 @@ pub fn agent_badge(
             .child(probe(regions, Region::AgentBadge(site, session)))
             .into_any_element(),
     )
+}
+
+/// The placement badge of a session row: `main` or `wt <branch>`, framed like the other row
+/// badges, with a warning border and `⚠` while another live agent works in the same checkout.
+/// Its tooltip names the checkout.
+pub fn placement_badge(
+    theme: &Theme,
+    badge: &PlacementBadge,
+    site: BadgeSite,
+    session: SessionId,
+    regions: &Rc<RefCell<HashMap<Region, gpui::Bounds<gpui::Pixels>>>>,
+    cx: &App,
+) -> AnyElement {
+    let tokens = UiStyle::get(cx).density.ui();
+    let tip = SharedString::from(badge.tooltip.clone());
+    let (color, text) = if badge.shared {
+        (theme.warning, format!("⚠ {}", badge.text))
+    } else {
+        (theme.muted, badge.text.clone())
+    };
+    div()
+        .id(SharedString::from(format!("placement-badge-{session}")))
+        .relative()
+        .flex_none()
+        .max_w(px(130.0))
+        .truncate()
+        .px(px(tokens.spacing))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(if badge.shared { color } else { theme.border })
+        .text_size(px(tokens.section_font_size))
+        .text_color(color)
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .child(SharedString::from(text))
+        .child(probe(regions, Region::PlacementBadge(site, session)))
+        .into_any_element()
 }
 
 pub fn kind_icon(kind: SessionKind) -> &'static str {

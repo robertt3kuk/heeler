@@ -762,7 +762,7 @@ async fn acting_open_tells_the_desktops_to_show_the_session() {
 // ---- the wire -----------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_daemon_advertises_the_capability_and_protocol_0_13() {
+async fn the_daemon_advertises_the_capability_since_protocol_0_13() {
     let t = Env::plain().await;
     assert!(t.client.supports_notify());
     let raw: serde_json::Value = t
@@ -770,7 +770,8 @@ async fn the_daemon_advertises_the_capability_and_protocol_0_13() {
         .call(Request::DaemonStatus(Empty {}))
         .await
         .unwrap();
-    assert_eq!(raw["protocol"]["minor"], 13);
+    // Later minors only add: the capability and the 0.13 messages stay.
+    assert!(raw["protocol"]["minor"].as_u64() >= Some(13), "{raw}");
     t.stop().await;
 }
 

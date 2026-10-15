@@ -192,7 +192,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "agent.tree",
             "chat.direct",
             "assistant",
-            "notify.intents"
+            "notify.intents",
+            "worktree"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

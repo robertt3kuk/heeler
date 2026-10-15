@@ -25,6 +25,7 @@ use crate::notify::NotifyService;
 use crate::providers::ProviderService;
 use crate::registry::RegistryHandle;
 use crate::terminals::TerminalHub;
+use crate::worktrees::WorktreeService;
 
 /// The services a router hands requests to besides the registry and the terminal hub.
 #[derive(Debug)]
@@ -32,6 +33,7 @@ pub struct Services {
     pub history: Arc<HistoryService>,
     pub assistant: Arc<AssistantService>,
     pub notify: Arc<NotifyService>,
+    pub worktrees: Arc<WorktreeService>,
 }
 
 #[derive(Debug)]
@@ -41,6 +43,7 @@ pub struct Router {
     history: Arc<HistoryService>,
     assistant: Arc<AssistantService>,
     notify: Arc<NotifyService>,
+    worktrees: Arc<WorktreeService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -64,6 +67,7 @@ impl Router {
             history: services.history,
             assistant: services.assistant,
             notify: services.notify,
+            worktrees: services.worktrees,
             bus,
             started: Instant::now(),
             shutdown,
@@ -240,6 +244,9 @@ impl Router {
                 self.notify.set_focus(conn.id(), req.session_id);
                 ok(&Empty {})
             }
+            Request::WorktreeCreate(req) => ok(&self.worktrees.create(req).await?),
+            Request::WorktreeList(req) => ok(&self.worktrees.list(req).await?),
+            Request::WorktreeRemove(req) => ok(&self.worktrees.remove(req).await?),
             Request::ProviderList(_) => ok(&self.providers().list().await?),
             Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
             Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),

@@ -189,7 +189,7 @@ impl Ctx {
 
     // ---- helpers shared with the session commands ------------------------------------------
 
-    async fn workspace_list(&self, client: &Client) -> Result<WorkspaceList, CliError> {
+    pub(super) async fn workspace_list(&self, client: &Client) -> Result<WorkspaceList, CliError> {
         self.call(client, Request::WorkspaceList(Empty {})).await
     }
 

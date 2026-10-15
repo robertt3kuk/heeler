@@ -494,7 +494,7 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
 
     // A database written by a newer build.
     let newer = Migration {
-        version: 6,
+        version: 7,
         name: "from the future",
         sql: "CREATE TABLE future (x INTEGER NOT NULL);",
     };
@@ -506,6 +506,7 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
             hutan_storage::MIGRATIONS[2],
             hutan_storage::MIGRATIONS[3],
             hutan_storage::MIGRATIONS[4],
+            hutan_storage::MIGRATIONS[5],
             newer,
         ],
     )

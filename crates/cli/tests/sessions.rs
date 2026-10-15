@@ -38,7 +38,10 @@ async fn new_then_ls_json_shows_a_running_session() {
     let table = t.hutan(&["ls"]).await.ok().stdout;
     let mut lines = table.lines();
     let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
-    assert_eq!(header, ["ID", "TERMINAL", "STATE", "TITLE", "CWD", "AGE"]);
+    assert_eq!(
+        header,
+        ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"]
+    );
     let row = lines.next().unwrap();
     assert!(
         row.starts_with(words[1])

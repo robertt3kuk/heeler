@@ -28,6 +28,7 @@ use crate::provider::{
 };
 use crate::render::Row;
 use crate::tree::{AgentTreeRequest, NodeReport};
+use crate::worktree::{Placement, WorktreeCreate, WorktreeListRequest, WorktreeRemove};
 
 /// Parameterless request body; encoded as `{}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -209,6 +210,17 @@ pub enum Request {
     /// answered with `Empty`.
     #[serde(rename = "client.focus")]
     ClientFocus(ClientFocus),
+    /// Capability `worktree` (protocol 0.14): a git worktree for a branch; answered with
+    /// `WorktreeCreated`.
+    #[serde(rename = "worktree.create")]
+    WorktreeCreate(WorktreeCreate),
+    /// Capability `worktree`: the worktrees of a workspace's repositories; answered with
+    /// `WorktreeList`.
+    #[serde(rename = "worktree.list")]
+    WorktreeList(WorktreeListRequest),
+    /// Capability `worktree`: remove a worktree; answered with `WorktreeRemoved`.
+    #[serde(rename = "worktree.remove")]
+    WorktreeRemove(WorktreeRemove),
 }
 
 impl Request {
@@ -657,6 +669,10 @@ pub struct SessionInfo {
     /// Present for agent chat sessions (kind `harness`; capability `chat.codex`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatInfo>,
+    /// Protocol 0.14 (capability `worktree`): the git checkout the session works in; absent
+    /// outside a git repository or while its directory is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
 }
 
 /// The latest report of a coding agent running in a session: the main agent, with the state
@@ -799,6 +815,10 @@ pub enum Event {
         workspace_id: Option<WorkspaceId>,
         at_ms: u64,
     },
+    /// Capability `worktree` (protocol 0.14): worktrees were created or removed in a workspace's
+    /// repositories; clients list them again.
+    #[serde(rename = "worktree.changed")]
+    WorktreeChanged { workspace_id: WorkspaceId },
 }
 
 impl Event {
@@ -832,6 +852,7 @@ impl Event {
         "agent.tree_updated",
         "notify.intent",
         "ui.open",
+        "worktree.changed",
     ];
 }
 

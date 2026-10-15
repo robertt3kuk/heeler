@@ -12,7 +12,8 @@ use crate::migrate::Migration;
 use crate::sql::Fault;
 use crate::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, ProviderRow,
-    RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow, Write, migrate,
+    RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow, WorktreeRow,
+    Write, migrate,
 };
 use hutan_core::ApprovalId;
 
@@ -96,7 +97,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -146,7 +147,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -412,7 +413,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -1125,8 +1126,75 @@ fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "providers"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 5);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
     storage.close();
     assert!(table_exists(&db(&dir), "providers"));
+    integrity_ok(&db(&dir));
+}
+
+fn worktree(path: &str, workspace: WorkspaceId, created: u64) -> WorktreeRow {
+    WorktreeRow {
+        path: PathBuf::from(path),
+        workspace_id: workspace,
+        repo_root: PathBuf::from("/work/repo"),
+        branch: "feature/x".to_owned(),
+        base: "HEAD".to_owned(),
+        created_at_ms: created,
+    }
+}
+
+#[test]
+fn worktrees_are_remembered_replaced_and_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceId::new();
+    {
+        let storage = Storage::open(db(&dir)).unwrap();
+        assert!(storage.worktrees().list().unwrap().is_empty());
+        storage
+            .worktrees()
+            .upsert(worktree("/work/repo-wt/b", ws, 20))
+            .unwrap();
+        storage
+            .worktrees()
+            .upsert(worktree("/work/repo-wt/a", ws, 10))
+            .unwrap();
+        let mut changed = worktree("/work/repo-wt/b", ws, 30);
+        changed.branch = "other".to_owned();
+        storage.worktrees().upsert(changed.clone()).unwrap();
+        storage.close();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    let rows = storage.worktrees().list().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], worktree("/work/repo-wt/a", ws, 10));
+    assert_eq!(rows[1].path, PathBuf::from("/work/repo-wt/b"));
+    assert_eq!(rows[1].branch, "other");
+    storage
+        .worktrees()
+        .delete(PathBuf::from("/work/repo-wt/a"))
+        .unwrap();
+    storage
+        .worktrees()
+        .delete(PathBuf::from("/missing"))
+        .unwrap();
+    assert_eq!(storage.worktrees().list().unwrap().len(), 1);
+    storage.close();
+}
+
+#[test]
+fn migrating_v5_adds_the_worktree_table_and_keeps_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..5]).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        storage.close();
+    }
+    assert!(!table_exists(&db(&dir), "worktrees"));
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+    storage.close();
+    assert!(table_exists(&db(&dir), "worktrees"));
     integrity_ok(&db(&dir));
 }

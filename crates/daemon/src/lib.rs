@@ -9,6 +9,8 @@
 //! - [`registry`]: the `SessionRegistry` actor (workspaces and terminal sessions, written
 //!   through to `hutan-storage` and restored from it at start).
 //! - [`restore`]: loading durable state and the rules for what is stored.
+//! - [`placement`]: which git checkout a session works in and which agents share one.
+//! - [`worktrees`]: git worktrees (`worktree.*`) on top of the git command line.
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 //! - [`history`]: the opt-in session history index (`hutan-index`) and the `history.*` requests.
@@ -36,6 +38,7 @@ pub mod error;
 pub mod history;
 pub mod notify;
 pub mod paths;
+pub mod placement;
 pub mod projects;
 pub mod providers;
 pub mod registry;
@@ -43,6 +46,7 @@ pub mod restore;
 pub mod router;
 pub mod terminals;
 pub mod tree;
+pub mod worktrees;
 
 pub use bus::RingLimits;
 pub use config::{AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, RestoreMode};

@@ -14,6 +14,7 @@ use hutan_protocol::messages::{
     TerminalSpec,
 };
 use hutan_protocol::render::{Row, TerminalRender};
+use hutan_protocol::worktree::PlacementKind;
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -39,12 +40,12 @@ impl Ctx {
             None
         };
         // The daemon resolves paths from its own working directory, not ours.
-        let cwd = match args.cwd {
+        let mut cwd = match args.cwd {
             Some(path) => std::path::absolute(path)?,
             None => std::env::current_dir()?,
         };
         let client = self.connect().await?;
-        let workspace = match super::workspaces::workspace_target(args.workspace) {
+        let mut workspace = match super::workspaces::workspace_target(args.workspace.clone()) {
             Some((target, source)) => Some(
                 self.resolve_workspace_id(&client, &target)
                     .await
@@ -52,6 +53,14 @@ impl Ctx {
             ),
             None => None,
         };
+        if let Some(branch) = &args.worktree {
+            // The session works in the branch's worktree, made now when there is none.
+            let placed = self
+                .worktree_for_session(&client, args.workspace, branch, &cwd)
+                .await?;
+            workspace = Some(placed.workspace);
+            cwd = placed.path;
+        }
         // Subscribe before creating so an instantly exiting command is not missed by `attach`.
         let events = client.events();
         if args.attach {
@@ -287,7 +296,7 @@ impl Ctx {
 }
 
 /// Tells where an unusable workspace name came from when it was not typed on the command line.
-fn with_source(error: CliError, target: &str, source: &str) -> CliError {
+pub(super) fn with_source(error: CliError, target: &str, source: &str) -> CliError {
     match error {
         CliError::Failed(message) if source != "--ws" => {
             CliError::Failed(format!("{message} (`{target}` comes from ${source})"))
@@ -452,17 +461,38 @@ fn listed_state_text(session: &SessionInfo) -> String {
     }
 }
 
+/// The placement column of `hutan ls`: `main` or `wt <branch>` (`wt (detached)` without a
+/// branch), `⚠ shared` added while another live agent works in the same checkout; `-` when the
+/// session is not in a git checkout.
+pub(super) fn placement_text(session: &SessionInfo) -> String {
+    let Some(placement) = &session.placement else {
+        return "-".to_owned();
+    };
+    let mut text = match placement.kind {
+        PlacementKind::Main => "main".to_owned(),
+        PlacementKind::Worktree => match &placement.branch {
+            Some(branch) => format!("wt {branch}"),
+            None => "wt (detached)".to_owned(),
+        },
+    };
+    if !placement.shared_with.is_empty() {
+        text.push_str(" ⚠ shared");
+    }
+    text
+}
+
 fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
     if sessions.is_empty() {
         return "no sessions".to_owned();
     }
-    let rows: Vec<[String; 6]> = sessions
+    let rows: Vec<[String; 7]> = sessions
         .iter()
         .map(|s| {
             [
                 s.id.to_string(),
                 terminal_text(s),
                 listed_state_text(s),
+                placement_text(s),
                 s.title.clone(),
                 s.cwd
                     .as_ref()
@@ -471,8 +501,8 @@ fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
             ]
         })
         .collect();
-    let header = ["ID", "TERMINAL", "STATE", "TITLE", "CWD", "AGE"].map(str::to_owned);
-    let mut widths = [0; 6];
+    let header = ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"].map(str::to_owned);
+    let mut widths = [0; 7];
     for row in std::iter::once(&header).chain(&rows) {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -484,10 +514,10 @@ fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
             table.push('\n');
         }
         let mut line = String::new();
-        for (cell, width) in row.iter().zip(widths).take(5) {
+        for (cell, width) in row.iter().zip(widths).take(6) {
             line.push_str(&format!("{cell:<width$}  "));
         }
-        line.push_str(&row[5]);
+        line.push_str(&row[6]);
         table.push_str(&line);
     }
     table
@@ -536,6 +566,7 @@ mod tests {
             agent: None,
             restored: false,
             chat: None,
+            placement: None,
         }
     }
 
@@ -593,6 +624,39 @@ mod tests {
                 .to_string()
                 .contains("at least 4")
         );
+    }
+
+    #[test]
+    fn placement_badges_say_main_worktree_detached_and_shared() {
+        use hutan_protocol::worktree::Placement;
+        let mut s = session(A, 1, "t");
+        assert_eq!(placement_text(&s), "-");
+        let mut placement = Placement {
+            kind: PlacementKind::Main,
+            root: PathBuf::from("/repo"),
+            branch: Some("master".to_owned()),
+            shared_with: vec![],
+        };
+        s.placement = Some(placement.clone());
+        assert_eq!(placement_text(&s), "main");
+        placement.kind = PlacementKind::Worktree;
+        placement.branch = Some("feature/x".to_owned());
+        s.placement = Some(placement.clone());
+        assert_eq!(placement_text(&s), "wt feature/x");
+        placement.branch = None;
+        s.placement = Some(placement.clone());
+        assert_eq!(placement_text(&s), "wt (detached)");
+        placement.shared_with = vec![B.parse().unwrap()];
+        s.placement = Some(placement);
+        assert_eq!(placement_text(&s), "wt (detached) ⚠ shared");
+
+        let table = session_table(&[s], 0);
+        let header: Vec<_> = table.lines().next().unwrap().split_whitespace().collect();
+        assert_eq!(
+            header,
+            ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"]
+        );
+        assert!(table.contains("wt (detached) ⚠ shared"), "{table}");
     }
 
     #[test]

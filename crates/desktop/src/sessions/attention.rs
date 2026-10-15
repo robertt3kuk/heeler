@@ -316,6 +316,7 @@ mod tests {
             agent: None,
             restored: false,
             chat: None,
+            placement: None,
         }
     }
 

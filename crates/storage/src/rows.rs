@@ -147,3 +147,19 @@ pub struct ProviderRow {
     pub keychain_ref: String,
     pub created_at_ms: u64,
 }
+
+/// A git worktree Hutan created (`worktree.create`). git itself is the source of truth for
+/// which worktrees exist; this only remembers which of them are Hutan's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRow {
+    /// The worktree's directory (canonical), unique.
+    pub path: PathBuf,
+    /// The workspace that asked for it.
+    pub workspace_id: WorkspaceId,
+    /// The repository's main worktree.
+    pub repo_root: PathBuf,
+    pub branch: String,
+    /// The ref the branch was started from.
+    pub base: String,
+    pub created_at_ms: u64,
+}

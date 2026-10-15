@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use crate::error::{Result, StorageError};
 use crate::rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow, WorktreeRow,
 };
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
@@ -79,6 +79,9 @@ pub enum Write {
     /// Inserts a provider or replaces everything but its creation time.
     UpsertProvider(Box<ProviderRow>),
     DeleteProvider(String),
+    /// Remembers a worktree Hutan created, replacing the row of the same path.
+    UpsertWorktree(Box<WorktreeRow>),
+    DeleteWorktree(PathBuf),
     /// Crash-injection points for the tests.
     #[cfg(test)]
     Fault(Fault),
@@ -216,6 +219,31 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         Write::DeleteProvider(id) => {
             conn.execute("DELETE FROM providers WHERE id = ?1", [id])
                 .map_err(StorageError::sqlite("deleting a provider"))?;
+        }
+        Write::UpsertWorktree(row) => {
+            conn.execute(
+                "INSERT INTO worktrees (path, workspace_id, repo_root, branch, base, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT (path) DO UPDATE SET workspace_id = excluded.workspace_id, \
+                     repo_root = excluded.repo_root, branch = excluded.branch, \
+                     base = excluded.base, created_at_ms = excluded.created_at_ms",
+                params![
+                    row.path.to_string_lossy(),
+                    row.workspace_id.to_string(),
+                    row.repo_root.to_string_lossy(),
+                    row.branch,
+                    row.base,
+                    ms(row.created_at_ms)
+                ],
+            )
+            .map_err(StorageError::sqlite("writing a worktree"))?;
+        }
+        Write::DeleteWorktree(path) => {
+            conn.execute(
+                "DELETE FROM worktrees WHERE path = ?1",
+                [path.to_string_lossy()],
+            )
+            .map_err(StorageError::sqlite("deleting a worktree"))?;
         }
         #[cfg(test)]
         Write::Fault(Fault::Panic) => panic!("injected writer panic"),
@@ -783,4 +811,47 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<ProviderRow>> {
         .map_err(StorageError::sqlite(context))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(StorageError::sqlite(context))
+}
+
+/// Every remembered worktree, oldest first.
+pub fn list_worktrees(conn: &Connection) -> Result<Vec<WorktreeRow>> {
+    let context = "listing worktrees";
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, workspace_id, repo_root, branch, base, created_at_ms \
+             FROM worktrees ORDER BY created_at_ms, rowid",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(1)?;
+            let path: String = row.get(0)?;
+            let repo_root: String = row.get(2)?;
+            Ok((
+                path,
+                id,
+                repo_root,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(StorageError::sqlite(context))?;
+    let mut out = Vec::new();
+    for entry in rows {
+        let (path, id, repo_root, branch, base, created) =
+            entry.map_err(StorageError::sqlite(context))?;
+        let workspace_id = id
+            .parse()
+            .map_err(|e| StorageError::corrupt(format!("worktrees.workspace_id of {path}"), e))?;
+        out.push(WorktreeRow {
+            path: PathBuf::from(path),
+            workspace_id,
+            repo_root: PathBuf::from(repo_root),
+            branch,
+            base,
+            created_at_ms: unms(created),
+        });
+    }
+    Ok(out)
 }

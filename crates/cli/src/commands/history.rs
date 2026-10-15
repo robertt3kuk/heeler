@@ -92,6 +92,7 @@ impl Ctx {
             title: Some(title),
             env: Vec::new(),
             attach,
+            worktree: None,
             argv,
         })
         .await

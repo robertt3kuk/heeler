@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
-use hutan_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
+use hutan_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId, WorkspaceId};
 use hutan_protocol::assistant::{
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
 };
@@ -31,6 +31,10 @@ use hutan_protocol::provider::{
 };
 use hutan_protocol::render::TerminalRender;
 use hutan_protocol::tree::{AgentTree, AgentTreeRequest};
+use hutan_protocol::worktree::{
+    WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeListRequest,
+    WorktreeRemove, WorktreeRemoved,
+};
 use hutan_protocol::{
     ControlMessage, ErrorBody, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
@@ -64,6 +68,9 @@ pub(crate) const ASSISTANT_CAPABILITY: &str = "assistant";
 /// Capability for `notify.*`, `client.focus` and the `notify.intent` / `ui.open` events
 /// (protocol 0.13).
 pub(crate) const NOTIFY_CAPABILITY: &str = "notify.intents";
+/// Capability for `worktree.*`, the `worktree.changed` event and `SessionInfo.placement`
+/// (protocol 0.14).
+pub(crate) const WORKTREE_CAPABILITY: &str = "worktree";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -77,6 +84,7 @@ const CAPABILITIES: &[&str] = &[
     DIRECT_CAPABILITY,
     ASSISTANT_CAPABILITY,
     NOTIFY_CAPABILITY,
+    WORKTREE_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -414,6 +422,40 @@ impl Client {
         self.call::<Empty>(Request::ClientFocus(ClientFocus { session_id }))
             .await
             .map(|_| ())
+    }
+
+    /// True when the daemon advertised capability `worktree` (protocol 0.14).
+    pub fn supports_worktrees(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == WORKTREE_CAPABILITY)
+    }
+
+    /// Creates a worktree for a branch (`worktree.create`).
+    pub async fn worktree_create(&self, req: WorktreeCreate) -> Result<WorktreeInfo, ClientError> {
+        let created: WorktreeCreated = self.call(Request::WorktreeCreate(req)).await?;
+        Ok(created.worktree)
+    }
+
+    /// The worktrees of one workspace's repositories, or of every workspace.
+    pub async fn worktree_list(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<Vec<WorktreeInfo>, ClientError> {
+        let list: WorktreeList = self
+            .call(Request::WorktreeList(WorktreeListRequest { workspace_id }))
+            .await?;
+        Ok(list.worktrees)
+    }
+
+    /// Removes a worktree (`worktree.remove`); the answer says when `delete_branch` left the
+    /// branch in place.
+    pub async fn worktree_remove(
+        &self,
+        req: WorktreeRemove,
+    ) -> Result<WorktreeRemoved, ClientError> {
+        self.call(Request::WorktreeRemove(req)).await
     }
 
     /// Stops the turn in progress.

@@ -31,6 +31,7 @@ use hutan_protocol::notify::{
 use hutan_protocol::provider::*;
 use hutan_protocol::render::*;
 use hutan_protocol::tree::*;
+use hutan_protocol::worktree::*;
 use hutan_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
 fn ws() -> WorkspaceId {
     "01K7F3B5N2Q9W8E4R6T1Y0V3JA".parse().unwrap()
@@ -66,6 +67,7 @@ fn session_info() -> SessionInfo {
         agent: None,
         restored: false,
         chat: None,
+        placement: None,
     }
 }
 
@@ -344,6 +346,55 @@ fn observation() -> AgentObservation {
             .into_iter()
             .map(|n| (n.node_id.clone(), n))
             .collect(),
+    }
+}
+
+fn sid2() -> SessionId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3KN".parse().unwrap()
+}
+
+fn worktree_info() -> WorktreeInfo {
+    WorktreeInfo {
+        path: "/work/repo-wt/feature-login".into(),
+        repo_root: "/work/repo".into(),
+        branch: Some("feature/login".into()),
+        head: "3f786850e387550fdab836ed7e6dc881de23001b".into(),
+        main: false,
+        created_by_hutan: true,
+        dirty: true,
+        live_sessions: vec![sid()],
+        locked: false,
+        prunable: false,
+    }
+}
+
+fn main_worktree_info() -> WorktreeInfo {
+    WorktreeInfo {
+        path: "/work/repo".into(),
+        repo_root: "/work/repo".into(),
+        branch: Some("master".into()),
+        head: "89e6c98d92887913cadf06b2adb97f26cde4849b".into(),
+        main: true,
+        created_by_hutan: false,
+        dirty: false,
+        live_sessions: vec![],
+        locked: false,
+        prunable: false,
+    }
+}
+
+fn detached_worktree_info() -> WorktreeInfo {
+    WorktreeInfo {
+        path: "/work/repo-wt/bisect".into(),
+        repo_root: "/work/repo".into(),
+        branch: None,
+        head: "6b3a3b8b5a0b7c8c0f4e4c1f8e6d5c4b3a291807".into(),
+        main: false,
+        created_by_hutan: false,
+        dirty: false,
+        live_sessions: vec![],
+        locked: true,
+        prunable: true,
     }
 }
 
@@ -980,6 +1031,52 @@ fn requests() -> Vec<(&'static str, Request)> {
             "client_focus_none",
             Request::ClientFocus(ClientFocus::default()),
         ),
+        (
+            "worktree_create",
+            Request::WorktreeCreate(WorktreeCreate {
+                workspace_id: ws(),
+                repo: Some("/work/repo".into()),
+                branch: "feature/login".into(),
+                base: Some("origin/main".into()),
+                path: Some("/work/repo-wt/feature-login".into()),
+            }),
+        ),
+        (
+            "worktree_create_minimal",
+            Request::WorktreeCreate(WorktreeCreate {
+                workspace_id: ws(),
+                repo: None,
+                branch: "fix-typo".into(),
+                base: None,
+                path: None,
+            }),
+        ),
+        (
+            "worktree_list",
+            Request::WorktreeList(WorktreeListRequest {
+                workspace_id: Some(ws()),
+            }),
+        ),
+        (
+            "worktree_list_all",
+            Request::WorktreeList(WorktreeListRequest::default()),
+        ),
+        (
+            "worktree_remove",
+            Request::WorktreeRemove(WorktreeRemove {
+                path: "/work/repo-wt/feature-login".into(),
+                force: false,
+                delete_branch: false,
+            }),
+        ),
+        (
+            "worktree_remove_force_delete_branch",
+            Request::WorktreeRemove(WorktreeRemove {
+                path: "/work/repo-wt/feature-login".into(),
+                force: true,
+                delete_branch: true,
+            }),
+        ),
     ]
 }
 
@@ -1336,6 +1433,52 @@ fn events() -> Vec<(&'static str, Event)> {
                 session_id: sid(),
                 workspace_id: None,
                 at_ms: 1_791_894_180_000,
+            },
+        ),
+        (
+            "worktree_changed",
+            Event::WorktreeChanged { workspace_id: ws() },
+        ),
+        (
+            "session_updated_placement_main",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    placement: Some(Placement {
+                        kind: PlacementKind::Main,
+                        root: "/work/repo".into(),
+                        branch: Some("master".into()),
+                        shared_with: vec![],
+                    }),
+                    ..session_info()
+                },
+            },
+        ),
+        (
+            "session_updated_placement_worktree_shared",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    placement: Some(Placement {
+                        kind: PlacementKind::Worktree,
+                        root: "/work/repo-wt/feature-login".into(),
+                        branch: Some("feature/login".into()),
+                        shared_with: vec![sid2()],
+                    }),
+                    ..session_info()
+                },
+            },
+        ),
+        (
+            "session_updated_placement_detached",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    placement: Some(Placement {
+                        kind: PlacementKind::Worktree,
+                        root: "/work/repo-wt/bisect".into(),
+                        branch: None,
+                        shared_with: vec![],
+                    }),
+                    ..session_info()
+                },
             },
         ),
     ]
@@ -1999,6 +2142,64 @@ fn responses_match_fixtures() {
             )
             .unwrap(),
         ),
+        (
+            "worktree_created",
+            ControlMessage::ok(
+                23,
+                &WorktreeCreated {
+                    worktree: worktree_info(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_list",
+            ControlMessage::ok(
+                24,
+                &WorktreeList {
+                    worktrees: vec![
+                        main_worktree_info(),
+                        worktree_info(),
+                        detached_worktree_info(),
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_removed",
+            ControlMessage::ok(25, &WorktreeRemoved::default()).unwrap(),
+        ),
+        (
+            "worktree_removed_branch_kept",
+            ControlMessage::ok(
+                26,
+                &WorktreeRemoved {
+                    branch_kept: Some(
+                        "error: the branch 'feature/login' is not fully merged".into(),
+                    ),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "session_result_placement",
+            ControlMessage::ok(
+                27,
+                &SessionResult {
+                    session: SessionInfo {
+                        placement: Some(Placement {
+                            kind: PlacementKind::Worktree,
+                            root: "/work/repo-wt/feature-login".into(),
+                            branch: Some("feature/login".into()),
+                            shared_with: vec![sid2()],
+                        }),
+                        ..session_info()
+                    },
+                },
+            )
+            .unwrap(),
+        ),
     ];
     for (name, message) in cases {
         let json = String::from_utf8(message.to_json().unwrap()).unwrap();
@@ -2072,6 +2273,17 @@ fn sessions_of_an_older_daemon_have_no_chat_info() {
     });
     let decoded: SessionInfo = serde_json::from_value(old).unwrap();
     assert_eq!(decoded.chat, None);
+}
+
+#[test]
+fn sessions_of_an_older_daemon_have_no_placement() {
+    let old = serde_json::json!({
+        "id": sid(), "workspace_id": ws(), "kind": "terminal", "title": "t",
+        "state": {"state": "running"}, "command": [], "cwd": null, "terminal_id": 1,
+        "created_at_ms": 1
+    });
+    let decoded: SessionInfo = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.placement, None);
 }
 
 #[test]

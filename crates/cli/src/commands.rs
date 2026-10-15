@@ -29,6 +29,7 @@ mod notify;
 mod providers;
 mod sessions;
 mod workspaces;
+mod worktrees;
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
 const STOP_POLL: Duration = Duration::from_millis(25);
@@ -73,6 +74,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Approvals => ctx?.approvals().await,
         Command::Approve(args) => ctx?.approve(args).await,
         Command::Notify(command) => ctx?.notify(command).await,
+        Command::Wt(command) => ctx?.wt(command).await,
     }
 }
 

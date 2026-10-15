@@ -88,6 +88,8 @@ actions!(
         ManageProviders,
         SwitchChatModel,
         OpenAssistant,
+        NewTerminalInWorktree,
+        RemoveWorktree,
     ]
 );
 
@@ -403,6 +405,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Models: Manage Providers…", ManageProviders),
         command("Chat: Switch Model…", SwitchChatModel),
         command("Assistant: Open / Focus", OpenAssistant),
+    ]);
+    out.extend([
+        command("Worktree: New Terminal in Worktree…", NewTerminalInWorktree),
+        command("Worktree: Remove…", RemoveWorktree),
     ]);
     out.extend([
         command(

@@ -46,12 +46,15 @@ pub enum PickerKind {
     Jump,
     /// ⌘K "Review approvals": the permission requests of every chat that wait for an answer.
     Approvals,
+    /// ⌘K "Worktree: Remove…": the removable worktrees of the active workspace.
+    Worktrees,
 }
 
 /// What confirming a picker row does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickerAction {
     OpenFolder,
+    RemoveWorktree(super::worktrees::WorktreeChoice),
     OpenProject(PathBuf),
     Workspace(WorkspaceId),
     Session(SessionId),
@@ -109,7 +112,7 @@ pub struct PickerState {
 }
 
 impl PickerState {
-    fn new(kind: PickerKind, entries: Vec<PickerEntry>) -> Self {
+    pub(super) fn new(kind: PickerKind, entries: Vec<PickerEntry>) -> Self {
         let mut state = Self {
             kind,
             query: String::new(),
@@ -128,7 +131,7 @@ impl PickerState {
     pub fn history_query(&self) -> Option<&str> {
         match self.kind {
             PickerKind::Jump => self.query.strip_prefix('?').map(str::trim),
-            PickerKind::Projects | PickerKind::Approvals => None,
+            PickerKind::Projects | PickerKind::Approvals | PickerKind::Worktrees => None,
         }
     }
 
@@ -190,7 +193,7 @@ impl PickerState {
 }
 
 /// `~/proj/x` for paths under the user's home folder.
-fn tilde(path: &Path) -> String {
+pub(super) fn tilde(path: &Path) -> String {
     match std::env::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_owned)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Some(rest) => format!("~/{}", rest.display()),
@@ -745,7 +748,12 @@ impl Workbench {
             .unwrap_or_default()
     }
 
-    fn show_picker(&mut self, state: PickerState, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_picker(
+        &mut self,
+        state: PickerState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.palette = None;
         self.context_menu = None;
         self.picker = Some(state);
@@ -969,6 +977,9 @@ impl Workbench {
         self.close_picker(window, cx);
         match action {
             PickerAction::OpenFolder => self.open_folder_dialog(window, cx),
+            PickerAction::RemoveWorktree(choice) => {
+                self.confirm_remove_worktree(choice, window, cx);
+            }
             PickerAction::OpenProject(path) => self.open_project_path(path, window, cx),
             PickerAction::Workspace(workspace) => self.switch_workspace(workspace, window, cx),
             PickerAction::Session(session) => self.open_session(session, window, cx),
@@ -1047,6 +1058,9 @@ impl Workbench {
             picker.matches.is_empty(),
             picker.loading,
         ) {
+            (_, _, true) if picker.kind == PickerKind::Worktrees => {
+                Some("Loading worktrees…".into())
+            }
             (_, _, true) => Some("Loading recent projects…".into()),
             (true, true, false) => Some(match &picker.history_state {
                 HistoryState::Idle => "Type to search the session history".into(),
@@ -1072,6 +1086,13 @@ impl Workbench {
                     "No approval matches".into()
                 })
             }
+            (false, true, false) if picker.kind == PickerKind::Worktrees => {
+                Some(if picker.entries.is_empty() {
+                    "No worktrees to remove".into()
+                } else {
+                    "No worktree matches".into()
+                })
+            }
             (false, true, false) => Some("Nothing matches".into()),
             (false, false, false) => None,
         };
@@ -1080,6 +1101,7 @@ impl Workbench {
             (PickerKind::Jump, true) => "Search history ›",
             (PickerKind::Jump, false) => "Jump to ›",
             (PickerKind::Approvals, _) => "Review approvals ›",
+            (PickerKind::Worktrees, _) => "Remove worktree ›",
         };
 
         Some(

@@ -31,7 +31,7 @@ pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
 pub use rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow,
+    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow, WorktreeRow,
 };
 pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
@@ -156,6 +156,10 @@ impl Storage {
 
     pub fn providers(&self) -> Providers<'_> {
         Providers(self)
+    }
+
+    pub fn worktrees(&self) -> Worktrees<'_> {
+        Worktrees(self)
     }
 
     pub fn app_meta(&self) -> AppMeta<'_> {
@@ -453,6 +457,26 @@ impl Providers<'_> {
     /// Oldest first.
     pub fn list(&self) -> Result<Vec<ProviderRow>> {
         self.0.read(sql::list_providers)
+    }
+}
+
+/// The worktrees Hutan created, keyed by path.
+#[derive(Debug, Clone, Copy)]
+pub struct Worktrees<'a>(&'a Storage);
+
+impl Worktrees<'_> {
+    /// Remembers a worktree (an existing path is replaced).
+    pub fn upsert(&self, row: WorktreeRow) -> Result<()> {
+        self.0.write(Write::UpsertWorktree(Box::new(row)))
+    }
+
+    pub fn delete(&self, path: PathBuf) -> Result<()> {
+        self.0.write(Write::DeleteWorktree(path))
+    }
+
+    /// Oldest first.
+    pub fn list(&self) -> Result<Vec<WorktreeRow>> {
+        self.0.read(sql::list_worktrees)
     }
 }
 

@@ -31,6 +31,7 @@ use hutan_protocol::messages::{
 };
 use hutan_protocol::provider::ChatSetModel;
 use hutan_protocol::tree::{AgentTree, NodeReport};
+use hutan_protocol::worktree::Placement;
 use hutan_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use hutan_terminal::{
     ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
@@ -45,6 +46,7 @@ use crate::chat::{
 };
 use crate::config::RestoreMode;
 use crate::direct::MAX_SYSTEM_PROMPT_BYTES;
+use crate::placement::{Occupant, PlacementCache, shared_with};
 use crate::projects::{self, Folder};
 use crate::providers::ProviderService;
 use crate::restore::{self, Stored};
@@ -147,6 +149,9 @@ enum Command {
     ChatTarget(SessionId, Reply<bool>),
     /// `chat.set_model`: answered once the switch is journaled.
     SetChatModel(ChatSetModel, Reply<SessionInfo>),
+    /// A worktree was created or removed: the remembered checkouts are stale. Answered once
+    /// every session's placement is derived again.
+    InvalidatePlacements(Reply<()>),
 }
 
 /// How a chat session's pump reaches the registry.
@@ -344,6 +349,12 @@ impl RegistryHandle {
     pub async fn set_chat_model(&self, req: ChatSetModel) -> Result<SessionInfo, ErrorBody> {
         self.ask(|r| Command::SetChatModel(req, r)).await
     }
+
+    /// `worktree.*` changed the checkouts on disk: forgets what is known of directories and
+    /// derives every session's placement again (announcing the ones that changed).
+    pub async fn invalidate_placements(&self) -> Result<(), ErrorBody> {
+        self.ask(Command::InvalidatePlacements).await
+    }
 }
 
 /// One terminal session and the daemon-side state around it.
@@ -470,6 +481,8 @@ struct SessionRegistry {
     activity_flush_at: Option<Instant>,
     /// When the earliest held-back `agent.tree_updated` may go out.
     tree_flush_at: Option<Instant>,
+    /// The git checkout of the directories sessions work in (`SessionInfo.placement`).
+    placements: PlacementCache,
 }
 
 /// What [`spawn`] needs besides the shared services.
@@ -536,6 +549,7 @@ pub fn spawn(
         flush_at: None,
         activity_flush_at: None,
         tree_flush_at: None,
+        placements: PlacementCache::default(),
     };
     registry.restore_sessions(stored.sessions, config.restore, stored.agent_trees);
     tokio::spawn(registry.run(rx));
@@ -829,6 +843,10 @@ impl SessionRegistry {
                 } => self.on_chat_state(session, turn, pending),
                 Command::ChatExited { session, exit } => self.on_chat_exited(session, &exit),
                 Command::ChatNode { session, update } => self.on_chat_node(session, *update),
+                Command::InvalidatePlacements(reply) => {
+                    self.invalidate_placements();
+                    let _ = reply.send(Ok(()));
+                }
                 Command::ChatTarget(id, reply) => {
                     let _ = reply.send(self.chat_target(id));
                 }
@@ -1376,6 +1394,7 @@ impl SessionRegistry {
             created_at_ms: now_ms(),
             restored: false,
             chat: None,
+            placement: self.placement_of(spec.cwd.as_deref()),
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -1803,6 +1822,8 @@ impl SessionRegistry {
         session.resume_ref_json = resume;
         session.stopping = false;
         self.sync_agent_summary(index);
+        // The waiters and the event below must not show it still sharing a checkout.
+        self.refresh_placement(index);
         let session = &mut self.sessions[index];
         let info = session.info.clone();
         let waiters = std::mem::take(&mut session.stop_waiters);
@@ -1937,6 +1958,7 @@ impl SessionRegistry {
             created_at_ms: now_ms(),
             restored: false,
             chat: Some(chat_info(&spec)),
+            placement: self.placement_of(Some(&req.cwd)),
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -2395,6 +2417,7 @@ impl SessionRegistry {
                 // The journal has the whole conversation: nothing is gone.
                 restored: false,
                 chat: Some(chat_info(&spec)),
+                placement: None,
             },
             spec: TerminalSpec {
                 command: vec![spec.agent.clone()],
@@ -2520,6 +2543,7 @@ impl SessionRegistry {
                     agent: None,
                     restored,
                     chat: None,
+                    placement: None,
                 },
                 spec,
                 default_title,
@@ -2550,6 +2574,7 @@ impl SessionRegistry {
         // from the start.
         self.recount_sessions();
         self.restore_trees(trees);
+        self.place_restored_sessions();
         // `start_terminal` stores the session itself once it is running.
         for index in respawn {
             self.start_terminal(index);
@@ -2713,10 +2738,88 @@ impl SessionRegistry {
 
     /// Announces the session and, when the change moved its workspace's counts, the workspace.
     fn emit_session(&mut self, index: usize) {
+        self.refresh_placement(index);
         self.emit(&Event::SessionUpdated {
             session: self.sessions[index].info.clone(),
         });
         self.sync_workspace(self.sessions[index].info.workspace_id);
+    }
+
+    // Placement -------------------------------------------------------------------------------
+
+    /// The placement of a session working in `dir`, before anyone shares it.
+    fn placement_of(&mut self, dir: Option<&Path>) -> Option<Placement> {
+        dir.and_then(|dir| self.placements.placement(dir))
+    }
+
+    /// Derives the placement of session `index` from its directory again (its checkout may
+    /// have changed: it moved, a branch was switched) and who shares it, and announces the
+    /// other sessions whose placement changed. The session itself is the caller's to announce.
+    /// Returns whether its own placement changed.
+    fn refresh_placement(&mut self, index: usize) -> bool {
+        let before = self.sessions[index].info.placement.clone();
+        let cwd = self.sessions[index].info.cwd.clone();
+        let mut next = self.placement_of(cwd.as_deref());
+        if let (Some(next), Some(before)) = (&mut next, &before) {
+            // Kept until the sharing is worked out below; one change, one announcement.
+            next.shared_with.clone_from(&before.shared_with);
+        }
+        self.sessions[index].info.placement = next;
+        for other in self.sync_shared() {
+            if other != index {
+                self.emit(&Event::SessionUpdated {
+                    session: self.sessions[other].info.clone(),
+                });
+            }
+        }
+        self.sessions[index].info.placement != before
+    }
+
+    /// Works out which sessions share a checkout and stores it; returns the sessions whose
+    /// `shared_with` changed.
+    fn sync_shared(&mut self) -> Vec<usize> {
+        let occupants: Vec<Occupant<'_>> = self
+            .sessions
+            .iter()
+            .map(|session| Occupant {
+                id: session.info.id,
+                live: session.info.state.is_live(),
+                agent: session.info.agent.is_some(),
+                root: session.info.placement.as_ref().map(|p| p.root.as_path()),
+            })
+            .collect();
+        let shared = shared_with(&occupants);
+        drop(occupants);
+        let mut changed = Vec::new();
+        for (index, shared) in shared.into_iter().enumerate() {
+            if let Some(placement) = &mut self.sessions[index].info.placement
+                && placement.shared_with != shared
+            {
+                placement.shared_with = shared;
+                changed.push(index);
+            }
+        }
+        changed
+    }
+
+    /// `worktree.*` created or removed checkouts: what was learned of directories is stale.
+    fn invalidate_placements(&mut self) {
+        self.placements.clear();
+        for index in 0..self.sessions.len() {
+            if self.refresh_placement(index) {
+                self.emit_session(index);
+            }
+        }
+    }
+
+    /// Derives the placement of every restored session; nobody listens yet, so nothing is
+    /// announced.
+    fn place_restored_sessions(&mut self) {
+        for index in 0..self.sessions.len() {
+            let cwd = self.sessions[index].info.cwd.clone();
+            self.sessions[index].info.placement = self.placement_of(cwd.as_deref());
+        }
+        self.sync_shared();
     }
 
     /// For changes that already happened: a rejected event is logged, not rolled back.

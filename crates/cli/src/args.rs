@@ -85,6 +85,66 @@ pub enum Command {
     /// on, or watch them
     #[command(subcommand)]
     Notify(NotifyCommand),
+    /// Git worktrees: isolated checkouts for parallel agents (`hutan wt new|ls|rm`)
+    #[command(subcommand)]
+    Wt(WtCommand),
+}
+
+const WT_WS_HELP: &str = "Workspace: id, unique id prefix, or exact name (default: \
+     $HUTAN_WORKSPACE, else the workspace containing the current directory)";
+
+#[derive(Debug, Subcommand)]
+pub enum WtCommand {
+    /// Create a worktree for a branch (a new branch from --base, or the existing one); prints
+    /// its path
+    New(WtNewArgs),
+    /// List the worktrees of a workspace's repositories: branch, path, state, live sessions
+    Ls(WtLsArgs),
+    /// Remove a worktree; refuses the main one, one with live sessions, and one with uncommitted
+    /// changes unless --force
+    Rm(WtRmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct WtNewArgs {
+    /// The branch to check out; created from --base when it does not exist
+    pub branch: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// Where a new branch starts (default: HEAD of the repository)
+    #[arg(long, value_name = "REF")]
+    pub base: Option<String>,
+    /// Directory of the worktree, which must not exist (default: `<repo>-wt/<branch>` next to
+    /// the repository, `/` in the branch written as `-`)
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<PathBuf>,
+    /// A directory in the repository (default: the current directory when the workspace is
+    /// found by it, else the workspace's first git root)
+    #[arg(long, value_name = "PATH")]
+    pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct WtLsArgs {
+    /// Only this workspace's repositories (default: $HUTAN_WORKSPACE, else the workspace
+    /// containing the current directory, else all workspaces)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct WtRmArgs {
+    /// The worktree's path, or its branch (see `hutan wt ls`)
+    pub target: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// Remove even with uncommitted changes
+    #[arg(long)]
+    pub force: bool,
+    /// Also delete the branch, as `git branch -d` does: an unmerged branch stays and is
+    /// reported
+    #[arg(long)]
+    pub delete_branch: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -464,6 +524,10 @@ pub struct NewArgs {
     /// Attach this terminal to the new session
     #[arg(long)]
     pub attach: bool,
+    /// Work in the worktree of this branch: created when there is none (see `hutan wt new`),
+    /// then the session starts in it and goes to the workspace that contains the repository
+    #[arg(long, value_name = "BRANCH", conflicts_with = "cwd")]
+    pub worktree: Option<String>,
     /// Command to run after `--`; the login shell if omitted
     #[arg(last = true, value_name = "ARGV")]
     pub argv: Vec<String>,

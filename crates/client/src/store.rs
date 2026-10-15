@@ -83,6 +83,11 @@ pub enum Notice {
         workspace: Option<WorkspaceId>,
         at_ms: u64,
     },
+    /// Worktrees of a workspace's repositories were created or removed (`worktree.changed`,
+    /// protocol 0.14): list them again.
+    WorktreesChanged {
+        workspace: WorkspaceId,
+    },
 }
 
 /// Side effects of folding events into the state, for the caller to act on after publishing.
@@ -299,6 +304,11 @@ impl StoreState {
                 workspace: workspace_id,
                 at_ms,
             }),
+            Event::WorktreeChanged { workspace_id } => {
+                effects.notices.push(Notice::WorktreesChanged {
+                    workspace: workspace_id,
+                });
+            }
         }
         effects
     }
@@ -331,6 +341,7 @@ mod tests {
             agent: None,
             restored: false,
             chat: None,
+            placement: None,
         }
     }
 
