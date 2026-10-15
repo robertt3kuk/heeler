@@ -1,36 +1,31 @@
-# M6-B: native notifications, launch-at-login, menu bar (roadmap M6.1, M6.3 rest, M6.4)
+# M6-B: native notifications posted by the daemon (roadmap M6.3)
 
-Agent: implementer (B2) after the parent's interactive spike (B1)   Depends on: M6-A (`6a9fb8e`, protocol 0.13)   Branch: slice/M6-B
+Agent: implementer   Depends on: master (protocol 0.13 intents; spike `docs/spikes/2026-10-15-notifications.md`, ADR 0007 accepted)   Branch: slice/M6-B
 
 ## Context
-Read AGENTS.md, then ADR 0007 (proposed), ADR 0008 (Keychain bound to signing identity), `docs/packaging.md`, `docs/protocol.md` § Notification intents, `docs/design.md` § Daemon lifecycle. Reuse: `crates/daemon/src/notify.rs` (intents, `notify.act`), `crates/client` (`notify_list`, `notify_act`, events), `xtask/src/bundle.rs` (layout, signing), `crates/desktop/src/app.rs` (daemon autostart, quit policy), `crates/desktop/src/workbench/notify.rs` (`ui.open`).
+Read AGENTS.md, then ADR 0007 (accepted: **the daemon posts**, no helper), the spike report (facts 1–6), ADR 0008, `docs/packaging.md`, `docs/protocol.md` § Notification intents. Reuse: `crates/daemon/src/notify.rs` (`NotifyService`: intents, `ack`, `act`, expiry), `xtask/src/bundle.rs` (signing), `crates/daemon/src/main.rs` (process start), `assets/brand/` (artwork if a notification attachment helps; optional).
 
-**This slice touches the user's system**: a notification permission prompt, a login item. Every step that triggers one runs only with the user present; tests never call `UNUserNotificationCenter` or `SMAppService`.
+The spike code (objc2 0.6.5, objc2-foundation 0.3.2, objc2-user-notifications 0.3.2 with `default-features = false` and only the needed features, block2 0.6.2) is in the spike report's terms: `define_class!` delegate with `willPresent` (Banner|List|Sound) and `didReceiveNotificationResponse`, a category per intent kind, `requestAuthorizationWithOptions`, `addNotificationRequest`. All crates are in the local cargo cache.
 
-## B1 — spike (parent, with the user; decides ADR 0007)
-Throwaway binary inside an ad-hoc signed test bundle in a temp folder (bundle id `dev.hutan.spike`, never `dev.hutan.Hutan`):
-1. Can a non-main executable in `Contents/MacOS` (like `hutand`) request authorization and post with `UNUserNotificationCenter` under the bundle's id?
-2. With that process alive, are action clicks (category with Approve/Deny + Open) delivered to its delegate? With it not running, what does a click launch?
-3. Same for an `LSUIElement` helper app in `Contents/Helpers`.
-Record facts in `docs/spikes/<date>-notifications.md`, accept or amend ADR 0007, and choose: **daemon posts** (no helper) or **Notifier helper** (protocol client). Remove the spike bundle and its notification permission entry afterwards (System Settings → Notifications), with the user.
-
-## B2 — Scope (after B1)
-`crates/notifier` (new; only if B1 picks the helper) or a `notify_native` module where B1 says posting happens; `crates/desktop` (settings + menu bar + Dock badge); `xtask` bundle (helper, LaunchAgent unchanged); `crates/daemon` only for wiring a native poster if the daemon posts; `docs/packaging.md`, ADR 0007, `docs/design.md`. Protocol changes only if B1 proves one necessary (then 0.14, golden fixtures).
+## Scope
+`crates/daemon` (new `notify_native.rs` behind a `NativePoster` trait, macOS only), `xtask` (sign `hutand` with identifier `dev.hutan.Hutan`; adjust the bundle test), workspace deps (objc2 family, macOS target only), `docs/packaging.md`, `docs/protocol.md` § Notification intents. No desktop changes (menu bar, Dock badge, login item, shortcut are M6-C). No protocol change.
 
 ## Contract
-- Every `notify.intent` becomes one native notification: title/body from the intent (already redacted and bounded), thread per session, category per kind. Approval actions = the intent's offered options (at most the first 3 plus Open); a click routes through `notify.act` (approval → `approval.respond`, Open → `ui.open`, which launches/focuses the desktop). Acknowledged/acted/expired intents remove their delivered notification. Dedup by intent id across reconnects (`notify.list` replay).
-- Permission: requested once, on first need, never at startup without an intent; denied → intents stay in `hutan notify ls` and the desktop shows a one-line hint in Settings.
-- `daemon.keep_running` setting (desktop Settings → General): on → `SMAppService.agent(plistName: "dev.hutan.daemon.plist")` register; off → unregister; status shown (enabled / requires approval in System Settings / not found). Only from the bundled app; a non-bundled `cargo run` shows "available in Hutan.app".
-- Menu bar status item (setting `app.menu_bar = true`): daemon state, count of sessions needing attention, Open Hutan, Quit. Dock badge = attention count (blocked + pending approvals).
-- Global shortcut ⌥Space opens the Assistant when the app runs (registered with the system only while the setting `assistant.global_shortcut` is on).
+- `NativePoster` trait: `authorize()`, `post(intent)`, `remove(intent_id)`, plus a channel of `NativeResponse {intent_id, action_id}`. Implementations: `UserNotifications` (real; only when `NSBundle.mainBundle` is `dev.hutan.Hutan` and the executable runs from a `.app`) and a test fake. Outside the bundle the daemon logs once at info level and uses no poster.
+- The Cocoa side runs on one dedicated thread with its own run loop (verify that delegate callbacks arrive there; if they only arrive on the main thread, move the tokio runtime off the main thread in `main.rs` and run the run loop on main). Bounded channels both ways; no blocking of the tokio runtime.
+- The Cocoa side runs on the **main thread** (the spike proved delegate delivery there): `hutand`'s `main.rs` builds the tokio runtime on a dedicated thread and, when a real poster exists, runs `NSRunLoop.mainRunLoop` on the main thread until shutdown; without a poster the main thread just joins the runtime thread. Shutdown (signals, `daemon.shutdown`) must still end the process cleanly. Bounded channels both ways; nothing blocks the tokio runtime.
+- Authorization is requested lazily before the first post, once per daemon run; denied → no further posts, intents stay in `notify.list`, one warning in the log. Settings `daemon.toml [notify] native = true` (false disables posting).
+- Removal: an intent that is acked, acted on, expired or whose approval resolved elsewhere removes its delivered notification. A daemon restart re-posts nothing (intents are in memory).
+- Bundle: `hutand` is signed with `--identifier dev.hutan.Hutan`; the xtask test asserts it.
 
 ## Acceptance
-- Unit/GPUI tests: intent → notification request mapping (fake poster trait), action → `notify.act` routing, dedup on replay, removal on ack/resolve, badge counts, setting toggles call a fake `LoginItem` trait. No real system calls in tests.
-- `just check` green; `just bundle` verifies.
-- Manual demo **with the user**: close the window, a TUI agent (fake `hutan agent hook claude` Stop after ≥ `min_turn_secs`) → native "finished" notification; a fake Codex approval → notification Approve unblocks the turn (`hutan approvals` empty); Keep running on → quit app → daemon alive, sessions alive; log out/in optional.
+- Unit tests with the fake poster: category/action mapping per kind, option truncation, response routing (approval option → `approval.respond` with `decided_by` notifier; default → `ui.open`; dismiss → ack), removal on ack/act/expire/resolve, authorization-denied path, `native = false`.
+- A test that the real poster is not constructed outside a `.app` (pure check on bundle path/identifier).
+- `just check` green; `just bundle` builds and verifies.
+- **Do not** call `UNUserNotificationCenter` from any test or run the bundled daemon: the manual demo with the user is done by the integrator (post approval from a fake Codex fixture → click Approve → turn continues; Open → desktop focuses the session; kill the daemon → click is lost, approval still pending).
 
 ## Out of scope
-Notarization and a Developer ID (open question 2), Keychain identity migration (document the prompts), remote clients. The app icon exists (`assets/macos/Hutan.icns`); reuse the mascot states in `assets/brand/` for notification and menu-bar artwork where it helps.
+SMAppService "keep running", menu bar, Dock badge, global shortcut (M6-C); notarization; remote clients.
 
 ## Report
-Summary, B1 facts and the decision, files changed, commands run with results, what the user clicked, open questions. Commit on `slice/M6-B`. Do not edit docs/status.md or docs/roadmap.md.
+Summary, the run-loop thread finding, files changed, commands run with results, open questions. Commit on `slice/M6-B`. Do not edit docs/status.md or docs/roadmap.md.
