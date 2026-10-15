@@ -1,0 +1,61 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>hutan — анимации</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{font-family:'Avenir Next',-apple-system,Helvetica,sans-serif;background:#0F0E11;color:#F4EDE6;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:48px 16px;gap:48px}
+.card{width:min(420px,100%);background:#1A181D;border-radius:28px;padding:28px;text-align:center}
+.card img{width:220px;height:220px}
+h1{font-size:26px;margin-top:8px}
+.sub{color:#9C938A;margin-top:6px;min-height:1.4em}
+.bar{height:8px;background:#2A272E;border-radius:99px;margin:22px 0;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#E0692E,#F5B53D);border-radius:99px;transition:width .4s ease}
+button{font:inherit;font-weight:700;font-size:17px;border:0;border-radius:14px;padding:14px 28px;
+  background:#F5B53D;color:#17151A;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+.loops{display:flex;gap:20px;flex-wrap:wrap;justify-content:center}
+.loops figure{background:#1A181D;border-radius:22px;padding:14px;text-align:center;color:#9C938A;font-size:14px}
+.loops img{width:180px;height:180px;display:block;margin-bottom:6px}
+.loops b{color:#F4EDE6;display:block;font-size:16px}
+</style></head><body>
+<div class="card">
+  <img id="ape" src="hutan-idle.svg" alt="маскот hutan">
+  <h1 id="title">Готов к деплою</h1>
+  <p class="sub" id="sub">Нажми кнопку — орангутан всё сделает</p>
+  <div class="bar"><i id="bar"></i></div>
+  <button id="go">Задеплоить</button>
+</div>
+<div class="loops">
+  <figure><img src="hutan-idle.svg" alt=""><b>Ожидание</b>моргает и дышит</figure>
+  <figure><img src="hutan-thinking.svg" alt=""><b>Загрузка</b>думает, точки бегут</figure>
+  <figure><img src="hutan-success.svg" alt=""><b>Успех</b>прыжок и конфетти</figure>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const steps = ["Собираю проект…", "Гоняю тесты…", "Выкатываю на сервер…"];
+let busy = false;
+function setApe(name){ $("ape").src = name + ".svg?t=" + Date.now(); }
+$("go").onclick = () => {
+  if (busy) return;
+  if ($("go").dataset.done) { reset(); return; }
+  busy = true; $("go").disabled = true;
+  setApe("hutan-thinking"); $("title").textContent = "Думаю…";
+  const t0 = performance.now(); let i = 0;
+  const tick = setInterval(() => {
+    $("sub").textContent = steps[Math.min(i, steps.length - 1)];
+    $("bar").style.width = Math.min(100, (i + 1) * 34) + "%"; i++;
+    if (i > steps.length) {
+      clearInterval(tick);
+      const sec = ((performance.now() - t0) / 1000).toFixed(1);
+      setApe("hutan-success-once"); $("title").textContent = "Готово!";
+      $("sub").textContent = "Деплой прошёл за " + sec + " с";
+      $("go").textContent = "Ещё раз"; $("go").disabled = false; $("go").dataset.done = 1; busy = false;
+    }
+  }, 1100);
+};
+function reset(){
+  delete $("go").dataset.done; setApe("hutan-idle"); $("bar").style.width = "0";
+  $("title").textContent = "Готов к деплою"; $("sub").textContent = "Нажми кнопку — орангутан всё сделает";
+  $("go").textContent = "Задеплоить";
+}
+</script></body></html>

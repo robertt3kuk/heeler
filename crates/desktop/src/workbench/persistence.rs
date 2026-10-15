@@ -7,18 +7,18 @@ use std::path::{Path, PathBuf};
 
 pub const STATE_FILE: &str = "desktop-state.json";
 
-/// `$STAFFY_HOME/desktop-state.json`, else
-/// `~/Library/Application Support/Staffy/desktop-state.json`. `None` when neither a Staffy home
+/// `$HUTAN_HOME/desktop-state.json`, else
+/// `~/Library/Application Support/Hutan/desktop-state.json`. `None` when neither a Hutan home
 /// nor a user home is known.
 pub fn state_path_from(
-    staffy_home: Option<OsString>,
+    hutan_home: Option<OsString>,
     user_home: Option<OsString>,
 ) -> Option<PathBuf> {
-    match staffy_home.filter(|h| !h.is_empty()) {
+    match hutan_home.filter(|h| !h.is_empty()) {
         Some(home) => Some(PathBuf::from(home).join(STATE_FILE)),
         None => user_home.filter(|h| !h.is_empty()).map(|home| {
             PathBuf::from(home)
-                .join("Library/Application Support/Staffy")
+                .join("Library/Application Support/Hutan")
                 .join(STATE_FILE)
         }),
     }
@@ -26,7 +26,7 @@ pub fn state_path_from(
 
 /// [`state_path_from`] over the process environment.
 pub fn default_state_path() -> Option<PathBuf> {
-    state_path_from(std::env::var_os("STAFFY_HOME"), std::env::var_os("HOME"))
+    state_path_from(std::env::var_os("HUTAN_HOME"), std::env::var_os("HOME"))
 }
 
 /// Read the saved state. Missing file → default layout; corrupt or unsupported → default layout
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staffy_home_wins() {
+    fn hutan_home_wins() {
         let path = state_path_from(Some("/tmp/hh".into()), Some("/Users/x".into()));
         assert_eq!(path, Some(PathBuf::from("/tmp/hh/desktop-state.json")));
     }
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(
             path,
             Some(PathBuf::from(
-                "/Users/x/Library/Application Support/Staffy/desktop-state.json"
+                "/Users/x/Library/Application Support/Hutan/desktop-state.json"
             ))
         );
         assert_eq!(

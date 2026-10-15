@@ -1,20 +1,20 @@
-//! `staffy-codex-fixture`: record, scrub and replay Codex app-server transcripts.
+//! `hutan-codex-fixture`: record, scrub and replay Codex app-server transcripts.
 //!
 //! ```text
-//! staffy-codex-fixture replay [--received FILE] TRANSCRIPT_OR_DIR [ignored args...]
-//! staffy-codex-fixture proxy OUT.jsonl -- PROGRAM [ARGS...]
-//! staffy-codex-fixture scrub RAW.jsonl OUT.jsonl
+//! hutan-codex-fixture replay [--received FILE] TRANSCRIPT_OR_DIR [ignored args...]
+//! hutan-codex-fixture proxy OUT.jsonl -- PROGRAM [ARGS...]
+//! hutan-codex-fixture scrub RAW.jsonl OUT.jsonl
 //! ```
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use staffy_agents::fixture::{proxy, replay, scrub};
+use hutan_agents::fixture::{proxy, replay, scrub};
 
 const USAGE: &str = "usage:
-  staffy-codex-fixture replay [--received FILE] TRANSCRIPT_OR_DIR [ignored args...]
-  staffy-codex-fixture proxy OUT.jsonl -- PROGRAM [ARGS...]
-  staffy-codex-fixture scrub RAW.jsonl OUT.jsonl";
+  hutan-codex-fixture replay [--received FILE] TRANSCRIPT_OR_DIR [ignored args...]
+  hutan-codex-fixture proxy OUT.jsonl -- PROGRAM [ARGS...]
+  hutan-codex-fixture scrub RAW.jsonl OUT.jsonl";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     match outcome {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(message) => {
-            eprintln!("staffy-codex-fixture: {message}");
+            eprintln!("hutan-codex-fixture: {message}");
             ExitCode::from(2)
         }
     }

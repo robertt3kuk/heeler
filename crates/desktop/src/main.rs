@@ -1,3 +1,3 @@
 fn main() {
-    staffy_desktop::app::run();
+    hutan_desktop::app::run();
 }

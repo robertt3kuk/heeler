@@ -17,7 +17,7 @@ Durable state: workspaces, sessions (kind, cwd, command, env allowlist, agent re
 ## Decision
 - `rusqlite` with `bundled` feature; one `storage` actor thread owns the write connection; Tokio side talks via a bounded channel. Read-only connections for heavy queries if needed.
 - `PRAGMA journal_mode=WAL; synchronous=NORMAL; foreign_keys=ON`.
-- File: `~/Library/Application Support/Staffy/staffy.db`, dir `0700`.
+- File: `~/Library/Application Support/Hutan/hutan.db`, dir `0700`.
 - Migrations embedded in the binary, forward-only, numbered; on failure the daemon refuses to start and keeps the old file (copy to `backups/` before migrating).
 - IDs: ULID strings (sortable, client-visible).
 - Terminal scrollback is not stored by default (may contain secrets). Optional per-session journaling is a later, opt-in feature.

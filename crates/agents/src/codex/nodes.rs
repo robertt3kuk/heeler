@@ -14,17 +14,17 @@
 
 use std::collections::HashSet;
 
+use hutan_core::{NodeKind, NodeOutcome, NodeState, NodeUpdate, Patch, Usage};
 use serde_json::Value;
-use staffy_core::{NodeKind, NodeOutcome, NodeState, NodeUpdate, Patch, Usage};
 
-/// The reporting source of Staffy-owned Codex chats.
+/// The reporting source of Hutan-owned Codex chats.
 pub const TREE_SOURCE: &str = "codex-app-server";
 /// Threads remembered as seen; past this the memory starts over (names are then re-derived).
 const MAX_SEEN: usize = 512;
 
 #[derive(Debug)]
 pub struct NodeFeed {
-    /// The conversation Staffy opened: the main agent.
+    /// The conversation Hutan opened: the main agent.
     thread_id: String,
     seen: HashSet<String>,
 }

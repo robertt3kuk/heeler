@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+<rect width="1200" height="1200" fill="#F6EFE4"/>
+<g color="#1C1A17" transform="translate(390 170) scale(0.8203125)">
+<g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M256.0 84.0 A34 34 0 0 1 316.9 94.7 A34 34 0 0 1 370.4 125.6 A34 34 0 0 1 410.2 173.0 A34 34 0 0 1 431.3 231.1 A34 34 0 0 1 431.3 292.9 A34 34 0 0 1 410.2 351.0 A34 34 0 0 1 370.4 398.4 A34 34 0 0 1 316.9 429.3 A34 34 0 0 1 256.0 440.0 A34 34 0 0 1 195.1 429.3 A34 34 0 0 1 141.6 398.4 A34 34 0 0 1 101.8 351.0 A34 34 0 0 1 80.7 292.9 A34 34 0 0 1 80.7 231.1 A34 34 0 0 1 101.8 173.0 A34 34 0 0 1 141.6 125.6 A34 34 0 0 1 195.1 94.7 A34 34 0 0 1 256.0 84.0 Z"/>
+  <path d="M236 70 Q230 46 214 34 M256 66 Q258 40 250 22 M276 70 Q286 46 304 36"/>
+  <path d="M256 104 C344 104 388 170 386 252 C384 344 334 424 256 424 C178 424 128 344 126 252 C124 170 168 104 256 104 Z"/>
+  <path d="M168 196 Q206 168 244 190 M268 190 Q306 168 344 196"/>
+  <path d="M182 258 Q204 270 228 258 M284 258 Q308 270 330 258"/>
+  <path d="M182 230 Q203 216 226 230 M286 230 Q309 216 330 230"/>
+  <path d="M162 330 C160 290 200 282 256 284 C312 282 352 290 350 330 C348 372 310 398 256 398 C202 398 164 372 162 330 Z"/>
+  <path d="M240 312 Q256 302 272 312"/>
+  <path d="M208 362 Q252 384 310 356"/>
+</g>
+<g fill="currentColor">
+  <ellipse cx="204" cy="238" rx="13" ry="9"/>
+  <ellipse cx="308" cy="238" rx="13" ry="9"/>
+  <ellipse cx="245" cy="322" rx="6" ry="4.5"/>
+  <ellipse cx="267" cy="322" rx="6" ry="4.5"/>
+</g></g>
+<text x="600" y="790" text-anchor="middle" font-family="Didot, 'Bodoni 72', 'Playfair Display', 'Times New Roman', serif" font-size="150" letter-spacing="42" fill="#1C1A17">HUTAN</text>
+<line x1="470" y1="850" x2="730" y2="850" stroke="#E8641C" stroke-width="3"/>
+<text x="600" y="910" text-anchor="middle" font-family="Didot, 'Bodoni 72', 'Playfair Display', 'Times New Roman', serif" font-style="italic" font-size="44" letter-spacing="4" fill="#1C1A17">code from the canopy</text>
+<text x="600" y="1040" text-anchor="middle" font-family="Menlo, Monaco, monospace" font-size="22" letter-spacing="10" fill="#8A7F72">EST. 2026 · DEVELOPMENT ENVIRONMENT</text>
+
+</svg>

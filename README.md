@@ -1,12 +1,12 @@
-# Staffy
+# Hutan
 
-**A native macOS agentic development environment in Rust.** A real terminal emulator and an AI-agent workspace in one GPUI app. It runs on a separate daemon (`staffyd`) that keeps your shells, coding agents and chats alive when the window is closed. The mascot is a Staffordshire Bull Terrier: loyal, stubborn, and it does not let go of your sessions.
+**A native macOS agentic development environment in Rust.** *Code from the canopy.* A real terminal emulator and an AI-agent workspace in one GPUI app. It runs on a separate daemon (`hutand`) that keeps your shells, coding agents and chats alive when the window is closed. *Hutan* is Malay and Indonesian for "forest", as in *orang-hutan*, "person of the forest", which is our mascot.
 
 > **Status: pre-alpha, macOS only, not released.** The first vertical slice (milestones M0–M6) is nearly complete. Native notifications and launch-at-login (M6-B) are still open, and several UI surfaces have not had a visual review yet. Expect breaking protocol changes. See [`docs/status.md`](docs/status.md) and [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Why
 
-- **The daemon is the source of truth.** If the UI crashes or you close it, work keeps going. The desktop app, the `staffy` CLI and any future remote client all speak the same protocol over a Unix socket.
+- **The daemon is the source of truth.** If the UI crashes or you close it, work keeps going. The desktop app, the `hutan` CLI and any future remote client all speak the same protocol over a Unix socket.
 - **Terminal-first.** Shells and TUI agents (Claude Code, Codex, OMP, OpenCode) run unmodified in a real PTY. Structured agent chat is added on top of terminals, not instead of them.
 - **Native and light.** No Electron and no webview for the core UI, and performance budgets are measured (`just bench`).
 - **Permissions are enforced in the daemon.** UI dialogs only collect decisions, and API keys live in the macOS Keychain.
@@ -23,16 +23,16 @@
 | Agent monitor | Live state (working/blocked/idle) of agents and subagents from Codex, Claude Code hooks and the OMP extension |
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
 | Assistant | ⌥Space opens a quick chat, global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
-| History search | Opt-in local SQLite FTS5 index over Staffy sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume** |
-| Notifications (API) | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready); `staffy notify watch` prints them. Native macOS delivery is M6-B |
-| App bundle | `just bundle` builds an ad-hoc signed `Staffy.app` (desktop, daemon, CLI) |
+| History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume** |
+| Notifications (API) | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready); `hutan notify watch` prints them. Native macOS delivery is M6-B |
+| App bundle | `just bundle` builds an ad-hoc signed `Hutan.app` (desktop, daemon, CLI) |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  D[Staffy desktop<br/>GPUI] <-->|Unix socket protocol| H[(staffyd)]
-  CLI[staffy CLI] <-->|Unix socket protocol| H
+  D[Hutan desktop<br/>GPUI] <-->|Unix socket protocol| H[(hutand)]
+  CLI[hutan CLI] <-->|Unix socket protocol| H
   H -->|PTY| T[shells and TUI agents]
   H -->|stdio JSON-RPC| C[codex app-server]
   H -->|HTTPS| M[model APIs / local models]
@@ -58,24 +58,24 @@ Crates live in `crates/` (`core`, `protocol`, `daemon`, `client`, `cli`, `termin
 The first build fetches and compiles GPUI, which takes a few minutes.
 
 ```sh
-git clone https://github.com/robertt3kuk/staffy.git
-cd staffy
+git clone https://github.com/robertt3kuk/hutan.git
+cd hutan
 cargo build --workspace --bins --locked
 ```
 
-Keep experiments away from your real data: `STAFFY_HOME` puts the socket, database, logs and the Home folder into one directory.
+Keep experiments away from your real data: `HUTAN_HOME` puts the socket, database, logs and the Home folder into one directory.
 
 ```sh
-export STAFFY_HOME="$(mktemp -d)"
+export HUTAN_HOME="$(mktemp -d)"
 ```
 
 ### Desktop app
 
 ```sh
-cargo run -p staffy-desktop
+cargo run -p hutan-desktop
 ```
 
-The app starts `staffyd` itself, using the copy built next to it. On quit it stops the daemon if no session is running; otherwise it asks.
+The app starts `hutand` itself, using the copy built next to it. On quit it stops the daemon if no session is running; otherwise it asks.
 
 | Keys | Action |
 |---|---|
@@ -92,35 +92,35 @@ The app starts `staffyd` itself, using the copy built next to it. On quit it sto
 ### CLI
 
 ```sh
-alias staffy="$PWD/target/debug/staffy"
+alias hutan="$PWD/target/debug/hutan"
 
-staffy daemon start
-staffy new --title demo -- /bin/sh -c 'echo hello; exec $SHELL'
-staffy ls
-staffy attach demo           # detach with ctrl+\ then d
-staffy history demo          # scrollback as plain text
-staffy ws ls                 # workspaces (Home is always there)
-staffy notify watch          # notification intents as they happen
-staffy daemon stop --stop-sessions
+hutan daemon start
+hutan new --title demo -- /bin/sh -c 'echo hello; exec $SHELL'
+hutan ls
+hutan attach demo           # detach with ctrl+\ then d
+hutan history demo          # scrollback as plain text
+hutan ws ls                 # workspaces (Home is always there)
+hutan notify watch          # notification intents as they happen
+hutan daemon stop --stop-sessions
 ```
 
 Other useful commands (each takes `--help`, and every command takes `--json`):
 
 ```sh
-staffy provider discover                      # find local Ollama / LM Studio
-staffy provider add ollama --name Local       # provider id is made from the name
-staffy chat new --direct --provider local     # chat with a model
-staffy ask "what does this error mean?" --attach file:src/main.rs   # needs [assistant] provider = "local" in daemon.toml
-staffy chat new                               # Codex agent chat (needs codex >= 0.160)
-staffy approvals && staffy approve <id> accept
-staffy index enable && staffy search "cargo test -p daemon"
-staffy integration status claude              # agent hooks; install only when you want them
+hutan provider discover                      # find local Ollama / LM Studio
+hutan provider add ollama --name Local       # provider id is made from the name
+hutan chat new --direct --provider local     # chat with a model
+hutan ask "what does this error mean?" --attach file:src/main.rs   # needs [assistant] provider = "local" in daemon.toml
+hutan chat new                               # Codex agent chat (needs codex >= 0.160)
+hutan approvals && hutan approve <id> accept
+hutan index enable && hutan search "cargo test -p daemon"
+hutan integration status claude              # agent hooks; install only when you want them
 ```
 
 ### App bundle
 
 ```sh
-just bundle                  # target/bundle/Staffy.app, ad-hoc signed
+just bundle                  # target/bundle/Hutan.app, ad-hoc signed
 just bundle --release
 ```
 
@@ -141,12 +141,12 @@ just fmt
 
 ## Where data lives
 
-| | Default | With `STAFFY_HOME` |
+| | Default | With `HUTAN_HOME` |
 |---|---|---|
-| Socket, database (`staffy.db`), daemon settings (`daemon.toml`) | `~/Library/Application Support/Staffy` | `$STAFFY_HOME` |
-| Logs | `~/Library/Logs/Staffy` | `$STAFFY_HOME/logs` |
-| Home workspace folder | `~/Staffy` | `$STAFFY_HOME/Staffy` |
-| API keys | macOS Keychain, service `dev.staffy.provider` | same |
+| Socket, database (`hutan.db`), daemon settings (`daemon.toml`) | `~/Library/Application Support/Hutan` | `$HUTAN_HOME` |
+| Logs | `~/Library/Logs/Hutan` | `$HUTAN_HOME/logs` |
+| Home workspace folder | `~/Hutan` | `$HUTAN_HOME/Hutan` |
+| API keys | macOS Keychain, service `dev.hutan.provider` | same |
 
 ## License
 

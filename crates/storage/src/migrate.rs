@@ -171,11 +171,11 @@ fn backup(conn: &Connection, path: &Path, from: u32) -> Result<PathBuf> {
 
 fn backup_name(stamp_ms: u64, from: u32) -> String {
     // Zero-padded so names sort chronologically.
-    format!("staffy-{stamp_ms:013}-v{from}.db")
+    format!("hutan-{stamp_ms:013}-v{from}.db")
 }
 
 fn backup_stamp(name: &str) -> Option<u64> {
-    name.strip_prefix("staffy-")?
+    name.strip_prefix("hutan-")?
         .strip_suffix(".db")?
         .split_once("-v")?
         .0
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn backup_names_roundtrip_and_sort_by_time() {
         let name = backup_name(1_791_894_164_332, 3);
-        assert_eq!(name, "staffy-1791894164332-v3.db");
+        assert_eq!(name, "hutan-1791894164332-v3.db");
         assert_eq!(backup_stamp(&name), Some(1_791_894_164_332));
         assert!(backup_name(999, 1) < backup_name(1_000, 1));
         assert_eq!(backup_stamp("other.db"), None);

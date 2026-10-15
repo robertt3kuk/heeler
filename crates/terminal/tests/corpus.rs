@@ -5,9 +5,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hutan_protocol::messages::TerminalSize;
+use hutan_terminal::{Emulator, RenderTracker, TerminalMeta};
 use serde_json::Value;
-use staffy_protocol::messages::TerminalSize;
-use staffy_terminal::{Emulator, RenderTracker, TerminalMeta};
 
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")

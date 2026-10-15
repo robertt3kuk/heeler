@@ -20,16 +20,16 @@ A separate slice (M2-F, performance) is fixing a release-build crash in the desk
    - ⌘K actions `daemon::Status`, `daemon::Restart`, `daemon::Stop`, `daemon::Start`, `daemon::OpenLogs`.
    Content per design.md: status fields (`daemon.status` + socket/log paths), actions with confirmation when sessions are live, and the **working mode** segmented control bound to `app.on_quit` (writes settings, reflects hot reload).
    - Stop Daemon: `daemon.shutdown { stop_sessions: true }`; the app stays open; disable autostart so the connection stays `Stopped`/disconnected with a "Daemon stopped — Start" banner in the status popover and on terminal items.
-   - Start Daemon: re-enable autostart / spawn `staffyd` and reconnect.
+   - Start Daemon: re-enable autostart / spawn `hutand` and reconnect.
    - Restart Daemon: stop as above then start; terminals show ended/re-attach states correctly (epoch change).
    - Open Logs: reveal the daemon log file in Finder (`open -R`), no other side effects.
-5. **CLI**: `staffy daemon restart [--stop-sessions]` = stop (refuse with exit 1 and a hint if sessions are live and the flag is absent) then start.
+5. **CLI**: `hutan daemon restart [--stop-sessions]` = stop (refuse with exit 1 and a hint if sessions are live and the flag is absent) then start.
 6. **Panic hook** (if M2-F has not landed one when you rebase): log panic message + backtrace to the desktop log before the process exits.
 
 ## Acceptance
-- GPUI tests with an in-process or spawned daemon (temp `STAFFY_HOME`): quit with no live sessions stops the daemon; quit with live sessions under each `on_quit` value (dialog choice simulated) does the right thing; "Don't ask again" writes the setting; SIGTERM path keeps the daemon; Stop/Start/Restart from the popover and palette; mode control writes `app.on_quit` and reflects external edits.
+- GPUI tests with an in-process or spawned daemon (temp `HUTAN_HOME`): quit with no live sessions stops the daemon; quit with live sessions under each `on_quit` value (dialog choice simulated) does the right thing; "Don't ask again" writes the setting; SIGTERM path keeps the daemon; Stop/Start/Restart from the popover and palette; mode control writes `app.on_quit` and reflects external edits.
 - CLI test for `daemon restart` (with and without live sessions).
-- Manual: launch `staffy-desktop` (temp `STAFFY_HOME`), quit via ⌘Q with and without sessions — exit code 0, no crash report in `~/Library/Logs/DiagnosticReports/` for `staffy-desktop` newer than the run start. No screenshots / permission prompts.
+- Manual: launch `hutan-desktop` (temp `HUTAN_HOME`), quit via ⌘Q with and without sessions — exit code 0, no crash report in `~/Library/Logs/DiagnosticReports/` for `hutan-desktop` newer than the run start. No screenshots / permission prompts.
 - `just check` green; committed on `slice/M2-G`.
 
 ## Report

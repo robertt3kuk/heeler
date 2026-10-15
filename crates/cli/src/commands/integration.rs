@@ -1,4 +1,4 @@
-//! `staffy integration install | uninstall | status`: local file operations on the agents'
+//! `hutan integration install | uninstall | status`: local file operations on the agents'
 //! configuration, no daemon involved.
 
 use super::print_line;

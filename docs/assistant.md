@@ -13,7 +13,7 @@ An **assistant** is a direct chat (a provider's chat API, no tools, no approvals
 | `crates/daemon/src/context_file.rs` | reading a file below the workspace roots without following symlinks |
 | `crates/daemon/src/{chat,direct}.rs` | `chat.agent = "assistant"` is a gateway chat; the message with its attachments is the user message of the turn |
 | `crates/daemon/src/history.rs`, `crates/index` | chat journals feed the index; `IndexHandle::session_text` reads a session's rows |
-| `crates/client`, `crates/cli` | `Client::chat_send_with`, `assistant_open`, `assistant_list`; `staffy ask`, `staffy assistant` |
+| `crates/client`, `crates/cli` | `Client::chat_send_with`, `assistant_open`, `assistant_list`; `hutan ask`, `hutan assistant` |
 
 ## Scope and sessions
 
@@ -33,7 +33,7 @@ An assistant session is an ordinary chat session: `chat.send`, `chat.history`, `
 |---|---|---|---|
 | `shell_block` | `terminal_id`, `block_id` | the terminal's output of that block (`terminal.block_text` path, M10) | the end |
 | `shell_recent` | `terminal_id`, `lines` ≤ 500 | the last lines of the screen and scrollback (soft wraps joined; on a full-screen program only the visible screen) | the end |
-| `agent_transcript` | `session_id`, `last_turns` ≤ 20 | a Staffy chat's journal (Codex, direct, assistant: the `message_end` events), else the history index rows of that session id (Claude Code, Codex, OMP; needs indexing) | the newest turns |
+| `agent_transcript` | `session_id`, `last_turns` ≤ 20 | a Hutan chat's journal (Codex, direct, assistant: the `message_end` events), else the history index rows of that session id (Claude Code, Codex, OMP; needs indexing) | the newest turns |
 | `file` | `path`, `range?` `{start, end}` (1-based, inclusive) | the file, under the session's workspace roots only | the start |
 | `search` | `query`, `limit` ≤ 10 | `history.search` (needs indexing): one line per session with its id, so that it can be attached next | the best hits |
 
@@ -51,9 +51,9 @@ A turn is a user message and what follows it. A relative file path is relative t
 --- end of attached context ---
 ```
 
-Headers: `[shell: <command> · exit <code>|running · <n> lines]`, `[shell: terminal <id> · last <n> lines]`, `[agent: <title> · <staffy chat|claude|codex|omp> · <n> turns]`, `[file: <path> · lines a-b · <n> lines]`, `[search: "<query>" · <n> hits]`. A part that was cut says so (`cut to the first|last N of M characters`; M is left out when the source was only read in part, as for a big file), a source that was incomplete says `incomplete` (the terminal lost lines). This whole text is the journaled message: `chat.history` and the next turns' conversation contain it, so the conversation is reproducible and visible. The user's `message_end` event carries `payload.attachments_meta = [{kind, label, chars, truncated}]` so that a client can show chips without parsing text.
+Headers: `[shell: <command> · exit <code>|running · <n> lines]`, `[shell: terminal <id> · last <n> lines]`, `[agent: <title> · <hutan chat|claude|codex|omp> · <n> turns]`, `[file: <path> · lines a-b · <n> lines]`, `[search: "<query>" · <n> hits]`. A part that was cut says so (`cut to the first|last N of M characters`; M is left out when the source was only read in part, as for a big file), a source that was incomplete says `incomplete` (the terminal lost lines). This whole text is the journaled message: `chat.history` and the next turns' conversation contain it, so the conversation is reproducible and visible. The user's `message_end` event carries `payload.attachments_meta = [{kind, label, chars, truncated}]` so that a client can show chips without parsing text.
 
-**Redaction.** Every text goes through the history index's redactor (`staffy_index::redact`: API keys, tokens, `Authorization:`/`Bearer`, PEM keys, `password=…` pairs, …; best effort, see `docs/history-index.md` § Privacy) *before* it is cut, so a secret straddling a cut is removed whole. Headers (a command line or a path may hold a secret) are redacted too. Files are read a little beyond their share (512 characters) so that redaction sees the end of a secret at the cut.
+**Redaction.** Every text goes through the history index's redactor (`hutan_index::redact`: API keys, tokens, `Authorization:`/`Bearer`, PEM keys, `password=…` pairs, …; best effort, see `docs/history-index.md` § Privacy) *before* it is cut, so a secret straddling a cut is removed whole. Headers (a command line or a path may hold a secret) are redacted too. Files are read a little beyond their share (512 characters) so that redaction sees the end of a secret at the cut.
 
 **Budget.** `assistant.context_budget_chars` (default 60 000) is split evenly over the attachments of one message (at least 1 character each); the user's own text and the earlier conversation are not part of it (the conversation is still limited by `gateway.max_context_chars`, oldest messages first; the new message, attachments included, is always sent).
 
@@ -64,7 +64,7 @@ Headers: `[shell: <command> · exit <code>|running · <n> lines]`, `[shell: term
 ```toml
 # daemon.toml
 [assistant]
-provider = "openrouter"            # a provider of `staffy provider ls`; used for assistants created from now on
+provider = "openrouter"            # a provider of `hutan provider ls`; used for assistants created from now on
 model = "meta-llama/llama-3.3-70b-instruct"
 context_budget_chars = 60000
 
@@ -77,7 +77,7 @@ search = true                      # search
 [assistant.global_context]         # the global (Home) assistant: files are off by default
 files = false
 
-[assistant.workspaces.staffy]      # per workspace, by name or id: only what differs from [assistant.context]
+[assistant.workspaces.hutan]      # per workspace, by name or id: only what differs from [assistant.context]
 files = false
 ```
 
@@ -87,13 +87,13 @@ Other refusals: `bad_request` (bounds, more than 16 attachments, a session that 
 
 ## Indexing of chats
 
-With `[history] enabled` the daemon feeds the journals of **all** chat sessions (Codex, direct, assistant) into the index as source `staffy`: user and assistant messages (`user`/`assistant` rows), tool calls and their output (`tool` rows), as they are journaled, keyed `c:<seq>`. The session id is the key and `history.search` hits carry it as `session_id` (also for terminal sessions), so a client can open the session; there is no `resume_argv` (resume = focus the session). Like all Staffy rows these are not backfilled from before indexing was on. A message with attachments is indexed with its attachments (redacted, at most 16 chunks).
+With `[history] enabled` the daemon feeds the journals of **all** chat sessions (Codex, direct, assistant) into the index as source `hutan`: user and assistant messages (`user`/`assistant` rows), tool calls and their output (`tool` rows), as they are journaled, keyed `c:<seq>`. The session id is the key and `history.search` hits carry it as `session_id` (also for terminal sessions), so a client can open the session; there is no `resume_argv` (resume = focus the session). Like all Hutan rows these are not backfilled from before indexing was on. A message with attachments is indexed with its attachments (redacted, at most 16 chunks).
 
 ## Desktop
 
 The **Assistant** panel (`assistant`, registered like every panel: movable between docks and the center, listed under ⌘K → **Panel: Open Assistant**) shows one assistant chat with the ordinary chat transcript and composer of agent chats. ⌥Space (⌘K → **Assistant: Open / Focus**) reveals it and puts the keyboard in its composer; registering ⌥Space for the whole OS belongs to M6. Opening an assistant calls `assistant.open` and shows the returned direct-chat session: no terminal and no vendor agent process is started.
 
-**Scope.** The header chooses **Global** (the Home assistant: it sees the Home folder only) or **Workspace · name** (the active workspace's assistant; disabled while Home is active). Each scope has its own session, so switching keeps both transcripts, drafts and chips; nothing moves from one to the other. A history hit that is an assistant conversation (`session_id` of a `staffy` hit) opens in the panel, in its own scope, instead of as a tab; the Sessions panel still opens any assistant as an ordinary chat tab, with the same composer.
+**Scope.** The header chooses **Global** (the Home assistant: it sees the Home folder only) or **Workspace · name** (the active workspace's assistant; disabled while Home is active). Each scope has its own session, so switching keeps both transcripts, drafts and chips; nothing moves from one to the other. A history hit that is an assistant conversation (`session_id` of a `hutan` hit) opens in the panel, in its own scope, instead of as a tab; the Sessions panel still opens any assistant as an ordinary chat tab, with the same composer.
 
 **Without a provider.** The daemon names the assistants' provider and model under `[assistant]` in `daemon.toml` and reads it at start. When `assistant.open` is refused with `invalid_state` the panel says so in the daemon's words, links to **Models settings** and offers Retry. The desktop never picks a provider or model of its own and makes no model call. A configured provider whose key is missing or rejected shows **Set key…** like any gateway chat, a missing model **Pick another model…**; the header's **Switch model…** applies to assistants too.
 
@@ -102,7 +102,7 @@ The **Assistant** panel (`assistant`, registered like every panel: movable betwe
 | Mention | Form | Chip (`kind · source · bounds`) |
 |---|---|---|
 | `@shell` | the daemon's live terminals (those of the assistant's workspace first); **Recent output** (the field is the number of lines, default 50, at most 500) or **Blocks ▾** to pick one of the newest blocks | `shell recent · title · last 50 lines`, `shell block · title · $ cmd · block #7 · exit 1` |
-| `@omp`, `@agent` | sessions that reported an agent session id, Staffy chats, and the indexed transcripts of the words typed after the mention (`@omp` is OMP only); a stepper for the turns (default 5, at most 20) | `agent · title · omp · last 5 turns` |
+| `@omp`, `@agent` | sessions that reported an agent session id, Hutan chats, and the indexed transcripts of the words typed after the mention (`@omp` is OMP only); a stepper for the turns (default 5, at most 20) | `agent · title · omp · last 5 turns` |
 | `@file path[:first-last]` | the path and optional lines; with the argument typed the chip is made at once | `file · src/lib.rs · lines 1-40` |
 | `@search words` | the words and a hits stepper (default 5, at most 10) | `search · “words” · 5 hits` |
 
@@ -113,16 +113,16 @@ Chips are removable (×) before the send and become structured attachments of `c
 ## CLI
 
 ```text
-staffy ask "<question>" [--ws <id|name>] [--attach <spec>]…
-staffy assistant ls [--ws <id|name>]
-staffy assistant open [--ws <id|name>] [--new]
+hutan ask "<question>" [--ws <id|name>] [--attach <spec>]…
+hutan assistant ls [--ws <id|name>]
+hutan assistant open [--ws <id|name>] [--new]
 ```
 
-`--attach` specs: `block:<terminal>:<block>`, `recent:<terminal>:<lines>`, `agent:<session>[:<turns>]` (default 5), `file:<path>[:<first>-<last>]`, `search:<query>` (5 hits; quotes optional). `ask` uses the default assistant of `--ws`, else `$STAFFY_WORKSPACE`, else the global one (Home), prints the answer as it streams and exits 1 when the turn fails (also when the daemon refuses an attachment: the message is on stderr). `--json` prints every event. `staffy chat log <session>` shows the whole conversation, attachments included.
+`--attach` specs: `block:<terminal>:<block>`, `recent:<terminal>:<lines>`, `agent:<session>[:<turns>]` (default 5), `file:<path>[:<first>-<last>]`, `search:<query>` (5 hits; quotes optional). `ask` uses the default assistant of `--ws`, else `$HUTAN_WORKSPACE`, else the global one (Home), prints the answer as it streams and exits 1 when the turn fails (also when the daemon refuses an attachment: the message is on stderr). `--json` prints every event. `hutan chat log <session>` shows the whole conversation, attachments included.
 
 ## Tests
 
-Resolver unit tests (`crates/daemon/src/{context,assistant,context_file}.rs`): bounds, cuts and headers, redaction before the cut, row joining, turn counting, path confinement including `..`, absolute paths, symlinks to files and directories, symlinked ancestors of a root and prefix siblings. Daemon tests (`crates/daemon/tests/assistant.rs`) run a real daemon with the in-memory credential store, a mock OpenAI-compatible server (`staffy_gateway::testing::MockServer`), real terminals with OSC 133 blocks and the history index on temporary directories: `assistant.open`/`list` per scope, restart and stop; every attachment kind resolved, journaled (with `attachments_meta`) and sent, the provider's request asserted (headers present, unattached terminal/file text absent, secrets redacted); refusals by setting and by confinement, bounds, nothing sent; the budget split and the cut headers; external transcripts from the index; chat journals found by `history.search` with `session_id`. CLI tests (`crates/cli/tests/assistant.rs`) drive the real `staffy` binary with every attachment kind.
+Resolver unit tests (`crates/daemon/src/{context,assistant,context_file}.rs`): bounds, cuts and headers, redaction before the cut, row joining, turn counting, path confinement including `..`, absolute paths, symlinks to files and directories, symlinked ancestors of a root and prefix siblings. Daemon tests (`crates/daemon/tests/assistant.rs`) run a real daemon with the in-memory credential store, a mock OpenAI-compatible server (`hutan_gateway::testing::MockServer`), real terminals with OSC 133 blocks and the history index on temporary directories: `assistant.open`/`list` per scope, restart and stop; every attachment kind resolved, journaled (with `attachments_meta`) and sent, the provider's request asserted (headers present, unattached terminal/file text absent, secrets redacted); refusals by setting and by confinement, bounds, nothing sent; the budget split and the cut headers; external transcripts from the index; chat journals found by `history.search` with `session_id`. CLI tests (`crates/cli/tests/assistant.rs`) drive the real `hutan` binary with every attachment kind.
 
 Desktop tests (`crates/desktop/tests/assistant_gpui.rs`, GPUI against an in-process daemon with the in-memory credential store and the same mock server): the global and a workspace assistant stream with no terminal and each scope keeps its transcript, draft and chips; every chip kind added through the mentions and the Attach menu, removed, and only the selected sources in the provider's prompt; truncation metadata after the send; refusals by setting and by confinement (chips marked, draft restored, nothing journaled or sent); a relative path no desktop process can resolve read by the daemon; a history hit of an assistant conversation opened in the panel and continued; the unconfigured prerequisite with no model call; a terminal block sent to the assistant as a `shell_block` attachment.
 

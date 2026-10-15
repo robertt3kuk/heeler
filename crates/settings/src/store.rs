@@ -38,29 +38,27 @@ impl SettingsPaths {
         }
     }
 
-    /// `$STAFFY_HOME` (empty counts as unset), else `~/Library/Application Support/Staffy`.
+    /// `$HUTAN_HOME` (empty counts as unset), else `~/Library/Application Support/Hutan`.
     pub fn from_env() -> Result<Self, SettingsError> {
-        Self::resolve(std::env::var_os("STAFFY_HOME"), std::env::home_dir())
+        Self::resolve(std::env::var_os("HUTAN_HOME"), std::env::home_dir())
     }
 
     /// Pure form of [`SettingsPaths::from_env`].
     pub fn resolve(
-        staffy_home: Option<std::ffi::OsString>,
+        hutan_home: Option<std::ffi::OsString>,
         user_home: Option<PathBuf>,
     ) -> Result<Self, SettingsError> {
-        match staffy_home.filter(|v| !v.is_empty()) {
+        match hutan_home.filter(|v| !v.is_empty()) {
             Some(home) => Ok(Self::in_dir(PathBuf::from(home))),
             None => {
                 let home = user_home.ok_or_else(|| {
                     SettingsError::error(
                         None,
                         "",
-                        "cannot determine the home directory; set STAFFY_HOME",
+                        "cannot determine the home directory; set HUTAN_HOME",
                     )
                 })?;
-                Ok(Self::in_dir(
-                    home.join("Library/Application Support/Staffy"),
-                ))
+                Ok(Self::in_dir(home.join("Library/Application Support/Hutan")))
             }
         }
     }
@@ -247,7 +245,7 @@ struct State {
 }
 
 fn workspace_file(root: &Path) -> PathBuf {
-    root.join(".staffy").join("settings.toml")
+    root.join(".hutan").join("settings.toml")
 }
 
 impl State {
@@ -506,8 +504,8 @@ impl Shared {
             }
         }
         if let Some(root) = &state.workspace_root {
-            let dot = root.join(".staffy");
-            // `.staffy` may not exist yet; watch the root until it does (watch handler refilters).
+            let dot = root.join(".hutan");
+            // `.hutan` may not exist yet; watch the root until it does (watch handler refilters).
             dirs.insert(if dot.is_dir() { dot } else { root.clone() });
         }
         dirs
@@ -604,7 +602,7 @@ impl SettingsStore {
             .ok()
     }
 
-    /// Uses `<root>/.staffy/settings.toml` as the workspace layer (`None` removes it).
+    /// Uses `<root>/.hutan/settings.toml` as the workspace layer (`None` removes it).
     pub fn set_workspace_root(&self, root: Option<PathBuf>) {
         {
             let mut state = self.shared.state.write();

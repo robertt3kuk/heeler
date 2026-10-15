@@ -1,11 +1,11 @@
-//! `cargo run -p xtask -- bundle [--release] [--out DIR]`: assembles `Staffy.app` and signs it
+//! `cargo run -p xtask -- bundle [--release] [--out DIR]`: assembles `Hutan.app` and signs it
 //! ad hoc (`docs/packaging.md`).
 //!
 //! ```text
-//! Staffy.app/Contents/
+//! Hutan.app/Contents/
 //!   Info.plist                                   assets/macos/Info.plist, version filled in
-//!   MacOS/staffy-desktop  staffyd  staffy        the three real executables of the workspace
-//!   Library/LaunchAgents/dev.staffy.daemon.plist assets/macos/dev.staffy.daemon.plist
+//!   MacOS/hutan-desktop  hutand  hutan        the three real executables of the workspace
+//!   Library/LaunchAgents/dev.hutan.daemon.plist assets/macos/dev.hutan.daemon.plist
 //!   Resources/shell-integration/…                the OSC 133 / OSC 7 scripts
 //! ```
 //!
@@ -21,23 +21,25 @@ use anyhow::{Context, Result, bail, ensure};
 
 /// The folder name of the bundle; its `Contents/MacOS` executable names must stay distinct
 /// ignoring case (the default macOS volume is case-insensitive).
-pub const APP_NAME: &str = "Staffy.app";
+pub const APP_NAME: &str = "Hutan.app";
 /// The workspace version, written to `CFBundleShortVersionString` and `CFBundleVersion`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// `Contents/Resources` name of the app icon, as `CFBundleIconFile` names it.
+const ICON_FILE: &str = "Hutan.icns";
 
 /// `(file name inside Contents/MacOS, binary name Cargo produces, code-signing identifier)`.
 /// The desktop is the bundle's main executable, so signing the bundle gives it the bundle id.
 const EXECUTABLES: [(&str, &str, &str); 3] = [
-    ("staffy-desktop", "staffy-desktop", "dev.staffy.Staffy"),
-    ("staffyd", "staffyd", "dev.staffy.daemon"),
-    ("staffy", "staffy", "dev.staffy.cli"),
+    ("hutan-desktop", "hutan-desktop", "dev.hutan.Hutan"),
+    ("hutand", "hutand", "dev.hutan.daemon"),
+    ("hutan", "hutan", "dev.hutan.cli"),
 ];
-const PACKAGES: [&str; 3] = ["staffy-desktop", "staffy-daemon", "staffy-cli"];
+const PACKAGES: [&str; 3] = ["hutan-desktop", "hutan-daemon", "hutan-cli"];
 
 #[derive(Debug)]
 pub struct Options {
     pub release: bool,
-    /// Where `Staffy.app` is created; default `target/bundle`.
+    /// Where `Hutan.app` is created; default `target/bundle`.
     pub out: Option<PathBuf>,
     /// Use the binaries already built in this folder instead of running `cargo build`.
     pub bin_dir: Option<PathBuf>,
@@ -59,7 +61,7 @@ pub fn run(options: Options) -> Result<()> {
     Ok(())
 }
 
-fn workspace_root() -> PathBuf {
+pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
@@ -89,7 +91,7 @@ fn build(root: &Path, release: bool) -> Result<PathBuf> {
     Ok(target_dir(root).join(profile))
 }
 
-/// Creates `out/Staffy.app` from the binaries in `bin_dir` and the assets; replaces a bundle
+/// Creates `out/Hutan.app` from the binaries in `bin_dir` and the assets; replaces a bundle
 /// that is already there. Returns the bundle's path. Does not sign.
 pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
     let app = out.join(APP_NAME);
@@ -99,7 +101,7 @@ pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
     for source in &sources {
         ensure!(
             source.is_file(),
-            "{} is missing; build it (`cargo build -p staffy-desktop -p staffy-daemon -p staffy-cli`) or pass --bin-dir",
+            "{} is missing; build it (`cargo build -p hutan-desktop -p hutan-daemon -p hutan-cli`) or pass --bin-dir",
             source.display()
         );
     }
@@ -131,10 +133,12 @@ pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
         info.replace("@VERSION@", VERSION),
     )?;
     fs::copy(
-        assets.join("dev.staffy.daemon.plist"),
-        launch_agents.join("dev.staffy.daemon.plist"),
+        assets.join("dev.hutan.daemon.plist"),
+        launch_agents.join("dev.hutan.daemon.plist"),
     )
     .context("copying the LaunchAgent plist")?;
+    fs::copy(root.join(crate::icon::ICNS), resources.join(ICON_FILE))
+        .context("copying the app icon (`cargo run -p xtask -- icon` makes it)")?;
     copy_tree(
         &root.join("crates/terminal/shell-integration"),
         &resources.join("shell-integration"),
@@ -262,7 +266,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["staffy", "staffy-desktop", "staffyd"]
+            ["hutan", "hutan-desktop", "hutand"]
                 .map(str::to_owned)
                 .into_iter()
                 .collect()
@@ -290,7 +294,7 @@ mod tests {
 
         // Info.plist.
         let info = dictionary(&app.join("Contents/Info.plist"));
-        assert_eq!(string(&info, "CFBundleIdentifier"), "dev.staffy.Staffy");
+        assert_eq!(string(&info, "CFBundleIdentifier"), "dev.hutan.Hutan");
         assert_eq!(string(&info, "CFBundleShortVersionString"), VERSION);
         assert_eq!(string(&info, "CFBundleVersion"), VERSION);
         assert_eq!(string(&info, "LSMinimumSystemVersion"), "13.0");
@@ -302,9 +306,10 @@ mod tests {
         );
         let executable = string(&info, "CFBundleExecutable");
         assert!(macos.join(executable).is_file(), "{executable}");
+        assert_eq!(string(&info, "CFBundleIconFile"), ICON_FILE);
         assert!(
-            !info.contains_key("CFBundleIconFile"),
-            "no placeholder icon is shipped"
+            app.join("Contents/Resources").join(ICON_FILE).is_file(),
+            "the icon named by Info.plist is shipped"
         );
         assert!(
             !fs::read_to_string(app.join("Contents/Info.plist"))
@@ -314,10 +319,10 @@ mod tests {
         );
 
         // The LaunchAgent: present, pointing into the bundle, and inert until registered.
-        let agent = dictionary(&app.join("Contents/Library/LaunchAgents/dev.staffy.daemon.plist"));
-        assert_eq!(string(&agent, "Label"), "dev.staffy.daemon");
+        let agent = dictionary(&app.join("Contents/Library/LaunchAgents/dev.hutan.daemon.plist"));
+        assert_eq!(string(&agent, "Label"), "dev.hutan.daemon");
         let program = string(&agent, "BundleProgram");
-        assert_eq!(program, "Contents/MacOS/staffyd");
+        assert_eq!(program, "Contents/MacOS/hutand");
         assert!(app.join(program).is_file());
         for key in ["KeepAlive", "RunAtLoad"] {
             assert_eq!(
@@ -327,13 +332,13 @@ mod tests {
             );
         }
 
-        // Resources: the shell integration scripts.
+        // Resources: the icon and the shell integration scripts.
         let scripts = app.join("Contents/Resources/shell-integration");
         for script in [
             "zsh/.zshenv",
-            "zsh/staffy-integration.zsh",
-            "bash/staffy.bash",
-            "fish/vendor_conf.d/staffy-shell-integration.fish",
+            "zsh/hutan-integration.zsh",
+            "bash/hutan.bash",
+            "fish/vendor_conf.d/hutan-shell-integration.fish",
         ] {
             assert!(scripts.join(script).is_file(), "{script}");
         }
@@ -343,11 +348,12 @@ mod tests {
             !app.join("Contents/Helpers").exists(),
             "no Notifier helper yet"
         );
-        let resources: Vec<_> = fs::read_dir(app.join("Contents/Resources"))
+        let mut resources: Vec<_> = fs::read_dir(app.join("Contents/Resources"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(resources, ["shell-integration"]);
+        resources.sort();
+        assert_eq!(resources, [ICON_FILE, "shell-integration"]);
 
         // Signature: ad hoc, with the identifiers we gave.
         let described = |path: &Path| {
@@ -360,10 +366,10 @@ mod tests {
         };
         let bundle = described(&app);
         assert!(bundle.contains("Signature=adhoc"), "{bundle}");
-        assert!(bundle.contains("Identifier=dev.staffy.Staffy"), "{bundle}");
-        let daemon = described(&macos.join("staffyd"));
+        assert!(bundle.contains("Identifier=dev.hutan.Hutan"), "{bundle}");
+        let daemon = described(&macos.join("hutand"));
         assert!(daemon.contains("Signature=adhoc"), "{daemon}");
-        assert!(daemon.contains("Identifier=dev.staffy.daemon"), "{daemon}");
+        assert!(daemon.contains("Identifier=dev.hutan.daemon"), "{daemon}");
         let status = Command::new("codesign")
             .args(["--verify", "--deep", "--strict"])
             .arg(&app)
@@ -372,9 +378,9 @@ mod tests {
         assert!(status.success());
 
         // The check is real: a changed executable no longer verifies.
-        let mut tampered = fs::read(macos.join("staffyd")).unwrap();
+        let mut tampered = fs::read(macos.join("hutand")).unwrap();
         tampered.push(0);
-        fs::write(macos.join("staffyd"), tampered).unwrap();
+        fs::write(macos.join("hutand"), tampered).unwrap();
         assert!(verify(&app).is_err(), "a modified bundle must not verify");
 
         // Nothing was launched: no process runs anything from the bundle.
@@ -391,7 +397,7 @@ mod tests {
         let root = workspace_root();
         let bins = tempfile::tempdir().unwrap();
         let err = assemble(&root, bins.path(), dir.path()).unwrap_err();
-        assert!(err.to_string().contains("staffy-desktop"), "{err}");
+        assert!(err.to_string().contains("hutan-desktop"), "{err}");
 
         for (_, binary, _) in EXECUTABLES {
             fs::write(bins.path().join(binary), b"not a program").unwrap();

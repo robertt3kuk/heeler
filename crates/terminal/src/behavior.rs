@@ -2,8 +2,8 @@
 //! screen, resize and logical lines, with a tiny hot window so a few hundred lines are enough.
 #![allow(clippy::expect_used, clippy::unwrap_used)] // tests assert by panicking
 
-use staffy_protocol::messages::TerminalSize;
-use staffy_protocol::render::Row;
+use hutan_protocol::messages::TerminalSize;
+use hutan_protocol::render::Row;
 
 use crate::emulator::{Emulator, LineScope, LogicalLine};
 

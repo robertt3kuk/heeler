@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
 //! GPUI tests for the daemon's lifetime (design.md § Daemon lifecycle): the quit flow and
 //! `app.on_quit`, the termination-signal path, the daemon controls (popover, palette, menu),
-//! and the working-mode control. Daemons are in-process on a temporary `STAFFY_HOME`, or a
-//! real `staffyd` process where the test starts one again.
+//! and the working-mode control. Daemons are in-process on a temporary `HUTAN_HOME`, or a
+//! real `hutand` process where the test starts one again.
 
 mod common;
 
@@ -13,14 +13,14 @@ use std::time::{Duration, Instant};
 
 use common::{ProcessDaemon, TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, OwnedMenuItem, TestAppContext, VisualTestContext};
-use staffy_client::{Connection, ConnectionState};
-use staffy_core::SessionId;
-use staffy_desktop::settings::OnQuit;
-use staffy_desktop::workbench::actions::{self, daemon as daemon_actions, palette};
-use staffy_desktop::workbench::model::DockPosition;
-use staffy_desktop::workbench::{DaemonBusy, Region, Workbench};
-use staffy_settings::{SettingsPaths, SettingsStore};
-use staffy_terminal_view::ViewStatus;
+use hutan_client::{Connection, ConnectionState};
+use hutan_core::SessionId;
+use hutan_desktop::settings::OnQuit;
+use hutan_desktop::workbench::actions::{self, daemon as daemon_actions, palette};
+use hutan_desktop::workbench::model::DockPosition;
+use hutan_desktop::workbench::{DaemonBusy, Region, Workbench};
+use hutan_settings::{SettingsPaths, SettingsStore};
+use hutan_terminal_view::ViewStatus;
 
 fn settings_in(dir: &Path) -> SettingsStore {
     SettingsStore::new(SettingsPaths::in_dir(dir))
@@ -196,7 +196,7 @@ fn closing_the_last_window_with_live_sessions_asks(cx: &mut TestAppContext) {
     wait_synced(&view, cx, 1);
 
     assert!(!cx.simulate_close());
-    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Staffy?"));
+    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Hutan?"));
     assert!(!quitting(&view, cx));
     assert!(daemon.paths.socket.exists());
 }
@@ -227,7 +227,7 @@ fn ask_keep_running_quits_and_leaves_the_sessions(cx: &mut TestAppContext) {
     wait_synced(&view, cx, 1);
 
     dispatch(cx, actions::Quit);
-    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Staffy?"));
+    assert_eq!(modal_title(&view, cx).as_deref(), Some("Quit Hutan?"));
     let checkbox = view.read_with(cx, |wb, _| {
         wb.modal()
             .and_then(|m| m.checkbox.as_ref().map(|c| c.checked))
@@ -456,11 +456,11 @@ fn open_logs_reveals_the_log_file_and_has_no_other_side_effects(cx: &mut TestApp
             .is_some_and(|n| n.starts_with("No daemon log yet"))
     );
 
-    write(log.parent().unwrap(), "staffyd.log", "started\n");
+    write(log.parent().unwrap(), "hutand.log", "started\n");
     dispatch(cx, daemon_actions::OpenLogs);
     pump_for(cx, Duration::from_millis(200));
     assert_eq!(*revealed.borrow(), std::slice::from_ref(&log));
-    assert_eq!(read(log.parent().unwrap(), "staffyd.log"), "started\n");
+    assert_eq!(read(log.parent().unwrap(), "hutand.log"), "started\n");
     assert!(!view.read_with(cx, |wb, _| wb.modal_open()));
     assert!(!quitting(&view, cx));
     assert!(!view.read_with(cx, |wb, _| wb.daemon_stopped()));
@@ -530,7 +530,7 @@ fn stop_from_the_palette_confirms_with_live_sessions_and_keeps_the_app_open(
     });
     assert!(!quitting(&view, cx), "the app stays open");
     assert!(view.read_with(cx, |wb, _| wb.daemon_stopped()));
-    assert_eq!(status_line(&view, cx), "staffyd stopped");
+    assert_eq!(status_line(&view, cx), "hutand stopped");
     assert!(
         !view.read_with(cx, |wb, cx| wb.sessions().read(cx).connection().autostart()),
         "autostart is off so the daemon is not brought back"
@@ -650,7 +650,7 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
             wb.daemon_busy().is_none() && wb.daemon_stopped()
         })
     });
-    assert_eq!(status_line(&view, cx), "staffyd stopped");
+    assert_eq!(status_line(&view, cx), "hutand stopped");
     // Autostart would bring a daemon back within a few hundred milliseconds.
     pump_for(cx, Duration::from_millis(1500));
     assert!(
@@ -671,7 +671,7 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
         })
     });
     assert!(!view.read_with(cx, |wb, _| wb.daemon_stopped()));
-    assert_eq!(status_line(&view, cx), "staffyd connected");
+    assert_eq!(status_line(&view, cx), "hutand connected");
     wait_until(cx, "the second terminal to end", |cx| {
         matches!(
             terminal_status(&view, cx, second.id),

@@ -9,18 +9,18 @@ rust-version = "1.98"
 publish = false
 
 [workspace.dependencies]
-staffy-agents = { path = "crates/agents" }
-staffy-chat-view = { path = "crates/chat_view" }
-staffy-client = { path = "crates/client" }
-staffy-core = { path = "crates/core" }
-staffy-daemon = { path = "crates/daemon" }
-staffy-gateway = { path = "crates/gateway" }
-staffy-index = { path = "crates/index" }
-staffy-protocol = { path = "crates/protocol" }
-staffy-settings = { path = "crates/settings" }
-staffy-storage = { path = "crates/storage" }
-staffy-terminal = { path = "crates/terminal" }
-staffy-terminal-view = { path = "crates/terminal_view" }
+hutan-agents = { path = "crates/agents" }
+hutan-chat-view = { path = "crates/chat_view" }
+hutan-client = { path = "crates/client" }
+hutan-core = { path = "crates/core" }
+hutan-daemon = { path = "crates/daemon" }
+hutan-gateway = { path = "crates/gateway" }
+hutan-index = { path = "crates/index" }
+hutan-protocol = { path = "crates/protocol" }
+hutan-settings = { path = "crates/settings" }
+hutan-storage = { path = "crates/storage" }
+hutan-terminal = { path = "crates/terminal" }
+hutan-terminal-view = { path = "crates/terminal_view" }
 
 anyhow = "1.0.104"
 bitflags = { version = "2.13.2", features = ["serde"] }
@@ -35,9 +35,11 @@ parking_lot = "0.12.5"
 plist = "1.10.1"
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 regex = "1.13.1"
-# HTTP for the model gateway (ADR 0008): rustls with the `ring` provider (installed by staffy-gateway,
+# HTTP for the model gateway (ADR 0008): rustls with the `ring` provider (installed by hutan-gateway,
 # `rustls-no-provider`) and the platform verifier for roots; aws-lc is avoided for its OpenSSL license.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream"] }
+# Renders the app icon from the brand SVG (`xtask icon`); no text, no system fonts.
+resvg = { version = "0.46.0", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = "1.2.3"
@@ -88,5 +90,5 @@ opt-level = 3
 [profile.dev.package.vte]
 opt-level = 3
 
-[profile.dev.package.staffy-terminal]
+[profile.dev.package.hutan-terminal]
 opt-level = 3

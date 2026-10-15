@@ -1,4 +1,4 @@
-//! `staffy search` and `staffy index` against a real daemon whose history sources are temporary
+//! `hutan search` and `hutan index` against a real daemon whose history sources are temporary
 //! directories (never the user's agent directories).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::{Out, TestDaemon, WAIT};
+use hutan_daemon::{DaemonConfig, Paths};
 use serde_json::Value;
-use staffy_daemon::{DaemonConfig, Paths};
 use tokio::time::sleep;
 
 struct Env {
@@ -41,7 +41,7 @@ async fn start(enabled: bool) -> Env {
     )
     .unwrap();
     let paths = Paths::in_home(&home);
-    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
+    let daemon = hutan_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     Env {
@@ -70,13 +70,13 @@ fn append(path: &Path, lines: &[&str]) {
 const RECENT: &str = r#"{"type":"user","cwd":"/work/app","message":{"role":"user","content":[{"type":"text","text":"why does the quokka scheduler stall under load"}]}}"#;
 const OLD: &str = r#"{"type":"user","timestamp":"2020-01-01T00:00:00.000Z","cwd":"/work/old","message":{"role":"user","content":[{"type":"text","text":"ancient quokka question"}]}}"#;
 
-/// Runs `staffy search …` until it prints at least `count` hits as JSON.
+/// Runs `hutan search …` until it prints at least `count` hits as JSON.
 async fn search_until(env: &Env, args: &[&str], count: usize) -> Value {
     let start = Instant::now();
     loop {
         let mut full = vec!["search", "--json"];
         full.extend_from_slice(args);
-        let out = env.t.staffy(&full).await;
+        let out = env.t.hutan(&full).await;
         if out.code == 0 {
             let json = out.json();
             if json["hits"].as_array().unwrap().len() >= count {
@@ -110,7 +110,7 @@ async fn search_prints_json_and_human_output_and_honours_filters() {
     );
     assert!(recent["snippet"].as_str().unwrap().contains("«quokka»"));
 
-    let human = env.t.staffy(&["search", "quokka", "scheduler"]).await.ok();
+    let human = env.t.hutan(&["search", "quokka", "scheduler"]).await.ok();
     assert!(human.stdout.contains("claude"), "{human:?}");
     assert!(human.stdout.contains("/work/app"), "{human:?}");
     assert!(
@@ -129,17 +129,17 @@ async fn search_prints_json_and_human_output_and_honours_filters() {
     assert_eq!(recent_only["hits"][0]["session_key"], "sess-a");
     let other = env
         .t
-        .staffy(&["search", "--json", "quokka", "--source", "codex"])
+        .hutan(&["search", "--json", "quokka", "--source", "codex"])
         .await
         .ok();
     assert!(other.json()["hits"].as_array().unwrap().is_empty());
     let capped = env
         .t
-        .staffy(&["search", "--json", "quokka", "--limit", "1"])
+        .hutan(&["search", "--json", "quokka", "--limit", "1"])
         .await
         .ok();
     assert_eq!(capped.json()["hits"].as_array().unwrap().len(), 1);
-    let none = env.t.staffy(&["search", "zzzzqqqq"]).await.ok();
+    let none = env.t.hutan(&["search", "zzzzqqqq"]).await.ok();
     assert_eq!(none.stdout.trim(), "no matches");
 
     // Usage errors exit 2.
@@ -149,7 +149,7 @@ async fn search_prints_json_and_human_output_and_honours_filters() {
         &["search", "--source", "opencode", "x"],
         &["search"],
     ] {
-        assert_eq!(env.t.staffy(bad).await.code, 2, "{bad:?}");
+        assert_eq!(env.t.hutan(bad).await.code, 2, "{bad:?}");
     }
     env.t.stop().await;
 }
@@ -162,35 +162,32 @@ async fn index_commands_enable_disable_status_clear_rebuild() {
     // Disabled: status says so, search is refused with a pointer to `index enable`.
     let status = env
         .t
-        .staffy(&["index", "status", "--json"])
+        .hutan(&["index", "status", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(status["enabled"], false);
-    let human = env.t.staffy(&["index", "status"]).await.ok();
+    let human = env.t.hutan(&["index", "status"]).await.ok();
     assert!(human.stdout.contains("disabled"), "{human:?}");
-    let refused: Out = env.t.staffy(&["search", "quokka"]).await;
+    let refused: Out = env.t.hutan(&["search", "quokka"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
-    assert!(
-        refused.stderr.contains("staffy index enable"),
-        "{refused:?}"
-    );
+    assert!(refused.stderr.contains("hutan index enable"), "{refused:?}");
 
     let enabled = env
         .t
-        .staffy(&["index", "enable", "--json"])
+        .hutan(&["index", "enable", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(enabled["enabled"], true);
     search_until(&env, &["quokka"], 1).await;
-    let human = env.t.staffy(&["index", "status"]).await.ok();
+    let human = env.t.hutan(&["index", "status"]).await.ok();
     assert!(human.stdout.contains("enabled"), "{human:?}");
     assert!(human.stdout.contains("claude"), "{human:?}");
     assert!(human.stdout.contains("MiB"), "{human:?}");
     let status = env
         .t
-        .staffy(&["index", "status", "--json"])
+        .hutan(&["index", "status", "--json"])
         .await
         .ok()
         .json();
@@ -206,16 +203,11 @@ async fn index_commands_enable_disable_status_clear_rebuild() {
         (Some(1), Some(1))
     );
 
-    let cleared = env
-        .t
-        .staffy(&["index", "clear", "--json"])
-        .await
-        .ok()
-        .json();
+    let cleared = env.t.hutan(&["index", "clear", "--json"]).await.ok().json();
     assert_eq!(cleared["cleared"], true);
     let after = env
         .t
-        .staffy(&["search", "--json", "quokka"])
+        .hutan(&["search", "--json", "quokka"])
         .await
         .ok()
         .json();
@@ -223,7 +215,7 @@ async fn index_commands_enable_disable_status_clear_rebuild() {
 
     let rebuilt = env
         .t
-        .staffy(&["index", "rebuild", "--json"])
+        .hutan(&["index", "rebuild", "--json"])
         .await
         .ok()
         .json();
@@ -232,12 +224,12 @@ async fn index_commands_enable_disable_status_clear_rebuild() {
 
     let disabled = env
         .t
-        .staffy(&["index", "disable", "--json"])
+        .hutan(&["index", "disable", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(disabled["enabled"], false);
-    assert_eq!(env.t.staffy(&["search", "quokka"]).await.code, 1);
+    assert_eq!(env.t.hutan(&["search", "quokka"]).await.code, 1);
     env.t.stop().await;
 }
 
@@ -246,7 +238,7 @@ async fn resuming_a_hit_that_cannot_resume_fails_cleanly() {
     let env = start(true).await;
     append(&env.claude.join("-work-app/sess-a.jsonl"), &[RECENT]);
     search_until(&env, &["quokka"], 1).await;
-    let out = env.t.staffy(&["search", "quokka", "--resume", "5"]).await;
+    let out = env.t.hutan(&["search", "quokka", "--resume", "5"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("no hit 5"), "{out:?}");
     env.t.stop().await;

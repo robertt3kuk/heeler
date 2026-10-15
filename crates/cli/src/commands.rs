@@ -1,17 +1,17 @@
-//! The commands behind `staffy`'s subcommands.
+//! The commands behind `hutan`'s subcommands.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
-use serde_json::Value;
-use staffy_client::{Client, ClientError, ConnectOptions, default_socket_path};
-use staffy_protocol::ErrorBody;
-use staffy_protocol::messages::{
+use hutan_client::{Client, ClientError, ConnectOptions, default_socket_path};
+use hutan_protocol::ErrorBody;
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
     SessionListFilter, SessionSnapshot, Subscribed,
 };
+use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::sleep;
 
@@ -142,12 +142,12 @@ impl Ctx {
 
     // ---- daemon ----------------------------------------------------------------------------
 
-    /// Connects to the daemon, starting `staffyd` if nothing listens; `true` when it was started.
+    /// Connects to the daemon, starting `hutand` if nothing listens; `true` when it was started.
     async fn ensure_daemon(&self) -> Result<(Client, bool), CliError> {
         match Client::connect(self.options(None)).await {
             Ok(client) => Ok((client, false)),
             Err(ClientError::Io(e)) if is_unreachable(&e) => {
-                let binary = find_staffyd()?;
+                let binary = find_hutand()?;
                 let client = Client::connect(self.options(Some(binary)))
                     .await
                     .map_err(|e| self.fail(e))?;
@@ -200,7 +200,7 @@ impl Ctx {
         let client = self.connect().await?;
         self.shutdown_daemon(client, stop_sessions, forget).await?;
         self.print(&serde_json::json!({"stopped": true}), || {
-            "staffyd stopped".to_owned()
+            "hutand stopped".to_owned()
         })
     }
 
@@ -233,7 +233,7 @@ impl Ctx {
         .await;
         if gone.is_err() {
             return Err(CliError::Failed(format!(
-                "staffyd accepted the shutdown but {} is still there after {}s",
+                "hutand accepted the shutdown but {} is still there after {}s",
                 self.socket.display(),
                 STOP_WAIT.as_secs()
             )));
@@ -253,8 +253,8 @@ impl Ctx {
                     let live = list.sessions.iter().filter(|s| s.state.is_live()).count();
                     if live > 0 {
                         return Err(CliError::Failed(format!(
-                            "{live} live session(s); staffyd was not restarted. \
-                             Run `staffy daemon restart --stop-sessions` to stop them and restart"
+                            "{live} live session(s); hutand was not restarted. \
+                             Run `hutan daemon restart --stop-sessions` to stop them and restart"
                         )));
                     }
                 }
@@ -374,7 +374,7 @@ impl StatusOut {
     fn human(&self) -> String {
         let i = &self.info;
         format!(
-            "staffyd {} (protocol {}.{}) pid {}, up {}, {} session(s), {} client(s)\nsocket {}\nepoch  {}",
+            "hutand {} (protocol {}.{}) pid {}, up {}, {} session(s), {} client(s)\nsocket {}\nepoch  {}",
             i.daemon_version,
             i.protocol.major,
             i.protocol.minor,
@@ -434,30 +434,30 @@ fn print_line(text: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `staffyd` next to this binary (also through symlinks), else the first one on `PATH`.
-fn find_staffyd() -> Result<PathBuf, CliError> {
-    locate_staffyd(
+/// `hutand` next to this binary (also through symlinks), else the first one on `PATH`.
+fn find_hutand() -> Result<PathBuf, CliError> {
+    locate_hutand(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("PATH"),
     )
     .ok_or_else(|| {
-        CliError::Failed("staffyd not found next to the staffy binary or on PATH".to_owned())
+        CliError::Failed("hutand not found next to the hutan binary or on PATH".to_owned())
     })
 }
 
-/// The executable `staffyd` beside `exe`, as invoked and with symlinks resolved (the CLI of an
+/// The executable `hutand` beside `exe`, as invoked and with symlinks resolved (the CLI of an
 /// app bundle linked into `/usr/local/bin` finds the bundle's daemon that way), else the first
 /// one on `path`.
-fn locate_staffyd(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+fn locate_hutand(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let beside = exe
         .into_iter()
         .flat_map(|exe| [Some(exe.to_owned()), exe.canonicalize().ok()])
         .flatten()
-        .filter_map(|exe| exe.parent().map(|dir| dir.join("staffyd")));
+        .filter_map(|exe| exe.parent().map(|dir| dir.join("hutand")));
     let on_path = path
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|dir| dir.join("staffyd"));
+        .map(|dir| dir.join("hutand"));
     beside
         .chain(on_path)
         .find(|candidate| is_executable(candidate))
@@ -481,10 +481,10 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// `Staffy.app/Contents/MacOS/{staffy-desktop,staffyd,staffy}`; returns the `MacOS` folder.
+    /// `Hutan.app/Contents/MacOS/{hutan-desktop,hutand,hutan}`; returns the `MacOS` folder.
     fn fake_bundle(root: &Path) -> PathBuf {
-        let macos = root.join("Staffy.app/Contents/MacOS");
-        for name in ["staffy-desktop", "staffyd", "staffy"] {
+        let macos = root.join("Hutan.app/Contents/MacOS");
+        for name in ["hutan-desktop", "hutand", "hutan"] {
             executable(&macos.join(name));
         }
         macos
@@ -495,8 +495,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let macos = fake_bundle(dir.path());
         assert_eq!(
-            locate_staffyd(Some(&macos.join("staffy")), None),
-            Some(macos.join("staffyd"))
+            locate_hutand(Some(&macos.join("hutan")), None),
+            Some(macos.join("hutand"))
         );
     }
 
@@ -506,12 +506,12 @@ mod tests {
         let macos = fake_bundle(dir.path());
         let bin = dir.path().join("usr/local/bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::os::unix::fs::symlink(macos.join("staffy"), bin.join("staffy")).unwrap();
+        std::os::unix::fs::symlink(macos.join("hutan"), bin.join("hutan")).unwrap();
         // The link's own folder holds no daemon; the target's does.
-        let found = locate_staffyd(Some(&bin.join("staffy")), None).unwrap();
+        let found = locate_hutand(Some(&bin.join("hutan")), None).unwrap();
         assert_eq!(
             found.canonicalize().unwrap(),
-            macos.join("staffyd").canonicalize().unwrap()
+            macos.join("hutand").canonicalize().unwrap()
         );
     }
 
@@ -519,14 +519,14 @@ mod tests {
     fn without_a_daemon_beside_it_the_cli_falls_back_to_path() {
         let dir = tempfile::tempdir().unwrap();
         let lonely = dir.path().join("lonely");
-        executable(&lonely.join("staffy"));
-        assert_eq!(locate_staffyd(Some(&lonely.join("staffy")), None), None);
+        executable(&lonely.join("hutan"));
+        assert_eq!(locate_hutand(Some(&lonely.join("hutan")), None), None);
         let installed = dir.path().join("installed");
-        executable(&installed.join("staffyd"));
+        executable(&installed.join("hutand"));
         let path = std::env::join_paths([dir.path().join("empty"), installed.clone()]).unwrap();
         assert_eq!(
-            locate_staffyd(Some(&lonely.join("staffy")), Some(path)),
-            Some(installed.join("staffyd"))
+            locate_hutand(Some(&lonely.join("hutan")), Some(path)),
+            Some(installed.join("hutand"))
         );
     }
 }

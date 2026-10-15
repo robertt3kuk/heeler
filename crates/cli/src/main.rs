@@ -1,4 +1,4 @@
-//! `staffy`: command-line client for staffyd.
+//! `hutan`: command-line client for hutand.
 
 mod args;
 mod attach_spec;
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("staffy: starting the async runtime: {e}");
+            eprintln!("hutan: starting the async runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
         Err(error) => {
             if !error.is_broken_pipe() && !matches!(error, error::CliError::Reported) {
                 // Not `eprintln!`: that panics when stderr is gone (attach after a hangup).
-                let _ = writeln!(std::io::stderr(), "staffy: {error}");
+                let _ = writeln!(std::io::stderr(), "hutan: {error}");
             }
             ExitCode::from(error.exit_code())
         }

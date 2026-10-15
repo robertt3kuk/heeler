@@ -1,4 +1,4 @@
-//! Agent chats in GPUI tests: a daemon whose `codex app-server` is `staffy-codex-fixture
+//! Agent chats in GPUI tests: a daemon whose `codex app-server` is `hutan-codex-fixture
 //! replay` over a recorded (or edited) transcript, and helpers to read what the fake server
 //! received.
 
@@ -7,15 +7,15 @@
 
 use std::path::{Path, PathBuf};
 
+use hutan_agents::CodexConfig;
+use hutan_core::SessionId;
+use hutan_protocol::chat::ChatCreate;
+use hutan_protocol::messages::{Request, SessionInfo, SessionResult};
 use serde_json::Value;
-use staffy_agents::CodexConfig;
-use staffy_core::SessionId;
-use staffy_protocol::chat::ChatCreate;
-use staffy_protocol::messages::{Request, SessionInfo, SessionResult};
 
 use super::TestDaemon;
 
-const FIXTURE_BIN_NAME: &str = "staffy-codex-fixture";
+const FIXTURE_BIN_NAME: &str = "hutan-codex-fixture";
 
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../agents/tests/fixtures/codex-0.162")
@@ -32,7 +32,7 @@ pub fn fixture_bin() -> PathBuf {
         .join(FIXTURE_BIN_NAME);
     assert!(
         bin.is_file(),
-        "{FIXTURE_BIN_NAME} not built: run `cargo build -p staffy-agents --bins` (or `just test`)"
+        "{FIXTURE_BIN_NAME} not built: run `cargo build -p hutan-agents --bins` (or `just test`)"
     );
     bin
 }

@@ -4,8 +4,8 @@
 
 use std::collections::VecDeque;
 
-use staffy_core::TerminalId;
-use staffy_protocol::blocks::{BLOCKS_MAX_LIMIT, Block, TerminalBlocksResult};
+use hutan_core::TerminalId;
+use hutan_protocol::blocks::{BLOCKS_MAX_LIMIT, Block, TerminalBlocksResult};
 
 use crate::client::Client;
 use crate::error::ClientError;
@@ -127,7 +127,7 @@ impl TruncateFront for VecDeque<Block> {
 
 #[cfg(test)]
 mod tests {
-    use staffy_protocol::blocks::BlockState;
+    use hutan_protocol::blocks::BlockState;
 
     use super::*;
 

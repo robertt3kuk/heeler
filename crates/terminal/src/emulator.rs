@@ -16,12 +16,12 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     CursorShape as EngineCursorShape, Processor, Rgb as EngineRgb,
 };
-use parking_lot::Mutex;
-use staffy_protocol::blocks::{Block, BlockPart};
-use staffy_protocol::messages::TerminalSize;
-use staffy_protocol::render::{
+use hutan_protocol::blocks::{Block, BlockPart};
+use hutan_protocol::messages::TerminalSize;
+use hutan_protocol::render::{
     Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, TerminalFrame, TerminalSnapshot,
 };
+use parking_lot::Mutex;
 
 use crate::blocks::{BlockIndex, BlockText, BlockTextError, MAX_COMMAND_BYTES, now_ms};
 use crate::error::TerminalError;

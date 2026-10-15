@@ -1,5 +1,5 @@
 [package]
-name = "staffy-gateway"
+name = "hutan-gateway"
 description = "Model gateway: OpenAI-compatible, Anthropic and Ollama adapters behind one Provider trait, and the credential store for provider API keys (ADR 0008)"
 version.workspace = true
 edition.workspace = true
@@ -7,16 +7,16 @@ rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_gateway"
+name = "hutan_gateway"
 
 [features]
-# A scriptable HTTP server (`staffy_gateway::testing`) for tests of this crate and the daemon.
+# A scriptable HTTP server (`hutan_gateway::testing`) for tests of this crate and the daemon.
 test-support = ["tokio/net", "tokio/io-util"]
 
 [dependencies]
 bytes.workspace = true
 futures.workspace = true
-staffy-core.workspace = true
+hutan-core.workspace = true
 parking_lot.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -32,7 +32,7 @@ tracing.workspace = true
 security-framework.workspace = true
 
 [dev-dependencies]
-staffy-gateway = { path = ".", features = ["test-support"] }
+hutan-gateway = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util"] }
 tracing-subscriber.workspace = true

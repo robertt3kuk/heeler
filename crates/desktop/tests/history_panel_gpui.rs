@@ -11,13 +11,13 @@ use std::time::Duration;
 use common::history::HistoryEnv;
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use staffy_desktop::settings::{HistoryRange, HistoryScope};
-use staffy_desktop::workbench::actions;
-use staffy_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
-use staffy_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
-use staffy_desktop::workbench::{HistoryState, Region, Workbench};
-use staffy_protocol::history::{HistoryRole, HistorySource};
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_desktop::settings::{HistoryRange, HistoryScope};
+use hutan_desktop::workbench::actions;
+use hutan_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
+use hutan_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
+use hutan_desktop::workbench::{HistoryState, Region, Workbench};
+use hutan_protocol::history::{HistoryRole, HistorySource};
+use hutan_settings::{SettingsPaths, SettingsStore};
 
 fn pump_until(
     cx: &mut VisualTestContext,
@@ -99,7 +99,7 @@ fn indexing_off_shows_the_card_and_reads_nothing(cx: &mut TestAppContext) {
 
     // ⌘J `?` says why there is nothing, and Enter does nothing.
     cx.simulate_keystrokes("cmd-j");
-    cx.simulate_input("?staffytest");
+    cx.simulate_input("?hutantest");
     pump_until(cx, "the answer", |cx| {
         view.read_with(cx, |wb, _| {
             wb.picker()

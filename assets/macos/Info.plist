@@ -1,28 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Info.plist of Staffy.app. `@VERSION@` is the workspace version; `cargo run -p xtask -- bundle`
-     fills it in (docs/packaging.md). The desktop executable is `staffy-desktop`, not `Staffy`: on
-     the default case-insensitive volume `Contents/MacOS/Staffy` and the CLI `staffy` are one name. -->
+<!-- Info.plist of Hutan.app. `@VERSION@` is the workspace version; `cargo run -p xtask -- bundle`
+     fills it in (docs/packaging.md). The desktop executable is `hutan-desktop`, not `Hutan`: on
+     the default case-insensitive volume `Contents/MacOS/Hutan` and the CLI `hutan` are one name. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Staffy</string>
+	<string>Hutan</string>
 	<key>CFBundleExecutable</key>
-	<string>staffy-desktop</string>
+	<string>hutan-desktop</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.staffy.Staffy</string>
+	<string>dev.hutan.Hutan</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Staffy</string>
+	<string>Hutan</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>Hutan.icns</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>

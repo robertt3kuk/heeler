@@ -1,6 +1,6 @@
-//! Terminal sessions end to end: the daemon runs in-process on a temporary `STAFFY_HOME` and
+//! Terminal sessions end to end: the daemon runs in-process on a temporary `HUTAN_HOME` and
 //! real shells run in real PTYs; everything is driven over the daemon's Unix socket with
-//! `staffy-client`. Tests 1–9 mirror the acceptance list of `docs/briefs/M1-D1.md`.
+//! `hutan-client`. Tests 1–9 mirror the acceptance list of `docs/briefs/M1-D1.md`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 
@@ -11,16 +11,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::*;
-use staffy_client::{Client, ConnectOptions};
-use staffy_core::{SessionId, SessionState, TerminalId};
-use staffy_protocol::ErrorCode;
-use staffy_protocol::messages::{
+use hutan_client::{Client, ConnectOptions};
+use hutan_core::{SessionId, SessionState, TerminalId};
+use hutan_protocol::ErrorCode;
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Request, SessionList,
     SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSnapshot, TerminalAck,
     TerminalColors, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalResize,
     TerminalSetColors, WorkspaceCreate, WorkspaceInfo, WorkspaceList, WorkspaceRef,
 };
-use staffy_protocol::render::TerminalRender;
+use hutan_protocol::render::TerminalRender;
 use tokio::time::{sleep, timeout};
 
 const QUIET: Duration = Duration::from_millis(500);
@@ -54,7 +54,7 @@ async fn wait_gone(pid: u32) {
 }
 
 /// Creates `echo PID=$$; exec cat` and returns the session with the shell's pid.
-async fn create_with_pid(client: &Client) -> (staffy_protocol::messages::SessionInfo, u32) {
+async fn create_with_pid(client: &Client) -> (hutan_protocol::messages::SessionInfo, u32) {
     let session = create(client, sh("echo PID=$$; exec cat")).await;
     let mut view = View::attach(client, terminal_of(&session), None).await;
     view.wait_for("pid line", |s| {
@@ -329,8 +329,8 @@ async fn stop_then_restart_gives_a_new_terminal_and_a_new_process() {
     assert_eq!(
         remote_code(
             client
-                .call::<staffy_protocol::messages::TerminalAttached>(Request::TerminalAttach(
-                    staffy_protocol::messages::TerminalAttach {
+                .call::<hutan_protocol::messages::TerminalAttached>(Request::TerminalAttach(
+                    hutan_protocol::messages::TerminalAttach {
                         terminal_id: first,
                         size: None
                     }
@@ -651,7 +651,7 @@ async fn a_renamed_session_keeps_its_title_while_other_metadata_flows() {
     client
         .send_input(
             tid,
-            b"\x1b]2;again\x07\r\x07\r\x1b]9;note body\x07\r\x1b]777;notify;Head;Body\x07\r\x1b]7;file://h/tmp/staffy%20x\x07\r",
+            b"\x1b]2;again\x07\r\x07\r\x1b]9;note body\x07\r\x1b]777;notify;Head;Body\x07\r\x1b]7;file://h/tmp/hutan%20x\x07\r",
         )
         .await
         .unwrap();
@@ -695,7 +695,7 @@ async fn a_renamed_session_keeps_its_title_while_other_metadata_flows() {
             (Some("Head".to_owned()), "Body".to_owned())
         ]
     );
-    assert_eq!(cwd, Some(PathBuf::from("/tmp/staffy x")));
+    assert_eq!(cwd, Some(PathBuf::from("/tmp/hutan x")));
     t.stop().await;
 }
 
@@ -808,10 +808,10 @@ async fn shutdown_with_stop_sessions_terminates_children_and_removes_the_socket(
 async fn sigterm_stops_sessions_and_removes_the_socket() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    let socket = home.join("staffyd.sock");
-    let mut daemon = Command::new(env!("CARGO_BIN_EXE_staffyd"))
-        .env("STAFFY_HOME", &home)
-        .env_remove("STAFFY_SOCKET")
+    let socket = home.join("hutand.sock");
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_hutand"))
+        .env("HUTAN_HOME", &home)
+        .env_remove("HUTAN_SOCKET")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -838,7 +838,7 @@ async fn sigterm_stops_sessions_and_removes_the_socket() {
         }
     })
     .await
-    .expect("staffyd started");
+    .expect("hutand started");
     let (_, pid) = create_with_pid(&client).await;
     assert!(process_exists(pid));
 
@@ -856,7 +856,7 @@ async fn sigterm_stops_sessions_and_removes_the_socket() {
         }
     })
     .await
-    .expect("staffyd exited after SIGTERM");
+    .expect("hutand exited after SIGTERM");
     assert!(exit.success(), "{exit:?}");
     assert!(!socket.exists());
     wait_gone(pid).await;
@@ -914,13 +914,12 @@ async fn daemon_managed_environment_wins_over_the_spec() {
         .workspaces
         .remove(0);
     let mut wide = sh(
-        "echo SID=$STAFFY_SESSION_ID WS=$STAFFY_WORKSPACE_ID SOCK=$STAFFY_SOCKET FOO=$FOO; exec cat",
+        "echo SID=$HUTAN_SESSION_ID WS=$HUTAN_WORKSPACE_ID SOCK=$HUTAN_SOCKET FOO=$FOO; exec cat",
     );
     wide.size = Some(size(400, 10));
     wide.env.insert("FOO".into(), "bar".into());
-    wide.env
-        .insert("STAFFY_SESSION_ID".into(), "spoofed".into());
-    wide.env.insert("STAFFY_SOCKET".into(), "/spoofed".into());
+    wide.env.insert("HUTAN_SESSION_ID".into(), "spoofed".into());
+    wide.env.insert("HUTAN_SOCKET".into(), "/spoofed".into());
     let session = create(&client, wide).await;
     let mut view = View::attach(&client, terminal_of(&session), None).await;
     view.wait_for("env line", |s| s.contains("FOO=")).await;
@@ -951,7 +950,7 @@ async fn zsh_sessions_get_the_installed_shell_integration() {
     let mut spec = spec(&[
         "/bin/zsh",
         "-c",
-        "echo \"VER=$STAFFY_SHELL_INTEGRATION_VERSION DIR=$STAFFY_SHELL_INTEGRATION_DIR ZD=[$ZDOTDIR]\"; exec cat",
+        "echo \"VER=$HUTAN_SHELL_INTEGRATION_VERSION DIR=$HUTAN_SHELL_INTEGRATION_DIR ZD=[$ZDOTDIR]\"; exec cat",
     ]);
     spec.size = Some(size(400, 10));
     spec.env
@@ -966,9 +965,9 @@ async fn zsh_sessions_get_the_installed_shell_integration() {
         format!("1 DIR={} ZD=[]", root.display())
     );
     assert!(root.join("zsh/.zshenv").is_file());
-    assert!(root.join("bash/staffy.bash").is_file());
+    assert!(root.join("bash/hutan.bash").is_file());
     assert!(
-        root.join("fish/vendor_conf.d/staffy-shell-integration.fish")
+        root.join("fish/vendor_conf.d/hutan-shell-integration.fish")
             .is_file()
     );
     t.stop().await;
@@ -1038,9 +1037,9 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
         remote_code(
             client
                 .call::<SessionResult>(Request::SessionCreate(
-                    staffy_protocol::messages::SessionCreate {
-                        workspace_id: Some(staffy_core::WorkspaceId::new()),
-                        spec: staffy_protocol::messages::SessionSpec::Terminal(spec(&["cat"])),
+                    hutan_protocol::messages::SessionCreate {
+                        workspace_id: Some(hutan_core::WorkspaceId::new()),
+                        spec: hutan_protocol::messages::SessionSpec::Terminal(spec(&["cat"])),
                     }
                 ))
                 .await
@@ -1053,9 +1052,9 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
         remote_code(
             client
                 .call::<SessionResult>(Request::SessionCreate(
-                    staffy_protocol::messages::SessionCreate {
+                    hutan_protocol::messages::SessionCreate {
                         workspace_id: None,
-                        spec: staffy_protocol::messages::SessionSpec::Terminal(zero),
+                        spec: hutan_protocol::messages::SessionSpec::Terminal(zero),
                     }
                 ))
                 .await
@@ -1072,7 +1071,7 @@ async fn unknown_ids_are_not_found() {
     let ghost = TerminalId(4242);
     let attach = client
         .call::<Empty>(Request::TerminalAttach(
-            staffy_protocol::messages::TerminalAttach {
+            hutan_protocol::messages::TerminalAttach {
                 terminal_id: ghost,
                 size: None,
             },
@@ -1278,7 +1277,7 @@ async fn wait_exited_with_cwd(client: &Client, id: SessionId, cwd: &std::path::P
     .unwrap_or_else(|_| panic!("session never exited with cwd {}", cwd.display()));
 }
 
-async fn restart(client: &Client, id: SessionId) -> staffy_protocol::messages::SessionInfo {
+async fn restart(client: &Client, id: SessionId) -> hutan_protocol::messages::SessionInfo {
     client
         .call::<SessionResult>(Request::SessionRestart(SessionRef { session_id: id }))
         .await

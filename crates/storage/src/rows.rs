@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
+use hutan_core::{ApprovalId, Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
 use serde::{Deserialize, Serialize};
-use staffy_core::{ApprovalId, Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
 
 /// What a workspace is for. The database holds at most one `Home`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

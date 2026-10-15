@@ -1,4 +1,4 @@
-//! GPUI terminal view for Staffy (M2.3): draws the daemon's render stream and turns keyboard,
+//! GPUI terminal view for Hutan (M2.3): draws the daemon's render stream and turns keyboard,
 //! mouse and input-method events into PTY bytes.
 //!
 //! The daemon is the only VT parser (ADR 0004). [`TerminalView`] is passive: an owner feeds it
@@ -24,13 +24,13 @@ pub mod trace;
 mod view;
 
 use gpui::Task;
+pub use hutan_protocol::blocks::BlockPart;
+pub use hutan_protocol::messages::TerminalSize;
+pub use hutan_protocol::render::{Row, TerminalRender};
 pub use settings::{
     BlockSettings, CursorSettings, CursorStyle, OptionAsMeta, TerminalViewSettings,
 };
 pub use shared::{SharedEvent, SharedTerminal};
-pub use staffy_protocol::blocks::BlockPart;
-pub use staffy_protocol::messages::TerminalSize;
-pub use staffy_protocol::render::{Row, TerminalRender};
 pub use theme::{DefaultColors, Rgb, TerminalPalette};
 pub use view::{
     BlockActions, Copy, CopyBlockCommand, CopyBlockOutput, JumpToNextPrompt, JumpToPreviousPrompt,

@@ -4,9 +4,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use staffy_protocol::messages::TerminalSize;
-use staffy_protocol::render::TerminalSnapshot;
-use staffy_terminal::{
+use hutan_protocol::messages::TerminalSize;
+use hutan_protocol::render::TerminalSnapshot;
+use hutan_terminal::{
     DefaultColors, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
 };
 use tokio::time::timeout;
@@ -83,10 +83,9 @@ async fn echo_round_trip_through_write_input() {
     let term = Terminal::spawn(config(&["/bin/sh"])).expect("spawn sh");
     assert!(term.pid().is_some());
     wait_for(&term, "prompt", |s| text(s).contains('$')).await;
-    term.write_input(b"echo staffy-$((20+22))\n")
-        .expect("write");
-    // The typed line contains `staffy-$((`; only the shell's output contains `staffy-42`.
-    let snapshot = wait_for(&term, "echo output", |s| text(s).contains("staffy-42")).await;
+    term.write_input(b"echo hutan-$((20+22))\n").expect("write");
+    // The typed line contains `hutan-$((`; only the shell's output contains `hutan-42`.
+    let snapshot = wait_for(&term, "echo output", |s| text(s).contains("hutan-42")).await;
     assert_eq!(snapshot.cols, 80);
     term.write_input(b"exit 7\n").expect("write");
     let status = timeout(LIMIT, term.wait_exit())
@@ -131,7 +130,7 @@ async fn resize_is_observed_by_the_child() {
     );
     assert!(matches!(
         term.render(&mut tracker),
-        Some(staffy_protocol::render::TerminalRender::Snapshot(s)) if (s.cols, s.rows) == (90, 20)
+        Some(hutan_protocol::render::TerminalRender::Snapshot(s)) if (s.cols, s.rows) == (90, 20)
     ));
     assert!(term.resize(size(0, 5)).is_err());
     term.terminate(Duration::from_secs(1)).expect("terminate");
@@ -147,8 +146,8 @@ async fn vim_enters_the_alternate_screen_and_returns() {
     .await;
     assert!(snapshot.modes.alt_screen);
 
-    term.write_input(b"ihello staffy\x1b").expect("write");
-    wait_for(&term, "inserted text", |s| text(s).contains("hello staffy")).await;
+    term.write_input(b"ihello hutan\x1b").expect("write");
+    wait_for(&term, "inserted text", |s| text(s).contains("hello hutan")).await;
 
     term.write_input(b":q!\r").expect("write");
     let status = timeout(LIMIT, term.wait_exit()).await.expect("vim exits");
@@ -157,7 +156,7 @@ async fn vim_enters_the_alternate_screen_and_returns() {
     let snapshot = term.snapshot(&mut tracker);
     assert!(!snapshot.modes.alt_screen, "alternate screen was left");
     assert!(
-        !text(&snapshot).contains("hello staffy"),
+        !text(&snapshot).contains("hello hutan"),
         "primary screen restored"
     );
 }
@@ -268,7 +267,7 @@ async fn metadata_events_are_broadcast() {
     wait_for(&term, "prompt", |s| text(s).contains('$')).await;
     let mut meta = term.metadata();
     term.write_input(
-        b"printf '\\033]0;staffy-title\\007\\033]133;A\\007\\033]7;file://h/tmp/x\\007\\a'\n",
+        b"printf '\\033]0;hutan-title\\007\\033]133;A\\007\\033]7;file://h/tmp/x\\007\\a'\n",
     )
     .expect("write");
     let mut seen = Vec::new();
@@ -291,14 +290,14 @@ async fn metadata_events_are_broadcast() {
     assert_eq!(
         seen,
         [
-            TerminalMeta::Title("staffy-title".to_owned()),
+            TerminalMeta::Title("hutan-title".to_owned()),
             TerminalMeta::PromptMark(PromptMark::A),
             TerminalMeta::Cwd("/tmp/x".into()),
             TerminalMeta::Bell,
         ]
     );
     let snapshot = term.snapshot(&mut RenderTracker::new());
-    assert_eq!(snapshot.title.as_deref(), Some("staffy-title"));
+    assert_eq!(snapshot.title.as_deref(), Some("hutan-title"));
     term.terminate(Duration::from_secs(1)).expect("terminate");
     timeout(LIMIT, term.wait_exit()).await.expect("exit");
 }
@@ -334,9 +333,9 @@ async fn environment_and_cwd_are_applied() {
     let mut cfg = config(&[
         "/bin/sh",
         "-c",
-        "echo T=$TERM C=$COLORTERM P=$TERM_PROGRAM X=$STAFFY_X; pwd",
+        "echo T=$TERM C=$COLORTERM P=$TERM_PROGRAM X=$HUTAN_X; pwd",
     ]);
-    cfg.env.insert("STAFFY_X".to_owned(), "yes".to_owned());
+    cfg.env.insert("HUTAN_X".to_owned(), "yes".to_owned());
     cfg.env.insert("TERM".to_owned(), "dumb".to_owned());
     cfg.cwd = Some("/".into());
     let term = Terminal::spawn(cfg).expect("spawn");
@@ -344,7 +343,7 @@ async fn environment_and_cwd_are_applied() {
     assert!(status.success());
     let screen = text(&term.snapshot(&mut RenderTracker::new()));
     assert!(
-        screen.contains("T=xterm-256color C=truecolor P=staffy X=yes"),
+        screen.contains("T=xterm-256color C=truecolor P=hutan X=yes"),
         "screen:\n{screen}"
     );
     assert!(screen.lines().any(|l| l.trim() == "/"), "screen:\n{screen}");
@@ -391,11 +390,11 @@ fn default_shell_is_the_account_login_shell_not_the_daemons_shell() {
         .to_owned();
 
     assert_eq!(
-        staffy_terminal::default_shell(&BTreeMap::new()),
+        hutan_terminal::default_shell(&BTreeMap::new()),
         account_shell
     );
     let explicit = BTreeMap::from([("SHELL".to_owned(), "/bin/sh".to_owned())]);
-    assert_eq!(staffy_terminal::default_shell(&explicit), "/bin/sh");
+    assert_eq!(hutan_terminal::default_shell(&explicit), "/bin/sh");
 }
 
 #[tokio::test]

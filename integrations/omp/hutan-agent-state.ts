@@ -1,12 +1,12 @@
-// staffy-managed: OMP agent-state extension.
-// Installed by `staffy integration install omp`; reinstalling overwrites this file, so put
+// hutan-managed: OMP agent-state extension.
+// Installed by `hutan integration install omp`; reinstalling overwrites this file, so put
 // custom extensions beside it instead of editing it.
 //
 // Reports OMP's state (turn running, waiting for an approval or an answer, idle) and how to
-// resume the conversation (`omp --resume=<id>`) to the Staffy session OMP runs in, by calling
-// `staffy agent report`. Every agent is a node of the session's agent tree: OMP binds this
+// resume the conversation (`omp --resume=<id>`) to the Hutan session OMP runs in, by calling
+// `hutan agent report`. Every agent is a node of the session's agent tree: OMP binds this
 // extension to the main session and to every subagent session, and `ctx.agent` (`kind`, `id`,
-// `parentId`, `name`) says which one an instance serves. Does nothing outside a Staffy session.
+// `parentId`, `name`) says which one an instance serves. Does nothing outside a Hutan session.
 // @ts-nocheck
 
 import { spawn } from "node:child_process";
@@ -44,7 +44,7 @@ interface ToolEvent {
   args?: { questions?: { question?: unknown }[] };
 }
 
-const ENABLED = process.env.STAFFY_ENV === "1" && !!process.env.STAFFY_SESSION_ID;
+const ENABLED = process.env.HUTAN_ENV === "1" && !!process.env.HUTAN_SESSION_ID;
 
 // Increases per report; microseconds keep it above what an earlier instance of this
 // extension (a reload) used and fit a double exactly.
@@ -54,9 +54,9 @@ function nextSeq(): number {
   return lastSeq;
 }
 
-// One `staffy` process at a time, in the order of the events, each bounded in time.
+// One `hutan` process at a time, in the order of the events, each bounded in time.
 let queue: Promise<void> = Promise.resolve();
-function staffy(args: string[]): void {
+function hutan(args: string[]): void {
   queue = queue.then(
     () =>
       new Promise<void>((resolve) => {
@@ -67,7 +67,7 @@ function staffy(args: string[]): void {
           resolve();
         };
         try {
-          const child = spawn(process.env.STAFFY_BIN || "staffy", args, {
+          const child = spawn(process.env.HUTAN_BIN || "hutan", args, {
             stdio: "ignore",
             windowsHide: true,
           });
@@ -112,7 +112,7 @@ function report(
   if (who.kind === "main" && agentSessionId) {
     args.push(`--agent-session-id=${agentSessionId}`, "--", "omp", `--resume=${agentSessionId}`);
   }
-  staffy(args);
+  hutan(args);
 }
 
 export default function (pi) {

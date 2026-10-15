@@ -10,10 +10,10 @@ use gpui::{
     InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use staffy_core::SessionId;
-use staffy_protocol::messages::SessionInfo;
-use staffy_settings::{ChangeSet, KEYMAP_NAMESPACE};
-use staffy_terminal_view::{
+use hutan_core::SessionId;
+use hutan_protocol::messages::SessionInfo;
+use hutan_settings::{ChangeSet, KEYMAP_NAMESPACE};
+use hutan_terminal_view::{
     DefaultColors, SharedEvent, SharedTerminal, TerminalView, TerminalViewEvent, ViewMode,
 };
 
@@ -31,12 +31,12 @@ use crate::theme::Theme;
 /// what follows the density (padding, block gutter) and the chrome theme (block colors).
 pub(crate) fn terminal_style(
     settings: &TerminalSettings,
-    system: staffy_settings::SystemAppearance,
+    system: hutan_settings::SystemAppearance,
     theme: &Theme,
-    density: staffy_settings::Density,
-) -> staffy_terminal_view::TerminalViewSettings {
+    density: hutan_settings::Density,
+) -> hutan_terminal_view::TerminalViewSettings {
     let base = settings.view_settings(system);
-    staffy_terminal_view::TerminalViewSettings {
+    hutan_terminal_view::TerminalViewSettings {
         padding: density.ui().terminal_padding,
         blocks: theme.block_settings(density, base.blocks.enabled, !crate::theme::reduce_motion()),
         ..base
@@ -199,7 +199,7 @@ impl Workbench {
         let live: HashSet<String> = {
             let store = self.sessions.read(cx);
             if !store.synced()
-                || store.connection_state() != staffy_client::ConnectionState::Connected
+                || store.connection_state() != hutan_client::ConnectionState::Connected
             {
                 return;
             }
@@ -439,9 +439,9 @@ impl Workbench {
         &self,
         pane: PaneId,
         cx: &gpui::App,
-    ) -> (Option<staffy_core::WorkspaceId>, Option<PathBuf>) {
+    ) -> (Option<hutan_core::WorkspaceId>, Option<PathBuf>) {
         let store = self.sessions.read(cx);
-        let home_or_root = |workspace: Option<&staffy_protocol::messages::WorkspaceInfo>| {
+        let home_or_root = |workspace: Option<&hutan_protocol::messages::WorkspaceInfo>| {
             workspace
                 .and_then(|w| w.roots.first().cloned())
                 .or_else(std::env::home_dir)
@@ -477,9 +477,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.sessions.read(cx).connection_state() != staffy_client::ConnectionState::Connected {
+        if self.sessions.read(cx).connection_state() != hutan_client::ConnectionState::Connected {
             self.split_with_placeholder(pane, edge, cx);
-            self.set_notice("Not connected to staffyd: opened an empty pane", cx);
+            self.set_notice("Not connected to hutand: opened an empty pane", cx);
             return;
         }
         let (workspace, cwd) = self.split_target(pane, cx);
@@ -712,7 +712,7 @@ impl Workbench {
         cx.notify();
     }
 
-    /// The root of the active workspace, whose `.staffy/settings.toml` currently applies.
+    /// The root of the active workspace, whose `.hutan/settings.toml` currently applies.
     pub fn workspace_root(&self) -> Option<&PathBuf> {
         self.workspace_root.as_ref()
     }
@@ -752,7 +752,7 @@ impl Workbench {
             } else if synced {
                 "This session no longer exists. Close the tab."
             } else {
-                "Connecting to staffyd…"
+                "Connecting to hutand…"
             };
             return div()
                 .size_full()
@@ -782,7 +782,7 @@ impl Workbench {
         let ended = self.held.get(&id).is_some_and(|h| {
             matches!(
                 h.read(cx).status(),
-                staffy_terminal_view::ViewStatus::Ended(_)
+                hutan_terminal_view::ViewStatus::Ended(_)
             )
         });
         let mut root = div().relative().size_full().child(view);

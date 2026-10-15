@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 512" width="1400" height="512">
+  <rect width="1400" height="512" fill="#0F0E11"/>
+  <g transform="translate(56 56) scale(0.78125)">
+  <!-- background -->
+  <rect width="512" height="512" rx="112" fill="#17151A"/>
+
+  <!-- orange hair fringe -->
+  <g fill="#E0692E">
+    <circle cx="256" cy="262" r="186"/>
+    <circle cx="96" cy="200" r="46"/>
+    <circle cx="416" cy="200" r="46"/>
+    <circle cx="82" cy="300" r="44"/>
+    <circle cx="430" cy="300" r="44"/>
+    <circle cx="120" cy="392" r="44"/>
+    <circle cx="392" cy="392" r="44"/>
+  </g>
+
+  <!-- ears -->
+  <ellipse cx="108" cy="270" rx="30" ry="40" fill="#A55A3A"/>
+  <ellipse cx="404" cy="270" rx="30" ry="40" fill="#A55A3A"/>
+  <ellipse cx="112" cy="272" rx="14" ry="22" fill="#7E4029"/>
+  <ellipse cx="400" cy="272" rx="14" ry="22" fill="#7E4029"/>
+
+  <!-- head -->
+  <path d="M256 88 C350 88 400 160 398 250 C396 350 340 440 256 440 C172 440 116 350 114 250 C112 160 162 88 256 88 Z" fill="#8C4F36"/>
+
+  <!-- eye patches -->
+  <ellipse cx="200" cy="232" rx="64" ry="50" fill="#C8805E"/>
+  <ellipse cx="312" cy="232" rx="64" ry="50" fill="#C8805E"/>
+
+  <!-- brow wrinkles -->
+  <g fill="none" stroke="#6F3824" stroke-width="6" stroke-linecap="round">
+    <path d="M150 210 Q200 178 248 210"/>
+    <path d="M264 210 Q312 178 362 210"/>
+    <path d="M160 190 Q200 166 240 188"/>
+    <path d="M272 188 Q312 166 352 190"/>
+  </g>
+
+  <!-- eyes -->
+  <ellipse cx="203" cy="236" rx="24" ry="16" fill="#1A0F0C"/>
+  <ellipse cx="309" cy="236" rx="24" ry="16" fill="#1A0F0C"/>
+  <circle cx="211" cy="231" r="5" fill="#fff" opacity=".85"/>
+  <circle cx="317" cy="231" r="5" fill="#fff" opacity=".85"/>
+  <!-- sleepy lids -->
+  <path d="M178 232 Q203 214 228 232" fill="none" stroke="#6F3824" stroke-width="5" stroke-linecap="round"/>
+  <path d="M284 232 Q309 214 334 232" fill="none" stroke="#6F3824" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- muzzle -->
+  <ellipse cx="256" cy="348" rx="112" ry="82" fill="#D99A7C"/>
+
+  <!-- nose -->
+  <path d="M232 296 Q256 276 280 296 Q284 312 256 314 Q228 312 232 296 Z" fill="#B87458"/>
+  <ellipse cx="243" cy="303" rx="8" ry="6" fill="#3A1D14"/>
+  <ellipse cx="269" cy="303" rx="8" ry="6" fill="#3A1D14"/>
+
+  <!-- smug smirk -->
+  <path d="M196 362 Q250 392 318 356" fill="none" stroke="#7A3B27" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- code badge -->
+  <circle cx="404" cy="420" r="58" fill="#17151A"/>
+  <circle cx="404" cy="420" r="48" fill="#F5B53D"/>
+  <path d="M386 404 L370 420 L386 436 M422 404 L438 420 L422 436 M410 398 L398 442" fill="none" stroke="#17151A" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="530" y="300" font-family="SF Pro Rounded, Avenir Next, Helvetica, Arial, sans-serif" font-weight="800" font-size="190" fill="#F4EDE6" letter-spacing="-4">hutan</text>
+  <text x="1094" y="300" font-family="Menlo, Monaco, monospace" font-weight="700" font-size="110" fill="#F5B53D">_</text>
+  <text x="538" y="370" font-family="Menlo, Monaco, monospace" font-size="38" fill="#E0692E" letter-spacing="2">code from the canopy</text>
+</svg>

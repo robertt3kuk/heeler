@@ -1,4 +1,4 @@
-//! `staffy ask` and `staffy assistant` against a real daemon (in-memory credential store, history
+//! `hutan ask` and `hutan assistant` against a real daemon (in-memory credential store, history
 //! index on temporary directories) and a mock provider on a loopback port: every attachment
 //! kind, scopes, refusals.
 
@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{Out, STAFFY, TestDaemon, WAIT};
-use staffy_client::{Client, ConnectOptions};
-use staffy_daemon::{DaemonConfig, GatewayConfig, Paths};
-use staffy_gateway::testing::{MockServer, Reply};
-use staffy_gateway::{CredentialStore, HttpConfig, MemoryStore};
-use staffy_protocol::messages::{ClientInfo, ClientKind};
+use common::{HUTAN, Out, TestDaemon, WAIT};
+use hutan_client::{Client, ConnectOptions};
+use hutan_daemon::{DaemonConfig, GatewayConfig, Paths};
+use hutan_gateway::testing::{MockServer, Reply};
+use hutan_gateway::{CredentialStore, HttpConfig, MemoryStore};
+use hutan_protocol::messages::{ClientInfo, ClientKind};
 use tokio::time::sleep;
 
 const PATH: &str = "/v1/chat/completions";
@@ -64,7 +64,7 @@ impl Env {
         .unwrap();
         let store = Arc::new(MemoryStore::new());
         let mut config = DaemonConfig {
-            staffy_bin: Some(PathBuf::from(STAFFY)),
+            hutan_bin: Some(PathBuf::from(HUTAN)),
             ..DaemonConfig::new(paths.clone())
         };
         config.gateway = GatewayConfig {
@@ -76,7 +76,7 @@ impl Env {
             },
             discovery: Some(Vec::new()),
         };
-        let daemon = staffy_daemon::start(config).await.unwrap();
+        let daemon = hutan_daemon::start(config).await.unwrap();
         let t = TestDaemon {
             _dir: home,
             paths,
@@ -94,7 +94,7 @@ impl Env {
         .await
         .unwrap();
         client
-            .provider_add(staffy_protocol::provider::ProviderAdd {
+            .provider_add(hutan_protocol::provider::ProviderAdd {
                 kind: "openai-compatible".into(),
                 name: "mock".into(),
                 base_url: Some(format!("{}/v1", mock.url())),
@@ -114,8 +114,8 @@ impl Env {
         }
     }
 
-    async fn staffy(&self, args: &[&str]) -> Out {
-        self.t.staffy(args).await
+    async fn hutan(&self, args: &[&str]) -> Out {
+        self.t.hutan(args).await
     }
 
     fn sent_user_text(&self, n: usize) -> String {
@@ -137,7 +137,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     )
     .unwrap();
     fs::write(e.work.join("private.txt"), "UNATTACHED-FILE").unwrap();
-    e.staffy(&["ws", "new", "proj", "--root", &work]).await.ok();
+    e.hutan(&["ws", "new", "proj", "--root", &work]).await.ok();
 
     // A terminal with one finished block.
     let script = format!(
@@ -152,7 +152,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
         let deadline = Instant::now() + WAIT;
         loop {
             let blocks = e
-                .staffy(&[
+                .hutan(&[
                     "api",
                     "terminal.blocks",
                     &format!("{{\"terminal_id\":{terminal},\"limit\":10}}"),
@@ -178,12 +178,12 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     // The index knows the terminal's output (the `search` attachment needs it) ...
     let deadline = Instant::now() + WAIT;
     while e
-        .staffy(&["search", "flibbertigibbet"])
+        .hutan(&["search", "flibbertigibbet"])
         .await
         .stdout
         .contains("no matches")
         || !e
-            .staffy(&["search", "flibbertigibbet"])
+            .hutan(&["search", "flibbertigibbet"])
             .await
             .stdout
             .contains("flibbertigibbet")
@@ -194,7 +194,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     // ... and an earlier chat provides a transcript to attach.
     e.mock.route("POST", PATH, reply("pangolin answer"));
     let created = e
-        .staffy(&[
+        .hutan(&[
             "chat",
             "new",
             "--direct",
@@ -208,7 +208,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
         .await
         .ok();
     let chat = created.stdout.split_whitespace().nth(1).unwrap().to_owned();
-    e.staffy(&["chat", "send", &chat, "tell me about pangolins", "--wait"])
+    e.hutan(&["chat", "send", &chat, "tell me about pangolins", "--wait"])
         .await
         .ok();
 
@@ -218,7 +218,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     let attach_recent = format!("recent:{terminal_arg}:10");
     let attach_agent = format!("agent:{chat}");
     let asked = e
-        .staffy(&[
+        .hutan(&[
             "ask",
             "why does this fail?",
             "--ws",
@@ -247,7 +247,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     for part in [
         "[shell: cargo test -p daemon · exit 0 · 2 lines]",
         &format!("[shell: terminal {terminal} · last "),
-        "staffy chat · 1 turns]\nuser: tell me about pangolins\n\nassistant: pangolin answer",
+        "hutan chat · 1 turns]\nuser: tell me about pangolins\n\nassistant: pangolin answer",
         "[file: src/lib.rs · lines 1-2 · 2 lines]\npub fn alpha() {}",
         "[search: \"flibbertigibbet\" · 1 hits]",
     ] {
@@ -260,23 +260,23 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(system.contains("Staffy's assistant"), "{system}");
+    assert!(system.contains("Hutan's assistant"), "{system}");
 
     // The assistant is a session of the workspace; `ls` and `open` agree on it, `open --new`
     // adds one.
     let opened = e
-        .staffy(&["assistant", "open", "--ws", "proj", "--json"])
+        .hutan(&["assistant", "open", "--ws", "proj", "--json"])
         .await
         .ok()
         .json();
     let id = opened["session"]["id"].as_str().unwrap().to_owned();
     assert_eq!(opened["session"]["chat"]["agent"], "assistant");
-    let listed = e.staffy(&["assistant", "ls", "--json"]).await.ok().json();
+    let listed = e.hutan(&["assistant", "ls", "--json"]).await.ok().json();
     assert_eq!(listed["assistants"].as_array().unwrap().len(), 1);
     assert_eq!(listed["assistants"][0]["scope"], "workspace");
     assert_eq!(listed["assistants"][0]["session"]["id"], id.as_str());
     assert_eq!(listed["assistants"][0]["default"], true);
-    let table = e.staffy(&["assistant", "ls"]).await.ok();
+    let table = e.hutan(&["assistant", "ls"]).await.ok();
     assert!(
         table.stdout.contains("SCOPE")
             && table.stdout.contains(&id)
@@ -284,12 +284,12 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
         "{table:?}"
     );
     let more = e
-        .staffy(&["assistant", "open", "--ws", "proj", "--new", "--json"])
+        .hutan(&["assistant", "open", "--ws", "proj", "--new", "--json"])
         .await
         .ok()
         .json();
     assert_ne!(more["session"]["id"], id.as_str());
-    let log = e.staffy(&["chat", "log", &id]).await.ok();
+    let log = e.hutan(&["chat", "log", &id]).await.ok();
     assert!(
         log.stdout.contains("why does this fail?") && log.stdout.contains("It fails"),
         "{log:?}"
@@ -301,14 +301,12 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
 async fn the_global_assistant_answers_and_refuses_files_by_default() {
     let e = Env::start().await;
     e.mock.route("POST", PATH, reply("global answer"));
-    let answered = e.staffy(&["ask", "hello there"]).await.ok();
+    let answered = e.hutan(&["ask", "hello there"]).await.ok();
     assert_eq!(answered.stdout, "global answer\n", "{answered:?}");
-    let listed = e.staffy(&["assistant", "ls", "--json"]).await.ok().json();
+    let listed = e.hutan(&["assistant", "ls", "--json"]).await.ok().json();
     assert_eq!(listed["assistants"][0]["scope"], "global");
 
-    let refused = e
-        .staffy(&["ask", "read it", "--attach", "file:x.txt"])
-        .await;
+    let refused = e.hutan(&["ask", "read it", "--attach", "file:x.txt"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
     assert!(
         refused.stderr.contains("assistant.global_context.files"),
@@ -321,9 +319,9 @@ async fn the_global_assistant_answers_and_refuses_files_by_default() {
     );
 
     // Usage errors are usage errors.
-    let bad = e.staffy(&["ask", "q", "--attach", "nonsense"]).await;
+    let bad = e.hutan(&["ask", "q", "--attach", "nonsense"]).await;
     assert_eq!(bad.code, 2, "{bad:?}");
-    let bad = e.staffy(&["ask", "q", "--attach", "recent:1:many"]).await;
+    let bad = e.hutan(&["ask", "q", "--attach", "recent:1:many"]).await;
     assert_eq!(bad.code, 2, "{bad:?}");
     e.t.stop().await;
 }

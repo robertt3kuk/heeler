@@ -3,11 +3,11 @@
 //! intents).
 //!
 //! The daemon decides *that* something deserves the user's attention and says so with an intent;
-//! whoever can actually show a notification (a Notifier, the desktop, `staffy notify watch`)
+//! whoever can actually show a notification (a Notifier, the desktop, `hutan notify watch`)
 //! renders it and sends the user's choice back with `notify.act`.
 
+use hutan_core::{SessionId, WorkspaceId};
 use serde::{Deserialize, Serialize};
-use staffy_core::{SessionId, WorkspaceId};
 
 /// Longest [`NotificationIntent::body`], in characters.
 pub const BODY_MAX_CHARS: usize = 240;

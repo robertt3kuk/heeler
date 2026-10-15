@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use staffy_core::agent::TokenCounts;
+use hutan_core::agent::TokenCounts;
 
 use crate::error::GatewayError;
 

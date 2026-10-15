@@ -14,7 +14,7 @@ use gpui::{
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task, Window, div,
     prelude::*, px,
 };
-use staffy_core::{NodeState, SessionId};
+use hutan_core::{NodeState, SessionId};
 
 use super::common::{now_ms, panel_header, tone_color};
 use super::history::pill;
@@ -364,7 +364,7 @@ impl Render for AgentsPanel {
                     .child(if hidden {
                         "Nothing matches the filters."
                     } else {
-                        "No agents reported yet. Coding agents that report to Staffy appear here."
+                        "No agents reported yet. Coding agents that report to Hutan appear here."
                     }),
             );
         }

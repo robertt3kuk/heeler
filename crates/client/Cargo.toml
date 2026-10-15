@@ -1,6 +1,6 @@
 [package]
-name = "staffy-client"
-description = "Staffy async protocol client: connect (optionally autostarting staffyd), calls, events, terminal streams, and a reconnecting Connection with a state store"
+name = "hutan-client"
+description = "Hutan async protocol client: connect (optionally autostarting hutand), calls, events, terminal streams, and a reconnecting Connection with a state store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 futures.workspace = true
-staffy-core.workspace = true
-staffy-protocol.workspace = true
+hutan-core.workspace = true
+hutan-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,7 +19,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-staffy-daemon.workspace = true
+hutan-daemon.workspace = true
 libc.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

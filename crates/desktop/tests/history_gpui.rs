@@ -16,14 +16,14 @@ use std::time::Duration;
 use common::history::{CLAUDE_ID, CODEX_ID, GONE_CWD, GONE_ID, HistoryEnv, OMP_ID, UNRESUMABLE_ID};
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use staffy_core::SessionId;
-use staffy_desktop::workbench::actions;
-use staffy_desktop::workbench::model::PanelId;
-use staffy_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
-use staffy_desktop::workbench::{HistoryState, Region, Workbench};
-use staffy_protocol::history::{HistoryRole, HistorySource};
-use staffy_protocol::messages::SessionInfo;
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_core::SessionId;
+use hutan_desktop::workbench::actions;
+use hutan_desktop::workbench::model::PanelId;
+use hutan_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
+use hutan_desktop::workbench::{HistoryState, Region, Workbench};
+use hutan_protocol::history::{HistoryRole, HistorySource};
+use hutan_protocol::messages::SessionInfo;
+use hutan_settings::{SettingsPaths, SettingsStore};
 
 /// Like [`wait_until`], but the GPUI clock moves too: debounce and poll timers are fake time.
 fn pump_until(
@@ -201,7 +201,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         "no index exists while indexing is off"
     );
     // A search is not sent while indexing is off.
-    history.update(cx, |p, cx| p.set_query("staffytest", cx));
+    history.update(cx, |p, cx| p.set_query("hutantest", cx));
     pump_until(cx, "nothing", |_| true);
     assert!(history.read_with(cx, |p, _| p.hits().is_empty() && !p.searching()));
     history.update(cx, |p, cx| p.set_query("", cx));
@@ -251,7 +251,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
 
     // Three sessions share the word: one row each, from three sources.
-    search(&history, cx, "staffytest", |p| p.hits().len() == 3);
+    search(&history, cx, "hutantest", |p| p.hits().len() == 3);
     assert_eq!(
         sources(&history, cx),
         [
@@ -286,7 +286,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     history.update(cx, |p, cx| {
         p.edit_filters(|f| f.toggle_role(HistoryRole::User), cx);
         p.edit_filters(
-            |f| f.range = staffy_desktop::settings::HistoryRange::Week,
+            |f| f.range = hutan_desktop::settings::HistoryRange::Week,
             cx,
         );
     });
@@ -300,12 +300,9 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
     // Project: only sessions that ran inside the active workspace's folder (Home here: none).
     history.update(cx, |p, cx| {
+        p.edit_filters(|f| f.range = hutan_desktop::settings::HistoryRange::All, cx);
         p.edit_filters(
-            |f| f.range = staffy_desktop::settings::HistoryRange::All,
-            cx,
-        );
-        p.edit_filters(
-            |f| f.scope = staffy_desktop::settings::HistoryScope::Workspace,
+            |f| f.scope = hutan_desktop::settings::HistoryScope::Workspace,
             cx,
         );
     });
@@ -328,10 +325,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         "both ran in app-a"
     );
     history.update(cx, |p, cx| {
-        p.edit_filters(
-            |f| f.scope = staffy_desktop::settings::HistoryScope::All,
-            cx,
-        );
+        p.edit_filters(|f| f.scope = hutan_desktop::settings::HistoryScope::All, cx);
     });
     view.update_in(cx, |wb, window, cx| wb.switch_workspace(home, window, cx));
     pump_until(cx, "Home to be active", |cx| {
@@ -379,7 +373,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
 
     // ---- ⌘J: `?` searches the history inline ---------------------------------------------------
     cx.simulate_keystrokes("cmd-j");
-    cx.simulate_input("?staffytest");
+    cx.simulate_input("?hutantest");
     pump_until(cx, "the inline hits", |cx| {
         view.read_with(cx, |wb, _| {
             wb.picker()
@@ -446,7 +440,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         view.read_with(cx, |wb, _| wb.state().docks.left.active.clone()),
         Some(PanelId::new("history"))
     );
-    // Enter on a row that cannot be resumed (and is no Staffy record) does nothing.
+    // Enter on a row that cannot be resumed (and is no Hutan record) does nothing.
     cx.simulate_keystrokes("enter");
     pump_until(cx, "nothing", |_| true);
     assert!(new_sessions(&view, cx, &before).is_empty());
@@ -472,10 +466,10 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         })
     });
 
-    // ---- a Staffy block: Open block scrolls its terminal to it ----------------------------------
+    // ---- a Hutan block: Open block scrolls its terminal to it ----------------------------------
     let block_session = daemon.sh_titled(
         "block source",
-        "printf '\\033]133;A\\007$ \\033]133;B\\007echo staffyblockword\\r\\n\\033]133;C\\007staffyoutput\\r\\n\\033]133;D;0\\007'; \
+        "printf '\\033]133;A\\007$ \\033]133;B\\007echo hutanblockword\\r\\n\\033]133;C\\007hutanoutput\\r\\n\\033]133;D;0\\007'; \
          printf '\\033]133;A\\007$ \\033]133;B\\007'; sleep 600",
     );
     pump_until(cx, "the session", |cx| {
@@ -483,9 +477,9 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
             wb.sessions().read(cx).session(block_session.id).is_some()
         })
     });
-    search(&history, cx, "staffyblockword", |p| !p.hits().is_empty());
+    search(&history, cx, "hutanblockword", |p| !p.hits().is_empty());
     let block_hit = history.read_with(cx, |p, _| p.hits()[0].clone());
-    assert_eq!(block_hit.source, HistorySource::Staffy);
+    assert_eq!(block_hit.source, HistorySource::Hutan);
     assert_eq!(block_hit.session_key, block_session.id.to_string());
     assert!(block_hit.resume_argv.is_none());
     let terminal = block_session.terminal_id.expect("a terminal");
@@ -495,7 +489,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         .find(|b| {
             b.command
                 .as_deref()
-                .is_some_and(|c| c.contains("staffyblockword"))
+                .is_some_and(|c| c.contains("hutanblockword"))
         })
         .expect("the daemon has the block");
     cx.simulate_keystrokes("down enter");
@@ -543,8 +537,8 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     pump_until(cx, "the transcripts to be read again", |cx| {
         rows(&history, cx) >= 10
     });
-    search(&history, cx, "staffytest", |p| p.hits().len() == 3);
-    // The Staffy record was deleted with the index and cannot come back.
-    search(&history, cx, "staffyblockword", |_| true);
+    search(&history, cx, "hutantest", |p| p.hits().len() == 3);
+    // The Hutan record was deleted with the index and cannot come back.
+    search(&history, cx, "hutanblockword", |_| true);
     assert!(history.read_with(cx, |p, _| p.hits().is_empty()));
 }

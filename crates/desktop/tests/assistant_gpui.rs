@@ -17,17 +17,17 @@ use common::assistant::{
 use common::history::{HistoryEnv, OMP_ID};
 use common::{TestDaemon, draw, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use staffy_chat_view::Body;
-use staffy_core::TerminalId;
-use staffy_desktop::workbench::actions;
-use staffy_desktop::workbench::chat::{ChatModel, ChatView, ContextChip, MentionKind};
-use staffy_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
-use staffy_desktop::workbench::panels::{AssistantChoice, Failure, HistoryPanel, Opened, ScopeKey};
-use staffy_desktop::workbench::{Region, Workbench};
-use staffy_protocol::assistant::{AssistantList, AssistantListRequest, Attachment, AttachmentKind};
-use staffy_protocol::blocks::BlockState;
-use staffy_protocol::history::HistoryStatusInfo;
-use staffy_protocol::messages::{Empty, Request, SessionInfo};
+use hutan_chat_view::Body;
+use hutan_core::TerminalId;
+use hutan_desktop::workbench::actions;
+use hutan_desktop::workbench::chat::{ChatModel, ChatView, ContextChip, MentionKind};
+use hutan_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
+use hutan_desktop::workbench::panels::{AssistantChoice, Failure, HistoryPanel, Opened, ScopeKey};
+use hutan_desktop::workbench::{Region, Workbench};
+use hutan_protocol::assistant::{AssistantList, AssistantListRequest, Attachment, AttachmentKind};
+use hutan_protocol::blocks::BlockState;
+use hutan_protocol::history::HistoryStatusInfo;
+use hutan_protocol::messages::{Empty, Request, SessionInfo};
 
 fn click(view: &Entity<Workbench>, cx: &mut VisualTestContext, region: Region) {
     draw(cx);
@@ -101,7 +101,7 @@ fn finished(command: &str, output: &str, code: i32) -> String {
 /// blocks, the third with a line nobody attaches.
 fn terminal_with_blocks(
     daemon: &TestDaemon,
-    workspace: staffy_core::WorkspaceId,
+    workspace: hutan_core::WorkspaceId,
 ) -> (SessionInfo, TerminalId) {
     let script = format!(
         "{}{}{}printf '\\033]133;A\\007$ \\033]133;B\\007'; sleep 600",
@@ -131,7 +131,7 @@ fn block_id(daemon: &TestDaemon, terminal: TerminalId, command: &str) -> u64 {
         .id
 }
 
-fn user_items(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<staffy_core::ItemId> {
+fn user_items(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<hutan_core::ItemId> {
     model.read_with(cx, |m, _| {
         m.transcript()
             .entries()
@@ -201,14 +201,14 @@ fn the_global_assistant_streams_without_a_terminal_and_each_scope_keeps_its_conv
     assert_eq!(chat.model, "m-1");
 
     // Typing reaches the composer; Send streams the answer into the transcript.
-    cx.simulate_input("what is staffy?");
+    cx.simulate_input("what is hutan?");
     assert_eq!(
         global_model.read_with(cx, |m, _| m.input().text().to_owned()),
-        "what is staffy?"
+        "what is hutan?"
     );
     cx.simulate_keystrokes("cmd-enter");
     wait_answer(&global_model, cx, "global reply");
-    assert_eq!(last_prompt(&env.mock), "what is staffy?");
+    assert_eq!(last_prompt(&env.mock), "what is hutan?");
     assert!(
         session_infos(&view, cx)
             .iter()
@@ -257,7 +257,7 @@ fn the_global_assistant_streams_without_a_terminal_and_each_scope_keeps_its_conv
     assert_eq!(
         texts(&global_model, cx),
         [
-            (true, "what is staffy?".to_owned()),
+            (true, "what is hutan?".to_owned()),
             (false, "global reply".to_owned())
         ],
         "the global conversation is as it was"
@@ -481,12 +481,12 @@ fn every_kind_of_chip_adds_and_removes_and_only_the_selected_sources_reach_the_p
     );
 
     // @search with its words: a chip at once.
-    cx.simulate_input("@search staffytest");
+    cx.simulate_input("@search hutantest");
     cx.simulate_keystrokes("tab");
     assert!(!chat.read_with(cx, |v, _| v.attach_open()));
     assert_eq!(
         context_labels(&model, cx)[4],
-        "search · “staffytest” · 5 hits"
+        "search · “hutantest” · 5 hits"
     );
     assert_eq!(model.read_with(cx, |m, _| m.input().text().to_owned()), "");
     assert_eq!(context_labels(&model, cx).len(), 5);
@@ -518,7 +518,7 @@ fn every_kind_of_chip_adds_and_removes_and_only_the_selected_sources_reach_the_p
             },
             Attachment::File {
                 path: "src/lib.rs".to_owned(),
-                range: Some(staffy_protocol::assistant::LineRange { start: 2, end: 3 })
+                range: Some(hutan_protocol::assistant::LineRange { start: 2, end: 3 })
             }
         ]
     );
@@ -564,14 +564,14 @@ fn every_kind_of_chip_adds_and_removes_and_only_the_selected_sources_reach_the_p
     model.update(cx, |m, cx| {
         m.attach_context(ContextChip::recent("t", terminal, 3), cx);
         m.attach_context(ContextChip::transcript("OMP", OMP_ID, 2), cx);
-        m.attach_context(ContextChip::search("staffytest", 3), cx);
+        m.attach_context(ContextChip::search("hutantest", 3), cx);
     });
     send(&model, &chat, cx, "and the others?");
     wait_answer(&model, cx, "answer two");
     let prompt = last_prompt(&env.mock);
     assert!(prompt.contains("[shell: terminal"), "{prompt}");
     assert!(prompt.contains("[agent:"), "{prompt}");
-    assert!(prompt.contains("[search: \"staffytest\""), "{prompt}");
+    assert!(prompt.contains("[search: \"hutantest\""), "{prompt}");
     assert!(
         !prompt.contains("[file:") && !prompt.contains("[shell: cmd2"),
         "{prompt}"
@@ -776,10 +776,10 @@ fn a_history_hit_of_an_assistant_conversation_opens_it_in_the_panel_and_continue
         "remember the quokkaquartz protocol",
     );
     wait_answer(&global_model, cx, "quartz answer");
-    // The chat journal feeds the index as source `staffy`, keyed by the session id.
+    // The chat journal feeds the index as source `hutan`, keyed by the session id.
     eventually("the conversation to be indexed", || {
-        let hits: staffy_protocol::history::HistoryHits = env.daemon.call(Request::HistorySearch(
-            staffy_protocol::history::HistorySearch {
+        let hits: hutan_protocol::history::HistoryHits = env.daemon.call(Request::HistorySearch(
+            hutan_protocol::history::HistorySearch {
                 query: "quokkaquartz".to_owned(),
                 limit: 5,
                 sources: Vec::new(),
@@ -870,12 +870,12 @@ fn a_history_hit_of_an_assistant_conversation_opens_it_in_the_panel_and_continue
     let list: AssistantList = env
         .daemon
         .call(Request::AssistantList(AssistantListRequest {
-            scope: Some(staffy_protocol::assistant::AssistantScope::Global),
+            scope: Some(hutan_protocol::assistant::AssistantScope::Global),
             workspace_id: None,
         }));
     assert_eq!(list.assistants.len(), 1);
     // The same conversation is also what the History panel opens a second time.
-    let again = actions::OpenHistoryHit(staffy_desktop::workbench::panels::StaffyTarget {
+    let again = actions::OpenHistoryHit(hutan_desktop::workbench::panels::HutanTarget {
         session: global.to_string(),
         block_started_at_ms: None,
     });
@@ -1023,9 +1023,9 @@ fn the_send_menu_offers_the_assistant_when_no_chat_running_is_one(cx: &mut TestA
     let cmd2 = block_id(&env.daemon, terminal, "cmd2");
     // Two ordinary direct chats are running: there is no obvious target, so the user picks.
     for title in ["first chat", "second chat"] {
-        let _: staffy_protocol::messages::SessionResult =
+        let _: hutan_protocol::messages::SessionResult =
             env.daemon
-                .call(Request::ChatCreate(staffy_protocol::chat::ChatCreate {
+                .call(Request::ChatCreate(hutan_protocol::chat::ChatCreate {
                     workspace_id: Some(workspace.id),
                     cwd: root.clone(),
                     agent: "direct".to_owned(),
@@ -1097,7 +1097,7 @@ fn an_assistants_provider_errors_offer_the_recovery_of_a_direct_chat(cx: &mut Te
     env.mock.route(
         "POST",
         PATH,
-        staffy_gateway::testing::Reply::json(401, r#"{"error":{"message":"key rejected"}}"#),
+        hutan_gateway::testing::Reply::json(401, r#"{"error":{"message":"key rejected"}}"#),
     );
     let (view, cx) = open(cx, &env.daemon);
     let panel = open_assistant(&view, cx);

@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use staffy_protocol::{ErrorBody, ProtocolError};
+use hutan_protocol::{ErrorBody, ProtocolError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -17,8 +17,8 @@ pub enum ClientError {
     Disconnected,
     #[error("handshake failed: {0}")]
     Handshake(String),
-    #[error("staffyd did not start accepting connections on {} in time", .socket.display())]
+    #[error("hutand did not start accepting connections on {} in time", .socket.display())]
     AutostartTimeout { socket: PathBuf },
-    #[error("cannot determine the staffyd socket path; set STAFFY_SOCKET or STAFFY_HOME")]
+    #[error("cannot determine the hutand socket path; set HUTAN_SOCKET or HUTAN_HOME")]
     NoSocketPath,
 }

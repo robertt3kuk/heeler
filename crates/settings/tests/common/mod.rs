@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use hutan_settings::Setting;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use staffy_settings::Setting;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]

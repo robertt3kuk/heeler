@@ -1,12 +1,12 @@
-//! `staffy ask`, `staffy assistant ls|open`: the assistant sessions of the daemon
+//! `hutan ask`, `hutan assistant ls|open`: the assistant sessions of the daemon
 //! (`docs/assistant.md`).
 
-use staffy_client::Client;
-use staffy_core::WorkspaceId;
-use staffy_protocol::assistant::{
+use hutan_client::Client;
+use hutan_core::WorkspaceId;
+use hutan_protocol::assistant::{
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, AssistantScope,
 };
-use staffy_protocol::messages::{
+use hutan_protocol::messages::{
     Empty, Request, SessionInfo, SessionResult, Subscribed, WorkspaceKind, WorkspaceList,
 };
 
@@ -23,7 +23,7 @@ impl Ctx {
         }
     }
 
-    /// `--ws`, else `$STAFFY_WORKSPACE`, as a scope: the Home workspace and no workspace at all
+    /// `--ws`, else `$HUTAN_WORKSPACE`, as a scope: the Home workspace and no workspace at all
     /// are the global assistant, any other workspace its own.
     async fn assistant_scope(
         &self,
@@ -123,7 +123,7 @@ impl Ctx {
 
 fn assistant_table(assistants: &[AssistantEntry]) -> String {
     if assistants.is_empty() {
-        return "no assistants yet (`staffy ask \"…\"` or `staffy assistant open` creates one)"
+        return "no assistants yet (`hutan ask \"…\"` or `hutan assistant open` creates one)"
             .to_owned();
     }
     let mut rows = vec![[

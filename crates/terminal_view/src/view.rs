@@ -14,9 +14,9 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Styled,
     Subscription, Task, UTF16Selection, Window, actions, div, point, px, rgba,
 };
-use staffy_protocol::blocks::{Block, BlockPart, BlockState};
-use staffy_protocol::messages::TerminalSize;
-use staffy_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
+use hutan_protocol::blocks::{Block, BlockPart, BlockState};
+use hutan_protocol::messages::TerminalSize;
+use hutan_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
 
 use crate::TerminalBackend;
 use crate::blocks::{self, DisplayRow};
@@ -35,7 +35,7 @@ use crate::shared::{ModelRef, SharedEvent, SharedTerminal};
 use crate::theme::{DefaultColors, Theme};
 
 actions!(
-    staffy_terminal_view,
+    hutan_terminal_view,
     [
         /// Copies the selection to the clipboard.
         Copy,
@@ -62,7 +62,7 @@ actions!(
 );
 
 /// Key context of the view's root element, for keymap bindings.
-pub const KEY_CONTEXT: &str = "StaffyTerminal";
+pub const KEY_CONTEXT: &str = "HutanTerminal";
 
 /// Binds ⌘C and ⌘V to [`Copy`] and [`Paste`], and the block keys (⌘↑ ⌘↓ ⌘⇧A ⌘⇧C) in the view's
 /// key context. Optional: the view also handles these chords itself when no binding claims them.
@@ -192,7 +192,7 @@ pub struct TerminalView {
     /// What the last paint drew of the overlay.
     pub(crate) painted_overlay: blocks::OverlayReport,
     pub(crate) rows: RowCache,
-    /// Keystroke → paint correlation, fed only while `STAFFY_TRACE_LATENCY` is on.
+    /// Keystroke → paint correlation, fed only while `HUTAN_TRACE_LATENCY` is on.
     latency: crate::trace::LatencyTracker,
     /// Cursor position after the previous applied frame (tracing only).
     traced_cursor: Option<(u16, u16)>,
@@ -610,10 +610,10 @@ impl TerminalView {
                 if screen <= layout.rows {
                     return 0;
                 }
-                let blank = |row: &staffy_protocol::render::Row| {
+                let blank = |row: &hutan_protocol::render::Row| {
                     row.runs.iter().all(|run| {
                         run.text.trim().is_empty()
-                            && run.bg == staffy_protocol::render::Color::Default
+                            && run.bg == hutan_protocol::render::Color::Default
                     })
                 };
                 let last_content = model
@@ -1822,7 +1822,7 @@ impl TerminalView {
         };
         Some(
             div()
-                .id("staffy-block-actions")
+                .id("hutan-block-actions")
                 .absolute()
                 .top(px(self.settings.padding) + layout.cell.height * row as f32)
                 .right(px(self.settings.padding))
@@ -1881,7 +1881,7 @@ impl Render for TerminalView {
         let background = hsla(self.theme.background());
         if self.mode == ViewMode::Preview {
             return div()
-                .id("staffy-terminal-preview")
+                .id("hutan-terminal-preview")
                 .relative()
                 .size_full()
                 .overflow_hidden()
@@ -1896,7 +1896,7 @@ impl Render for TerminalView {
         };
         let bar = self.actions_bar(cx);
         let root = div()
-            .id("staffy-terminal")
+            .id("hutan-terminal")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))

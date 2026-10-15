@@ -10,23 +10,23 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, WeakEntity};
-use staffy_client::{
+use hutan_client::{
     BlockList, ClientError, Connection, GoneReason, TerminalHandle, TerminalUpdate,
 };
-use staffy_core::{SessionId, TerminalId};
-use staffy_protocol::blocks::{Block, BlockPart};
-use staffy_protocol::messages::{
+use hutan_core::{SessionId, TerminalId};
+use hutan_protocol::blocks::{Block, BlockPart};
+use hutan_protocol::messages::{
     Request, SessionInfo, TerminalColors, TerminalHistory, TerminalHistoryRows, TerminalSize,
 };
-use staffy_protocol::render::TerminalRender;
-use staffy_terminal_view::{DefaultColors, SharedTerminal, TerminalBackend, ViewStatus};
+use hutan_protocol::render::TerminalRender;
+use hutan_terminal_view::{DefaultColors, SharedTerminal, TerminalBackend, ViewStatus};
 
 use super::attention::ended_text;
 
 type SharedHandle = Rc<RefCell<Option<TerminalHandle>>>;
 
 pub(crate) fn terminal_colors(colors: DefaultColors) -> TerminalColors {
-    let tuple = |c: staffy_terminal_view::Rgb| (c.0, c.1, c.2);
+    let tuple = |c: hutan_terminal_view::Rgb| (c.0, c.1, c.2);
     TerminalColors {
         foreground: tuple(colors.foreground),
         background: tuple(colors.background),

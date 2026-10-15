@@ -16,19 +16,19 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bytes::Bytes;
-use staffy_core::TerminalId;
-use staffy_protocol::blocks::{
+use hutan_core::TerminalId;
+use hutan_protocol::blocks::{
     BLOCKS_MAX_LIMIT, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
 };
-use staffy_protocol::control::{ErrorBody, ErrorCode};
-use staffy_protocol::messages::{
+use hutan_protocol::control::{ErrorBody, ErrorCode};
+use hutan_protocol::messages::{
     TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize,
     TerminalSetColors,
 };
-use staffy_protocol::render::TerminalRender;
-use staffy_protocol::{Frame, MAX_PAYLOAD};
-use staffy_terminal::{BlockTextError, DefaultColors, RenderTracker, Terminal, TerminalError};
+use hutan_protocol::render::TerminalRender;
+use hutan_protocol::{Frame, MAX_PAYLOAD};
+use hutan_terminal::{BlockTextError, DefaultColors, RenderTracker, Terminal, TerminalError};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -416,7 +416,7 @@ impl TerminalHub {
         let entry = self.get(id)?;
         let snapshot = entry.terminal.snapshot(&mut RenderTracker::new());
         let alternate_screen = snapshot.modes.alt_screen;
-        let row_text = |row: &staffy_protocol::render::Row| {
+        let row_text = |row: &hutan_protocol::render::Row| {
             let text: String = row.runs.iter().map(|run| run.text.as_str()).collect();
             (text.trim_end_matches(' ').to_owned(), row.wrapped)
         };

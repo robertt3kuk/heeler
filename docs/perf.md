@@ -20,7 +20,7 @@ Report `target/bench/1792001491.json` (commit `8a1de1d`, ADR 0013 store; before 
 | B2 | Idle daemon RSS, 10 sessions × 10k-line scrollback, 80 columns, desktop attached | ≤ 120 MB | **40.1 MB** | 40.1, 39.8, 40.1 | 254.6 MB | pass |
 | B2w | Same at 200 columns (~190-column lines), no client | ≤ 150 MB | **84.6 MB** | 84.6, 84.6, 84.9 | 538 MB (measured with the old store, B2w did not exist) | pass |
 | B3 | Idle CPU, daemon + desktop, 30 s | ≤ 0.5 % | **0.48 %** | 0.48, 0.43, 0.58 | 0.46 % | pass, at the limit |
-| B4a | Staffy path: key handled → frame with the echo submitted, p95 over 500 keys | ≤ 2 ms | **1.34 ms** | 1.17, 1.35, 1.34 | n/a (new) | pass |
+| B4a | Hutan path: key handled → frame with the echo submitted, p95 over 500 keys | ≤ 2 ms | **1.34 ms** | 1.17, 1.35, 1.34 | n/a (new) | pass |
 | B4b | On screen, p95 over 500 keys | ≤ 1 frame + 2 ms = 18.7 ms (60 Hz, read from the platform) | **18.50 ms** | 106.9*, 18.5, 18.0 | 18.0 ms (vs 16 ms) | pass, marginal (below) |
 | B5 | 200 MB+ flood: p95 key latency in a second terminal | ≤ 50 ms | **17.25 ms** | 17.25, 17.27, 17.21 | 16.9 ms | pass |
 | B5 | 200 MB+ flood: daemon RSS growth | ≤ 50 MB | **2.28 MB** | 2.30, 2.25, 2.28 | 13.6 MB | pass |
@@ -41,8 +41,8 @@ painted 213.
 ## Method
 
 `cargo run -p xtask --release -- bench [--only B1,B4] [--runs N] [--json] [--sample]
-[--key-interval-ms N]` builds `staffyd`, `staffy-desktop` and `staffy` in release, then for every
-scenario and run: creates a temporary `STAFFY_HOME`, starts `staffyd`, seeds sessions and a
+[--key-interval-ms N]` builds `hutand`, `hutan-desktop` and `hutan` in release, then for every
+scenario and run: creates a temporary `HUTAN_HOME`, starts `hutand`, seeds sessions and a
 `desktop-state.json`, launches the desktop (the window appears, no screenshots), measures, and
 tears down. The report goes to `target/bench/<unix-time>.json` (all runs, every stage metric).
 
@@ -54,7 +54,7 @@ tears down. The report goes to `target/bench/<unix-time>.json` (all runs, every 
   (`proc_pid_rusage`: resident size, physical footprint, user+system CPU time, idle wakeups), and
   again after 30 s. B3 is the CPU time delta of both processes over those 30 s.
 - **B4a / B4b.** One `cat`-like session (`printf 'bench> '; exec cat`) in the only pane. The desktop types
-  500 keys at one key per 100 ms plus a deterministic 0–17 ms jitter (`STAFFY_BENCH_INPUT`, below).
+  500 keys at one key per 100 ms plus a deterministic 0–17 ms jitter (`HUTAN_BENCH_INPUT`, below).
   Latency is the in-app trace: key event handled → first paint that follows the daemon frame
   replacing the cursor row or moving the cursor. **B4b** is that whole latency. **B4a** is the same
   minus the wait for the display tick (`echo_to_prepaint`): `key_to_sent + sent_to_echo +
@@ -73,18 +73,18 @@ tears down. The report goes to `target/bench/<unix-time>.json` (all runs, every 
   and is too short to type through). 600 keys at 20 keys/s (+ jitter) are typed into the first
   pane; latency is taken only for keys that were painted while the flood ran. Daemon growth is
   peak RSS minus RSS before the flood.
-- **B6.** Daemon running with 4 prompt sessions; `staffy-desktop` is spawned with the seeded
+- **B6.** Daemon running with 4 prompt sessions; `hutan-desktop` is spawned with the seeded
   layout. Cold start is the wall clock from just before the spawn to the end of the first paint of
   a terminal whose snapshot has text (the prompt).
 
 **Instrumentation** (no cost when off: one atomic load):
 
-- `STAFFY_TRACE_LATENCY=1` and `STAFFY_TRACE_FILE=<path>` enable JSON-lines tracing
+- `HUTAN_TRACE_LATENCY=1` and `HUTAN_TRACE_FILE=<path>` enable JSON-lines tracing
   (`terminal_view::trace`): `startup` events (`main`, `window_opened`, `first_frame`, `connected`,
   `first_terminal_painted`), `key` events with the stages `key_to_sent`, `sent_to_echo`,
   `echo_to_paint` (and its first part `echo_to_prepaint`: waiting for the display tick), and once a
   second a `paints` count.
-- `STAFFY_BENCH_INPUT=<script.json>` types `{"interval_ms", "start_delay_ms", "jitter_ms",
+- `HUTAN_BENCH_INPUT=<script.json>` types `{"interval_ms", "start_delay_ms", "jitter_ms",
   "keys": ["a", "enter", …]}` through `Window::dispatch_keystroke`: the real dispatch tree, the
   terminal view's key handler, key encoding and `TerminalHandle::input`. It starts after the first
   terminal painted text.
@@ -93,10 +93,10 @@ tears down. The report goes to `target/bench/<unix-time>.json` (all runs, every 
   builds.
 
 **Teardown is graceful and checked.** The desktop is stopped with SIGTERM (it saves its layout and
-exits 0, leaving the daemon running); the daemon with `staffy daemon stop --stop-sessions`. The run
+exits 0, leaving the daemon running); the daemon with `hutan daemon stop --stop-sessions`. The run
 fails if either had to be SIGKILLed, died of a signal, or left a process behind (descendants of the
-daemon included). Verified across three full runs: no stray `staffyd`/`staffy-desktop`, no new
-`staffy-desktop-*.ips` crash report.
+daemon included). Verified across three full runs: no stray `hutand`/`hutan-desktop`, no new
+`hutan-desktop-*.ips` crash report.
 
 ## Fixes (before → after, same harness)
 
@@ -149,25 +149,25 @@ live size, decides. Throughput of the mixed 200 MB `flood` example: 138 MB/s wit
 
 Where the time goes (medians over the three runs): key event → bytes sent 0.02 ms; sent → echo
 applied 0.3–0.5 ms; applied → start of the paint 9–10 ms (waiting for the display tick); paint
-≈ 0.5 ms. B4a (Staffy path) is **1.3 ms p95**, well inside 2 ms. B4b is the display-tick wait on
+≈ 0.5 ms. B4a (Hutan path) is **1.3 ms p95**, well inside 2 ms. B4b is the display-tick wait on
 top: p95 ≈ one frame (16.7 ms) + ~1.3–2.2 ms, against a limit of one frame + 2 ms, so it sits on
 the limit: 18.0, 18.5, 18.6, 18.9 ms in the valid runs of two reports. Reducing it further needs
-the on-demand present path (roadmap backlog), not Staffy-side work.
+the on-demand present path (roadmap backlog), not Hutan-side work.
 
 ### B3: passes, but at the limit
 
-The remaining 0.46 % is not Staffy code: with the window visible, GPUI at the pinned revision keeps
+The remaining 0.46 % is not Hutan code: with the window visible, GPUI at the pinned revision keeps
 a `CVDisplayLink` running and wakes the main thread at every display tick (~18–30 wakeups/s) to find
 nothing to draw; `sample` shows all residual main-thread time under `gpui_macos::window::step` and
 `gpui::window` request-frame handling, and the run-to-run spread (0.44–0.52 %) is that cost.
 One earlier run measured 0.0 % with 0.03 wakeups/s [INFERENCE: the window was occluded, which
 stops the link]. Follow-up: stop the link
 while no frame is wanted (the `frame_waker` hook other platforms use) in the GPUI platform layer.
-The sessions panel's relative-age refresh (every 30 s) is the only timer Staffy keeps while idle.
+The sessions panel's relative-age refresh (every 30 s) is the only timer Hutan keeps while idle.
 
 ## Crash found while building the harness
 
-Four `staffy-desktop` crash reports (SIGABRT, main thread) appeared while the harness was being
+Four `hutan-desktop` crash reports (SIGABRT, main thread) appeared while the harness was being
 developed. Root cause: the first version of the bench key injector dispatched keystrokes from
 inside a `Workbench` update (`WeakEntity::update_in`); the terminal view's key handling updates
 the workbench again (focus, commands), and GPUI panics on re-entrant entity updates
@@ -176,6 +176,6 @@ AppKit callback, which cannot unwind, so the process aborted and macOS showed it
 Fixed by dispatching through the window context (`AsyncWindowContext::update`) instead; the
 regression test (`scripted_keys_reach_the_focused_terminal_without_reentering_the_workbench`) fails
 with exactly that panic message when the dispatch is moved back inside the update.
-`staffy-desktop` now also installs a panic hook that appends the message, location and backtrace to
-`$STAFFY_HOME/logs/desktop.log` (`~/Library/Logs/Staffy/desktop.log` by default, next to
-`staffyd.log`; one path function, `crash::log_dir`) before the process dies.
+`hutan-desktop` now also installs a panic hook that appends the message, location and backtrace to
+`$HUTAN_HOME/logs/desktop.log` (`~/Library/Logs/Hutan/desktop.log` by default, next to
+`hutand.log`; one path function, `crash::log_dir`) before the process dies.

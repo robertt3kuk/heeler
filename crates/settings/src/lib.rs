@@ -1,8 +1,8 @@
-//! Staffy settings: layered TOML store with per-namespace schemas, hot reload, keymap parsing,
+//! Hutan settings: layered TOML store with per-namespace schemas, hot reload, keymap parsing,
 //! appearance/density tokens and terminal themes. No GPUI (ADR 0010).
 //!
 //! Layers, lowest to highest: built-in defaults (each [`Setting`]'s `Default`), user
-//! `settings.toml`, workspace `<root>/.staffy/settings.toml` (only for namespaces with
+//! `settings.toml`, workspace `<root>/.hutan/settings.toml` (only for namespaces with
 //! [`Setting::WORKSPACE_OVERRIDABLE`]), runtime overrides. Tables merge deeply, arrays and scalars
 //! replace. Each namespace is then deserialized into its owner's type; an invalid result keeps the
 //! last good value and records a [`SettingsError`].
@@ -36,6 +36,6 @@ pub trait Setting:
 {
     /// Dotted path of the namespace in the settings files, e.g. `terminal`, `panels.sessions`.
     const NAMESPACE: &'static str;
-    /// Whether `<repo>/.staffy/settings.toml` may override this namespace.
+    /// Whether `<repo>/.hutan/settings.toml` may override this namespace.
     const WORKSPACE_OVERRIDABLE: bool = false;
 }

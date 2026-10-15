@@ -1,6 +1,6 @@
 //! The session history index inside the daemon (roadmap M17, `docs/history-index.md`): starts
-//! and stops the `staffy-index` indexer according to `[history]` in `daemon.toml`, feeds it
-//! Staffy's own sessions (finished terminal blocks, agent state changes), and answers the
+//! and stops the `hutan-index` indexer according to `[history]` in `daemon.toml`, feeds it
+//! Hutan's own sessions (finished terminal blocks, agent state changes), and answers the
 //! `history.*` requests.
 //!
 //! Opt-in: while disabled nothing is opened, watched, or read, and `index.sqlite` is not even
@@ -10,19 +10,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use staffy_core::agent::MessageRole;
-use staffy_core::{AgentEvent, AgentEventKind, SessionId, TerminalId};
-use staffy_index::{
-    IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery, SessionText,
-    SessionTextQuery, Source, StaffyRecord,
+use hutan_core::agent::MessageRole;
+use hutan_core::{AgentEvent, AgentEventKind, SessionId, TerminalId};
+use hutan_index::{
+    HutanRecord, IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery, SessionText,
+    SessionTextQuery, Source,
 };
-use staffy_protocol::blocks::{BlockPart, BlockState, TerminalBlockText};
-use staffy_protocol::control::{ErrorBody, ErrorCode};
-use staffy_protocol::history::{
+use hutan_protocol::blocks::{BlockPart, BlockState, TerminalBlockText};
+use hutan_protocol::control::{ErrorBody, ErrorCode};
+use hutan_protocol::history::{
     HistoryHit, HistoryHits, HistoryRole, HistorySearch, HistorySource, HistorySourceStatus,
     HistoryStatusInfo, SEARCH_MAX_LIMIT,
 };
-use staffy_protocol::messages::{AgentState, Event, SessionInfo};
+use hutan_protocol::messages::{AgentState, Event, SessionInfo};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -71,7 +71,7 @@ fn internal(error: impl std::fmt::Display) -> ErrorBody {
 fn disabled() -> ErrorBody {
     ErrorBody::new(
         ErrorCode::InvalidState,
-        "history indexing is disabled; enable it with `staffy index enable`",
+        "history indexing is disabled; enable it with `hutan index enable`",
     )
 }
 
@@ -129,7 +129,7 @@ impl HistoryService {
             db_path: self.paths.index_database.clone(),
             range_days: settings.range_days,
             roots: source_roots(&settings),
-            staffy: settings.staffy,
+            hutan: settings.hutan,
         };
         let sources: Vec<_> = config.roots.iter().map(|(s, p)| (*s, p.clone())).collect();
         let indexer = tokio::task::spawn_blocking(move || Indexer::start(config))
@@ -137,7 +137,7 @@ impl HistoryService {
             .map_err(internal)?
             .map_err(index_error)?;
         let handle = indexer.handle();
-        let tap = settings.staffy.then(|| {
+        let tap = settings.hutan.then(|| {
             let (tx, rx) = mpsc::channel(TAP_QUEUE);
             // Subscribe before reading the snapshot so no session update falls in between.
             self.bus.set_tap(Some(tx));
@@ -150,7 +150,7 @@ impl HistoryService {
         });
         info!(
             range_days = settings.range_days,
-            staffy = settings.staffy,
+            hutan = settings.hutan,
             sources = ?sources,
             "history indexing started"
         );
@@ -249,7 +249,7 @@ impl HistoryService {
             return Ok(HistoryStatusInfo {
                 enabled: false,
                 sources: Vec::new(),
-                db_bytes: staffy_index::store::database_bytes(&self.paths.index_database),
+                db_bytes: hutan_index::store::database_bytes(&self.paths.index_database),
             });
         };
         let status = tokio::task::spawn_blocking(move || handle.status())
@@ -312,7 +312,7 @@ impl HistoryService {
             }
             None => {
                 let path = self.paths.index_database.clone();
-                tokio::task::spawn_blocking(move || staffy_index::store::remove_database(&path))
+                tokio::task::spawn_blocking(move || hutan_index::store::remove_database(&path))
                     .await
                     .map_err(internal)?
                     .map_err(index_error)
@@ -371,7 +371,7 @@ fn source_roots(settings: &HistorySettings) -> Vec<(Source, PathBuf)> {
 
 fn source_in(source: HistorySource) -> Source {
     match source {
-        HistorySource::Staffy => Source::Staffy,
+        HistorySource::Hutan => Source::Hutan,
         HistorySource::Claude => Source::Claude,
         HistorySource::Codex => Source::Codex,
         HistorySource::Omp => Source::Omp,
@@ -380,7 +380,7 @@ fn source_in(source: HistorySource) -> Source {
 
 fn source_out(source: Source) -> HistorySource {
     match source {
-        Source::Staffy => HistorySource::Staffy,
+        Source::Hutan => HistorySource::Hutan,
         Source::Claude => HistorySource::Claude,
         Source::Codex => HistorySource::Codex,
         Source::Omp => HistorySource::Omp,
@@ -407,12 +407,12 @@ fn role_out(role: Role) -> HistoryRole {
     }
 }
 
-fn hit_out(hit: staffy_index::Hit) -> HistoryHit {
+fn hit_out(hit: hutan_index::Hit) -> HistoryHit {
     // The same rules as `agent.report` resume commands: an id that would not pass is not offered.
-    let resume_argv = staffy_index::resume_argv(hit.source, &hit.session_key)
+    let resume_argv = hutan_index::resume_argv(hit.source, &hit.session_key)
         .filter(|argv| validate_resume_argv(argv).is_ok());
-    // A Staffy hit's key is the Staffy session id: a client can open the session.
-    let session_id = (hit.source == Source::Staffy)
+    // A Hutan hit's key is the Hutan session id: a client can open the session.
+    let session_id = (hit.source == Source::Hutan)
         .then(|| hit.session_key.parse::<SessionId>().ok())
         .flatten();
     HistoryHit {
@@ -430,7 +430,7 @@ fn hit_out(hit: staffy_index::Hit) -> HistoryHit {
     }
 }
 
-// ---- Staffy's own sessions -----------------------------------------------------------------------
+// ---- Hutan's own sessions -----------------------------------------------------------------------
 
 /// What the tap consumer remembers about a session.
 struct SessionMeta {
@@ -523,7 +523,7 @@ impl Consumer {
             text.push_str(": ");
             text.push_str(message);
         }
-        handle.push_staffy(StaffyRecord {
+        handle.push_hutan(HutanRecord {
             session_key: session.id.to_string(),
             title: Some(session.title.clone()),
             cwd: session
@@ -575,7 +575,7 @@ async fn consume(
                     .as_ref()
                     .map(|c| c.to_string_lossy().into_owned())
                     .or_else(|| session.cwd.clone());
-                let record = |role, text: &str, suffix: &str| StaffyRecord {
+                let record = |role, text: &str, suffix: &str| HutanRecord {
                     session_key: session.id.to_string(),
                     title: Some(session.title.clone()),
                     cwd: cwd.clone(),
@@ -584,7 +584,7 @@ async fn consume(
                     text: text.to_owned(),
                     ext_key: format!("b:{}:{}{suffix}", block.id, block.started_at_ms),
                 };
-                handle.push_staffy(record(Role::Command, command, ""));
+                handle.push_hutan(record(Role::Command, command, ""));
                 let output = hub.block_text(TerminalBlockText {
                     terminal_id,
                     block_id: block.id,
@@ -594,7 +594,7 @@ async fn consume(
                 if let Ok(output) = output
                     && !output.text.trim().is_empty()
                 {
-                    handle.push_staffy(record(Role::Output, &output.text, ":out"));
+                    handle.push_hutan(record(Role::Output, &output.text, ":out"));
                 }
             }
             Event::ChatEvent { session_id, event } => {
@@ -603,7 +603,7 @@ async fn consume(
                     continue;
                 };
                 if let Some((role, text, key)) = chat_row(&event) {
-                    handle.push_staffy(StaffyRecord {
+                    handle.push_hutan(HutanRecord {
                         session_key: session_id.to_string(),
                         title: Some(session.title.clone()),
                         cwd: session.cwd.clone(),

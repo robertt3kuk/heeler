@@ -1,6 +1,6 @@
-//! `Connection` starts `staffyd` when the socket is absent, and not more than once per 10 s.
+//! `Connection` starts `hutand` when the socket is absent, and not more than once per 10 s.
 //!
-//! Own test binary: it sets `STAFFY_HOME` for the daemon process it spawns.
+//! Own test binary: it sets `HUTAN_HOME` for the daemon process it spawns.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // `set_var` is unsafe in edition 2024.
@@ -12,33 +12,33 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use common::*;
-use staffy_client::{ConnectOptions, Connection, ConnectionState};
-use staffy_protocol::messages::{
+use hutan_client::{ConnectOptions, Connection, ConnectionState};
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Request,
 };
 use tokio::time::{sleep, timeout};
 
-/// `staffyd` next to the test binaries (same profile). Tests never build it: `just test`
+/// `hutand` next to the test binaries (same profile). Tests never build it: `just test`
 /// builds the workspace binaries first.
-fn staffyd() -> PathBuf {
+fn hutand() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
-    let binary = profile_dir.join("staffyd");
+    let binary = profile_dir.join("hutand");
     assert!(
         binary.is_file(),
-        "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
+        "hutand not built: run `cargo build -p hutan-daemon --bin hutand` (or `just test`)"
     );
     binary
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn autostarts_a_missing_daemon_at_most_once_per_interval() {
-    let binary = staffyd();
+    let binary = hutand();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: this binary has a single test, so nothing else reads or writes the environment
     // while it is changed; the daemon inherits it.
-    unsafe { std::env::set_var("STAFFY_HOME", home.path()) };
-    let socket = home.path().join("staffyd.sock");
+    unsafe { std::env::set_var("HUTAN_HOME", home.path()) };
+    let socket = home.path().join("hutand.sock");
 
     let connection = Connection::start(ConnectOptions {
         socket: Some(socket.clone()),

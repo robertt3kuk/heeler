@@ -12,12 +12,12 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Task, TextRun,
     div, font, prelude::*, px,
 };
-use staffy_client::ClientError;
-use staffy_core::TerminalId;
-use staffy_protocol::ErrorCode;
-use staffy_protocol::assistant::AGENT_ASSISTANT;
-use staffy_protocol::blocks::{Block, BlockState};
-use staffy_protocol::history::{HistoryHit, HistorySearch, HistorySource};
+use hutan_client::ClientError;
+use hutan_core::TerminalId;
+use hutan_protocol::ErrorCode;
+use hutan_protocol::assistant::AGENT_ASSISTANT;
+use hutan_protocol::blocks::{Block, BlockState};
+use hutan_protocol::history::{HistoryHit, HistorySearch, HistorySource};
 
 use super::context::{
     ContextChip, DEFAULT_HITS, DEFAULT_TURNS, Mention, MentionKind, clamp_hits, clamp_turns,
@@ -195,7 +195,7 @@ impl ChatView {
         rows.into_iter().map(|(_, row)| row).collect()
     }
 
-    /// The conversations the agent form offers: sessions that reported an agent session id, Staffy
+    /// The conversations the agent form offers: sessions that reported an agent session id, Hutan
     /// chats, and the indexed transcripts the query found.
     fn transcripts(&self, source: Option<&str>, query: &str, cx: &App) -> Vec<TranscriptRow> {
         let store = self.sessions.read(cx);
@@ -220,9 +220,9 @@ impl ChatView {
             {
                 rows.push(TranscriptRow {
                     session_id: info.id.to_string(),
-                    source: format!("{} · staffy chat", info.title),
+                    source: format!("{} · hutan chat", info.title),
                     title: info.title.clone(),
-                    detail: format!("Staffy chat · {}", chat.agent),
+                    detail: format!("Hutan chat · {}", chat.agent),
                 });
             }
         }
@@ -418,7 +418,7 @@ impl ChatView {
         self.attach_chip(chip, cx)
     }
 
-    /// Attaches the last turns (the form's stepper) of the conversation `session_id`: a Staffy
+    /// Attaches the last turns (the form's stepper) of the conversation `session_id`: a Hutan
     /// chat, or an agent session of the history index.
     pub fn attach_transcript(
         &mut self,

@@ -8,16 +8,16 @@ use std::path::Path;
 
 use common::{TestDaemon, draw, open_with, screen_text, wait_until};
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
-use staffy_client::ConnectionState;
-use staffy_core::{SessionId, SessionState};
-use staffy_desktop::theme::Density;
-use staffy_desktop::workbench::actions;
-use staffy_desktop::workbench::model::{ItemRef, LayoutPreset};
-use staffy_desktop::workbench::panels::{InspectorPanel, OverviewPanel, SessionsPanel};
-use staffy_desktop::workbench::{Workbench, connection_label};
-use staffy_protocol::messages::{Request, SessionInfo};
-use staffy_settings::{SettingsPaths, SettingsStore};
-use staffy_terminal_view::ViewStatus;
+use hutan_client::ConnectionState;
+use hutan_core::{SessionId, SessionState};
+use hutan_desktop::theme::Density;
+use hutan_desktop::workbench::actions;
+use hutan_desktop::workbench::model::{ItemRef, LayoutPreset};
+use hutan_desktop::workbench::panels::{InspectorPanel, OverviewPanel, SessionsPanel};
+use hutan_desktop::workbench::{Workbench, connection_label};
+use hutan_protocol::messages::{Request, SessionInfo};
+use hutan_settings::{SettingsPaths, SettingsStore};
+use hutan_terminal_view::ViewStatus;
 
 fn settings_for(daemon: &TestDaemon) -> SettingsStore {
     SettingsStore::new(SettingsPaths::in_dir(daemon.home()))
@@ -66,7 +66,7 @@ fn wait_screen(view: &Entity<Workbench>, cx: &mut VisualTestContext, id: Session
 fn state_of(
     view: &Entity<Workbench>,
     cx: &mut VisualTestContext,
-) -> staffy_desktop::workbench::model::WorkbenchState {
+) -> hutan_desktop::workbench::model::WorkbenchState {
     view.read_with(cx, |wb, _| wb.state().clone())
 }
 
@@ -87,12 +87,12 @@ fn write(dir: &Path, name: &str, text: &str) {
 #[gpui::test]
 fn a_session_item_shows_the_daemons_snapshot_and_takes_focus(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
-    let info = daemon.sh("echo hello-from-staffy; sleep 600");
+    let info = daemon.sh("echo hello-from-hutan; sleep 600");
     let (view, cx) = open(cx, &daemon);
     wait_synced(&view, cx, 1);
 
     open_session(&view, cx, info.id);
-    wait_screen(&view, cx, info.id, "hello-from-staffy");
+    wait_screen(&view, cx, info.id, "hello-from-hutan");
 
     // The welcome placeholder gave way to the session; its tab shows the session title.
     let state = state_of(&view, cx);
@@ -104,7 +104,7 @@ fn a_session_item_shows_the_daemons_snapshot_and_takes_focus(cx: &mut TestAppCon
     );
     assert_eq!(
         cx.window_title().as_deref(),
-        Some(format!("{} — Staffy", info.title).as_str())
+        Some(format!("{} — Hutan", info.title).as_str())
     );
     // The terminal has keyboard focus and the store knows which session is looked at.
     let focused = view.read_with(cx, |wb, cx| {
@@ -175,7 +175,7 @@ fn a_pane_tab_and_an_overview_card_share_one_attachment(cx: &mut TestAppContext)
     // The preview never takes over the terminal's size.
     assert_eq!(
         preview.read_with(cx, |v, _| v.mode()),
-        staffy_terminal_view::ViewMode::Preview
+        hutan_terminal_view::ViewMode::Preview
     );
 
     // Clicking a card leaves the overview (restoring the layout) and focuses the session.
@@ -194,12 +194,12 @@ fn the_sessions_panel_lists_groups_and_filters(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let ws_dir = tempfile::tempdir().unwrap();
     let ws = daemon.create_workspace("api", &[ws_dir.path()]);
-    let make = |title: &str, ws: Option<staffy_core::WorkspaceId>| {
-        let info: staffy_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
-            staffy_protocol::messages::SessionCreate {
+    let make = |title: &str, ws: Option<hutan_core::WorkspaceId>| {
+        let info: hutan_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
+            hutan_protocol::messages::SessionCreate {
                 workspace_id: ws,
-                spec: staffy_protocol::messages::SessionSpec::Terminal(
-                    staffy_protocol::messages::TerminalSpec {
+                spec: hutan_protocol::messages::SessionSpec::Terminal(
+                    hutan_protocol::messages::TerminalSpec {
                         command: vec!["sleep".into(), "600".into()],
                         title: Some(title.to_owned()),
                         ..Default::default()
@@ -296,7 +296,7 @@ fn the_sessions_panel_lists_groups_and_filters(cx: &mut TestAppContext) {
     wait_until(cx, "the panel settings", |cx| {
         view.read_with(cx, |wb, _| {
             wb.settings_store()
-                .get::<staffy_desktop::settings::SessionsPanelSettings>()
+                .get::<hutan_desktop::settings::SessionsPanelSettings>()
                 .row
                 == ["title"]
         })
@@ -479,7 +479,7 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     );
     let pane = view
         .read_with(cx, |wb, _| {
-            wb.region_bounds(staffy_desktop::workbench::Region::Pane(
+            wb.region_bounds(hutan_desktop::workbench::Region::Pane(
                 wb.state().active_pane_id(),
             ))
         })
@@ -522,7 +522,7 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     // Panel geometry follows the density tokens: the status bar is 26 px comfortable.
     draw(cx);
     let bar = view.read_with(cx, |wb, _| {
-        wb.region_bounds(staffy_desktop::workbench::Region::StatusBar)
+        wb.region_bounds(hutan_desktop::workbench::Region::StatusBar)
     });
     let height = f32::from(bar.unwrap().size.height);
     assert!((height - 26.0).abs() <= 1.0, "{height}");
@@ -568,11 +568,11 @@ fn changing_the_terminal_theme_updates_the_daemons_osc_11_answer(cx: &mut TestAp
     write(
         daemon.home(),
         "settings.toml",
-        "[terminal]\ntheme = \"staffy-light\"\n",
+        "[terminal]\ntheme = \"hutan-light\"\n",
     );
     wait_until(cx, "the light theme", |cx| {
         view.read_with(cx, |wb, _| wb.terminal_view_settings().palette.background)
-            == staffy_terminal_view::Rgb(0xff, 0xff, 0xff)
+            == hutan_terminal_view::Rgb(0xff, 0xff, 0xff)
     });
     // `terminal.set_colors` travels through the handle; give the connection a moment.
     for _ in 0..30 {
@@ -820,9 +820,9 @@ fn save_layout_as_preset_writes_settings_and_hot_reloads_presets(cx: &mut TestAp
 fn workspace_settings_apply_while_their_session_is_focused(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(root.path().join(".staffy")).unwrap();
+    std::fs::create_dir_all(root.path().join(".hutan")).unwrap();
     std::fs::write(
-        root.path().join(".staffy/settings.toml"),
+        root.path().join(".hutan/settings.toml"),
         "[terminal]\nfont_size = 20\n",
     )
     .unwrap();
@@ -906,7 +906,7 @@ fn closing_a_tab_detaches_and_the_layout_reattaches_after_a_restart(cx: &mut Tes
         open_session(&view, cx, a.id);
         cx.dispatch_action(actions::OpenSessionInSplit(actions::SessionSplit {
             session: b.id.to_string(),
-            edge: staffy_desktop::workbench::model::Edge::Right,
+            edge: hutan_desktop::workbench::model::Edge::Right,
         }));
         wait_screen(&view, cx, a.id, "session-a");
         wait_screen(&view, cx, b.id, "session-b");
@@ -926,7 +926,7 @@ fn closing_a_tab_detaches_and_the_layout_reattaches_after_a_restart(cx: &mut Tes
         // Put it back so the saved layout holds both.
         cx.dispatch_action(actions::OpenSessionInSplit(actions::SessionSplit {
             session: b.id.to_string(),
-            edge: staffy_desktop::workbench::model::Edge::Bottom,
+            edge: hutan_desktop::workbench::model::Edge::Bottom,
         }));
         view.update(cx, |wb, _| wb.flush_save());
     }
@@ -952,7 +952,7 @@ fn items_of_vanished_sessions_do_not_attach(cx: &mut TestAppContext) {
     let live = daemon.sh("sleep 600");
     let ghost = SessionId::new();
     let state_path = daemon.home().join("desktop-state.json");
-    let mut state = staffy_desktop::workbench::model::WorkbenchState::default();
+    let mut state = hutan_desktop::workbench::model::WorkbenchState::default();
     let pane = state.active_pane_id();
     for id in [live.id, ghost] {
         state
@@ -1000,7 +1000,7 @@ fn status_items_follow_the_connection_through_loss_and_recovery(cx: &mut TestApp
     assert_eq!(conn(cx), ConnectionState::Connected);
     assert_eq!(
         connection_label(ConnectionState::Connected).0,
-        "staffyd connected"
+        "hutand connected"
     );
     let epoch = view.read_with(cx, |wb, cx| wb.sessions().read(cx).state().epoch);
 
@@ -1184,7 +1184,7 @@ fn the_overview_preset_shows_the_board_from_every_path(cx: &mut TestAppContext) 
             && s.active_pane().unwrap().active_item() == Some(&ItemRef::panel("overview"))
             && matches!(
                 s.focus,
-                staffy_desktop::workbench::model::FocusTarget::Pane(_)
+                hutan_desktop::workbench::model::FocusTarget::Pane(_)
             )
     };
 
@@ -1261,11 +1261,11 @@ fn the_overview_preset_applies_at_startup_from_settings(cx: &mut TestAppContext)
 fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let dir = tempfile::tempdir().unwrap();
-    let created: staffy_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
-        staffy_protocol::messages::SessionCreate {
+    let created: hutan_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
+        hutan_protocol::messages::SessionCreate {
             workspace_id: None,
-            spec: staffy_protocol::messages::SessionSpec::Terminal(
-                staffy_protocol::messages::TerminalSpec {
+            spec: hutan_protocol::messages::SessionSpec::Terminal(
+                hutan_protocol::messages::TerminalSpec {
                     command: vec!["sleep".into(), "600".into()],
                     cwd: Some(dir.path().to_path_buf()),
                     ..Default::default()
@@ -1332,8 +1332,8 @@ fn every_overview_card_shows_its_session_even_unfocused_or_ended(cx: &mut TestAp
     wait_screen(&view, cx, omp.id, "omp-screen");
     // Two more panes; the last one opened has focus, the others are unfocused.
     for (session, edge) in [
-        (&tests, staffy_desktop::workbench::model::Edge::Right),
-        (&failing, staffy_desktop::workbench::model::Edge::Bottom),
+        (&tests, hutan_desktop::workbench::model::Edge::Right),
+        (&failing, hutan_desktop::workbench::model::Edge::Bottom),
     ] {
         cx.dispatch_action(actions::OpenSessionInSplit(actions::SessionSplit {
             session: session.id.to_string(),
@@ -1411,14 +1411,14 @@ fn assert_same_dir(actual: Option<&std::path::Path>, expected: &std::path::Path)
     );
 }
 
-/// The benchmark key injection (`STAFFY_BENCH_INPUT`) types through the window like real key
+/// The benchmark key injection (`HUTAN_BENCH_INPUT`) types through the window like real key
 /// events. Dispatching from inside a `Workbench` update used to re-enter the leased entity: a
 /// panic that aborts the process when it happens in a window callback.
 #[gpui::test]
 fn scripted_keys_reach_the_focused_terminal_without_reentering_the_workbench(
     cx: &mut TestAppContext,
 ) {
-    use staffy_desktop::bench::{Script, run};
+    use hutan_desktop::bench::{Script, run};
 
     let daemon = TestDaemon::start();
     let echo = daemon.create_session(&["cat"], None);

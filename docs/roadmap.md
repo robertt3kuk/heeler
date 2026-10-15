@@ -30,23 +30,23 @@ flowchart LR
 
 ## M0 — Foundations
 Exit: workspace builds, gate green, protocol v0 types compile with roundtrip tests, ADR 0003–0005 accepted.
-- [x] M0.1 Cargo workspace (`crates/*`, package `staffy-<dir>`), `rust-toolchain.toml` 1.98.0, `clippy.toml`, `deny.toml`, `justfile` (`just check` = fmt + clippy `-D warnings` + nextest + cargo-deny); pinned deps from ADR 0003/0004 in `[workspace.dependencies]`
+- [x] M0.1 Cargo workspace (`crates/*`, package `hutan-<dir>`), `rust-toolchain.toml` 1.98.0, `clippy.toml`, `deny.toml`, `justfile` (`just check` = fmt + clippy `-D warnings` + nextest + cargo-deny); pinned deps from ADR 0003/0004 in `[workspace.dependencies]`
 - [x] M0.2 `core` IDs (ULID newtypes, `TerminalId`, `Seq`), `SessionState` machine; `protocol` frames + codec, control envelope, typed requests/results/events, render DTOs, error codes; golden fixtures `crates/protocol/tests/fixtures/v0/`
 - [x] M0.3 Accept ADR 0003 GPUI sourcing, 0004 terminal engine, 0005 agent integration (spike evidence in `docs/spikes/`)
 - [x] M0.4 Terminal conformance corpus in `crates/terminal/tests/corpus/`: 21 feature streams (whole, byte-by-byte, 7-byte chunks) + recordings (zsh, `seq`, vim) replayed to `.grid`. Open: htop (not installed), agent TUIs (omp, codex) need logins — record during M2 demo prep.
 
 ## M1 — Daemon + CLI terminals
-Exit demo: `staffy new -- omp` in one terminal, `staffy attach <id>` from another, detach/reattach, two clients attached at once, `staffy ls --json`; heavy output keeps daemon memory bounded.
+Exit demo: `hutan new -- omp` in one terminal, `hutan attach <id>` from another, detach/reattach, two clients attached at once, `hutan ls --json`; heavy output keeps daemon memory bounded.
 
 Execution (briefs in `docs/briefs/`, implementer agent per `process.md`): **M1-A** (M1.1 + M1.2, `daemon` + `client`) and **M1-B** (M1.3 + M0.4, `terminal`) in parallel → merged; **M1-C** (M1.6 part 1, `cli` + host renderer) after M1-A; **M1-D1** (M1.4 + M1.5, daemon sessions/attach) after M1-B, parallel with M1-C; **M1-D2** (orchestrator): CLI `new/ls/attach/send/stop`, M1.7 bench, demo.
 
-- [x] M1.1 `staffyd` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Staffy/`
+- [x] M1.1 `hutand` lifecycle: single-instance lock, socket perms, peer UID check, graceful shutdown, tracing to `~/Library/Logs/Hutan/`
 - [x] M1.2 Connection layer: framing codec, handshake, per-client bounded queues, event ring with epoch/seq, replay
 - [x] M1.3 `terminal`: PTY spawn, reader thread → OSC sniffer → engine, writer thread, resize, input, exit/reap, render tracker (merged `dd63216`; 180.7 MB/s, 26.2 MiB @10k lines)
 - [x] M1.4 Terminal attach: snapshot queued before the response, credit-1 ack pacing (≤ 1 render / 8 ms), `terminal.history`, resize → snapshot, bounded input path (merged `6039594`)
 - [x] M1.5 Session registry in memory: create/list/stop/restart/rename, metadata events (title/bell/notification/cwd), workspace close and shutdown rules (merged `6039594`)
-- [x] M1.6 `staffy` CLI: `daemon start|stop|status`, `ws …`, `new`, `ls`, `attach` (raw mode, ctrl+\ d detach, SIGWINCH resize, restart follow), `send`, `stop/restart/rename`, `history`, `api`, `events` (merged `8a4a583`, `98a6c35`)
-- [x] M1.7 Bench `cargo run --release -p staffy-daemon --example flood`: ≈193 MiB in 1.4 s (136 MiB/s end-to-end through daemon + acking client), non-acking client 0 renders after snapshot, `daemon.status` p99 0.11 ms, peak RSS 25.2 MiB
+- [x] M1.6 `hutan` CLI: `daemon start|stop|status`, `ws …`, `new`, `ls`, `attach` (raw mode, ctrl+\ d detach, SIGWINCH resize, restart follow), `send`, `stop/restart/rename`, `history`, `api`, `events` (merged `8a4a583`, `98a6c35`)
+- [x] M1.7 Bench `cargo run --release -p hutan-daemon --example flood`: ≈193 MiB in 1.4 s (136 MiB/s end-to-end through daemon + acking client), non-acking client 0 renders after snapshot, `daemon.status` p99 0.11 ms, peak RSS 25.2 MiB
 
 **M1 done (2026-10-13).** Demo checklist: `docs/demos/M1.md`.
 
@@ -66,10 +66,10 @@ Execution: wave 1 in parallel — **M2-A** (M2.2, `client`), **M2-B** (M2.1, `de
 - [x] M2.9 Empty workspaces hidden: the sessions panel already lists only workspaces that have sessions (`panels/sessions.rs` skips empty groups); a setting `show_empty_workspaces` and "always show the active workspace" arrive with the workspace switcher in M12
 
 ## M3 — Persistence and restore
-Exit demo: kill `staffyd`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
+Exit demo: kill `hutand`, start it → workspaces/sessions reappear, terminals respawn in cwd, Codex/OMP sessions resume via native resume IDs.
 - [x] M3.1 `storage` actor, migrations, schema for workspaces/sessions (layouts stay in the desktop state file per ADR 0010)
 - [x] M3.2 Restore pipeline per ADR 0009 step 1
-- [x] M3.3 Agent resume references: `agent.report` (protocol 0.4), `staffy agent report`, `staffy integration install codex|claude|omp`
+- [x] M3.3 Agent resume references: `agent.report` (protocol 0.4), `hutan agent report`, `hutan integration install codex|claude|omp`
 
 ## M4 — Harness chat (Codex)
 Exit demo: open a Codex chat session, stream reply, see tool calls and diffs, approve a command from the UI, approval enforced in daemon; same conversation visible from CLI.
@@ -89,7 +89,7 @@ Exit demo: chat with an OpenAI-compatible endpoint and a local Ollama model; swi
 ## M6 — macOS integration
 Exit demo: with the window closed, an agent finishing triggers a native notification; an approval notification's "Approve" action unblocks the agent; launch-at-login agent mode works.
 - [ ] M6.1 Spike: notifications from daemon vs helper (ADR 0007 open questions) → accept ADR 0007
-- [x] M6.2 App bundle build (`just bundle`), ad-hoc signing for dev (M6-A; executable `staffy-desktop`, see `docs/packaging.md`)
+- [x] M6.2 App bundle build (`just bundle`), ad-hoc signing for dev (M6-A; executable `hutan-desktop`, see `docs/packaging.md`)
 - [ ] M6.3 Notification intents + Notifier helper + action routing — intents, `notify.*`, `client.focus`, `ui.open` and CLI done (M6-A, protocol 0.13); native delivery/Notifier is M6-B
 - [ ] M6.4 SMAppService launch agent toggle; menu bar status; Dock badge; global shortcuts
 
@@ -99,13 +99,13 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 - Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
-- ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Staffy as MCP server exposing its own control surface to agents.
+- ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
 
 ## M9 — Extensibility and remote
 - Plugin manifests + event hooks; live daemon upgrade handoff (ADR 0009 step 2); remote transport (TLS over Tailscale/SSH) and mobile/web client feasibility.
 
 ## M10 — Shell integration + blocks
-Exit demo: in zsh, bash, and fish (no user config edits) commands become blocks with exit status and duration; jump between blocks, copy a block's output, collapse it, send it to an agent as context; `terminal.blocks = false` restores the plain terminal; TUIs and `staffy attach` unaffected.
+Exit demo: in zsh, bash, and fish (no user config edits) commands become blocks with exit status and duration; jump between blocks, copy a block's output, collapse it, send it to an agent as context; `terminal.blocks = false` restores the plain terminal; TUIs and `hutan attach` unaffected.
 - Shell integration auto-injected per shell (zsh `ZDOTDIR` shim, bash `--rcfile` shim, fish `XDG_DATA_DIRS` vendor_conf.d), emitting OSC 133 A/B/C/D (+ exit code) and OSC 7; opt-out setting; works over nested shells where possible.
 - Daemon: block index per terminal (prompt/command/output line ranges in the compact store, exit code, start/end time), protocol events + `terminal.blocks` query.
 - Desktop: block overlay on the single grid (gutter, separators, status/duration chips, hover actions), keyboard navigation, block selection/copy, collapse, "send to agent" (wired in M4).
@@ -117,12 +117,12 @@ Exit demo: open a file from the sessions panel/⌘P next to a terminal; tree-sit
 - Crates per ADR 0012: `buffer`, `syntax`, `lsp_client` (servers supervised by the daemon), `code_view` (GPUI); `ItemRef::File` in the workbench; one theme for chrome/terminal/syntax.
 
 ## M12 — Projects and workspaces
-Exit demo: open three projects (⌘O → folder / recent list), each with its own sessions and layout; switch between them without losing state; reorder workspaces by drag and switch the sort mode; pin one; the **Home** workspace opens on your notes folder with a scratch chat; workspace-level settings override (`<repo>/.staffy/settings.toml`); a project with several repos; empty workspaces hidden.
+Exit demo: open three projects (⌘O → folder / recent list), each with its own sessions and layout; switch between them without losing state; reorder workspaces by drag and switch the sort mode; pin one; the **Home** workspace opens on your notes folder with a scratch chat; workspace-level settings override (`<repo>/.hutan/settings.toml`); a project with several repos; empty workspaces hidden.
 - Daemon: workspace roots (one or more repos), recent projects list, per-workspace defaults (shell, env, start cwd), workspace order + pins; persisted via M3.
 - **Home workspace**: always present, bound to a configurable folder (`workspaces.home_folder`, e.g. `~/Notes`) for notes, docs, and scratch sessions/chats that belong to no project; cannot be deleted, can be renamed.
 - **Sorting and arrangement** (Orca-like): sort modes `manual` (drag to reorder, the default) · `recent activity` · `attention first` · `name`; pin to top; group by project (multi-repo project groups); filters: hide empty, hide sleeping (no live sessions), hide CLI-created; "always show the active workspace"; a sidebar filter box + ⌘J jump palette reaching hidden ones.
 - Desktop: ⌘O project picker (recent + folder dialog), workspace switcher in the sidebar header and ⌘K, per-workspace layout state (each workspace remembers its own pane tree), new sessions start in the active workspace root.
-- CLI: `staffy ws open <path>`, `staffy ws use <id>`, `staffy ws move <id> --before <id>`, `staffy ws pin <id>`.
+- CLI: `hutan ws open <path>`, `hutan ws use <id>`, `hutan ws move <id> --before <id>`, `hutan ws pin <id>`.
 
 ## M16 — Assistant chat
 Exit demo: ⌥Space (or the assistant panel) opens a quick chat for questions without starting a session; history of past assistant chats is searchable and resumable; inside a workspace the assistant answers with context it is allowed to read — `@omp` (an agent session's transcript), `@shell` (a terminal's recent output or a block), `@file`, `@search` (M17 index) — shown as attached context chips; nothing is read without being attached or allowed in settings.
@@ -130,9 +130,9 @@ Exit demo: ⌥Space (or the assistant panel) opens a quick chat for questions wi
 - Two scopes: global (Home) assistant and per-workspace assistant; context providers are read-only, bounded (token budget, truncation shown), and permission-gated per workspace (`assistant.context.*` settings).
 
 ## M17 — Session history index and search
-Exit demo: enable indexing (opt-in), search "which session ran `cargo test -p daemon`" or a phrase from an old conversation and find Staffy sessions, terminal blocks, assistant chats, and external agent sessions (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini); open a result or **Resume** it (runs the agent's resume command in a new terminal with the same cwd and session id); `staffy search "<query>" --json`.
+Exit demo: enable indexing (opt-in), search "which session ran `cargo test -p daemon`" or a phrase from an old conversation and find Hutan sessions, terminal blocks, assistant chats, and external agent sessions (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini); open a result or **Resume** it (runs the agent's resume command in a new terminal with the same cwd and session id); `hutan search "<query>" --json`.
 - Index: local SQLite FTS5 + BM25 with role weighting (user/assistant/tool) and a separate identifier column (paths, commands, symbols) — the approach Orca measured to beat dense vectors/rerankers on ~1M real messages; tool calls and commands indexed as text.
-- Sources: Staffy journals (blocks text, agent events, assistant chats) and external transcript stores (`~/.claude/projects`, `~/.codex/sessions` + `state_*.sqlite`, `~/.omp/agent/sessions`, OpenCode, Cursor, Gemini); adapters versioned per format.
+- Sources: Hutan journals (blocks text, agent events, assistant chats) and external transcript stores (`~/.claude/projects`, `~/.codex/sessions` + `state_*.sqlite`, `~/.omp/agent/sessions`, OpenCode, Cursor, Gemini); adapters versioned per format.
 - Incremental, cheap scanning: FSEvents + per-file offsets/mtimes, never re-walking the whole tree on a timer (Orca issue #27008 is the counter-example); history range (all / 90 / 30 days), index size + Clear in settings; data never leaves the machine.
 - Surfaces: History panel (filters: agent, project, date, role), ⌘K / jump palette integration, assistant `@search`, CLI.
 
@@ -152,9 +152,9 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 
 ## Backlog (agreed, not yet scheduled)
 
-- **B-1 Session environment like a real terminal emulator.** New sessions get a fresh login environment instead of inheriting `staffyd`'s environment (which depends on whoever started the daemon: CLI, desktop, launchd): start from the user's launchd environment (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`/`LC_*`, `PATH` via `path_helper`), then the login shell builds the rest (`-l`). Configurable in settings and applied at session start: `terminal.shell` (override the account login shell), `terminal.env` (extra variables), `terminal.env_inherit = "login" | "daemon"`, with workspace overrides (`<repo>/.staffy/settings.toml`). Clients pass the resolved shell/env in `session.create` (`TerminalSpec.command`/`env` already exist); daemon-managed `STAFFY_*` still win. Already done: the default shell is the account's login shell (`getpwuid`), not the daemon's `$SHELL`.
+- **B-1 Session environment like a real terminal emulator.** New sessions get a fresh login environment instead of inheriting `hutand`'s environment (which depends on whoever started the daemon: CLI, desktop, launchd): start from the user's launchd environment (`HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`/`LC_*`, `PATH` via `path_helper`), then the login shell builds the rest (`-l`). Configurable in settings and applied at session start: `terminal.shell` (override the account login shell), `terminal.env` (extra variables), `terminal.env_inherit = "login" | "daemon"`, with workspace overrides (`<repo>/.hutan/settings.toml`). Clients pass the resolved shell/env in `session.create` (`TerminalSpec.command`/`env` already exist); daemon-managed `HUTAN_*` still win. Already done: the default shell is the account's login shell (`getpwuid`), not the daemon's `$SHELL`.
 - **B-2** → scheduled as M2.7. **B-3** → resolved by ADR 0011.
-- **B-4 History hits carry their origin.** `HistoryHit` gains optional `path` (external transcript file, for "Reveal file") and `block_id` (+ `terminal_id`) for Staffy block hits so "Open block" is exact instead of matching `ts_ms` (gap found in M17-B). Additive protocol change.
+- **B-4 History hits carry their origin.** `HistoryHit` gains optional `path` (external transcript file, for "Reveal file") and `block_id` (+ `terminal_id`) for Hutan block hits so "Open block" is exact instead of matching `ts_ms` (gap found in M17-B). Additive protocol change.
 - **B-5 OpenCode history adapter** once its v1/v2 schemas settle (deferred in M17-A).
 - **B-6 Approval provenance on the wire.** `approval.resolved` / `PermissionResolved` carry `decided_by` (ui/cli/client id) so a chat can show who answered (gap found in M4-B; already in the audit table). Journal streaming deltas or a coalesced partial so a window opened mid-stream sees the full text; "Load earlier" paging in the chat view.
 

@@ -1,4 +1,4 @@
-//! Plain-text rendering of chat events for `staffy chat send --wait`, `log` and `attach`.
+//! Plain-text rendering of chat events for `hutan chat send --wait`, `log` and `attach`.
 //!
 //! Assistant text streams as it arrives; a tool call is one line when it ends
 //! (`• shell: touch hi.txt → completed (exit 0, 12 ms)`); a permission request is a short block
@@ -7,8 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use staffy_core::agent::{MessageRole, NoticeLevel, PermissionOutcome, ToolStatus};
-use staffy_core::{AgentEvent, AgentEventKind, ItemId};
+use hutan_core::agent::{MessageRole, NoticeLevel, PermissionOutcome, ToolStatus};
+use hutan_core::{AgentEvent, AgentEventKind, ItemId};
 
 /// Longest tool title shown on its line, in characters.
 const MAX_TITLE_CHARS: usize = 100;
@@ -126,7 +126,7 @@ impl ChatPrinter {
                 }
                 let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
                 out.push_str(&format!(
-                    "    answer with: staffy approve {approval_id} <{}>\n",
+                    "    answer with: hutan approve {approval_id} <{}>\n",
                     ids.join("|")
                 ));
                 out
@@ -154,7 +154,7 @@ impl ChatPrinter {
                 } else {
                     let done = steps
                         .iter()
-                        .filter(|s| s.status == staffy_core::agent::PlanStepStatus::Completed)
+                        .filter(|s| s.status == hutan_core::agent::PlanStepStatus::Completed)
                         .count();
                     out.push_str(&format!("• plan: {done}/{} steps done\n", steps.len()));
                 }
@@ -226,8 +226,8 @@ fn status_text(status: ToolStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use staffy_core::agent::{PermissionKind, PermissionOption, PermissionOptionKind, ToolKind};
-    use staffy_core::{AgentEventDraft, ApprovalId, SessionId};
+    use hutan_core::agent::{PermissionKind, PermissionOption, PermissionOptionKind, ToolKind};
+    use hutan_core::{AgentEventDraft, ApprovalId, SessionId};
 
     use super::*;
 
@@ -340,7 +340,7 @@ mod tests {
         );
         assert!(out.contains("    cleanup\n    in /w\n"), "{out}");
         assert!(
-            out.contains(&format!("staffy approve {approval} <accept|cancel>")),
+            out.contains(&format!("hutan approve {approval} <accept|cancel>")),
             "{out}"
         );
     }

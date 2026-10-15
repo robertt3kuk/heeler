@@ -1,5 +1,5 @@
 [package]
-name = "staffy-agents"
+name = "hutan-agents"
 description = "Agent adapters behind one AgentAdapter trait: Codex app-server over stdio JSON-RPC (ADR 0005), and the fixture tool that records, scrubs and replays its transcripts"
 version.workspace = true
 edition.workspace = true
@@ -7,15 +7,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_agents"
+name = "hutan_agents"
 
 [[bin]]
-name = "staffy-codex-fixture"
+name = "hutan-codex-fixture"
 path = "src/bin/codex_fixture.rs"
 
 [dependencies]
 futures.workspace = true
-staffy-core.workspace = true
+hutan-core.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }

@@ -14,7 +14,7 @@ use gpui::{
     Font, FontFeatures, FontStyle, FontWeight, Hsla, Pixels, ShapedLine, SharedString,
     StrikethroughStyle, TextRun, UnderlineStyle, WindowTextSystem, px, rgb,
 };
-use staffy_protocol::render::{CellFlags, Color, Row, Run};
+use hutan_protocol::render::{CellFlags, Color, Row, Run};
 
 use crate::model::{Cell, row_cells};
 use crate::theme::{Rgb, Theme};

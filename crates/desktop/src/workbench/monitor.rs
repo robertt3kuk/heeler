@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use gpui::{ClipboardItem, Context, Pixels, Point, Window};
-use staffy_core::SessionId;
+use hutan_core::SessionId;
 
 use super::view::{MenuEntry, Workbench};
 

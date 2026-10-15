@@ -1,26 +1,26 @@
 [package]
-name = "staffy-terminal-view"
-description = "Staffy GPUI terminal view: draws the daemon's render stream, encodes keyboard and mouse input"
+name = "hutan-terminal-view"
+description = "Hutan GPUI terminal view: draws the daemon's render stream, encodes keyboard and mouse input"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_terminal_view"
+name = "hutan_terminal_view"
 
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-staffy-protocol.workspace = true
-staffy-client.workspace = true
+hutan-protocol.workspace = true
+hutan-client.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
-staffy-core.workspace = true
-staffy-daemon.workspace = true
+hutan-core.workspace = true
+hutan-daemon.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

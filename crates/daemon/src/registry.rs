@@ -4,7 +4,7 @@
 //! The actor never waits on a child process. Stopping a session signals its terminal and parks
 //! the reply until the terminal's watcher task reports the exit back through the same mailbox.
 //!
-//! Every change is written through to `staffy-storage` (fire-and-forget into the writer thread,
+//! Every change is written through to `hutan-storage` (fire-and-forget into the writer thread,
 //! so request handling never waits for the disk), and [`spawn`] rebuilds the state from what was
 //! stored (ADR 0009 step 1): live sessions come back as new terminals with the same ids.
 
@@ -15,24 +15,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::{Instant, sleep_until};
 
-use staffy_agents::{CodexConfig, ExitInfo, Started};
-use staffy_core::{
+use hutan_agents::{CodexConfig, ExitInfo, Started};
+use hutan_core::{
     NodeOutcome, NodeUpdate, ObservationTree, Patch, SessionEvent, SessionId, SessionKind,
     SessionState, TerminalId, WorkspaceId,
 };
-use staffy_protocol::chat::{ChatCreate, ChatInfo};
-use staffy_protocol::control::{ErrorBody, ErrorCode};
-use staffy_protocol::messages::{
+use hutan_protocol::chat::{ChatCreate, ChatInfo};
+use hutan_protocol::control::{ErrorBody, ErrorCode};
+use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, CreatedBy, Event,
     RECENT_PROJECTS_DEFAULT_LIMIT, RECENT_PROJECTS_MAX_LIMIT, RecentProject, RecentProjects,
     SessionCreate, SessionInfo, SessionList, SessionListFilter, SessionRename, SessionSnapshot,
     SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
     WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRename,
 };
-use staffy_protocol::provider::ChatSetModel;
-use staffy_protocol::tree::{AgentTree, NodeReport};
-use staffy_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
-use staffy_terminal::{
+use hutan_protocol::provider::ChatSetModel;
+use hutan_protocol::tree::{AgentTree, NodeReport};
+use hutan_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
+use hutan_terminal::{
     ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -443,12 +443,12 @@ impl WorkspaceEntry {
 struct SessionRegistry {
     bus: Arc<EventBus>,
     hub: Arc<TerminalHub>,
-    /// Exported to children as `STAFFY_SOCKET`.
+    /// Exported to children as `HUTAN_SOCKET`.
     socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     shell_integration_dir: Option<PathBuf>,
-    /// Exported to children as `STAFFY_BIN`.
-    staffy_bin: String,
+    /// Exported to children as `HUTAN_BIN`.
+    hutan_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
     mailbox: mpsc::WeakSender<Command>,
     /// The Home workspace: where sessions without a workspace go.
@@ -475,12 +475,12 @@ struct SessionRegistry {
 /// What [`spawn`] needs besides the shared services.
 #[derive(Debug)]
 pub struct RegistryConfig {
-    /// Exported to children as `STAFFY_SOCKET`.
+    /// Exported to children as `HUTAN_SOCKET`.
     pub socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     pub shell_integration_dir: Option<PathBuf>,
-    /// The `staffy` CLI exported to sessions as `STAFFY_BIN`.
-    pub staffy_bin: PathBuf,
+    /// The `hutan` CLI exported to sessions as `HUTAN_BIN`.
+    pub hutan_bin: PathBuf,
     pub storage: Storage,
     pub restore: RestoreMode,
     /// The folder of the Home workspace (existing, canonical).
@@ -522,7 +522,7 @@ pub fn spawn(
         hub,
         socket: config.socket,
         shell_integration_dir: config.shell_integration_dir,
-        staffy_bin: config.staffy_bin.to_string_lossy().into_owned(),
+        hutan_bin: config.hutan_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
         home,
         workspaces,
@@ -1432,14 +1432,14 @@ impl SessionRegistry {
         let mut env: BTreeMap<String, String> = session.spec.env.clone();
         // Daemon-managed variables win over whatever the client asked for.
         env.insert(
-            "STAFFY_SOCKET".to_owned(),
+            "HUTAN_SOCKET".to_owned(),
             self.socket.to_string_lossy().into_owned(),
         );
-        env.insert("STAFFY_SESSION_ID".to_owned(), session.info.id.to_string());
-        env.insert("STAFFY_ENV".to_owned(), "1".to_owned());
-        env.insert("STAFFY_BIN".to_owned(), self.staffy_bin.clone());
+        env.insert("HUTAN_SESSION_ID".to_owned(), session.info.id.to_string());
+        env.insert("HUTAN_ENV".to_owned(), "1".to_owned());
+        env.insert("HUTAN_BIN".to_owned(), self.hutan_bin.clone());
         env.insert(
-            "STAFFY_WORKSPACE_ID".to_owned(),
+            "HUTAN_WORKSPACE_ID".to_owned(),
             session.info.workspace_id.to_string(),
         );
         let mut config = TerminalConfig {
@@ -1983,7 +1983,7 @@ impl SessionRegistry {
         let bad = |message: String| ErrorBody::new(ErrorCode::BadRequest, message);
         let Some(provider_id) = req.provider_id.as_deref().filter(|p| !p.is_empty()) else {
             return Err(bad(
-                "a direct chat needs a provider (`provider_id`, see `staffy provider ls`)".into(),
+                "a direct chat needs a provider (`provider_id`, see `hutan provider ls`)".into(),
             ));
         };
         let provider = self.chats.providers().require(provider_id)?;
@@ -2064,7 +2064,7 @@ impl SessionRegistry {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidState,
                 format!(
-                    "chat session {} is not running (`staffy restart` it first)",
+                    "chat session {} is not running (`hutan restart` it first)",
                     req.session_id
                 ),
             ));
@@ -2961,7 +2961,7 @@ fn exit_reason(exit: &ExitInfo) -> String {
 fn default_title(spec: &TerminalSpec) -> String {
     let program = match spec.command.first() {
         Some(program) => program.clone(),
-        None => staffy_terminal::default_shell(&spec.env),
+        None => hutan_terminal::default_shell(&spec.env),
     };
     Path::new(&program)
         .file_name()

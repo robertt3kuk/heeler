@@ -5,23 +5,23 @@ use std::collections::BTreeMap;
 use std::io::IsTerminal as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
-use staffy_client::Client;
-use staffy_core::{SessionId, SessionState, TerminalId};
-use staffy_protocol::messages::{
+use hutan_client::Client;
+use hutan_core::{SessionId, SessionState, TerminalId};
+use hutan_protocol::messages::{
     AgentState, DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo, SessionList,
     SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSpec, TerminalAttach,
     TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalSize,
     TerminalSpec,
 };
-use staffy_protocol::render::{Row, TerminalRender};
+use hutan_protocol::render::{Row, TerminalRender};
+use serde_json::Value;
 use tokio::time::timeout;
 
 use super::attach::end_message;
 use super::{Ctx, print_line};
 use crate::args::{HistoryArgs, LsArgs, NewArgs, RenameArgs, SendArgs};
 use crate::error::CliError;
-use staffy_cli::host;
+use hutan_cli::host;
 
 /// Shortest session id prefix accepted as a target.
 const MIN_PREFIX: usize = 4;
@@ -55,7 +55,7 @@ impl Ctx {
         // Subscribe before creating so an instantly exiting command is not missed by `attach`.
         let events = client.events();
         if args.attach {
-            let _: staffy_protocol::messages::Subscribed = self
+            let _: hutan_protocol::messages::Subscribed = self
                 .call(&client, Request::EventsSubscribe(Empty {}))
                 .await?;
         }
@@ -172,9 +172,9 @@ impl Ctx {
     pub(super) async fn history(&self, args: HistoryArgs) -> Result<(), CliError> {
         let client = self.connect().await?;
         let session = self.resolve(&client, &args.target).await?;
-        if session.kind == staffy_core::SessionKind::Harness {
+        if session.kind == hutan_core::SessionKind::Harness {
             return Err(CliError::Failed(format!(
-                "session {} is a chat session; `staffy chat log` prints its history",
+                "session {} is a chat session; `hutan chat log` prints its history",
                 session.id
             )));
         }
@@ -255,7 +255,7 @@ impl Ctx {
     pub(super) async fn session_list(
         &self,
         client: &Client,
-        workspace_id: Option<staffy_core::WorkspaceId>,
+        workspace_id: Option<hutan_core::WorkspaceId>,
     ) -> Result<SessionList, CliError> {
         self.call(
             client,
@@ -298,15 +298,15 @@ fn with_source(error: CliError, target: &str, source: &str) -> CliError {
 
 /// The terminal of a session that can still take input and be attached live.
 pub(super) fn live_terminal(session: &SessionInfo) -> Result<TerminalId, CliError> {
-    if session.kind == staffy_core::SessionKind::Harness {
+    if session.kind == hutan_core::SessionKind::Harness {
         return Err(CliError::Failed(format!(
-            "session {} is a chat session; use `staffy chat send|attach|log`",
+            "session {} is a chat session; use `hutan chat send|attach|log`",
             session.id
         )));
     }
     if !session.state.is_live() {
         return Err(CliError::Failed(format!(
-            "session {} is {}; `staffy restart` starts it again, `staffy history` shows its output",
+            "session {} is {}; `hutan restart` starts it again, `hutan history` shows its output",
             session.id,
             state_text(&session.state)
         )));
@@ -406,7 +406,7 @@ fn not_found(target: &str) -> CliError {
         String::new()
     };
     CliError::Failed(format!(
-        "no session matches `{target}`{hint}; `staffy ls` lists sessions"
+        "no session matches `{target}`{hint}; `hutan ls` lists sessions"
     ))
 }
 
@@ -435,7 +435,7 @@ pub(super) fn state_text(state: &SessionState) -> String {
     }
 }
 
-/// The state column of `staffy ls`: ended sessions loaded from a previous daemon run say so,
+/// The state column of `hutan ls`: ended sessions loaded from a previous daemon run say so,
 /// because their final screen is gone; a session whose agent (or one of its subagents) waits
 /// for the user says `blocked`, naming the subagent.
 fn listed_state_text(session: &SessionInfo) -> String {
@@ -518,7 +518,7 @@ fn row_text(row: &Row) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use staffy_core::WorkspaceId;
+    use hutan_core::WorkspaceId;
 
     use super::*;
 
@@ -526,7 +526,7 @@ mod tests {
         SessionInfo {
             id: id.parse().unwrap(),
             workspace_id: WorkspaceId::new(),
-            kind: staffy_core::SessionKind::Terminal,
+            kind: hutan_core::SessionKind::Terminal,
             title: title.to_owned(),
             state: SessionState::Running,
             command: vec![],

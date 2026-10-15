@@ -9,7 +9,7 @@ pub enum SessionKind {
     Terminal,
     /// Structured coding-agent session (Codex app-server, ACP).
     Harness,
-    /// Conversation through Staffy's own model gateway.
+    /// Conversation through Hutan's own model gateway.
     Direct,
 }
 

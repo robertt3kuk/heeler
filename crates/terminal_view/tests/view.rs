@@ -10,12 +10,12 @@ use gpui::{
     Entity, Focusable as _, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TestAppContext,
     TouchPhase, VisualTestContext, point, px, size,
 };
-use staffy_protocol::blocks::BlockPart;
-use staffy_protocol::render::{
+use hutan_protocol::blocks::BlockPart;
+use hutan_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, Run,
     TerminalFrame, TerminalRender, TerminalSnapshot,
 };
-use staffy_terminal_view::{
+use hutan_terminal_view::{
     DefaultColors, TerminalBackend, TerminalSize, TerminalView, TerminalViewEvent,
     TerminalViewSettings, ViewStatus,
 };
@@ -199,13 +199,13 @@ fn creation_reports_the_default_colors(cx: &mut TestAppContext) {
         .expect("set_default_colors on creation");
     assert_eq!(
         colors.background,
-        staffy_terminal_view::Rgb(0x1e, 0x1e, 0x1e)
+        hutan_terminal_view::Rgb(0x1e, 0x1e, 0x1e)
     );
     assert_eq!(
         colors.foreground,
-        staffy_terminal_view::Rgb(0xd4, 0xd4, 0xd4)
+        hutan_terminal_view::Rgb(0xd4, 0xd4, 0xd4)
     );
-    assert_eq!(colors.cursor, staffy_terminal_view::Rgb(0xd4, 0xd4, 0xd4));
+    assert_eq!(colors.cursor, hutan_terminal_view::Rgb(0xd4, 0xd4, 0xd4));
 }
 
 #[gpui::test]
@@ -835,7 +835,7 @@ fn settings_changes_report_new_default_colors(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| {
         v.update_settings(
             TerminalViewSettings {
-                palette: staffy_terminal_view::TerminalPalette::STAFFY_LIGHT,
+                palette: hutan_terminal_view::TerminalPalette::HUTAN_LIGHT,
                 ..TerminalViewSettings::default()
             },
             cx,
@@ -843,7 +843,7 @@ fn settings_changes_report_new_default_colors(cx: &mut TestAppContext) {
     });
     let calls = recorder.take();
     assert!(
-        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == staffy_terminal_view::Rgb(255, 255, 255))),
+        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == hutan_terminal_view::Rgb(255, 255, 255))),
         "{calls:?}"
     );
 }
@@ -1006,7 +1006,7 @@ impl gpui::Render for Pair {
 #[gpui::test]
 fn two_views_share_one_model_and_one_ack(cx: &mut TestAppContext) {
     use gpui::AppContext as _;
-    use staffy_terminal_view::{SharedTerminal, ViewMode};
+    use hutan_terminal_view::{SharedTerminal, ViewMode};
     let recorder = Rc::new(Recorder::default());
     let backend: Rc<dyn TerminalBackend> = recorder.clone();
     let (pair, cx) = cx.add_window_view(|window, cx| {

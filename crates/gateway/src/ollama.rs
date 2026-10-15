@@ -12,9 +12,9 @@
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use hutan_core::ModelInfo;
+use hutan_core::agent::TokenCounts;
 use serde_json::{Value, json};
-use staffy_core::ModelInfo;
-use staffy_core::agent::TokenCounts;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::GatewayError;

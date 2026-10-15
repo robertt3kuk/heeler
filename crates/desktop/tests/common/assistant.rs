@@ -12,15 +12,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use staffy_core::SessionId;
-use staffy_desktop::workbench::Workbench;
-use staffy_desktop::workbench::chat::{ChatModel, ChatView};
-use staffy_desktop::workbench::panels::AssistantPanel;
-use staffy_gateway::testing::{MockServer, Reply};
-use staffy_gateway::{CredentialStore, HttpConfig, MemoryStore};
-use staffy_protocol::messages::Request;
-use staffy_protocol::provider::{ProviderAdd, ProviderResult, ProviderSetCredential};
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_core::SessionId;
+use hutan_desktop::workbench::Workbench;
+use hutan_desktop::workbench::chat::{ChatModel, ChatView};
+use hutan_desktop::workbench::panels::AssistantPanel;
+use hutan_gateway::testing::{MockServer, Reply};
+use hutan_gateway::{CredentialStore, HttpConfig, MemoryStore};
+use hutan_protocol::messages::Request;
+use hutan_protocol::provider::{ProviderAdd, ProviderResult, ProviderSetCredential};
+use hutan_settings::{SettingsPaths, SettingsStore};
 
 use super::history::HistoryEnv;
 use super::{TestDaemon, WAIT, draw, open_with, wait_until};
@@ -71,7 +71,7 @@ impl AssistantEnv {
         let daemon = TestDaemon::start_configured(
             Some(&toml),
             None,
-            staffy_daemon::GatewayConfig {
+            hutan_daemon::GatewayConfig {
                 credentials: Some(store),
                 http: HttpConfig {
                     no_proxy: true,
@@ -188,7 +188,7 @@ pub fn shown(
 
 /// The `(user, assistant)` texts of a transcript, in order.
 pub fn texts(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<(bool, String)> {
-    use staffy_chat_view::Body;
+    use hutan_chat_view::Body;
     model.read_with(cx, |m, _| {
         m.transcript()
             .entries()
@@ -204,7 +204,7 @@ pub fn texts(model: &Entity<ChatModel>, cx: &VisualTestContext) -> Vec<(bool, St
 
 /// Waits until the transcript has a finished assistant message with `text`.
 pub fn wait_answer(model: &Entity<ChatModel>, cx: &mut VisualTestContext, text: &str) {
-    use staffy_chat_view::Body;
+    use hutan_chat_view::Body;
     wait_until(cx, &format!("the answer `{text}`"), |cx| {
         model.read_with(cx, |m, _| {
             m.transcript()

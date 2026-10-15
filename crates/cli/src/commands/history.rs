@@ -1,15 +1,15 @@
-//! `staffy search` and `staffy index …`: the session history index (roadmap M17).
+//! `hutan search` and `hutan index …`: the session history index (roadmap M17).
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
-use staffy_client::Client;
-use staffy_protocol::history::{
+use hutan_client::Client;
+use hutan_protocol::history::{
     HistoryHit, HistoryHits, HistorySearch, HistorySetEnabled, HistorySource, HistoryStatusInfo,
 };
-use staffy_protocol::messages::{Empty, Request};
+use hutan_protocol::messages::{Empty, Request};
+use serde_json::Value;
 
 use super::Ctx;
 use crate::args::{IndexCommand, NewArgs, SearchArgs, SourceArg};
@@ -21,8 +21,8 @@ impl Ctx {
         let client = self.connect().await?;
         if !client.supports_history() {
             return Err(CliError::Failed(
-                "this staffyd does not offer history search (protocol 0.8); \
-                 restart it with `staffy daemon restart`"
+                "this hutand does not offer history search (protocol 0.8); \
+                 restart it with `hutan daemon restart`"
                     .to_owned(),
             ));
         }
@@ -74,7 +74,7 @@ impl Ctx {
             Some(dir) if dir.is_dir() => Some(dir),
             Some(dir) => {
                 eprintln!(
-                    "staffy: {} no longer exists; resuming in the current directory",
+                    "hutan: {} no longer exists; resuming in the current directory",
                     dir.display()
                 );
                 None
@@ -111,8 +111,8 @@ impl Ctx {
                 let (client, _) = self.ensure_daemon().await?;
                 if !client.supports_history() {
                     return Err(CliError::Failed(
-                        "this staffyd does not offer history search (protocol 0.8); \
-                         restart it with `staffy daemon restart`"
+                        "this hutand does not offer history search (protocol 0.8); \
+                         restart it with `hutan daemon restart`"
                             .to_owned(),
                     ));
                 }
@@ -137,7 +137,7 @@ impl Ctx {
                     .call(&client, Request::HistoryRebuild(Empty {}))
                     .await?;
                 self.print(&serde_json::json!({"rebuilding": true}), || {
-                    "rebuilding the history index in the background; `staffy index status` shows progress"
+                    "rebuilding the history index in the background; `hutan index status` shows progress"
                         .to_owned()
                 })
             }
@@ -147,7 +147,7 @@ impl Ctx {
 
 fn source_of(source: SourceArg) -> HistorySource {
     match source {
-        SourceArg::Staffy => HistorySource::Staffy,
+        SourceArg::Hutan => HistorySource::Hutan,
         SourceArg::Claude => HistorySource::Claude,
         SourceArg::Codex => HistorySource::Codex,
         SourceArg::Omp => HistorySource::Omp,
@@ -232,7 +232,7 @@ fn status_text(info: &HistoryStatusInfo) -> String {
     let mut out = if info.enabled {
         "history index: enabled".to_owned()
     } else {
-        "history index: disabled (turn it on with `staffy index enable`)".to_owned()
+        "history index: disabled (turn it on with `hutan index enable`)".to_owned()
     };
     for source in &info.sources {
         let last = source
@@ -260,7 +260,7 @@ fn status_text(info: &HistoryStatusInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use staffy_protocol::history::HistoryRole;
+    use hutan_protocol::history::HistoryRole;
 
     fn hit() -> HistoryHit {
         HistoryHit {

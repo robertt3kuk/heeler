@@ -10,17 +10,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
-use staffy_client::{Connection, ConnectionState, Notice, StoreState};
-use staffy_core::agent::ModelInfo;
-use staffy_core::{AgentObservation, ApprovalId, Epoch, SessionId, TerminalId, WorkspaceId};
-use staffy_protocol::chat::{ApprovalInfo, ChatCreate};
-use staffy_protocol::messages::{
+use hutan_client::{Connection, ConnectionState, Notice, StoreState};
+use hutan_core::agent::ModelInfo;
+use hutan_core::{AgentObservation, ApprovalId, Epoch, SessionId, TerminalId, WorkspaceId};
+use hutan_protocol::chat::{ApprovalInfo, ChatCreate};
+use hutan_protocol::messages::{
     RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
     SessionResult, SessionSpec, TerminalSpec, WorkspaceInfo, WorkspaceKind, WorkspaceMove,
     WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
     WorkspaceRoot,
 };
-use staffy_terminal_view::DefaultColors;
+use hutan_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::agents::{self, AgentAttentionChanged, AgentBadge};
@@ -175,7 +175,7 @@ impl SessionsStore {
         let connected = latest.connection == ConnectionState::Connected;
         if connected && !was_connected {
             self.connected_since = Some(Instant::now());
-            staffy_terminal_view::trace::startup("connected");
+            hutan_terminal_view::trace::startup("connected");
         } else if !connected {
             // Notices that arrive while (re)connecting replay what happened meanwhile.
             self.connected_since = None;
@@ -305,7 +305,7 @@ impl SessionsStore {
                     });
                 }
             }
-            // Intents are for notifiers (M6-B) and `staffy notify watch`; the desktop shows
+            // Intents are for notifiers (M6-B) and `hutan notify watch`; the desktop shows
             // approvals and agent state from its own state.
             Notice::SessionExited { .. }
             | Notice::Bell { .. }

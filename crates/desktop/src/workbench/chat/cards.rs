@@ -13,14 +13,14 @@ use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use staffy_chat_view::diff::{self, DiffLine, FileDiff, LineKind, MAX_LINES};
-use staffy_chat_view::markdown::{self, Block as MdBlock};
-use staffy_chat_view::{
+use hutan_chat_view::diff::{self, DiffLine, FileDiff, LineKind, MAX_LINES};
+use hutan_chat_view::markdown::{self, Block as MdBlock};
+use hutan_chat_view::{
     Approval, ApprovalState, Body, Entry, Footer, Message, Plan, Reasoning, Tool, Transcript,
     TurnOutcome, TurnUsage,
 };
-use staffy_core::ApprovalId;
-use staffy_core::agent::{
+use hutan_core::ApprovalId;
+use hutan_core::agent::{
     FileChangeKind, NoticeLevel, PermissionKind, PermissionOptionKind, PlanStepStatus, ToolKind,
     ToolStatus,
 };
@@ -981,7 +981,7 @@ fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
                     .px(px(tokens.spacing * 2.0))
                     .text_color(theme.muted)
                     .child(SharedString::from(format!(
-                        "… {hidden} more lines (the whole diff is in `staffy chat log`)"
+                        "… {hidden} more lines (the whole diff is in `hutan chat log`)"
                     ))),
             )
         })

@@ -3,10 +3,10 @@
 //! ```text
 //! sources   one row per transcript file: path, size, mtime, offset, tail hash, format version,
 //!           adapter state, counters
-//! sessions  one row per indexed session (a transcript file, or a Staffy session)
+//! sessions  one row per indexed session (a transcript file, or a Hutan session)
 //! entries   one row per indexed chunk: role, timestamp, optional external key
 //! fts       FTS5 (body, idents), rowid = entries.id
-//! meta      small facts (last Staffy write)
+//! meta      small facts (last Hutan write)
 //! ```
 //!
 //! The database is a derived cache: a schema version other than [`SCHEMA_VERSION`] drops it and
@@ -50,7 +50,7 @@ CREATE TABLE sessions (
     title TEXT,
     cwd TEXT
 );
-CREATE UNIQUE INDEX sessions_staffy_key ON sessions(source, key) WHERE source_id IS NULL;
+CREATE UNIQUE INDEX sessions_hutan_key ON sessions(source, key) WHERE source_id IS NULL;
 CREATE TABLE entries (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -301,7 +301,7 @@ pub fn delete_file_rows(conn: &Connection, source_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Removes everything that came from transcript files (what `rebuild` re-creates); Staffy rows
+/// Removes everything that came from transcript files (what `rebuild` re-creates); Hutan rows
 /// stay, they cannot be derived again.
 pub fn delete_external(conn: &Connection) -> Result<()> {
     let context = "clearing the transcript rows";
@@ -323,7 +323,7 @@ pub fn delete_external(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The session of `(source, key)` for a file (`source_id` given) or for Staffy (none); created
+/// The session of `(source, key)` for a file (`source_id` given) or for Hutan (none); created
 /// when missing. A given `title`/`cwd` replaces the stored one.
 pub fn ensure_session(
     conn: &Connection,
@@ -483,14 +483,14 @@ pub fn source_status(conn: &Connection, sources: &[Source]) -> Result<Vec<Source
             ),
         );
     }
-    let staffy_last = get_meta(conn, "staffy_last_indexed_ms")?.and_then(|v| v.parse::<u64>().ok());
+    let hutan_last = get_meta(conn, "hutan_last_indexed_ms")?.and_then(|v| v.parse::<u64>().ok());
     Ok(sources
         .iter()
         .map(|&source| {
             let (file_count, errors, last) =
                 files.get(source.as_str()).copied().unwrap_or_default();
-            let last_indexed_ms = if source == Source::Staffy {
-                staffy_last
+            let last_indexed_ms = if source == Source::Hutan {
+                hutan_last
             } else {
                 (last > 0).then_some(last)
             };

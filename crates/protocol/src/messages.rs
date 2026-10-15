@@ -3,14 +3,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use staffy_core::agent::PermissionOutcome;
-use staffy_core::{
+use hutan_core::agent::PermissionOutcome;
+use hutan_core::{
     AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, Seq, SessionId, SessionKind,
     SessionState, TerminalId, WorkspaceId,
 };
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
 use crate::assistant::{AssistantListRequest, AssistantOpen};
@@ -407,7 +407,7 @@ pub struct TerminalSpec {
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    /// Extra environment for this process only; daemon-managed `STAFFY_*` vars win.
+    /// Extra environment for this process only; daemon-managed `HUTAN_*` vars win.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600">
+<rect width="1200" height="600" fill="#0E0E10"/>
+<g transform="translate(70 80) scale(0.859375)">
+<g fill="none" stroke="#F3EADF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M150 90 C100 90 104 150 104 200 C104 236 86 256 56 256 C86 256 104 276 104 312 C104 362 100 422 150 422"/>
+  <path d="M362 90 C412 90 408 150 408 200 C408 236 426 256 456 256 C426 256 408 276 408 312 C408 362 412 422 362 422"/>
+</g>
+<g fill="none" stroke="#E8641C" stroke-width="12" stroke-linecap="round">
+  <path d="M226 92 Q220 62 202 48 M256 88 Q258 58 250 38 M286 92 Q296 62 314 52"/>
+  <path d="M182 196 Q214 176 244 194 M268 194 Q298 176 330 196"/>
+</g>
+<circle cx="212" cy="236" r="20" fill="#E8641C"/><circle cx="300" cy="236" r="20" fill="#E8641C"/>
+<circle cx="242" cy="306" r="8" fill="#F3EADF"/><circle cx="270" cy="306" r="8" fill="#F3EADF"/>
+<path d="M200 362 Q252 392 316 352" fill="none" stroke="#F3EADF" stroke-width="14" stroke-linecap="round"/></g>
+<text x="580" y="330" font-family="'SF Mono', Menlo, Monaco, monospace" font-weight="700" font-size="128" letter-spacing="-4" fill="#F3EADF">hutan</text>
+<text x="586" y="392" font-family="'SF Mono', Menlo, Monaco, monospace" font-size="28" fill="#8C857C"><tspan fill="#E8641C">{</tspan> ape-grade code editor <tspan fill="#E8641C">}</tspan></text>
+
+</svg>

@@ -1,22 +1,22 @@
 //! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
 //! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`, `chat`,
 //! `agents`.
-//! `appearance` lives in `staffy-settings`.
+//! `appearance` lives in `hutan-settings`.
 //!
 //! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
 //! rounding noise (`1.2`, not `1.2000000476837158`).
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-pub use staffy_settings::AppearanceSettings;
-use staffy_settings::themes::{self, SystemAppearance};
-use staffy_settings::{Setting, SettingsStore};
-use staffy_terminal_view::{
+pub use hutan_settings::AppearanceSettings;
+use hutan_settings::themes::{self, SystemAppearance};
+use hutan_settings::{Setting, SettingsStore};
+use hutan_terminal_view::{
     BlockSettings, CursorSettings, CursorStyle, OptionAsMeta, Rgb, TerminalPalette,
     TerminalViewSettings,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::workbench::StatusBarLayout;
 use crate::workbench::model::{CenterLayout, Dock, Docks, LayoutPreset, PanelId};
@@ -71,7 +71,7 @@ pub struct TerminalSettings {
     pub font_size: f64,
     /// Line height as a multiple of the font size.
     pub line_height: f64,
-    /// `auto` (follows the system appearance), `staffy-dark`, `staffy-light`.
+    /// `auto` (follows the system appearance), `hutan-dark`, `hutan-light`.
     pub theme: String,
     pub cursor: CursorConfig,
     pub option_as_meta: OptionAsMetaSetting,
@@ -479,7 +479,7 @@ pub struct WorkspacesSettings {
     pub hide_empty: bool,
     /// Hide workspaces without a live session.
     pub hide_sleeping: bool,
-    /// Hide workspaces the `staffy` CLI (or an agent) created.
+    /// Hide workspaces the `hutan` CLI (or an agent) created.
     pub hide_cli_created: bool,
     /// Keep the workspace you are in visible whatever the filters say.
     pub always_show_active: bool,
@@ -565,7 +565,7 @@ pub enum HistoryScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HistorySettings {
-    /// Sources the panel searches by default: any of `staffy`, `claude`, `codex`, `omp`; empty
+    /// Sources the panel searches by default: any of `hutan`, `claude`, `codex`, `omp`; empty
     /// means all of them.
     pub sources: Vec<String>,
     /// Roles the panel searches by default: any of `user`, `assistant`, `tool`, `command`,
@@ -666,9 +666,9 @@ pub enum OnQuit {
     /// Ask: keep the sessions running or stop them with the daemon.
     #[default]
     Ask,
-    /// Quit and leave `staffyd` running with its sessions.
+    /// Quit and leave `hutand` running with its sessions.
     KeepRunning,
-    /// Stop the sessions and `staffyd`, then quit.
+    /// Stop the sessions and `hutand`, then quit.
     StopDaemon,
 }
 
@@ -793,7 +793,7 @@ mod tests {
         assert_eq!(light.palette.background, Rgb(0xff, 0xff, 0xff));
         assert_eq!(dark.font_size, 72.0);
         let pinned = TerminalSettings {
-            theme: "staffy-light".into(),
+            theme: "hutan-light".into(),
             ..TerminalSettings::default()
         };
         assert_eq!(
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn defaults_round_trip_through_the_store() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SettingsStore::new(staffy_settings::SettingsPaths::in_dir(dir.path()));
+        let store = SettingsStore::new(hutan_settings::SettingsPaths::in_dir(dir.path()));
         register_all(&store);
         assert!(store.errors().is_empty(), "{:?}", store.errors());
         assert_eq!(

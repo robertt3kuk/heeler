@@ -1,4 +1,4 @@
-# M1-A: `staffyd` lifecycle, connection layer, `client` crate (roadmap M1.1 + M1.2)
+# M1-A: `hutand` lifecycle, connection layer, `client` crate (roadmap M1.1 + M1.2)
 
 Agent: implementer   Depends on: M0 (commit 6c99867)   Branch: slice/M1-A
 
@@ -6,12 +6,12 @@ Agent: implementer   Depends on: M0 (commit 6c99867)   Branch: slice/M1-A
 Read `AGENTS.md`, then `docs/architecture.md` (§ Daemon internals, § Paths, § Security), `docs/protocol.md`, ADR 0001, ADR 0002, ADR 0009. Reuse `crates/core` and `crates/protocol` as they are: `FrameCodec`, `Frame`, `ControlMessage`, `Request::decode`, `Event`, `messages::*`, `PROTOCOL_VERSION`.
 
 ## Scope
-Create `crates/daemon` (package `staffy-daemon`, binary `staffyd`, plus a lib target for tests) and `crates/client` (package `staffy-client`). Add needed deps to root `[workspace.dependencies]` (tokio with `rt-multi-thread, net, io-util, sync, time, macros, signal, process`, tokio-util, futures, tracing, tracing-subscriber, anyhow in binaries only, `nix` or `libc` for `getpeereid`/flock). Do **not** edit `crates/protocol` or `crates/core`; if a protocol change seems necessary, stop and describe it in the report.
+Create `crates/daemon` (package `hutan-daemon`, binary `hutand`, plus a lib target for tests) and `crates/client` (package `hutan-client`). Add needed deps to root `[workspace.dependencies]` (tokio with `rt-multi-thread, net, io-util, sync, time, macros, signal, process`, tokio-util, futures, tracing, tracing-subscriber, anyhow in binaries only, `nix` or `libc` for `getpeereid`/flock). Do **not** edit `crates/protocol` or `crates/core`; if a protocol change seems necessary, stop and describe it in the report.
 
 ## Contract
 
 ### Paths (`daemon::paths`)
-`STAFFY_HOME` overrides the base dir; default `~/Library/Application Support/Staffy/`. Base dir created `0700`. Socket `staffyd.sock` (`0600`), lock `staffyd.lock` (exclusive `flock`, second daemon exits with a clear error and code 2), logs `~/Library/Logs/Staffy/staffyd.log` or `$STAFFY_HOME/logs/` when overridden. `STAFFY_SOCKET` overrides only the socket path. Stale socket file from a dead daemon is removed after the lock is acquired.
+`HUTAN_HOME` overrides the base dir; default `~/Library/Application Support/Hutan/`. Base dir created `0700`. Socket `hutand.sock` (`0600`), lock `hutand.lock` (exclusive `flock`, second daemon exits with a clear error and code 2), logs `~/Library/Logs/Hutan/hutand.log` or `$HUTAN_HOME/logs/` when overridden. `HUTAN_SOCKET` overrides only the socket path. Stale socket file from a dead daemon is removed after the lock is acquired.
 
 ### Daemon behavior
 - Accepts UDS connections; rejects peers whose UID ≠ daemon UID (`getpeereid`), closing the socket.
@@ -23,12 +23,12 @@ Create `crates/daemon` (package `staffy-daemon`, binary `staffyd`, plus a lib ta
 - Binary frames from clients (kind 1/2) are accepted and ignored with a debug log in this slice.
 - Structure for later slices: a `Router` that dispatches typed `Request`s to services, a `SessionRegistry` actor stub that M1.5 will extend (keep the actor/channel shape from architecture.md; no unbounded channels).
 
-### `staffy-client`
+### `hutan-client`
 ```rust
-pub struct ConnectOptions { pub socket: Option<PathBuf>, pub autostart: Option<PathBuf /* staffyd path */>, pub client: ClientInfo }
+pub struct ConnectOptions { pub socket: Option<PathBuf>, pub autostart: Option<PathBuf /* hutand path */>, pub client: ClientInfo }
 pub struct Client { /* cloneable handle */ }
 impl Client {
-    pub async fn connect(opts: ConnectOptions) -> Result<Self, ClientError>; // spawns staffyd detached if socket absent and autostart is set, waits ≤ 3 s
+    pub async fn connect(opts: ConnectOptions) -> Result<Self, ClientError>; // spawns hutand detached if socket absent and autostart is set, waits ≤ 3 s
     pub async fn call<T: DeserializeOwned>(&self, req: Request) -> Result<T, ClientError>; // maps error responses to ClientError::Remote(ErrorBody)
     pub fn events(&self) -> tokio::sync::broadcast::Receiver<(Seq, Event)>;
     pub fn terminal_frames(&self, id: TerminalId) -> tokio::sync::mpsc::Receiver<TerminalRender>; // bounded; used from M1.4
@@ -39,16 +39,16 @@ impl Client {
 Request ids are per-connection counters; responses are matched by id; a dropped connection fails all pending calls with `ClientError::Disconnected`. Reconnect is **not** in this slice (M2.2), but keep `last_seq` tracked for it.
 
 ## Acceptance
-- Integration tests in `crates/daemon/tests/` that start the daemon in-process (lib API) on a temp `STAFFY_HOME` and talk to it with `staffy-client`:
+- Integration tests in `crates/daemon/tests/` that start the daemon in-process (lib API) on a temp `HUTAN_HOME` and talk to it with `hutan-client`:
   1. handshake + `daemon.status` returns this epoch/pid;
   2. incompatible major → `unsupported_version`;
   3. workspace create/rename/close emits events in seq order to a subscriber;
   4. reconnect with `resume` in the same epoch replays exactly the missed events; with an unknown epoch → `snapshot_required`;
   5. a client that never reads is disconnected after its queue fills while another client keeps receiving events;
-  6. second daemon on the same `STAFFY_HOME` fails to start;
+  6. second daemon on the same `HUTAN_HOME` fails to start;
   7. `daemon.shutdown` removes the socket.
 - `just check` green. No `unwrap/expect` outside tests.
-- Manual: `STAFFY_HOME=/tmp/hh cargo run -p staffy-daemon --bin staffyd` starts and logs the socket path.
+- Manual: `HUTAN_HOME=/tmp/hh cargo run -p hutan-daemon --bin hutand` starts and logs the socket path.
 
 ## Out of scope
 Sessions, PTYs, terminals (M1-B), CLI (M1-C), persistence (M3), reconnect logic in client (M2.2), launchd.

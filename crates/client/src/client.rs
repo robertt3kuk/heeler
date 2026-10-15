@@ -7,35 +7,35 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-use staffy_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
-use staffy_protocol::assistant::{
+use hutan_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId};
+use hutan_protocol::assistant::{
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
 };
-use staffy_protocol::blocks::{
+use hutan_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
-use staffy_protocol::chat::{
+use hutan_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, HISTORY_MAX_LIMIT,
 };
-use staffy_protocol::messages::{
+use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, ClientInfo, Empty, Event, Hello,
     Request, ResumePoint, SessionInfo, SessionRef, SessionResult, Welcome, decode_result,
 };
-use staffy_protocol::notify::{
+use hutan_protocol::notify::{
     ClientFocus, NotificationIntent, NotifyAck, NotifyAct, NotifyActed, NotifyList,
 };
-use staffy_protocol::provider::{
+use hutan_protocol::provider::{
     ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
-use staffy_protocol::render::TerminalRender;
-use staffy_protocol::tree::{AgentTree, AgentTreeRequest};
-use staffy_protocol::{
+use hutan_protocol::render::TerminalRender;
+use hutan_protocol::tree::{AgentTree, AgentTreeRequest};
+use hutan_protocol::{
     ControlMessage, ErrorBody, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION,
 };
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -79,7 +79,7 @@ const CAPABILITIES: &[&str] = &[
     NOTIFY_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Generous on purpose: the first launch of a freshly built or updated `staffyd` can take
+/// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
 /// several seconds on macOS while the system scans the new binary (observed 3–11 s), and a
 /// timeout here leaves a daemon that comes up anyway behind an error. A warm start takes
 /// well under a second, so the wait only costs time when the daemon really is slow or broken.
@@ -98,9 +98,9 @@ const MAX_INPUT_CHUNK: usize = MAX_PAYLOAD - 8;
 
 #[derive(Debug, Clone)]
 pub struct ConnectOptions {
-    /// Socket to dial; default per `STAFFY_SOCKET` / `STAFFY_HOME` / the standard location.
+    /// Socket to dial; default per `HUTAN_SOCKET` / `HUTAN_HOME` / the standard location.
     pub socket: Option<PathBuf>,
-    /// `staffyd` binary to spawn (detached) when nothing accepts connections on the socket.
+    /// `hutand` binary to spawn (detached) when nothing accepts connections on the socket.
     pub autostart: Option<PathBuf>,
     pub client: ClientInfo,
 }
@@ -142,7 +142,7 @@ struct Pending {
 
 impl Client {
     /// Connects and handshakes. If the socket is absent (or stale) and `opts.autostart` is set,
-    /// spawns `staffyd` and waits up to 3 s for it.
+    /// spawns `hutand` and waits up to 3 s for it.
     pub async fn connect(opts: ConnectOptions) -> Result<Self, ClientError> {
         Ok(Self::connect_resuming(opts, None).await?.client)
     }
@@ -195,7 +195,7 @@ impl Client {
 
         let replayed = resume
             .filter(|r| r.epoch == welcome.epoch)
-            .filter(|_| welcome.resume == staffy_protocol::messages::ResumeOutcome::Replayed);
+            .filter(|_| welcome.resume == hutan_protocol::messages::ResumeOutcome::Replayed);
         let (events_tx, events_rx) = broadcast::channel(EVENT_BUFFER);
         let shared = Arc::new(Shared {
             pending: Mutex::new(Pending::default()),
@@ -298,7 +298,7 @@ impl Client {
     pub async fn agent_tree(
         &self,
         session_id: Option<SessionId>,
-    ) -> Result<Vec<staffy_core::AgentObservation>, ClientError> {
+    ) -> Result<Vec<hutan_core::AgentObservation>, ClientError> {
         let tree: AgentTree = self
             .call(Request::AgentTree(AgentTreeRequest { session_id }))
             .await?;
@@ -852,7 +852,7 @@ impl AutostartThrottle {
     }
 }
 
-/// Dials `socket`. When it is unreachable and `autostart` is set, spawns `staffyd` if `permit`
+/// Dials `socket`. When it is unreachable and `autostart` is set, spawns `hutand` if `permit`
 /// agrees and waits up to [`AUTOSTART_WAIT`] for it; otherwise returns the dial error.
 async fn dial(
     socket: &Path,
@@ -885,7 +885,7 @@ async fn dial(
     Ok(connected?)
 }
 
-/// Starts `staffyd` in its own process group with no stdio, so it outlives this process and
+/// Starts `hutand` in its own process group with no stdio, so it outlives this process and
 /// terminal signals.
 fn spawn_daemon(binary: &Path, socket: Option<&Path>) -> Result<(), ClientError> {
     let mut command = tokio::process::Command::new(binary);
@@ -896,7 +896,7 @@ fn spawn_daemon(binary: &Path, socket: Option<&Path>) -> Result<(), ClientError>
         .process_group(0)
         .kill_on_drop(false);
     if let Some(socket) = socket {
-        command.env("STAFFY_SOCKET", socket);
+        command.env("HUTAN_SOCKET", socket);
     }
     // The child is intentionally not awaited; tokio reaps it in the background if it exits.
     drop(command.spawn()?);

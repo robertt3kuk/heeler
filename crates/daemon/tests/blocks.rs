@@ -1,4 +1,4 @@
-//! Terminal blocks end to end (protocol 0.5): a real daemon on a temporary `STAFFY_HOME`, real
+//! Terminal blocks end to end (protocol 0.5): a real daemon on a temporary `HUTAN_HOME`, real
 //! zsh, bash 3.2 (`/bin/bash` on macOS) and fish sessions with automatic shell integration,
 //! driven over the daemon's socket. Shells that are not installed are skipped with a message.
 
@@ -12,14 +12,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use staffy_client::{BlockList, Client};
-use staffy_core::TerminalId;
-use staffy_protocol::ErrorCode;
-use staffy_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
-use staffy_protocol::messages::{Event, TerminalSpec};
+use hutan_client::{BlockList, Client};
+use hutan_core::TerminalId;
+use hutan_protocol::ErrorCode;
+use hutan_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
+use hutan_protocol::messages::{Event, TerminalSpec};
 use tokio::time::sleep;
 
-const PROMPT: &str = "STAFFY-TEST-PROMPT>";
+const PROMPT: &str = "HUTAN-TEST-PROMPT>";
 
 fn have(path: &str) -> bool {
     Path::new(path).exists()

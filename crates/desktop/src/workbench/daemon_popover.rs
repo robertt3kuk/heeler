@@ -70,7 +70,7 @@ impl Workbench {
             fields.push((
                 "Daemon",
                 format!(
-                    "staffyd {} · protocol {}.{}",
+                    "hutand {} · protocol {}.{}",
                     info.daemon_version, info.protocol.major, info.protocol.minor
                 ),
             ));

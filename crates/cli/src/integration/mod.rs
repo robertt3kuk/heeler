@@ -1,9 +1,9 @@
-//! `staffy integration install | uninstall | status <codex|claude|omp>`: hooks and extensions
+//! `hutan integration install | uninstall | status <codex|claude|omp>`: hooks and extensions
 //! that make the coding agents report to the session they run in (`docs/integrations.md`).
 //!
-//! An install touches only what is Staffy's: its own script or extension file, and (Codex,
+//! An install touches only what is Hutan's: its own script or extension file, and (Codex,
 //! Claude Code) its own marked hook entries inside the agent's configuration. That file is
-//! copied to `<name>.staffy-<unix ms>.bak` before it changes, entries of other tools stay
+//! copied to `<name>.hutan-<unix ms>.bak` before it changes, entries of other tools stay
 //! as they are, and an uninstall removes exactly what the install added.
 
 use std::fs;
@@ -20,14 +20,14 @@ use crate::error::CliError;
 mod hooks_json;
 
 /// The script both hook-based integrations run (`integrations/hooks/`).
-const HOOK_SCRIPT: &str = include_str!("../../../../integrations/hooks/staffy-agent-state.sh");
+const HOOK_SCRIPT: &str = include_str!("../../../../integrations/hooks/hutan-agent-state.sh");
 /// The OMP extension (`integrations/omp/`).
-const OMP_EXTENSION: &str = include_str!("../../../../integrations/omp/staffy-agent-state.ts");
-/// Present in everything Staffy writes as a whole file; files without it are never overwritten.
-const FILE_MARKER: &str = "staffy-managed";
+const OMP_EXTENSION: &str = include_str!("../../../../integrations/omp/hutan-agent-state.ts");
+/// Present in everything Hutan writes as a whole file; files without it are never overwritten.
+const FILE_MARKER: &str = "hutan-managed";
 
-const SCRIPT_NAME: &str = "staffy-agent-state.sh";
-const EXTENSION_NAME: &str = "staffy-agent-state.ts";
+const SCRIPT_NAME: &str = "hutan-agent-state.sh";
+const EXTENSION_NAME: &str = "hutan-agent-state.ts";
 
 /// Events Codex reports through (its permission prompts are `PermissionRequest`).
 const CODEX_EVENTS: &[&str] = &[
@@ -170,7 +170,7 @@ pub fn status(target: IntegrationTarget, dir: &Path) -> Result<Report, CliError>
 struct Layout {
     /// The agent's hooks file (Codex, Claude Code); `None` for OMP, which only loads a file.
     config: Option<PathBuf>,
-    /// The script or extension Staffy owns.
+    /// The script or extension Hutan owns.
     script: PathBuf,
     script_text: &'static str,
     events: &'static [&'static str],
@@ -228,7 +228,7 @@ fn finish_status(layout: &Layout, report: &mut Report) -> Result<(), CliError> {
             missing.push(format!("{} is outdated", layout.script.display()));
         }
         Some(_) => missing.push(format!(
-            "{} exists but is not Staffy's",
+            "{} exists but is not Hutan's",
             layout.script.display()
         )),
         None => missing.push(format!("{} is missing", layout.script.display())),
@@ -295,7 +295,7 @@ fn parse_json(path: &Path, text: &str) -> Result<Value, CliError> {
     })
 }
 
-/// Writes a whole file Staffy owns (script, extension). Refuses to replace one that is not.
+/// Writes a whole file Hutan owns (script, extension). Refuses to replace one that is not.
 fn write_managed(path: &Path, text: &str, mode: u32, report: &mut Report) -> Result<(), CliError> {
     if let Some(existing) = read_optional(path)? {
         if existing == text {
@@ -303,7 +303,7 @@ fn write_managed(path: &Path, text: &str, mode: u32, report: &mut Report) -> Res
         }
         if !is_managed(&existing) {
             return Err(CliError::Failed(format!(
-                "{} exists and was not written by Staffy; move it away first",
+                "{} exists and was not written by Hutan; move it away first",
                 path.display()
             )));
         }
@@ -437,7 +437,7 @@ fn detect_indent(text: &str) -> Option<String> {
     any.then(|| "  ".to_owned())
 }
 
-/// Copies `path` to a fresh `<name>.staffy-<unix ms>.bak` next to it.
+/// Copies `path` to a fresh `<name>.hutan-<unix ms>.bak` next to it.
 fn backup(path: &Path, contents: &str) -> Result<PathBuf, CliError> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -452,7 +452,7 @@ fn backup(path: &Path, contents: &str) -> Result<PathBuf, CliError> {
         } else {
             format!("-{attempt}")
         };
-        let candidate = path.with_file_name(format!("{file_name}.staffy-{stamp}{suffix}.bak"));
+        let candidate = path.with_file_name(format!("{file_name}.hutan-{stamp}{suffix}.bak"));
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -487,7 +487,7 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), CliE
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = dir.join(format!(".{file_name}.staffy-tmp-{}", std::process::id()));
+    let tmp = dir.join(format!(".{file_name}.hutan-tmp-{}", std::process::id()));
     let result = (|| {
         let mut file = fs::File::create(&tmp)?;
         file.write_all(bytes)?;

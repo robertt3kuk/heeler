@@ -2,7 +2,7 @@
 //! watcher that tells it which files changed, and the cloneable [`IndexHandle`] for everything
 //! else.
 //!
-//! Nothing runs on a timer. The worker sleeps in `recv` until a file event, a Staffy record, or
+//! Nothing runs on a timer. The worker sleeps in `recv` until a file event, a Hutan record, or
 //! a command arrives; at startup it does one `stat` pass over the source roots and reads only
 //! the files whose stamp changed.
 
@@ -27,7 +27,7 @@ use crate::store;
 use crate::sys;
 use crate::text::{chunks, idents};
 use crate::types::{
-    Hit, Role, SearchQuery, SessionText, SessionTextQuery, Source, StaffyRecord, Status,
+    Hit, HutanRecord, Role, SearchQuery, SessionText, SessionTextQuery, Source, Status,
 };
 
 /// Quiet time after the last file event before the changed files are read.
@@ -46,13 +46,13 @@ pub struct IndexConfig {
     pub range_days: u32,
     /// Transcript sources to read, with their roots. A source that is not listed is never read.
     pub roots: Vec<(Source, PathBuf)>,
-    /// Accept Staffy records ([`IndexHandle::push_staffy`]).
-    pub staffy: bool,
+    /// Accept Hutan records ([`IndexHandle::push_hutan`]).
+    pub hutan: bool,
 }
 
 enum Msg {
     Fs(Vec<PathBuf>),
-    Staffy(Box<StaffyRecord>),
+    Hutan(Box<HutanRecord>),
     Flush(SyncSender<()>),
     Clear(SyncSender<Result<()>>),
     Rebuild,
@@ -65,7 +65,7 @@ struct Shared {
     tx: SyncSender<Msg>,
     /// Events were dropped because the queue was full: the worker repeats the stat pass.
     overflow: AtomicBool,
-    /// Staffy records dropped because the queue was full.
+    /// Hutan records dropped because the queue was full.
     dropped: AtomicU64,
     metrics: Arc<Metrics>,
     sources: Vec<Source>,
@@ -99,10 +99,10 @@ impl IndexHandle {
         })
     }
 
-    /// Queues one Staffy record. `false` when the queue is full (the record is dropped and
+    /// Queues one Hutan record. `false` when the queue is full (the record is dropped and
     /// counted) or the indexer has stopped.
-    pub fn push_staffy(&self, record: StaffyRecord) -> bool {
-        match self.shared.tx.try_send(Msg::Staffy(Box::new(record))) {
+    pub fn push_hutan(&self, record: HutanRecord) -> bool {
+        match self.shared.tx.try_send(Msg::Hutan(Box::new(record))) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
@@ -112,7 +112,7 @@ impl IndexHandle {
         }
     }
 
-    /// Staffy records dropped so far because the worker could not keep up.
+    /// Hutan records dropped so far because the worker could not keep up.
     pub fn dropped(&self) -> u64 {
         self.shared.dropped.load(Ordering::Relaxed)
     }
@@ -140,7 +140,7 @@ impl IndexHandle {
     }
 
     /// Forgets everything read from transcript files and reads all of them again, in the
-    /// background. Staffy rows are kept.
+    /// background. Hutan rows are kept.
     pub fn rebuild(&self) -> Result<()> {
         self.shared
             .tx
@@ -182,8 +182,8 @@ impl Indexer {
             })
             .collect();
         let mut sources: Vec<Source> = config.roots.iter().map(|(source, _)| *source).collect();
-        if config.staffy {
-            sources.push(Source::Staffy);
+        if config.hutan {
+            sources.push(Source::Hutan);
         }
         sources.sort();
         sources.dedup();
@@ -204,14 +204,14 @@ impl Indexer {
             db_path: config.db_path,
             range_days: config.range_days,
             roots,
-            staffy: config.staffy,
+            hutan: config.hutan,
             shared: Arc::clone(&shared),
             pending: BTreeSet::new(),
             first_pending: None,
             last_event: None,
         };
         let thread = std::thread::Builder::new()
-            .name("staffy-index".to_owned())
+            .name("hutan-index".to_owned())
             .spawn(move || worker.run(&rx))
             .map_err(IndexError::io("starting the history indexer"))?;
         Ok(Self {
@@ -291,7 +291,7 @@ struct Worker {
     db_path: PathBuf,
     range_days: u32,
     roots: Vec<Root>,
-    staffy: bool,
+    hutan: bool,
     shared: Arc<Shared>,
     pending: BTreeSet<PathBuf>,
     first_pending: Option<Instant>,
@@ -324,7 +324,7 @@ impl Worker {
                     self.last_event = Some(now);
                     self.pending.extend(paths);
                 }
-                Msg::Staffy(record) => self.index_staffy(&record),
+                Msg::Hutan(record) => self.index_hutan(&record),
                 Msg::Flush(reply) => {
                     self.read_pending();
                     let _ = reply.send(());
@@ -487,8 +487,8 @@ impl Worker {
         }
     }
 
-    fn index_staffy(&mut self, record: &StaffyRecord) {
-        if !self.staffy {
+    fn index_hutan(&mut self, record: &HutanRecord) {
+        if !self.hutan {
             return;
         }
         let cutoff = self.cutoff_ms();
@@ -499,10 +499,10 @@ impl Worker {
             let conn = self.conn()?;
             let tx = conn
                 .transaction()
-                .map_err(IndexError::sqlite("starting a Staffy write"))?;
+                .map_err(IndexError::sqlite("starting a Hutan write"))?;
             let session = store::ensure_session(
                 &tx,
-                Source::Staffy,
+                Source::Hutan,
                 &record.session_key,
                 None,
                 record.title.as_deref(),
@@ -532,12 +532,12 @@ impl Worker {
                     &idents,
                 )?;
             }
-            store::set_meta(&tx, "staffy_last_indexed_ms", &now_ms().to_string())?;
+            store::set_meta(&tx, "hutan_last_indexed_ms", &now_ms().to_string())?;
             tx.commit()
-                .map_err(IndexError::sqlite("committing a Staffy write"))
+                .map_err(IndexError::sqlite("committing a Hutan write"))
         })();
         if let Err(error) = result {
-            warn!(%error, "indexing a Staffy record failed");
+            warn!(%error, "indexing a Hutan record failed");
         }
     }
 

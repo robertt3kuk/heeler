@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use hutan_core::{ApprovalId, ModelInfo, TurnId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use staffy_core::{ApprovalId, ModelInfo, TurnId};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -151,8 +151,8 @@ async fn call<P: Serialize, R: DeserializeOwned>(
 async fn handshake(transport: &Transport) -> Result<String, AgentError> {
     let init = wire::InitializeParams {
         client_info: wire::ClientInfo {
-            name: "staffy",
-            title: "Staffy",
+            name: "hutan",
+            title: "Hutan",
             version: env!("CARGO_PKG_VERSION"),
         },
         capabilities: wire::InitializeCapabilities {
@@ -353,7 +353,7 @@ async fn pump(
     exit: oneshot::Receiver<ExitInfo>,
     events: mpsc::Sender<AdapterMessage>,
 ) {
-    let send = |drafts: Vec<staffy_core::AgentEventDraft>| {
+    let send = |drafts: Vec<hutan_core::AgentEventDraft>| {
         let events = events.clone();
         async move {
             for draft in drafts {
@@ -535,17 +535,17 @@ mod tests {
     #[test]
     fn versions_inside_the_range_pass() {
         assert_eq!(
-            check_version("staffy/0.162.1 (Mac OS 26.6; arm64) x").unwrap(),
+            check_version("hutan/0.162.1 (Mac OS 26.6; arm64) x").unwrap(),
             "0.162.1"
         );
-        assert!(check_version("staffy/0.160.0").is_ok());
-        assert!(check_version("staffy/0.169.9-alpha.2 (Linux)").is_ok());
+        assert!(check_version("hutan/0.160.0").is_ok());
+        assert!(check_version("hutan/0.169.9-alpha.2 (Linux)").is_ok());
     }
 
     #[test]
     fn versions_outside_the_range_name_both_versions() {
         for found in ["0.144.2", "0.159.9", "0.170.0", "1.0.0"] {
-            let error = check_version(&format!("staffy/{found} (Mac OS)")).unwrap_err();
+            let error = check_version(&format!("hutan/{found} (Mac OS)")).unwrap_err();
             let text = error.to_string();
             assert!(
                 text.contains(found) && text.contains(">=0.160, <0.170"),
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn unreadable_versions_are_refused() {
-        for agent in ["", "codex", "staffy/abc", "staffy/0 (x)"] {
+        for agent in ["", "codex", "hutan/abc", "hutan/0 (x)"] {
             assert!(
                 matches!(check_version(agent), Err(AgentError::UnknownVersion(_))),
                 "{agent}"

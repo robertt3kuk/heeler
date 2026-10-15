@@ -6,16 +6,16 @@ Agent: implementer   Depends on: master (M1 + debt)   Branch: slice/M2-A
 Read `AGENTS.md`, ADR 0002 (handshake, resume, epoch/seq, snapshot rule: subscribe first, snapshot, apply events with `seq > snapshot.seq`), ADR 0009, `docs/protocol.md` (all semantics sections), `crates/client/src/*` (existing single-connection `Client`: `connect`, `connect_resuming`, `call`, `events`, `terminal_frames`, `send_input`, `epoch`, `last_seq`), `crates/daemon/tests/common/mod.rs` (test helpers you can copy patterns from).
 
 ## Scope
-`crates/client` only (new modules + tests; `staffy-daemon` already usable as a dev-dependency). Do not edit `core`, `protocol`, `daemon`, `cli`. Keep `Client` working for the CLI.
+`crates/client` only (new modules + tests; `hutan-daemon` already usable as a dev-dependency). Do not edit `core`, `protocol`, `daemon`, `cli`. Keep `Client` working for the CLI.
 
 ## Contract
-GPUI drives its own executor, not Tokio. `Connection` must therefore own a Tokio runtime (dedicated threads, named `staffy-client*`) and every public method must be callable / awaitable from **any** executor or plain thread.
+GPUI drives its own executor, not Tokio. `Connection` must therefore own a Tokio runtime (dedicated threads, named `hutan-client*`) and every public method must be callable / awaitable from **any** executor or plain thread.
 
 ```rust
 pub struct Connection { /* Clone, Send + Sync */ }
 
 impl Connection {
-    /// Returns immediately; connects (autostarting staffyd per opts) and keeps reconnecting
+    /// Returns immediately; connects (autostarting hutand per opts) and keeps reconnecting
     /// with exponential backoff (100 ms doubling to 5 s, ±20 % jitter) until dropped.
     pub fn start(opts: ConnectOptions) -> Connection;
     pub fn state(&self) -> tokio::sync::watch::Receiver<Arc<StoreState>>;   // latest full state, coalesced
@@ -65,10 +65,10 @@ Tests over a real in-process daemon. Put a tiny UDS proxy between client and dae
 1. `start` from a plain `std::thread` (no Tokio) and from `futures::executor::block_on`: state reaches `Connected`, `call(daemon.status)` works.
 2. Sever via proxy → `Reconnecting` → `Connected`; events published while disconnected (create a workspace through a second client) appear in `state()` via replay; no duplicates.
 3. Same as 2 but the ring has evicted the missed events (small ring in daemon config) → snapshot path; state equals a fresh snapshot.
-4. Restart the daemon on the same `STAFFY_HOME` → `DaemonRestarted`, state reset to the new daemon's view, terminal handles get `Gone(EpochChanged)`.
+4. Restart the daemon on the same `HUTAN_HOME` → `DaemonRestarted`, state reset to the new daemon's view, terminal handles get `Gone(EpochChanged)`.
 5. Terminal handle survives a sever: after reconnect a new snapshot arrives; `input` then reaches the PTY (verify through `terminal.history` or the next render).
 6. Session restart → `Gone(SessionRestarted { new_terminal })`.
-7. `shutdown` joins all threads (no leaked `staffy-client*` threads; check by name).
+7. `shutdown` joins all threads (no leaked `hutan-client*` threads; check by name).
 `just check` green.
 
 ## Out of scope

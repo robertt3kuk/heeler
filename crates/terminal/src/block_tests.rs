@@ -5,8 +5,8 @@
 
 use std::path::PathBuf;
 
-use staffy_protocol::blocks::{Block, BlockPart, BlockState};
-use staffy_protocol::messages::TerminalSize;
+use hutan_protocol::blocks::{Block, BlockPart, BlockState};
+use hutan_protocol::messages::TerminalSize;
 
 use crate::blocks::{BlockTextError, MAX_BLOCKS};
 use crate::emulator::Emulator;

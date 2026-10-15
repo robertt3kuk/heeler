@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600">
+<rect width="1200" height="600" fill="#FFFFFF"/>
+<g transform="translate(70 80) scale(0.859375)">
+<defs>
+  <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFB547"/><stop offset="1" stop-color="#FF4D2E"/></linearGradient>
+  <linearGradient id="g2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF8A3D"/><stop offset="1" stop-color="#E0306B"/></linearGradient>
+  <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF6A2B"/><stop offset="1" stop-color="#8E2DE2"/></linearGradient>
+</defs>
+<g style="mix-blend-mode:multiply" opacity=".92">
+  <circle cx="186" cy="200" r="120" fill="url(#g1)"/>
+  <circle cx="326" cy="200" r="120" fill="url(#g2)"/>
+  <circle cx="256" cy="338" r="150" fill="url(#g3)"/>
+</g>
+<circle cx="196" cy="212" r="20" fill="#FFF"/><circle cx="316" cy="212" r="20" fill="#FFF"/>
+<circle cx="200" cy="216" r="10" fill="#120B14"/><circle cx="312" cy="216" r="10" fill="#120B14"/>
+<path d="M214 392 Q258 414 304 386" fill="none" stroke="#FFF" stroke-width="12" stroke-linecap="round"/></g>
+<text x="580" y="330" font-family="'Avenir Next', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="600" font-size="140" letter-spacing="-5" fill="#120B14">Hutan</text>
+<text x="588" y="390" font-family="'Avenir Next', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="500" font-size="30" fill="#7B6F85">Build wild. Ship calm.</text>
+
+</svg>

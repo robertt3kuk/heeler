@@ -1,5 +1,5 @@
-//! Notification intents (protocol 0.13) end to end: a real daemon on a temporary `STAFFY_HOME`,
-//! real client connections to its socket, real PTY sessions, and `staffy-codex-fixture replay`
+//! Notification intents (protocol 0.13) end to end: a real daemon on a temporary `HUTAN_HOME`,
+//! real client connections to its socket, real PTY sessions, and `hutan-codex-fixture replay`
 //! standing in for `codex app-server`. Every trigger, the gate (dedup, rate limit, settings,
 //! expiry), focus suppression and the routing of `notify.act` are exercised over the wire.
 
@@ -11,21 +11,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{TestDaemon, WAIT, create, remote_code, sh, stop, wait_event};
-use staffy_agents::CodexConfig;
-use staffy_client::Client;
-use staffy_core::Seq;
-use staffy_core::agent::PermissionOutcome;
-use staffy_core::{AgentEventKind, ApprovalPolicy, NodeKind, NodeOutcome, SandboxMode, SessionId};
-use staffy_protocol::ErrorCode;
-use staffy_protocol::chat::{ApprovalRespond, ChatCreate};
-use staffy_protocol::messages::{
+use hutan_agents::CodexConfig;
+use hutan_client::Client;
+use hutan_core::Seq;
+use hutan_core::agent::PermissionOutcome;
+use hutan_core::{AgentEventKind, ApprovalPolicy, NodeKind, NodeOutcome, SandboxMode, SessionId};
+use hutan_protocol::ErrorCode;
+use hutan_protocol::chat::{ApprovalRespond, ChatCreate};
+use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, ClientKind, Empty, Event,
     Request, SessionInfo, SessionResult,
 };
-use staffy_protocol::notify::{
+use hutan_protocol::notify::{
     ACTION_OPEN, ActRoute, BODY_MAX_CHARS, IntentKind, NotificationIntent,
 };
-use staffy_protocol::tree::NodeReport;
+use hutan_protocol::tree::NodeReport;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
 
@@ -41,10 +41,10 @@ fn fixture_bin() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .unwrap()
-        .join("staffy-codex-fixture");
+        .join("hutan-codex-fixture");
     assert!(
         bin.is_file(),
-        "staffy-codex-fixture not built: run `cargo build -p staffy-agents --bins` (or `just test`)"
+        "hutan-codex-fixture not built: run `cargo build -p hutan-agents --bins` (or `just test`)"
     );
     bin
 }
@@ -221,7 +221,7 @@ async fn release(client: &Client, session: SessionId, seq: u64, outcome: Option<
     assert!(applied.applied, "release ignored");
 }
 
-fn idle_session() -> staffy_protocol::messages::TerminalSpec {
+fn idle_session() -> hutan_protocol::messages::TerminalSpec {
     sh("exec sleep 600")
 }
 
@@ -460,7 +460,7 @@ async fn a_finished_chat_turn_raises_an_intent_unless_a_client_has_the_session_f
 
 impl Env {
     async fn daemon_clients(&self) -> u32 {
-        let status: staffy_protocol::messages::DaemonStatusInfo = self
+        let status: hutan_protocol::messages::DaemonStatusInfo = self
             .client
             .call(Request::DaemonStatus(Empty {}))
             .await
@@ -690,9 +690,9 @@ async fn a_disabled_notify_section_raises_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_notify_settings_refuse_to_start_the_daemon() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = staffy_daemon::Paths::in_home(dir.path());
+    let paths = hutan_daemon::Paths::in_home(dir.path());
     std::fs::write(&paths.config_file, "[notify]\nkinds = [\"gossip\"]\n").unwrap();
-    let error = staffy_daemon::start(staffy_daemon::DaemonConfig::new(paths))
+    let error = hutan_daemon::start(hutan_daemon::DaemonConfig::new(paths))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("gossip"), "{error}");
@@ -708,7 +708,7 @@ async fn acting_open_tells_the_desktops_to_show_the_session() {
     let desktop = Client::connect(options).await.unwrap();
     let mut desktop_events = desktop.events();
     desktop
-        .call::<staffy_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
+        .call::<hutan_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
         .await
         .unwrap();
 
@@ -789,13 +789,11 @@ async fn a_credential_cut_short_by_the_tree_never_reaches_an_intent() {
     )
     .await;
     let kept = {
-        let tree: staffy_protocol::tree::AgentTree = t
+        let tree: hutan_protocol::tree::AgentTree = t
             .client
-            .call(Request::AgentTree(
-                staffy_protocol::tree::AgentTreeRequest {
-                    session_id: Some(session.id),
-                },
-            ))
+            .call(Request::AgentTree(hutan_protocol::tree::AgentTreeRequest {
+                session_id: Some(session.id),
+            }))
             .await
             .unwrap();
         tree.observations[0]

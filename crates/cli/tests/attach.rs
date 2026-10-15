@@ -1,4 +1,4 @@
-//! `staffy attach` (and `new --attach`) driven through a real pseudo-terminal: the test plays
+//! `hutan attach` (and `new --attach`) driven through a real pseudo-terminal: the test plays
 //! the host terminal, a `vt100` parser shows what the user would see, and a real daemon runs
 //! the sessions.
 
@@ -11,18 +11,18 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{STAFFY, TestDaemon, WAIT};
-use parking_lot::Mutex;
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use staffy_client::{Client, ConnectOptions};
-use staffy_protocol::messages::{
+use common::{HUTAN, TestDaemon, WAIT};
+use hutan_client::{Client, ConnectOptions};
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, Empty, Event, Request, SessionRef, SessionResult, Subscribed,
 };
+use parking_lot::Mutex;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::time::sleep;
 
 const CTRL_BACKSLASH: u8 = 0x1c;
 
-/// `staffy` running on a pseudo-terminal, with the screen it draws kept by a vt100 parser.
+/// `hutan` running on a pseudo-terminal, with the screen it draws kept by a vt100 parser.
 struct Host {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -42,12 +42,12 @@ impl Host {
                 pixel_height: 0,
             })
             .unwrap();
-        let mut cmd = CommandBuilder::new(STAFFY);
+        let mut cmd = CommandBuilder::new(HUTAN);
         cmd.arg("--socket");
         cmd.arg(socket);
         cmd.args(args);
-        cmd.env_remove("STAFFY_HOME");
-        cmd.env_remove("STAFFY_SOCKET");
+        cmd.env_remove("HUTAN_HOME");
+        cmd.env_remove("HUTAN_SOCKET");
         cmd.env("TERM", "xterm-256color");
         let child = pty.slave.spawn_command(cmd).unwrap();
         drop(pty.slave);
@@ -138,7 +138,7 @@ impl Host {
             }
             assert!(
                 start.elapsed() < WAIT,
-                "staffy did not exit; screen:\n{}",
+                "hutan did not exit; screen:\n{}",
                 self.screen()
             );
             sleep(Duration::from_millis(20)).await;
@@ -303,7 +303,7 @@ async fn attach_leaves_when_the_session_is_stopped_from_elsewhere() {
     let id = t.new_session(&[], &["cat"]).await;
     let mut host = Host::spawn(&t.paths.socket, &["attach", &id]);
     sleep(Duration::from_millis(300)).await;
-    t.staffy(&["stop", &id]).await.ok();
+    t.hutan(&["stop", &id]).await.ok();
     assert_eq!(host.wait_exit().await, 0);
     host.wait_for_text("[session stopped]").await;
     t.stop().await;
@@ -320,8 +320,8 @@ async fn attaching_to_an_ended_session_shows_the_final_screen() {
     assert_eq!(host.wait_exit().await, 0);
     assert!(!host.in_alternate_screen());
     host.wait_for_text("[session exited with code 3]").await;
-    host.wait_for_text("staffy restart").await;
-    host.wait_for_text("staffy history").await;
+    host.wait_for_text("hutan restart").await;
+    host.wait_for_text("hutan history").await;
     // The alternate screen was entered and left: the final output must have been drawn on it,
     // so it is in the byte stream even though the main screen no longer shows it.
     assert!(
@@ -461,14 +461,14 @@ async fn attach_follows_a_restart_to_the_new_terminal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn losing_the_daemon_ends_attach_with_exit_3() {
-    let bin_dir = common::staffyd_dir();
+    let bin_dir = common::hutand_dir();
     let home = tempfile::tempdir().unwrap();
-    let socket = home.path().join("staffyd.sock");
+    let socket = home.path().join("hutand.sock");
     let run = |args: &[&str]| {
-        let mut cmd = std::process::Command::new(bin_dir.join("staffy"));
+        let mut cmd = std::process::Command::new(bin_dir.join("hutan"));
         cmd.args(args)
-            .env("STAFFY_HOME", home.path())
-            .env_remove("STAFFY_SOCKET");
+            .env("HUTAN_HOME", home.path())
+            .env_remove("HUTAN_SOCKET");
         cmd.output().unwrap()
     };
     let started = run(&["daemon", "start", "--json"]);
@@ -493,5 +493,5 @@ async fn losing_the_daemon_ends_attach_with_exit_3() {
 
     assert_eq!(host.wait_exit().await, 3);
     assert!(!host.in_alternate_screen());
-    host.wait_for_text("lost the connection to staffyd").await;
+    host.wait_for_text("lost the connection to hutand").await;
 }

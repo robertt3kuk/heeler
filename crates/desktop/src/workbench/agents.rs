@@ -14,12 +14,12 @@ use gpui::{
     IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled,
     Window, div, prelude::*, px,
 };
-use staffy_core::agent::ModelInfo;
-use staffy_core::{ApprovalId, SessionId, WorkspaceId};
-use staffy_protocol::assistant::AGENT_ASSISTANT;
-use staffy_protocol::blocks::BlockPart;
-use staffy_protocol::chat::ChatCreate;
-use staffy_protocol::messages::SessionInfo;
+use hutan_core::agent::ModelInfo;
+use hutan_core::{ApprovalId, SessionId, WorkspaceId};
+use hutan_protocol::assistant::AGENT_ASSISTANT;
+use hutan_protocol::blocks::BlockPart;
+use hutan_protocol::chat::ChatCreate;
+use hutan_protocol::messages::SessionInfo;
 
 use super::actions::palette;
 use super::chat::{ButtonKind, ChatModel, ChatView, Chip, ContextChip, Look, button, cut_to};
@@ -255,7 +255,7 @@ impl Workbench {
             let store = self.sessions.read(cx);
             let workspace = self.target_workspace(store);
             (
-                store.connection_state() == staffy_client::ConnectionState::Connected,
+                store.connection_state() == hutan_client::ConnectionState::Connected,
                 store.connection().supports_chat(),
                 workspace.map(|w| w.id),
                 workspace
@@ -264,12 +264,12 @@ impl Workbench {
             )
         };
         if !connected {
-            self.set_notice("Not connected to staffyd", cx);
+            self.set_notice("Not connected to hutand", cx);
             return;
         }
         if !supported {
             self.set_notice(
-                "This staffyd does not run agent chats; restart it (Daemon → Restart)",
+                "This hutand does not run agent chats; restart it (Daemon → Restart)",
                 cx,
             );
             return;

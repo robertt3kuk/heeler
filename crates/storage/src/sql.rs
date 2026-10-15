@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
+use hutan_core::{SessionId, SessionKind, SessionState, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use staffy_core::{SessionId, SessionKind, SessionState, WorkspaceId};
 
 use crate::error::{Result, StorageError};
 use crate::rows::{

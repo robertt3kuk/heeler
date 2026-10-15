@@ -1,4 +1,4 @@
-//! Harness for the desktop's GPUI tests: an in-process daemon on a temporary `STAFFY_HOME`
+//! Harness for the desktop's GPUI tests: an in-process daemon on a temporary `HUTAN_HOME`
 //! (driven from its own Tokio runtime, since GPUI has no reactor), a real `Connection`, and
 //! helpers to pump GPUI while real I/O happens on other threads.
 
@@ -15,16 +15,16 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use serde::de::DeserializeOwned;
-use staffy_client::{Client, ConnectOptions, Connection};
-use staffy_core::{SessionId, WorkspaceId};
-use staffy_daemon::{DaemonConfig, Paths, RunningDaemon};
-use staffy_desktop::workbench::{Workbench, WorkbenchOptions};
-use staffy_protocol::messages::{
+use hutan_client::{Client, ConnectOptions, Connection};
+use hutan_core::{SessionId, WorkspaceId};
+use hutan_daemon::{DaemonConfig, Paths, RunningDaemon};
+use hutan_desktop::workbench::{Workbench, WorkbenchOptions};
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, Request, SessionCreate, SessionInfo, SessionResult, SessionSpec,
     TerminalSpec, WorkspaceCreate, WorkspaceInfo,
 };
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_settings::{SettingsPaths, SettingsStore};
+use serde::de::DeserializeOwned;
 use tempfile::TempDir;
 
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -107,7 +107,7 @@ impl Drop for Proxy {
     }
 }
 
-/// A daemon in this process on a fresh `STAFFY_HOME`.
+/// A daemon in this process on a fresh `HUTAN_HOME`.
 pub struct TestDaemon {
     pub dir: TempDir,
     pub paths: Paths,
@@ -127,31 +127,31 @@ impl TestDaemon {
     }
 
     /// A daemon whose `codex app-server` is `codex` (a replay of a recorded transcript).
-    pub fn start_with_codex(codex: staffy_agents::CodexConfig) -> Self {
+    pub fn start_with_codex(codex: hutan_agents::CodexConfig) -> Self {
         Self::start_inner(None, Some(codex))
     }
 
-    pub fn start_with_gateway(gateway: staffy_daemon::GatewayConfig) -> Self {
+    pub fn start_with_gateway(gateway: hutan_daemon::GatewayConfig) -> Self {
         Self::start_configured(None, None, gateway)
     }
 
-    pub fn http_mock(&self) -> staffy_gateway::testing::MockServer {
+    pub fn http_mock(&self) -> hutan_gateway::testing::MockServer {
         self.rt()
-            .block_on(staffy_gateway::testing::MockServer::start())
+            .block_on(hutan_gateway::testing::MockServer::start())
     }
 
     fn start_with(daemon_toml: Option<&str>) -> Self {
         Self::start_inner(daemon_toml, None)
     }
 
-    fn start_inner(daemon_toml: Option<&str>, codex: Option<staffy_agents::CodexConfig>) -> Self {
-        Self::start_configured(daemon_toml, codex, staffy_daemon::GatewayConfig::default())
+    fn start_inner(daemon_toml: Option<&str>, codex: Option<hutan_agents::CodexConfig>) -> Self {
+        Self::start_configured(daemon_toml, codex, hutan_daemon::GatewayConfig::default())
     }
 
     fn start_configured(
         daemon_toml: Option<&str>,
-        codex: Option<staffy_agents::CodexConfig>,
-        gateway: staffy_daemon::GatewayConfig,
+        codex: Option<hutan_agents::CodexConfig>,
+        gateway: hutan_daemon::GatewayConfig,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
@@ -167,7 +167,7 @@ impl TestDaemon {
         let mut config = DaemonConfig::new(paths.clone());
         config.codex = codex;
         config.gateway = gateway;
-        let daemon = runtime.block_on(staffy_daemon::start(config)).unwrap();
+        let daemon = runtime.block_on(hutan_daemon::start(config)).unwrap();
         Self {
             dir,
             paths,
@@ -244,7 +244,7 @@ impl TestDaemon {
     }
 
     /// Types `bytes` into `terminal` from a connection of its own (no desktop involved).
-    pub fn send_input(&self, terminal: staffy_core::TerminalId, bytes: &[u8]) {
+    pub fn send_input(&self, terminal: hutan_core::TerminalId, bytes: &[u8]) {
         let options = self.options();
         self.rt().block_on(async move {
             let client = Client::connect(options).await.unwrap();
@@ -258,9 +258,9 @@ impl TestDaemon {
     }
 
     /// The daemon's blocks of `terminal`, oldest first.
-    pub fn blocks(&self, terminal: staffy_core::TerminalId) -> Vec<staffy_protocol::blocks::Block> {
-        let result: staffy_protocol::blocks::TerminalBlocksResult = self.call(
-            Request::TerminalBlocks(staffy_protocol::blocks::TerminalBlocks {
+    pub fn blocks(&self, terminal: hutan_core::TerminalId) -> Vec<hutan_protocol::blocks::Block> {
+        let result: hutan_protocol::blocks::TerminalBlocksResult = self.call(
+            Request::TerminalBlocks(hutan_protocol::blocks::TerminalBlocks {
                 terminal_id: terminal,
                 before_id: None,
                 limit: 500,
@@ -272,12 +272,12 @@ impl TestDaemon {
     }
 
     /// What `terminal.block_text` answers for a block's output.
-    pub fn block_output(&self, terminal: staffy_core::TerminalId, block_id: u64) -> String {
-        let result: staffy_protocol::blocks::TerminalBlockTextResult = self.call(
-            Request::TerminalBlockText(staffy_protocol::blocks::TerminalBlockText {
+    pub fn block_output(&self, terminal: hutan_core::TerminalId, block_id: u64) -> String {
+        let result: hutan_protocol::blocks::TerminalBlockTextResult = self.call(
+            Request::TerminalBlockText(hutan_protocol::blocks::TerminalBlockText {
                 terminal_id: terminal,
                 block_id,
-                part: staffy_protocol::blocks::BlockPart::Output,
+                part: hutan_protocol::blocks::BlockPart::Output,
                 max_bytes: 1 << 20,
             }),
         );
@@ -303,7 +303,7 @@ impl TestDaemon {
     }
 
     pub fn session(&self, id: SessionId) -> SessionInfo {
-        let list: staffy_protocol::messages::SessionList =
+        let list: hutan_protocol::messages::SessionList =
             self.call(Request::SessionList(Default::default()));
         list.sessions.into_iter().find(|s| s.id == id).unwrap()
     }
@@ -323,7 +323,7 @@ impl TestDaemon {
         let paths = self.paths.clone();
         self.daemon = Some(
             self.rt()
-                .block_on(staffy_daemon::start(DaemonConfig::new(paths)))
+                .block_on(hutan_daemon::start(DaemonConfig::new(paths)))
                 .unwrap(),
         );
     }
@@ -404,16 +404,16 @@ pub fn wait_until(
 }
 
 /// Text of the terminal view's screen, rows joined by newlines.
-pub fn screen_text(model: &staffy_terminal_view::model::TerminalModel) -> String {
+pub fn screen_text(model: &hutan_terminal_view::model::TerminalModel) -> String {
     model
         .viewport()
         .iter()
-        .map(staffy_terminal_view::model::TerminalModel::row_text)
+        .map(hutan_terminal_view::model::TerminalModel::row_text)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// A real `staffyd` process on its own temporary home, started by the connection's autostart
+/// A real `hutand` process on its own temporary home, started by the connection's autostart
 /// (and again by `Connection::set_autostart`). Stopped through the protocol on drop.
 pub struct ProcessDaemon {
     pub dir: TempDir,
@@ -426,21 +426,21 @@ impl ProcessDaemon {
         use std::os::unix::fs::PermissionsExt;
         let exe = std::env::current_exe().unwrap();
         let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
-        let staffyd = profile_dir.join("staffyd");
+        let hutand = profile_dir.join("hutand");
         assert!(
-            staffyd.is_file(),
-            "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
+            hutand.is_file(),
+            "hutand not built: run `cargo build -p hutan-daemon --bin hutand` (or `just test`)"
         );
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         // `ConnectOptions` cannot carry environment, so a wrapper pins the daemon to the home.
-        let wrapper = dir.path().join("staffyd-wrapper.sh");
+        let wrapper = dir.path().join("hutand-wrapper.sh");
         std::fs::write(
             &wrapper,
             format!(
-                "#!/bin/sh\nexport STAFFY_HOME='{}'\nexec '{}'\n",
+                "#!/bin/sh\nexport HUTAN_HOME='{}'\nexec '{}'\n",
                 home.display(),
-                staffyd.display()
+                hutand.display()
             ),
         )
         .unwrap();
@@ -462,7 +462,7 @@ impl ProcessDaemon {
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.home().join("staffyd.sock")
+        self.home().join("hutand.sock")
     }
 
     pub fn options(&self) -> ConnectOptions {
@@ -505,7 +505,7 @@ impl Drop for ProcessDaemon {
             if let Ok(client) = Client::connect(options).await {
                 let _ = client
                     .call::<serde_json::Value>(Request::DaemonShutdown(
-                        staffy_protocol::messages::DaemonShutdown {
+                        hutan_protocol::messages::DaemonShutdown {
                             stop_sessions: true,
                             forget: false,
                         },

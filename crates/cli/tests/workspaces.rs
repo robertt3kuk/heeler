@@ -1,4 +1,4 @@
-//! `staffy ws open|ls|move|pin|unpin|recent|use` and `STAFFY_WORKSPACE` for `staffy new` (roadmap
+//! `hutan ws open|ls|move|pin|unpin|recent|use` and `HUTAN_WORKSPACE` for `hutan new` (roadmap
 //! M12-A), through the real binary against a real in-process daemon. Every folder is a
 //! temporary directory.
 
@@ -30,17 +30,17 @@ fn s(path: &Path) -> &str {
 }
 
 async fn ws_new(t: &TestDaemon, name: &str) -> String {
-    t.staffy(&["ws", "new", name, "--json"]).await.ok().json()["id"]
+    t.hutan(&["ws", "new", name, "--json"]).await.ok().json()["id"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
-/// Names of `staffy ws ls --json <args>`, in listing order.
+/// Names of `hutan ws ls --json <args>`, in listing order.
 async fn listed(t: &TestDaemon, args: &[&str]) -> Vec<String> {
     let mut full = vec!["ws", "ls", "--json"];
     full.extend_from_slice(args);
-    let out = t.staffy(&full).await.ok().json();
+    let out = t.hutan(&full).await.ok().json();
     out["workspaces"]
         .as_array()
         .unwrap()
@@ -57,7 +57,7 @@ async fn ws_open_creates_a_workspace_once_and_finds_it_again() {
     let inner = mkdir(&project.join("src/deep"));
 
     let created = t
-        .staffy(&["ws", "open", s(&project), "--json"])
+        .hutan(&["ws", "open", s(&project), "--json"])
         .await
         .ok()
         .json();
@@ -70,10 +70,10 @@ async fn ws_open_creates_a_workspace_once_and_finds_it_again() {
     let id = ws["id"].as_str().unwrap().to_owned();
 
     // The human form says what happened.
-    let human = t.staffy(&["ws", "open", s(&inner)]).await.ok();
+    let human = t.hutan(&["ws", "open", s(&inner)]).await.ok();
     assert_eq!(human.stdout.trim(), format!("opened {id} (plain)"));
     let again = t
-        .staffy(&["ws", "open", s(&inner), "--json"])
+        .hutan(&["ws", "open", s(&inner), "--json"])
         .await
         .ok()
         .json();
@@ -86,7 +86,7 @@ async fn ws_open_creates_a_workspace_once_and_finds_it_again() {
     mkdir(&repo.join(".git"));
     mkdir(&repo.join("crates/x"));
     let mut command = command(
-        Path::new(STAFFY),
+        Path::new(HUTAN),
         Some(&t.paths.socket),
         &["ws", "open", "crates/x", "--json"],
     );
@@ -97,10 +97,10 @@ async fn ws_open_creates_a_workspace_once_and_finds_it_again() {
     assert_eq!(out["workspace"]["name"], "clone");
 
     // Failures.
-    let out = t.staffy(&["ws", "open", s(&base.join("missing"))]).await;
+    let out = t.hutan(&["ws", "open", s(&base.join("missing"))]).await;
     assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stderr.starts_with("staffy: not_found:"), "{out:?}");
-    assert_eq!(t.staffy(&["ws", "open"]).await.code, 2);
+    assert!(out.stderr.starts_with("hutan: not_found:"), "{out:?}");
+    assert_eq!(t.hutan(&["ws", "open"]).await.code, 2);
     t.stop().await;
 }
 
@@ -111,7 +111,7 @@ async fn ws_ls_hides_empty_workspaces_unless_pinned_or_home() {
     let _empty = ws_new(&t, "empty").await;
     let pinned = ws_new(&t, "pinned").await;
     t.new_session(&["--ws", &busy], &["cat"]).await;
-    t.staffy(&["ws", "pin", &pinned]).await.ok();
+    t.hutan(&["ws", "pin", &pinned]).await.ok();
 
     // Pinned first, then the manual order; Home is never hidden.
     assert_eq!(listed(&t, &[]).await, ["pinned", "Home", "busy"]);
@@ -121,7 +121,7 @@ async fn ws_ls_hides_empty_workspaces_unless_pinned_or_home() {
     );
 
     // The human table has the same rows; counts show live/total sessions.
-    let human = t.staffy(&["ws", "ls"]).await.ok().stdout;
+    let human = t.hutan(&["ws", "ls"]).await.ok().stdout;
     let lines: Vec<_> = human.lines().collect();
     assert_eq!(lines.len(), 4, "{human}");
     assert!(
@@ -196,7 +196,7 @@ async fn ws_ls_sorts_by_manual_order_recent_activity_attention_and_name() {
         })
         .to_string()
     };
-    t.staffy(&["api", "agent.report", &report("blocked", 1)])
+    t.hutan(&["api", "agent.report", &report("blocked", 1)])
         .await
         .ok();
     assert_eq!(
@@ -204,7 +204,7 @@ async fn ws_ls_sorts_by_manual_order_recent_activity_attention_and_name() {
         ["zeta", "mid", "Alpha", "Home"]
     );
     // Not blocked any more: back to the recent order.
-    t.staffy(&["api", "agent.report", &report("working", 2)])
+    t.hutan(&["api", "agent.report", &report("working", 2)])
         .await
         .ok();
     assert_eq!(
@@ -213,12 +213,12 @@ async fn ws_ls_sorts_by_manual_order_recent_activity_attention_and_name() {
     );
 
     // Pinned workspaces come first in every mode.
-    t.staffy(&["ws", "pin", "Alpha"]).await.ok();
+    t.hutan(&["ws", "pin", "Alpha"]).await.ok();
     for mode in ["manual", "recent", "attention", "name"] {
         assert_eq!(listed(&t, &["--sort", mode]).await[0], "Alpha", "{mode}");
     }
 
-    let out = t.staffy(&["ws", "ls", "--sort", "sideways"]).await;
+    let out = t.hutan(&["ws", "ls", "--sort", "sideways"]).await;
     assert_eq!(out.code, 2, "{out:?}");
     t.stop().await;
 }
@@ -232,7 +232,7 @@ async fn ws_move_reorders_by_id_or_name() {
     assert_eq!(listed(&t, &["--all"]).await, ["Home", "a", "b", "c"]);
 
     let out = t
-        .staffy(&["ws", "move", "c", "--before", &a, "--json"])
+        .hutan(&["ws", "move", "c", "--before", &a, "--json"])
         .await
         .ok()
         .json();
@@ -249,29 +249,27 @@ async fn ws_move_reorders_by_id_or_name() {
     );
     assert_eq!(listed(&t, &["--all"]).await, ["Home", "c", "a", "b"]);
 
-    let human = t.staffy(&["ws", "move", "Home", "--last"]).await.ok();
+    let human = t.hutan(&["ws", "move", "Home", "--last"]).await.ok();
     assert!(human.stdout.contains("to the end"), "{human:?}");
     assert_eq!(listed(&t, &["--all"]).await, ["c", "a", "b", "Home"]);
-    let human = t.staffy(&["ws", "move", &a, "--before", "Home"]).await.ok();
+    let human = t.hutan(&["ws", "move", &a, "--before", "Home"]).await.ok();
     assert!(human.stdout.contains("before"), "{human:?}");
     assert_eq!(listed(&t, &["--all"]).await, ["c", "b", "a", "Home"]);
 
     // Exactly one of --before and --last.
-    assert_eq!(t.staffy(&["ws", "move", "a"]).await.code, 2);
+    assert_eq!(t.hutan(&["ws", "move", "a"]).await.code, 2);
     assert_eq!(
-        t.staffy(&["ws", "move", "a", "--last", "--before", "b"])
+        t.hutan(&["ws", "move", "a", "--last", "--before", "b"])
             .await
             .code,
         2
     );
     // Unknown targets fail without moving anything.
-    let out = t.staffy(&["ws", "move", "nope", "--last"]).await;
+    let out = t.hutan(&["ws", "move", "nope", "--last"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("no workspace matches"), "{out:?}");
     assert_eq!(
-        t.staffy(&["ws", "move", "a", "--before", "nope"])
-            .await
-            .code,
+        t.hutan(&["ws", "move", "a", "--before", "nope"]).await.code,
         1
     );
     assert_eq!(listed(&t, &["--all"]).await, ["c", "b", "a", "Home"]);
@@ -284,14 +282,10 @@ async fn ws_pin_and_unpin() {
     let id = ws_new(&t, "later").await;
     let _other = ws_new(&t, "other").await;
 
-    let pinned = t
-        .staffy(&["ws", "pin", "later", "--json"])
-        .await
-        .ok()
-        .json();
+    let pinned = t.hutan(&["ws", "pin", "later", "--json"]).await.ok().json();
     assert_eq!(pinned["pinned"], true);
     assert_eq!(pinned["id"], id);
-    let human = t.staffy(&["ws", "pin", &id]).await.ok();
+    let human = t.hutan(&["ws", "pin", &id]).await.ok();
     assert_eq!(
         human.stdout.trim(),
         format!("pinned {id} (later)"),
@@ -299,14 +293,14 @@ async fn ws_pin_and_unpin() {
     );
     assert_eq!(listed(&t, &["--all"]).await, ["later", "Home", "other"]);
 
-    let unpinned = t.staffy(&["ws", "unpin", &id, "--json"]).await.ok().json();
+    let unpinned = t.hutan(&["ws", "unpin", &id, "--json"]).await.ok().json();
     assert_eq!(unpinned["pinned"], false);
-    let human = t.staffy(&["ws", "unpin", "later"]).await.ok();
+    let human = t.hutan(&["ws", "unpin", "later"]).await.ok();
     assert!(human.stdout.starts_with("unpinned "), "{human:?}");
     assert_eq!(listed(&t, &["--all"]).await, ["Home", "later", "other"]);
 
-    assert_eq!(t.staffy(&["ws", "pin", "nope"]).await.code, 1);
-    assert_eq!(t.staffy(&["ws", "pin"]).await.code, 2);
+    assert_eq!(t.hutan(&["ws", "pin", "nope"]).await.code, 1);
+    assert_eq!(t.hutan(&["ws", "pin"]).await.code, 2);
     t.stop().await;
 }
 
@@ -317,7 +311,7 @@ async fn ws_recent_lists_open_and_closed_projects_newest_first() {
     let one = mkdir(&base.join("one"));
     let two = mkdir(&base.join("two"));
     let id_one = t
-        .staffy(&["ws", "open", s(&one), "--json"])
+        .hutan(&["ws", "open", s(&one), "--json"])
         .await
         .ok()
         .json()["workspace"]["id"]
@@ -325,10 +319,10 @@ async fn ws_recent_lists_open_and_closed_projects_newest_first() {
         .unwrap()
         .to_owned();
     sleep(Duration::from_millis(10)).await;
-    t.staffy(&["ws", "open", s(&two)]).await.ok();
-    t.staffy(&["ws", "close", &id_one]).await.ok();
+    t.hutan(&["ws", "open", s(&two)]).await.ok();
+    t.hutan(&["ws", "close", &id_one]).await.ok();
 
-    let out = t.staffy(&["ws", "recent", "--json"]).await.ok().json();
+    let out = t.hutan(&["ws", "recent", "--json"]).await.ok().json();
     let projects = out["projects"].as_array().unwrap();
     assert_eq!(projects.len(), 2, "{out}");
     assert_eq!(projects[0]["name"], "two");
@@ -337,7 +331,7 @@ async fn ws_recent_lists_open_and_closed_projects_newest_first() {
     assert_eq!(projects[1]["path"], s(&one));
     assert!(projects[1].get("workspace_id").is_none(), "closed");
 
-    let human = t.staffy(&["ws", "recent"]).await.ok().stdout;
+    let human = t.hutan(&["ws", "recent"]).await.ok().stdout;
     let lines: Vec<_> = human.lines().collect();
     assert_eq!(lines.len(), 3, "{human}");
     assert!(
@@ -354,18 +348,18 @@ async fn ws_recent_lists_open_and_closed_projects_newest_first() {
     );
 
     let out = t
-        .staffy(&["ws", "recent", "--limit", "1", "--json"])
+        .hutan(&["ws", "recent", "--limit", "1", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(out["projects"].as_array().unwrap().len(), 1);
-    assert_eq!(t.staffy(&["ws", "recent", "--limit", "0"]).await.code, 2);
+    assert_eq!(t.hutan(&["ws", "recent", "--limit", "0"]).await.code, 2);
 
     // Nothing remembered yet on another daemon.
     t.stop().await;
     let t = TestDaemon::start().await;
     assert_eq!(
-        t.staffy(&["ws", "recent"]).await.ok().stdout.trim(),
+        t.hutan(&["ws", "recent"]).await.ok().stdout.trim(),
         "no recent projects"
     );
     t.stop().await;
@@ -377,17 +371,17 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
     let work = ws_new(&t, "work").await;
     let other = ws_new(&t, "other").await;
 
-    let line = t.staffy(&["ws", "use", "work"]).await.ok().stdout;
-    assert_eq!(line.trim(), format!("export STAFFY_WORKSPACE={work}"));
+    let line = t.hutan(&["ws", "use", "work"]).await.ok().stdout;
+    assert_eq!(line.trim(), format!("export HUTAN_WORKSPACE={work}"));
     let json = t
-        .staffy(&["ws", "use", &other[..20], "--json"])
+        .hutan(&["ws", "use", &other[..20], "--json"])
         .await
         .ok()
         .json();
     assert_eq!(json["workspace_id"], other);
     assert_eq!(json["name"], "other");
-    assert_eq!(json["export"], format!("export STAFFY_WORKSPACE={other}"));
-    let out = t.staffy(&["ws", "use", "nope"]).await;
+    assert_eq!(json["export"], format!("export HUTAN_WORKSPACE={other}"));
+    let out = t.hutan(&["ws", "use", "nope"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stdout.is_empty(), "nothing to eval: {out:?}");
 
@@ -395,8 +389,8 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
         let mut args = vec!["new", "--json"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&["--", "cat"]);
-        let mut command = command(Path::new(STAFFY), Some(&t.paths.socket), &args);
-        command.env("STAFFY_WORKSPACE", value);
+        let mut command = command(Path::new(HUTAN), Some(&t.paths.socket), &args);
+        command.env("HUTAN_WORKSPACE", value);
         finish(command)
     };
     // The variable chooses the workspace (by id or name); `--ws` wins over it; without either
@@ -408,7 +402,7 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
     let out = with_env(&["--ws", "work"], "other").await.ok().json();
     assert_eq!(out["session"]["workspace_id"], work);
     let out = with_env(&[], "").await.ok().json();
-    let home = t.staffy(&["ws", "ls", "--json"]).await.ok().json()["workspaces"]
+    let home = t.hutan(&["ws", "ls", "--json"]).await.ok().json()["workspaces"]
         .as_array()
         .unwrap()
         .iter()
@@ -428,7 +422,7 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
         out.stderr.contains("no workspace matches `gone`"),
         "{out:?}"
     );
-    assert!(out.stderr.contains("$STAFFY_WORKSPACE"), "{out:?}");
+    assert!(out.stderr.contains("$HUTAN_WORKSPACE"), "{out:?}");
     assert_eq!(t.sessions().await.len(), before);
     t.stop().await;
 }
@@ -439,11 +433,7 @@ async fn ls_and_new_take_workspace_names() {
     let work = ws_new(&t, "work").await;
     let id = t.new_session(&["--ws", "work"], &["cat"]).await;
     t.new_session(&[], &["cat"]).await;
-    let out = t
-        .staffy(&["ls", "--ws", "work", "--json"])
-        .await
-        .ok()
-        .json();
+    let out = t.hutan(&["ls", "--ws", "work", "--json"]).await.ok().json();
     let sessions = out["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["id"], id);
@@ -454,14 +444,14 @@ async fn ls_and_new_take_workspace_names() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_close_keeps_home_and_the_rest_of_the_workspace_commands_work_together() {
     let t = TestDaemon::start().await;
-    let home = t.staffy(&["ws", "ls", "--json"]).await.ok().json()["workspaces"][0].clone();
+    let home = t.hutan(&["ws", "ls", "--json"]).await.ok().json()["workspaces"][0].clone();
     let out = t
-        .staffy(&["ws", "close", home["id"].as_str().unwrap()])
+        .hutan(&["ws", "close", home["id"].as_str().unwrap()])
         .await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("invalid_state"), "{out:?}");
     let renamed = t
-        .staffy(&[
+        .hutan(&[
             "ws",
             "rename",
             home["id"].as_str().unwrap(),
@@ -475,7 +465,7 @@ async fn ws_close_keeps_home_and_the_rest_of_the_workspace_commands_work_togethe
     assert_eq!(renamed["kind"], "home");
     assert_eq!(listed(&t, &[]).await, ["Notes"]);
     // And Home resolves by its new name.
-    let line = t.staffy(&["ws", "use", "notes"]).await.ok().stdout;
+    let line = t.hutan(&["ws", "use", "notes"]).await.ok().stdout;
     assert!(line.contains(home["id"].as_str().unwrap()), "{line}");
     let _: Value = home;
     t.stop().await;

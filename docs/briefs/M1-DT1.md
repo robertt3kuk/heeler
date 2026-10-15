@@ -10,7 +10,7 @@ Read `AGENTS.md`, `docs/status.md` § Tech debt, `docs/protocol.md` (terminal + 
 
 ## Changes
 
-1. **Exit signal as a number** (debt 2). `staffy_terminal::ExitStatus { code: Option<i32>, signal: Option<i32> }` — the raw signal number from the wait status (use `portable-pty`'s data or `libc` W* macros in `sys.rs`; keep `unsafe` confined there with `// SAFETY:`). Delete the daemon's `signal_number` name table and its tests; the daemon passes the number through. Test: `kill -TERM $$` inside a session → `session.exited { signal: Some(15) }`.
+1. **Exit signal as a number** (debt 2). `hutan_terminal::ExitStatus { code: Option<i32>, signal: Option<i32> }` — the raw signal number from the wait status (use `portable-pty`'s data or `libc` W* macros in `sys.rs`; keep `unsafe` confined there with `// SAFETY:`). Delete the daemon's `signal_number` name table and its tests; the daemon passes the number through. Test: `kill -TERM $$` inside a session → `session.exited { signal: Some(15) }`.
 
 2. **Terminal query replies** (new; real TUIs such as Claude Code and Codex query these at startup and may stall or pick the wrong theme without answers). Answer, via the existing single PTY writer:
    - OSC 10 / 11 / 12 `?` (foreground / background / cursor color) → `ESC ] 1x ; rgb:RRRR/GGGG/BBBB` + the terminator the query used (BEL or ST). Value = palette override if the app set one, else the terminal's default colors from a new `TerminalConfig.default_colors { foreground, background, cursor }` (default: fg `#d4d4d4`, bg `#1e1e1e`, cursor `#d4d4d4`).
@@ -27,7 +27,7 @@ Read `AGENTS.md`, `docs/status.md` § Tech debt, `docs/protocol.md` (terminal + 
 6. **Agent TUI corpus** (M0.4 open item). With the recorder example, record startup screens (no prompt submitted, quit with the app's exit key or SIGHUP after ~3 s) of `omp` and `codex` at 100×30 into `crates/terminal/tests/corpus/recorded/` and add them to the replay test. Before committing, scan the `.raw`/`.grid` files and drop or redact anything that looks like an account email, token, or API key; if a recording cannot be made clean, skip it and say why. Note `htop` stays unrecorded if not installed.
 
 ## Acceptance
-All new tests pass; `cargo nextest run -p staffy-terminal -p staffy-daemon` repeated 3× without flakes; `just check` green; committed on `slice/M1-DT1`.
+All new tests pass; `cargo nextest run -p hutan-terminal -p hutan-daemon` repeated 3× without flakes; `just check` green; committed on `slice/M1-DT1`.
 
 ## Out of scope
 CLI changes, protocol type changes, `scrolled` detection, client theme reporting (M2.4).

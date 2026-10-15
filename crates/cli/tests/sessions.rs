@@ -1,4 +1,4 @@
-//! `staffy new/ls/send/stop/restart/rename/history` against a real daemon.
+//! `hutan new/ls/send/stop/restart/rename/history` against a real daemon.
 
 mod common;
 
@@ -11,7 +11,7 @@ use tokio::time::{sleep, timeout};
 async fn new_then_ls_json_shows_a_running_session() {
     let t = TestDaemon::start().await;
     let out = t
-        .staffy(&[
+        .hutan(&[
             "new", "--title", "worker", "--env", "A=1", "--env", "B=x=y", "--", "cat",
         ])
         .await
@@ -35,7 +35,7 @@ async fn new_then_ls_json_shows_a_running_session() {
         "--cwd defaults to the current directory"
     );
 
-    let table = t.staffy(&["ls"]).await.ok().stdout;
+    let table = t.hutan(&["ls"]).await.ok().stdout;
     let mut lines = table.lines();
     let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
     assert_eq!(header, ["ID", "TERMINAL", "STATE", "TITLE", "CWD", "AGE"]);
@@ -61,7 +61,7 @@ async fn new_honours_cwd_and_environment() {
         .await;
     assert_eq!(t.session(&id).await["cwd"], "/tmp");
     wait_history(&t, &id, "hi there in ").await;
-    let history = t.staffy(&["history", &id]).await.ok().stdout;
+    let history = t.hutan(&["history", &id]).await.ok().stdout;
     assert!(history.contains("/tmp"), "{history}");
     t.stop().await;
 }
@@ -70,7 +70,7 @@ async fn new_honours_cwd_and_environment() {
 async fn a_command_that_cannot_start_fails_the_command() {
     let t = TestDaemon::start().await;
     let out = t
-        .staffy(&["new", "--", "/nonexistent/staffy-test-binary"])
+        .hutan(&["new", "--", "/nonexistent/hutan-test-binary"])
         .await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("failed to start"), "{out:?}");
@@ -79,11 +79,11 @@ async fn a_command_that_cannot_start_fails_the_command() {
     t.stop().await;
 }
 
-/// Polls `staffy history` until it contains `needle`.
+/// Polls `hutan history` until it contains `needle`.
 async fn wait_history(t: &TestDaemon, target: &str, needle: &str) {
     let result = timeout(WAIT, async {
         loop {
-            let out = t.staffy(&["history", target]).await.ok();
+            let out = t.hutan(&["history", target]).await.ok();
             if out.stdout.contains(needle) {
                 return;
             }
@@ -98,17 +98,15 @@ async fn wait_history(t: &TestDaemon, target: &str, needle: &str) {
 async fn send_enter_reaches_the_session_and_shows_in_history() {
     let t = TestDaemon::start().await;
     let id = t.new_session(&[], &["cat"]).await;
-    t.staffy(&["send", &id, "hello staffy", "--enter"])
-        .await
-        .ok();
-    wait_history(&t, &id, "hello staffy").await;
+    t.hutan(&["send", &id, "hello hutan", "--enter"]).await.ok();
+    wait_history(&t, &id, "hello hutan").await;
 
     // Without --enter nothing is submitted: cat has not echoed it yet, but the line discipline
     // did (the typed text is visible), and the next --enter completes the line.
-    t.staffy(&["send", &id, "second"]).await.ok();
+    t.hutan(&["send", &id, "second"]).await.ok();
     wait_history(&t, &id, "second").await;
     let json = t
-        .staffy(&["--json", "history", &id, "--lines", "2"])
+        .hutan(&["--json", "history", &id, "--lines", "2"])
         .await
         .ok()
         .json();
@@ -124,18 +122,14 @@ async fn history_is_oldest_first_across_scrollback_and_screen() {
         .await;
     wait_history(&t, &id, "100").await;
     let all = t
-        .staffy(&["history", &id, "--lines", "5000"])
+        .hutan(&["history", &id, "--lines", "5000"])
         .await
         .ok()
         .stdout;
     let numbers: Vec<u32> = all.lines().filter_map(|l| l.parse().ok()).collect();
     assert_eq!(numbers, (1..=100).collect::<Vec<_>>(), "{all}");
 
-    let last = t
-        .staffy(&["history", &id, "--lines", "3"])
-        .await
-        .ok()
-        .stdout;
+    let last = t.hutan(&["history", &id, "--lines", "3"]).await.ok().stdout;
     assert_eq!(last.lines().collect::<Vec<_>>(), ["98", "99", "100"]);
     t.stop().await;
 }
@@ -146,18 +140,18 @@ async fn stop_moves_the_session_to_stopped_and_restart_revives_it() {
     let id = t.new_session(&[], &["cat"]).await;
     let first_terminal = t.session(&id).await["terminal_id"].as_u64().unwrap();
 
-    let out = t.staffy(&["stop", &id]).await.ok();
+    let out = t.hutan(&["stop", &id]).await.ok();
     assert!(out.stdout.contains(&id), "{out:?}");
     assert_eq!(t.session(&id).await["state"]["state"], "stopped");
-    let table = t.staffy(&["ls"]).await.ok().stdout;
+    let table = t.hutan(&["ls"]).await.ok().stdout;
     assert!(table.contains("stopped"), "{table}");
 
     // Input to an ended session is an error, not a silent drop.
-    let out = t.staffy(&["send", &id, "x"]).await;
+    let out = t.hutan(&["send", &id, "x"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("stopped"), "{out:?}");
 
-    let out = t.staffy(&["restart", &id]).await.ok();
+    let out = t.hutan(&["restart", &id]).await.ok();
     let second_terminal = t.session(&id).await["terminal_id"].as_u64().unwrap();
     assert!(second_terminal > first_terminal);
     assert_eq!(
@@ -174,7 +168,7 @@ async fn exit_codes_show_in_ls() {
     let id = t.new_session(&[], &["sh", "-c", "exit 7"]).await;
     let session = t.wait_state(&id, "exited").await;
     assert_eq!(session["state"]["code"], 7);
-    let table = t.staffy(&["ls"]).await.ok().stdout;
+    let table = t.hutan(&["ls"]).await.ok().stdout;
     assert!(table.contains("exited (7)"), "{table}");
     t.stop().await;
 }
@@ -183,7 +177,7 @@ async fn exit_codes_show_in_ls() {
 async fn rename_changes_the_title() {
     let t = TestDaemon::start().await;
     let id = t.new_session(&["--title", "before"], &["cat"]).await;
-    let out = t.staffy(&["rename", "before", "after"]).await.ok();
+    let out = t.hutan(&["rename", "before", "after"]).await.ok();
     assert!(out.stdout.contains("after"), "{out:?}");
     assert_eq!(t.session(&id).await["title"], "after");
     t.stop().await;
@@ -198,7 +192,7 @@ async fn targets_resolve_by_id_prefix_terminal_and_title() {
 
     // `history --json` names the session it resolved and changes nothing.
     async fn probe(t: &TestDaemon, target: &str) -> common::Out {
-        t.staffy(&["--json", "history", target]).await
+        t.hutan(&["--json", "history", target]).await
     }
 
     // Full id, long unique prefix, lowercase prefix, terminal id, unique title.
@@ -249,18 +243,14 @@ async fn targets_resolve_by_id_prefix_terminal_and_title() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ls_filters_by_workspace() {
     let t = TestDaemon::start().await;
-    let ws = t
-        .staffy(&["ws", "new", "other", "--json"])
-        .await
-        .ok()
-        .json()["id"]
+    let ws = t.hutan(&["ws", "new", "other", "--json"]).await.ok().json()["id"]
         .as_str()
         .unwrap()
         .to_owned();
     let in_default = t.new_session(&[], &["cat"]).await;
     let in_other = t.new_session(&["--ws", &ws], &["cat"]).await;
 
-    let out = t.staffy(&["ls", "--ws", &ws, "--json"]).await.ok().json();
+    let out = t.hutan(&["ls", "--ws", &ws, "--json"]).await.ok().json();
     let ids: Vec<_> = out["sessions"]
         .as_array()
         .unwrap()
@@ -270,15 +260,11 @@ async fn ls_filters_by_workspace() {
     assert_eq!(ids, [serde_json::json!(in_other)]);
     assert_ne!(in_default, in_other);
 
-    let empty = t
-        .staffy(&["ws", "new", "empty", "--json"])
-        .await
-        .ok()
-        .json()["id"]
+    let empty = t.hutan(&["ws", "new", "empty", "--json"]).await.ok().json()["id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let out = t.staffy(&["ls", "--ws", &empty]).await.ok();
+    let out = t.hutan(&["ls", "--ws", &empty]).await.ok();
     assert_eq!(out.stdout.trim(), "no sessions");
     t.stop().await;
 }
@@ -293,18 +279,18 @@ async fn usage_errors_and_missing_daemon() {
         &["rename", "x"],
         &["attach"],
     ] {
-        let out = t.staffy(args).await;
+        let out = t.hutan(args).await;
         assert_eq!(out.code, 2, "{args:?}: {out:?}");
     }
     // `--ws` takes an id, a prefix or a name; one that matches nothing is a failure, not usage.
-    let out = t.staffy(&["new", "--ws", "not-a-workspace"]).await;
+    let out = t.hutan(&["new", "--ws", "not-a-workspace"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.contains("no workspace matches"), "{out:?}");
     // attach needs a terminal; stdin is /dev/null here.
-    let out = t.staffy(&["attach", "anything"]).await;
+    let out = t.hutan(&["attach", "anything"]).await;
     assert_eq!(out.code, 2, "{out:?}");
     assert!(out.stderr.contains("needs a terminal"), "{out:?}");
-    let out = t.staffy(&["new", "--attach", "--", "cat"]).await;
+    let out = t.hutan(&["new", "--attach", "--", "cat"]).await;
     assert_eq!(out.code, 2, "{out:?}");
     assert!(
         t.sessions().await.is_empty(),
@@ -314,7 +300,7 @@ async fn usage_errors_and_missing_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let nowhere = dir.path().join("no.sock");
     for args in [&["ls"][..], &["stop", "x"], &["new", "--", "cat"]] {
-        let out = common::staffy(&nowhere, args).await;
+        let out = common::hutan(&nowhere, args).await;
         assert_eq!(out.code, 3, "{args:?}: {out:?}");
     }
     t.stop().await;

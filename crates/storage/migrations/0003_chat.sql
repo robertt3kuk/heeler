@@ -1,4 +1,4 @@
--- Schema v3: agent chat sessions (roadmap M4). Staffy's journal is the source of a chat's
+-- Schema v3: agent chat sessions (roadmap M4). Hutan's journal is the source of a chat's
 -- history (ADR 0005); the provider's own copy only lets the agent continue.
 
 -- One row per user-message-to-completion cycle.

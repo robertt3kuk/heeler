@@ -1,16 +1,16 @@
-//! `staffy agent report | release | hook`: the reporting side of the agent channel. These are
+//! `hutan agent report | release | hook`: the reporting side of the agent channel. These are
 //! called by agent hooks and extensions, so they never fail, never print, and never wait: no
-//! `STAFFY_SESSION_ID`, no daemon, a daemon error, or 200 ms of silence all end in exit 0.
+//! `HUTAN_SESSION_ID`, no daemon, a daemon error, or 200 ms of silence all end in exit 0.
 
 use std::io::{IsTerminal as _, Read as _};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
-use staffy_core::{NodeKind, NodeOutcome, SessionId, Usage};
-use staffy_protocol::messages::{
+use hutan_core::{NodeKind, NodeOutcome, SessionId, Usage};
+use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Request,
 };
-use staffy_protocol::tree::NodeReport;
+use hutan_protocol::tree::NodeReport;
+use serde_json::Value;
 use tokio::time::timeout;
 
 use super::Ctx;
@@ -58,7 +58,7 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
     .await;
 }
 
-/// `staffy agent report`; `None` when `--usage-json` is not a usage object (the report is
+/// `hutan agent report`; `None` when `--usage-json` is not a usage object (the report is
 /// dropped rather than sent without the numbers it was meant to carry).
 fn report_request(args: &AgentReportArgs, session: SessionId, default_seq: u64) -> Option<Request> {
     let usage = match &args.usage_json {
@@ -165,9 +165,9 @@ fn outcome(arg: OutcomeArg) -> NodeOutcome {
     }
 }
 
-/// The Staffy session this process runs in, from the environment the daemon gave it.
+/// The Hutan session this process runs in, from the environment the daemon gave it.
 fn session_from_env() -> Option<SessionId> {
-    std::env::var("STAFFY_SESSION_ID").ok()?.parse().ok()
+    std::env::var("HUTAN_SESSION_ID").ok()?.parse().ok()
 }
 
 /// The JSON document the agent wrote to the hook's stdin; `None` when there is none.

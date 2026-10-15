@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use staffy_protocol::messages::TerminalSize;
-use staffy_terminal::{Terminal, TerminalConfig};
+use hutan_protocol::messages::TerminalSize;
+use hutan_terminal::{Terminal, TerminalConfig};
 use tokio::time::timeout;
 
 fn open_fds() -> usize {

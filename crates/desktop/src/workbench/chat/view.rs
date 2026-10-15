@@ -11,11 +11,11 @@ use gpui::{
     ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, StyledText,
     Subscription, TextRun, Window, div, font, list, prelude::*, px,
 };
-use staffy_chat_view::markdown::Block;
-use staffy_client::ConnectionState;
-use staffy_core::{ApprovalId, SessionId, SessionState};
-use staffy_protocol::messages::SessionInfo;
-use staffy_settings::SettingsStore;
+use hutan_chat_view::markdown::Block;
+use hutan_client::ConnectionState;
+use hutan_core::{ApprovalId, SessionId, SessionState};
+use hutan_protocol::messages::SessionInfo;
+use hutan_settings::SettingsStore;
 
 use super::attach::Attaching;
 use super::context::is_gateway_chat;
@@ -33,7 +33,7 @@ use crate::workbench::view::Region;
 pub(crate) type Regions = Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>;
 
 /// Key context of the chat view's root element, for keymap bindings.
-pub const KEY_CONTEXT: &str = "StaffyChat";
+pub const KEY_CONTEXT: &str = "HutanChat";
 
 /// Tallest the composer's text grows before it scrolls.
 const COMPOSER_MAX_HEIGHT: f32 = 220.0;
@@ -210,7 +210,7 @@ impl ChatView {
             }
         }
         if gate.blocked.is_none() && store.connection_state() != ConnectionState::Connected {
-            gate.blocked = Some("Reconnecting to staffyd…".into());
+            gate.blocked = Some("Reconnecting to hutand…".into());
         }
         gate
     }
@@ -561,7 +561,7 @@ impl ChatView {
                 false,
             ),
             (None, _) if model.history_cut() => (
-                "Older history is not shown (`staffy chat log` has all of it).".to_owned(),
+                "Older history is not shown (`hutan chat log` has all of it).".to_owned(),
                 theme.muted,
                 false,
             ),

@@ -6,19 +6,19 @@ use std::str::FromStr;
 /// Where an indexed session came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
-    /// Staffy's own terminal blocks and agent reports.
-    Staffy,
+    /// Hutan's own terminal blocks and agent reports.
+    Hutan,
     Claude,
     Codex,
     Omp,
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [Source::Staffy, Source::Claude, Source::Codex, Source::Omp];
+    pub const ALL: [Source; 4] = [Source::Hutan, Source::Claude, Source::Codex, Source::Omp];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Source::Staffy => "staffy",
+            Source::Hutan => "hutan",
             Source::Claude => "claude",
             Source::Codex => "codex",
             Source::Omp => "omp",
@@ -50,9 +50,9 @@ pub enum Role {
     Assistant,
     /// A tool call, a tool result, or an agent state report.
     Tool,
-    /// A command typed in a Staffy terminal.
+    /// A command typed in a Hutan terminal.
     Command,
-    /// The output of a Staffy terminal command.
+    /// The output of a Hutan terminal command.
     Output,
 }
 
@@ -123,10 +123,10 @@ impl Entry {
     }
 }
 
-/// A Staffy-side record pushed by the daemon (terminal block parts, agent reports).
+/// A Hutan-side record pushed by the daemon (terminal block parts, agent reports).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StaffyRecord {
-    /// The Staffy session id.
+pub struct HutanRecord {
+    /// The Hutan session id.
     pub session_key: String,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -189,7 +189,7 @@ pub struct Status {
 /// A request for the rows of one session, in conversation order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionTextQuery {
-    /// The session's id in its source (the agent's session id, or the Staffy session id).
+    /// The session's id in its source (the agent's session id, or the Hutan session id).
     pub key: String,
     /// Only these sources; empty = all.
     pub sources: Vec<Source>,

@@ -1,29 +1,29 @@
 [package]
-name = "staffy-daemon"
-description = "staffyd: Staffy daemon lifecycle, connection layer, event bus, request router, and terminal sessions"
+name = "hutan-daemon"
+description = "hutand: Hutan daemon lifecycle, connection layer, event bus, request router, and terminal sessions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_daemon"
+name = "hutan_daemon"
 
 [[bin]]
-name = "staffyd"
+name = "hutand"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
 futures.workspace = true
-staffy-agents.workspace = true
-staffy-core.workspace = true
-staffy-gateway.workspace = true
-staffy-index.workspace = true
-staffy-protocol.workspace = true
-staffy-storage.workspace = true
-staffy-terminal.workspace = true
+hutan-agents.workspace = true
+hutan-core.workspace = true
+hutan-gateway.workspace = true
+hutan-index.workspace = true
+hutan-protocol.workspace = true
+hutan-storage.workspace = true
+hutan-terminal.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -38,8 +38,8 @@ tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
-staffy-client.workspace = true
-staffy-gateway = { workspace = true, features = ["test-support"] }
+hutan-client.workspace = true
+hutan-gateway = { workspace = true, features = ["test-support"] }
 rusqlite.workspace = true
 tempfile.workspace = true
 

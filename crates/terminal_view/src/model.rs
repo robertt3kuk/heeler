@@ -11,9 +11,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use staffy_client::BlockList;
-use staffy_protocol::blocks::Block;
-use staffy_protocol::render::{
+use hutan_client::BlockList;
+use hutan_protocol::blocks::Block;
+use hutan_protocol::render::{
     CellFlags, Cursor, CursorShape, Modes, Palette, Row, Run, TerminalFrame, TerminalRender,
     TerminalSnapshot,
 };
@@ -500,7 +500,7 @@ fn history_growth(old_len: u32, new_len: u32, old_top: u64, new_top: u64) -> u32
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
-    use staffy_protocol::render::Color;
+    use hutan_protocol::render::Color;
 
     pub fn run(text: &str) -> Run {
         Run {
@@ -576,7 +576,7 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
-    use staffy_protocol::render::Link;
+    use hutan_protocol::render::Link;
 
     fn text(model: &TerminalModel, row: usize) -> String {
         TerminalModel::row_text(&model.viewport()[row])
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn collapsed_blocks_are_pruned_by_a_new_list_only() {
-        use staffy_protocol::blocks::{Block, BlockState, TerminalBlocksResult};
+        use hutan_protocol::blocks::{Block, BlockState, TerminalBlocksResult};
         let block = |id| Block {
             id,
             prompt_line: id,

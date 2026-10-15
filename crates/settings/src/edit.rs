@@ -115,7 +115,7 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = "\
-# Staffy settings — edited by hand
+# Hutan settings — edited by hand
 
 [appearance]
 # compact | comfortable
@@ -167,7 +167,7 @@ preset = \"default\"
         )
         .unwrap();
         assert!(out.starts_with(
-            "# Staffy settings — edited by hand\n\n[appearance]\n# compact | comfortable\n"
+            "# Hutan settings — edited by hand\n\n[appearance]\n# compact | comfortable\n"
         ));
         assert!(out.contains("font_size = 13 # keep it readable\n"));
         assert!(out.contains("copy_on_select = true"));

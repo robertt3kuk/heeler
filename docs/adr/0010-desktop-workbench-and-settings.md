@@ -26,7 +26,7 @@ The user wants full control of the layout: any component movable anywhere, every
 - Layout state (`desktop-state.json`, per window): docks, pane tree, open items, sizes. Presets live in settings (`layout.presets.<name>`); applying a preset rewrites the state; sessions are never closed by layout changes.
 
 ### Settings
-- TOML files: user `settings.toml`, `keymap.toml` (app support dir), workspace `<repo>/.staffy/settings.toml`.
+- TOML files: user `settings.toml`, `keymap.toml` (app support dir), workspace `<repo>/.hutan/settings.toml`.
 - Layers: defaults < user < workspace < runtime overrides; merged as values, then each namespace is deserialized into its owner's typed struct with `#[serde(default)]`; schema per namespace via `schemars` drives validation, docs, and the generated settings UI.
 - Hot reload with a file watcher; invalid files keep the last good values and surface errors.
 - Desktop-only. Settings that change daemon behavior (default shell, scrollback, env) become a separate daemon config + protocol later; the desktop never edits daemon files.

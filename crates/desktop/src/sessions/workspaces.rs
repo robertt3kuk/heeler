@@ -6,8 +6,8 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use staffy_core::WorkspaceId;
-use staffy_protocol::messages::{CreatedBy, WorkspaceInfo, WorkspaceKind};
+use hutan_core::WorkspaceId;
+use hutan_protocol::messages::{CreatedBy, WorkspaceInfo, WorkspaceKind};
 
 use crate::settings::{WorkspaceSort, WorkspacesSettings};
 

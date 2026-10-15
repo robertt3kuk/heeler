@@ -1,4 +1,4 @@
-//! `staffy notify ls|ack|act|watch` against a real daemon: the real `staffy` binary over the real
+//! `hutan notify ls|ack|act|watch` against a real daemon: the real `hutan` binary over the real
 //! socket, intents raised by real PTY sessions and by the fake Codex app server replaying a
 //! transcript recorded from codex 0.162.1.
 
@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use common::{STAFFY, TestDaemon, WAIT, codex_fixture_bin, command};
+use common::{HUTAN, TestDaemon, WAIT, codex_fixture_bin, command};
+use hutan_agents::CodexConfig;
 use serde_json::Value;
-use staffy_agents::CodexConfig;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdout};
 use tokio::time::{sleep, timeout};
@@ -37,7 +37,7 @@ fn replay(transcript: &Path, received: &Path) -> CodexConfig {
     }
 }
 
-/// `staffy notify watch --json` with its output read line by line.
+/// `hutan notify watch --json` with its output read line by line.
 struct Watch {
     child: Child,
     lines: tokio::io::Lines<BufReader<ChildStdout>>,
@@ -46,7 +46,7 @@ struct Watch {
 impl Watch {
     fn spawn(t: &TestDaemon) -> Self {
         let mut cmd = command(
-            Path::new(STAFFY),
+            Path::new(HUTAN),
             Some(&t.paths.socket),
             &["notify", "watch", "--json"],
         );
@@ -70,7 +70,7 @@ impl Watch {
 }
 
 async fn intents(t: &TestDaemon) -> Vec<Value> {
-    let out = t.staffy(&["notify", "ls", "--json"]).await.ok();
+    let out = t.hutan(&["notify", "ls", "--json"]).await.ok();
     out.json()["intents"].as_array().unwrap().clone()
 }
 
@@ -100,7 +100,7 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
 
     let cwd = work.path().display().to_string();
     let created = t
-        .staffy(&[
+        .hutan(&[
             "chat",
             "new",
             "--json",
@@ -114,7 +114,7 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
         .await
         .ok();
     let session = created.json()["session"]["id"].as_str().unwrap().to_owned();
-    t.staffy(&[
+    t.hutan(&[
         "chat",
         "send",
         &session,
@@ -142,7 +142,7 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
 
     // The table names it, its kind and its actions.
     // The human table names the intent, its kind and what can be done about it.
-    let table = t.staffy(&["notify", "ls"]).await.ok().stdout;
+    let table = t.hutan(&["notify", "ls"]).await.ok().stdout;
     let row = table
         .lines()
         .find(|line| line.contains(&id))
@@ -153,24 +153,24 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
     }
 
     // An action the intent does not offer is refused and the intent stays.
-    let refused = t.staffy(&["notify", "act", &id[..8], "decline"]).await;
+    let refused = t.hutan(&["notify", "act", &id[..8], "decline"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
     assert!(
         refused.stderr.contains("option_not_offered") && refused.stderr.contains("accept"),
         "{refused:?}"
     );
-    let unknown = t.staffy(&["notify", "act", "0000", "accept"]).await;
+    let unknown = t.hutan(&["notify", "act", "0000", "accept"]).await;
     assert_eq!(unknown.code, 1);
     assert_eq!(intents(&t).await.len(), 1);
 
     // By unique prefix: the approval is answered.
     let acted = t
-        .staffy(&["notify", "act", &id[..8], "accept", "--json"])
+        .hutan(&["notify", "act", &id[..8], "accept", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(acted["route"], "approval");
-    let approvals = t.staffy(&["approvals", "--json"]).await.ok();
+    let approvals = t.hutan(&["approvals", "--json"]).await.ok();
     assert!(approvals.json()["approvals"].as_array().unwrap().is_empty());
 
     // The turn then ends in a session nobody has focused: the watcher prints that intent, and
@@ -185,7 +185,7 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
     // Acknowledging by prefix empties the list.
     let finished_id = finished["id"].as_str().unwrap();
     let acked = t
-        .staffy(&["notify", "ack", &finished_id[..8], "--json"])
+        .hutan(&["notify", "ack", &finished_id[..8], "--json"])
         .await
         .ok()
         .json();
@@ -213,7 +213,7 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
 
     // `open` goes out as ui.open; with no desktop connected nobody was reached (exit 0).
     let opened = t
-        .staffy(&["notify", "act", &id, "open", "--json"])
+        .hutan(&["notify", "act", &id, "open", "--json"])
         .await
         .ok()
         .json();
@@ -226,7 +226,7 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
         t.new_session(&[], &["sh", "-c", "exit 4"]).await;
         let pending = wait_for_intents(&t, 1).await;
         let id = pending[0]["id"].as_str().unwrap().to_owned();
-        t.staffy(&["notify", "act", &id, "open", "--json"])
+        t.hutan(&["notify", "act", &id, "open", "--json"])
             .await
             .ok()
             .json()
@@ -235,7 +235,7 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
     assert_eq!(raw["desktop_clients"], 0);
 
     // Acknowledging what is gone is an error.
-    let gone = t.staffy(&["notify", "ack", &id]).await;
+    let gone = t.hutan(&["notify", "ack", &id]).await;
     assert_eq!(gone.code, 1, "{gone:?}");
     watch.child.kill().await.unwrap();
     t.stop().await;
@@ -244,9 +244,9 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
 #[tokio::test(flavor = "multi_thread")]
 async fn usage_errors_exit_two_and_nothing_is_pending_at_first() {
     let t = TestDaemon::start().await;
-    let missing = t.staffy(&["notify", "act", "abcd"]).await;
+    let missing = t.hutan(&["notify", "act", "abcd"]).await;
     assert_eq!(missing.code, 2, "{missing:?}");
-    let empty = t.staffy(&["notify", "ls", "--json"]).await.ok().json();
+    let empty = t.hutan(&["notify", "ls", "--json"]).await.ok().json();
     assert!(empty["intents"].as_array().unwrap().is_empty());
     t.stop().await;
 }

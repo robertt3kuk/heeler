@@ -10,20 +10,20 @@ mod common;
 use common::chat::ChatEnv;
 use common::{TestDaemon, open_with, wait_until};
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use staffy_client::ConnectionState;
-use staffy_core::SessionId;
-use staffy_desktop::workbench::Workbench;
-use staffy_protocol::chat::{ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
-use staffy_protocol::messages::{Empty, Request};
-use staffy_protocol::notify::{
+use hutan_client::ConnectionState;
+use hutan_core::SessionId;
+use hutan_desktop::workbench::Workbench;
+use hutan_protocol::chat::{ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
+use hutan_protocol::messages::{Empty, Request};
+use hutan_protocol::notify::{
     ACTION_OPEN, ActRoute, NotificationIntent, NotifyAct, NotifyActed, NotifyList,
 };
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_settings::{SettingsPaths, SettingsStore};
 
 fn open<'a>(
     cx: &'a mut TestAppContext,
     daemon: &TestDaemon,
-    connection: staffy_client::Connection,
+    connection: hutan_client::Connection,
     sessions: usize,
 ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
     let (view, cx) = open_with(
@@ -219,10 +219,10 @@ fn the_assistant_panel_counts_as_looked_at_wherever_it_is_and_only_while_it_is(
     cx: &mut TestAppContext,
 ) {
     use common::assistant::{AssistantEnv, Options, PATH, open, open_assistant, reply, shown};
-    use staffy_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
-    use staffy_desktop::workbench::panels::AssistantChoice;
-    use staffy_protocol::assistant::{AssistantOpen, AssistantScope};
-    use staffy_protocol::messages::SessionResult;
+    use hutan_desktop::workbench::model::{DockPosition, PanelDest, PanelId};
+    use hutan_desktop::workbench::panels::AssistantChoice;
+    use hutan_protocol::assistant::{AssistantOpen, AssistantScope};
+    use hutan_protocol::messages::SessionResult;
 
     let env = AssistantEnv::start(Options {
         configured: true,

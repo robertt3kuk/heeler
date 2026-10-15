@@ -1,5 +1,5 @@
-//! Shared harness for the session and attach tests: the real `staffy` binary against a real
-//! `staffyd` (in-process on a temporary `STAFFY_HOME`, or a spawned process).
+//! Shared harness for the session and attach tests: the real `hutan` binary against a real
+//! `hutand` (in-process on a temporary `HUTAN_HOME`, or a spawned process).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 #![allow(dead_code)] // each test binary uses a different subset
@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use hutan_daemon::{DaemonConfig, Paths, RunningDaemon};
 use serde_json::Value;
-use staffy_daemon::{DaemonConfig, Paths, RunningDaemon};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 
-pub const STAFFY: &str = env!("CARGO_BIN_EXE_staffy");
+pub const HUTAN: &str = env!("CARGO_BIN_EXE_hutan");
 pub const WAIT: Duration = Duration::from_secs(20);
 
 #[derive(Debug)]
@@ -52,13 +52,13 @@ impl TestDaemon {
     pub async fn start_with(tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
-        // Sessions find this build of the CLI through `STAFFY_BIN`, as in a real install.
+        // Sessions find this build of the CLI through `HUTAN_BIN`, as in a real install.
         let mut config = DaemonConfig {
-            staffy_bin: Some(PathBuf::from(STAFFY)),
+            hutan_bin: Some(PathBuf::from(HUTAN)),
             ..DaemonConfig::new(paths.clone())
         };
         tweak(&mut config);
-        let daemon = staffy_daemon::start(config).await.unwrap();
+        let daemon = hutan_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,
@@ -66,23 +66,23 @@ impl TestDaemon {
         }
     }
 
-    pub async fn staffy(&self, args: &[&str]) -> Out {
-        staffy(&self.paths.socket, args).await
+    pub async fn hutan(&self, args: &[&str]) -> Out {
+        hutan(&self.paths.socket, args).await
     }
 
-    /// `staffy new --json` of `argv`; returns the session id.
+    /// `hutan new --json` of `argv`; returns the session id.
     pub async fn new_session(&self, extra: &[&str], argv: &[&str]) -> String {
         let mut args = vec!["new", "--json"];
         args.extend_from_slice(extra);
         args.push("--");
         args.extend_from_slice(argv);
-        let out = self.staffy(&args).await.ok();
+        let out = self.hutan(&args).await.ok();
         out.json()["session"]["id"].as_str().unwrap().to_owned()
     }
 
-    /// The session objects of `staffy ls --json`.
+    /// The session objects of `hutan ls --json`.
     pub async fn sessions(&self) -> Vec<Value> {
-        let out = self.staffy(&["ls", "--json"]).await.ok();
+        let out = self.hutan(&["ls", "--json"]).await.ok();
         out.json()["sessions"].as_array().unwrap().clone()
     }
 
@@ -94,7 +94,7 @@ impl TestDaemon {
             .unwrap_or_else(|| panic!("session {id} not listed"))
     }
 
-    /// Polls `staffy ls` until the session's `state.state` is `state`.
+    /// Polls `hutan ls` until the session's `state.state` is `state`.
     pub async fn wait_state(&self, id: &str, state: &str) -> Value {
         let result = timeout(WAIT, async {
             loop {
@@ -115,7 +115,7 @@ impl TestDaemon {
     }
 }
 
-/// Environment-free invocation: `STAFFY_*` from the parent never leak in. `--socket` goes
+/// Environment-free invocation: `HUTAN_*` from the parent never leak in. `--socket` goes
 /// first so it cannot end up inside a trailing `-- ARGV`.
 pub fn command(binary: &Path, socket: Option<&Path>, args: &[&str]) -> Command {
     let mut command = Command::new(binary);
@@ -124,8 +124,8 @@ pub fn command(binary: &Path, socket: Option<&Path>, args: &[&str]) -> Command {
     }
     command
         .args(args)
-        .env_remove("STAFFY_HOME")
-        .env_remove("STAFFY_SOCKET")
+        .env_remove("HUTAN_HOME")
+        .env_remove("HUTAN_SOCKET")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     command
@@ -140,31 +140,31 @@ pub async fn finish(mut command: Command) -> Out {
     }
 }
 
-pub async fn staffy(socket: &Path, args: &[&str]) -> Out {
-    finish(command(Path::new(STAFFY), Some(socket), args)).await
+pub async fn hutan(socket: &Path, args: &[&str]) -> Out {
+    finish(command(Path::new(HUTAN), Some(socket), args)).await
 }
 
-/// Directory holding `staffyd`, next to the `staffy` test binary (same profile). Tests never
+/// Directory holding `hutand`, next to the `hutan` test binary (same profile). Tests never
 /// build it: `just test` builds the workspace binaries first.
-pub fn staffyd_dir() -> PathBuf {
-    let dir = Path::new(STAFFY).parent().unwrap().to_owned();
+pub fn hutand_dir() -> PathBuf {
+    let dir = Path::new(HUTAN).parent().unwrap().to_owned();
     assert!(
-        dir.join("staffyd").is_file(),
-        "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
+        dir.join("hutand").is_file(),
+        "hutand not built: run `cargo build -p hutan-daemon --bin hutand` (or `just test`)"
     );
     dir
 }
 
-/// The fake codex app server, next to the `staffy` test binary; `just test` builds the
+/// The fake codex app server, next to the `hutan` test binary; `just test` builds the
 /// workspace binaries first.
 pub fn codex_fixture_bin() -> PathBuf {
-    let bin = Path::new(STAFFY)
+    let bin = Path::new(HUTAN)
         .parent()
         .unwrap()
-        .join("staffy-codex-fixture");
+        .join("hutan-codex-fixture");
     assert!(
         bin.is_file(),
-        "staffy-codex-fixture not built: run `cargo build -p staffy-agents --bins` (or `just test`)"
+        "hutan-codex-fixture not built: run `cargo build -p hutan-agents --bins` (or `just test`)"
     );
     bin
 }

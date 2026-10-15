@@ -8,8 +8,8 @@
 
 use std::ops::Range;
 
-use staffy_core::TerminalId;
-use staffy_protocol::assistant::{
+use hutan_core::TerminalId;
+use hutan_protocol::assistant::{
     AGENT_ASSISTANT, Attachment, AttachmentKind, LineRange, SEARCH_MAX_LIMIT,
     SHELL_RECENT_MAX_LINES, TRANSCRIPT_MAX_TURNS,
 };
@@ -104,7 +104,7 @@ impl ContextChip {
         )
     }
 
-    /// The last `turns` turns of a conversation: a Staffy chat, or an agent's session id.
+    /// The last `turns` turns of a conversation: a Hutan chat, or an agent's session id.
     pub fn transcript(source: &str, session_id: &str, turns: u32) -> Self {
         Self::new(
             Attachment::AgentTranscript {
@@ -208,7 +208,7 @@ pub enum MentionKind {
     Shell,
     /// `@omp`: a transcript of an OMP session (reported or indexed).
     Omp,
-    /// `@agent`: a transcript of any coding agent session or Staffy chat.
+    /// `@agent`: a transcript of any coding agent session or Hutan chat.
     Agent,
     /// `@file path[:first-last]`.
     File,
@@ -494,7 +494,7 @@ mod tests {
             AttachmentKind::ShellBlock
         ));
         assert!(refused_by(
-            "assistant.workspaces.staffy.agents",
+            "assistant.workspaces.hutan.agents",
             AttachmentKind::AgentTranscript
         ));
         assert!(!refused_by(

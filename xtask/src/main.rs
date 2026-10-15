@@ -1,8 +1,10 @@
 //! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets;
-//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Staffy.app` (`docs/packaging.md`).
+//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Hutan.app`, `-- icon` renders its
+//! icon (`docs/packaging.md`).
 
 mod bench;
 mod bundle;
+mod icon;
 mod proc;
 mod seed;
 mod stats;
@@ -10,7 +12,7 @@ mod stats;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "Staffy developer tasks")]
+#[command(name = "xtask", about = "Hutan developer tasks")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -37,19 +39,21 @@ enum Command {
         #[arg(long)]
         key_interval_ms: Option<u64>,
     },
-    /// Assemble Staffy.app (desktop, staffyd, staffy, LaunchAgent plist, shell integration
+    /// Assemble Hutan.app (desktop, hutand, hutan, LaunchAgent plist, shell integration
     /// scripts) and sign it ad hoc. Nothing is launched or registered.
     Bundle {
         /// Build (and bundle) the release binaries instead of the debug ones.
         #[arg(long)]
         release: bool,
-        /// Folder that gets Staffy.app (default: target/bundle).
+        /// Folder that gets Hutan.app (default: target/bundle).
         #[arg(long, value_name = "DIR")]
         out: Option<std::path::PathBuf>,
         /// Bundle the binaries already built in DIR instead of running cargo build.
         #[arg(long, value_name = "DIR")]
         bin_dir: Option<std::path::PathBuf>,
     },
+    /// Render assets/macos/Hutan.icns from the brand icon SVG.
+    Icon,
 }
 
 #[tokio::main]
@@ -80,5 +84,6 @@ async fn main() -> anyhow::Result<()> {
             out,
             bin_dir,
         }),
+        Command::Icon => icon::run(&bundle::workspace_root()),
     }
 }

@@ -1,13 +1,13 @@
 //! Translation of Codex and Claude Code hook events (JSON on stdin) into agent reports
-//! (`staffy agent hook`). Pure, so it is tested directly.
+//! (`hutan agent hook`). Pure, so it is tested directly.
 //!
 //! Claude Code's subagents are nodes of the session's agent tree, keyed by the `agent_id` its
 //! hooks carry: `SubagentStart` makes one, tool and permission hooks that carry an `agent_id`
 //! update that node's activity and state, `SubagentStop` ends it. Hooks without an `agent_id`
 //! are about the main agent, which is the node `root`.
 
+use hutan_core::{NodeKind, NodeOutcome};
 use serde_json::Value;
-use staffy_core::{NodeKind, NodeOutcome};
 
 use crate::args::{AgentStateArg, HookAgentArg};
 

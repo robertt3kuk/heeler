@@ -1,19 +1,19 @@
-//! `staffy chat new|send|log|attach|interrupt|models|model`, `staffy approvals`, `staffy approve`.
+//! `hutan chat new|send|log|attach|interrupt|models|model`, `hutan approvals`, `hutan approve`.
 
 use std::io::Write as _;
 
+use hutan_client::Client;
+use hutan_core::{AgentEvent, ApprovalId, SessionKind};
+use hutan_protocol::chat::{ApprovalInfo, ApprovalList, ChatCreate, ChatHistory};
+use hutan_protocol::messages::{Empty, Event, Request, SessionInfo, SessionResult, Subscribed};
+use hutan_protocol::provider::AGENT_DIRECT;
 use serde_json::json;
-use staffy_client::Client;
-use staffy_core::{AgentEvent, ApprovalId, SessionKind};
-use staffy_protocol::chat::{ApprovalInfo, ApprovalList, ChatCreate, ChatHistory};
-use staffy_protocol::messages::{Empty, Event, Request, SessionInfo, SessionResult, Subscribed};
-use staffy_protocol::provider::AGENT_DIRECT;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{Ctx, print_line};
 use crate::args::{ApproveArgs, ChatCommand, ChatModelArgs, ChatNewArgs, ChatSendArgs, TargetArgs};
 use crate::error::CliError;
-use staffy_cli::chat_render::ChatPrinter;
+use hutan_cli::chat_render::ChatPrinter;
 
 /// Shortest approval id prefix accepted.
 const MIN_PREFIX: usize = 4;
@@ -38,7 +38,7 @@ impl Ctx {
         let session = self.resolve(client, target).await?;
         if session.kind != SessionKind::Harness {
             return Err(CliError::Failed(format!(
-                "session {} is a terminal session; `staffy chat new` starts a chat session",
+                "session {} is a terminal session; `hutan chat new` starts a chat session",
                 session.id
             )));
         }
@@ -140,9 +140,9 @@ impl Ctx {
     /// else the reason is printed and the error is [`CliError::Reported`].
     pub(super) async fn follow_turn(
         &self,
-        events: &mut tokio::sync::broadcast::Receiver<(staffy_core::Seq, Event)>,
-        session_id: staffy_core::SessionId,
-        turn_id: staffy_core::TurnId,
+        events: &mut tokio::sync::broadcast::Receiver<(hutan_core::Seq, Event)>,
+        session_id: hutan_core::SessionId,
+        turn_id: hutan_core::TurnId,
     ) -> Result<(), CliError> {
         let mut printer = ChatPrinter::without_user_messages();
         loop {
@@ -157,7 +157,7 @@ impl Ctx {
                     self.show(&mut printer, &event)?;
                     if event.kind.ends_turn() {
                         return match event.kind {
-                            staffy_core::AgentEventKind::TurnCompleted { .. } => Ok(()),
+                            hutan_core::AgentEventKind::TurnCompleted { .. } => Ok(()),
                             // The line saying why is already printed.
                             _ => Err(CliError::Reported),
                         };
@@ -194,9 +194,9 @@ impl Ctx {
     fn stream_error(&self, error: RecvError) -> CliError {
         match error {
             RecvError::Lagged(missed) => CliError::Failed(format!(
-                "fell behind the event stream by {missed} events; `staffy chat log` has the rest"
+                "fell behind the event stream by {missed} events; `hutan chat log` has the rest"
             )),
-            RecvError::Closed => self.fail(staffy_client::ClientError::Disconnected),
+            RecvError::Closed => self.fail(hutan_client::ClientError::Disconnected),
         }
     }
 
@@ -339,7 +339,7 @@ fn resolve_approval<'a>(
     match matches.as_slice() {
         [one] => Ok(one),
         [] => Err(CliError::Failed(format!(
-            "no pending approval matches `{target}`; `staffy approvals` lists them"
+            "no pending approval matches `{target}`; `hutan approvals` lists them"
         ))),
         many => {
             let mut message = format!(

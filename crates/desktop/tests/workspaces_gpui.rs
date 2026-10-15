@@ -13,19 +13,19 @@ use gpui::{
     Bounds, Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext,
     point, px,
 };
-use staffy_core::{SessionId, WorkspaceId};
-use staffy_desktop::settings::{WorkspaceSort, WorkspacesSettings};
-use staffy_desktop::workbench::actions;
-use staffy_desktop::workbench::model::{Edge, ItemRef, WorkbenchState};
-use staffy_desktop::workbench::panels::SessionsPanel;
-use staffy_desktop::workbench::{PickerKind, Region, Workbench};
-use staffy_protocol::messages::{
+use hutan_core::{SessionId, WorkspaceId};
+use hutan_desktop::settings::{WorkspaceSort, WorkspacesSettings};
+use hutan_desktop::workbench::actions;
+use hutan_desktop::workbench::model::{Edge, ItemRef, WorkbenchState};
+use hutan_desktop::workbench::panels::SessionsPanel;
+use hutan_desktop::workbench::{PickerKind, Region, Workbench};
+use hutan_protocol::messages::{
     AgentApplied, AgentReportRequest, AgentState, CreatedBy, Empty, RecentProjects, Request,
     SessionCreate, SessionInfo, SessionResult, SessionSpec, TerminalSpec, WorkspaceCreate,
     WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspacePin, WorkspaceRecent,
     WorkspaceRef,
 };
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_settings::{SettingsPaths, SettingsStore};
 use tempfile::TempDir;
 
 // ---- harness ------------------------------------------------------------------------------
@@ -628,8 +628,8 @@ fn the_project_picker_lists_recent_projects_and_opens_one(cx: &mut TestAppContex
     // One closed project (only in the recent list) and one that is open.
     let closed_root = folders.make("quokka");
     let open_root = folders.make("wombat");
-    let opened: staffy_protocol::messages::WorkspaceOpened = daemon.call(Request::WorkspaceOpen(
-        staffy_protocol::messages::WorkspaceOpen {
+    let opened: hutan_protocol::messages::WorkspaceOpened = daemon.call(Request::WorkspaceOpen(
+        hutan_protocol::messages::WorkspaceOpen {
             path: closed_root.clone(),
             created_by: None,
         },
@@ -968,9 +968,9 @@ fn workspace_settings_layer_over_user_settings_while_their_workspace_is_active(
     let daemon = TestDaemon::start();
     let mut folders = Folders::default();
     let root = folders.make("styled");
-    std::fs::create_dir_all(root.join(".staffy")).unwrap();
+    std::fs::create_dir_all(root.join(".hutan")).unwrap();
     std::fs::write(
-        root.join(".staffy/settings.toml"),
+        root.join(".hutan/settings.toml"),
         "[terminal]\nfont_size = 20\n",
     )
     .unwrap();
@@ -995,7 +995,7 @@ fn workspace_settings_layer_over_user_settings_while_their_workspace_is_active(
 
     // The file hot-reloads while its workspace stays active.
     std::fs::write(
-        root.join(".staffy/settings.toml"),
+        root.join(".hutan/settings.toml"),
         "[terminal]\nfont_size = 24\n",
     )
     .unwrap();

@@ -7,12 +7,12 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>dev.staffy.daemon</string>
+	<string>dev.hutan.daemon</string>
 	<key>BundleProgram</key>
-	<string>Contents/MacOS/staffyd</string>
+	<string>Contents/MacOS/hutand</string>
 	<key>AssociatedBundleIdentifiers</key>
 	<array>
-		<string>dev.staffy.Staffy</string>
+		<string>dev.hutan.Hutan</string>
 	</array>
 	<key>KeepAlive</key>
 	<false/>

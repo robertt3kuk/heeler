@@ -1,5 +1,5 @@
-//! The OMP extension (`integrations/omp/staffy-agent-state.ts`) driven by a fake OMP event
-//! source under Bun, with a stand-in `staffy` that records its command lines. Skipped when
+//! The OMP extension (`integrations/omp/hutan-agent-state.ts`) driven by a fake OMP event
+//! source under Bun, with a stand-in `hutan` that records its command lines. Skipped when
 //! `bun` is not installed; the gate does not depend on it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code
@@ -18,7 +18,7 @@ fn find_bun() -> Option<PathBuf> {
 }
 
 fn extension() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/omp/staffy-agent-state.ts")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/omp/hutan-agent-state.ts")
 }
 
 const HARNESS: &str = r#"
@@ -69,12 +69,12 @@ if (Object.keys(handlers).length > 0) {
 }
 "#;
 
-/// Runs the harness and returns the lines the fake `staffy` recorded.
+/// Runs the harness and returns the lines the fake `hutan` recorded.
 fn run(env: &[(&str, &str)]) -> Option<Vec<String>> {
     let bun = find_bun()?;
     let dir = TempDir::new().unwrap();
     let log = dir.path().join("calls");
-    let fake = dir.path().join("staffy");
+    let fake = dir.path().join("hutan");
     fs::write(
         &fake,
         format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
@@ -93,9 +93,9 @@ fn run(env: &[(&str, &str)]) -> Option<Vec<String>> {
     command
         .arg("run")
         .arg(&harness)
-        .env_remove("STAFFY_ENV")
-        .env_remove("STAFFY_SESSION_ID")
-        .env("STAFFY_BIN", &fake)
+        .env_remove("HUTAN_ENV")
+        .env_remove("HUTAN_SESSION_ID")
+        .env("HUTAN_BIN", &fake)
         .env("HARNESS_CALL_LOG", &log);
     for (key, value) in env {
         command.env(key, value);
@@ -118,15 +118,15 @@ fn run(env: &[(&str, &str)]) -> Option<Vec<String>> {
 #[test]
 fn the_extension_reports_turns_approvals_and_the_resume_command() {
     let Some(calls) = run(&[
-        ("STAFFY_ENV", "1"),
-        ("STAFFY_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
+        ("HUTAN_ENV", "1"),
+        ("HUTAN_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
         ("HARNESS_EXPECT_CALLS", "7"),
     ]) else {
         eprintln!("skipping: bun is not installed");
         return;
     };
 
-    // The daemon orders reports by `seq`, not by arrival: a report whose `staffy` process is
+    // The daemon orders reports by `seq`, not by arrival: a report whose `hutan` process is
     // slow to start is overtaken once the extension's per-call timeout lets the next one go.
     let seq_of = |call: &String| -> u64 {
         call.split_whitespace()
@@ -197,7 +197,7 @@ fn the_extension_reports_turns_approvals_and_the_resume_command() {
 }
 
 #[test]
-fn outside_staffy_the_extension_does_nothing() {
+fn outside_hutan_the_extension_does_nothing() {
     let Some(calls) = run(&[]) else {
         eprintln!("skipping: bun is not installed");
         return;

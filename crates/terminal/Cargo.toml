@@ -1,6 +1,6 @@
 [package]
-name = "staffy-terminal"
-description = "Staffy terminal: PTY ownership, VT engine, render tracking (ADR 0004)"
+name = "hutan-terminal"
+description = "Hutan terminal: PTY ownership, VT engine, render tracking (ADR 0004)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
-staffy-protocol.workspace = true
+hutan-protocol.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 portable-pty.workspace = true

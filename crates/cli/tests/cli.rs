@@ -1,5 +1,5 @@
-//! Runs the real `staffy` binary against a real `staffyd`: in-process on a temporary
-//! `STAFFY_HOME` for most commands, a spawned `staffyd` process for `daemon start`/`stop`.
+//! Runs the real `hutan` binary against a real `hutand`: in-process on a temporary
+//! `HUTAN_HOME` for most commands, a spawned `hutand` process for `daemon start`/`stop`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 
@@ -8,7 +8,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use common::{STAFFY, TestDaemon, WAIT, command, finish, staffy, staffyd_dir};
+use common::{HUTAN, TestDaemon, WAIT, command, finish, hutan, hutand_dir};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -25,7 +25,7 @@ fn missing_socket() -> (TempDir, PathBuf) {
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_status_json_reports_the_running_daemon() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["daemon", "status", "--json"]).await;
+    let out = t.hutan(&["daemon", "status", "--json"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     let status = out.json();
     assert_eq!(status["running"], true);
@@ -40,7 +40,7 @@ async fn daemon_status_json_reports_the_running_daemon() {
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_status_human_output() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["daemon", "status"]).await;
+    let out = t.hutan(&["daemon", "status"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert!(
         out.stdout.contains(&format!("pid {}", std::process::id())),
@@ -51,26 +51,26 @@ async fn daemon_status_human_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn socket_is_found_through_staffy_home_and_staffy_socket() {
+async fn socket_is_found_through_hutan_home_and_hutan_socket() {
     let t = TestDaemon::start().await;
 
-    let mut by_home = command(Path::new(STAFFY), None, &["daemon", "status", "--json"]);
-    by_home.env("STAFFY_HOME", &t.paths.base);
+    let mut by_home = command(Path::new(HUTAN), None, &["daemon", "status", "--json"]);
+    by_home.env("HUTAN_HOME", &t.paths.base);
     let out = finish(by_home).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["pid"], std::process::id());
 
     let (_dir, nowhere) = missing_socket();
-    let mut by_socket = command(Path::new(STAFFY), None, &["daemon", "status", "--json"]);
+    let mut by_socket = command(Path::new(HUTAN), None, &["daemon", "status", "--json"]);
     by_socket
-        .env("STAFFY_HOME", nowhere.parent().unwrap())
-        .env("STAFFY_SOCKET", &t.paths.socket);
+        .env("HUTAN_HOME", nowhere.parent().unwrap())
+        .env("HUTAN_SOCKET", &t.paths.socket);
     let out = finish(by_socket).await;
     assert_eq!(out.code, 0, "{out:?}");
 
     // --socket beats the environment.
-    let mut flag = command(Path::new(STAFFY), None, &["daemon", "status"]);
-    flag.env("STAFFY_SOCKET", &nowhere)
+    let mut flag = command(Path::new(HUTAN), None, &["daemon", "status"]);
+    flag.env("HUTAN_SOCKET", &nowhere)
         .arg("--socket")
         .arg(&t.paths.socket);
     assert_eq!(finish(flag).await.code, 0);
@@ -83,7 +83,7 @@ async fn socket_is_found_through_staffy_home_and_staffy_socket() {
 async fn ws_new_then_ls_json() {
     let t = TestDaemon::start().await;
     let created = t
-        .staffy(&[
+        .hutan(&[
             "ws", "new", "alpha", "--root", "/srv/a", "--root", "rel/b", "--json",
         ])
         .await;
@@ -98,8 +98,8 @@ async fn ws_new_then_ls_json() {
         "relative roots are resolved against the caller's directory"
     );
 
-    t.staffy(&["ws", "new", "beta"]).await;
-    let list = t.staffy(&["ws", "ls", "--all", "--json"]).await;
+    t.hutan(&["ws", "new", "beta"]).await;
+    let list = t.hutan(&["ws", "ls", "--all", "--json"]).await;
     assert_eq!(list.code, 0, "{list:?}");
     let workspaces = list.json()["workspaces"].clone();
     let names: Vec<_> = workspaces
@@ -112,7 +112,7 @@ async fn ws_new_then_ls_json() {
     assert_eq!(names, ["Home", "alpha", "beta"]);
     assert_eq!(workspaces[1]["id"], id);
 
-    let human = t.staffy(&["ws", "ls", "--all"]).await;
+    let human = t.hutan(&["ws", "ls", "--all"]).await;
     assert!(human.stdout.contains(&id), "{human:?}");
     assert!(human.stdout.contains("alpha"), "{human:?}");
     t.stop().await;
@@ -121,11 +121,11 @@ async fn ws_new_then_ls_json() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_ls_on_a_fresh_daemon_shows_home() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["ws", "ls"]).await;
+    let out = t.hutan(&["ws", "ls"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.stdout.lines().count(), 2, "header and one row: {out:?}");
     assert!(out.stdout.lines().nth(1).unwrap().contains("Home"));
-    let out = t.staffy(&["ws", "ls", "--json"]).await.json();
+    let out = t.hutan(&["ws", "ls", "--json"]).await.json();
     assert_eq!(out["workspaces"].as_array().unwrap().len(), 1);
     t.stop().await;
 }
@@ -133,19 +133,19 @@ async fn ws_ls_on_a_fresh_daemon_shows_home() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_rename_and_close() {
     let t = TestDaemon::start().await;
-    let created = t.staffy(&["ws", "new", "old", "--json"]).await.json();
+    let created = t.hutan(&["ws", "new", "old", "--json"]).await.json();
     let id = created["id"].as_str().unwrap();
 
-    let renamed = t.staffy(&["ws", "rename", id, "fresh", "--json"]).await;
+    let renamed = t.hutan(&["ws", "rename", id, "fresh", "--json"]).await;
     assert_eq!(renamed.code, 0, "{renamed:?}");
     assert_eq!(renamed.json()["name"], "fresh");
-    let human = t.staffy(&["ws", "rename", id, "again"]).await;
+    let human = t.hutan(&["ws", "rename", id, "again"]).await;
     assert!(human.stdout.contains("again"), "{human:?}");
 
-    let closed = t.staffy(&["ws", "close", id, "--json"]).await;
+    let closed = t.hutan(&["ws", "close", id, "--json"]).await;
     assert_eq!(closed.code, 0, "{closed:?}");
     assert_eq!(closed.json(), json!({"workspace_id": id, "closed": true}));
-    let list = t.staffy(&["ws", "ls", "--json"]).await.json();
+    let list = t.hutan(&["ws", "ls", "--json"]).await.json();
     assert_eq!(list["workspaces"].as_array().unwrap().len(), 1);
     assert_eq!(list["workspaces"][0]["name"], "Home");
     t.stop().await;
@@ -155,11 +155,11 @@ async fn ws_rename_and_close() {
 async fn remote_errors_exit_1_with_the_code_on_stderr() {
     let t = TestDaemon::start().await;
     let unknown = "01J00000000000000000000000";
-    let out = t.staffy(&["ws", "close", unknown]).await;
+    let out = t.hutan(&["ws", "close", unknown]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
-    assert!(out.stderr.starts_with("staffy: not_found:"), "{out:?}");
-    let out = t.staffy(&["ws", "rename", unknown, "x"]).await;
+    assert!(out.stderr.starts_with("hutan: not_found:"), "{out:?}");
+    let out = t.hutan(&["ws", "rename", unknown, "x"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     t.stop().await;
 }
@@ -169,7 +169,7 @@ async fn remote_errors_exit_1_with_the_code_on_stderr() {
 #[tokio::test(flavor = "multi_thread")]
 async fn api_daemon_status_prints_the_result() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["api", "daemon.status"]).await;
+    let out = t.hutan(&["api", "daemon.status"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     let result = out.json();
     assert_eq!(result["pid"], std::process::id());
@@ -179,7 +179,7 @@ async fn api_daemon_status_prints_the_result() {
         "human output is pretty-printed"
     );
 
-    let compact = t.staffy(&["api", "daemon.status", "--json"]).await;
+    let compact = t.hutan(&["api", "daemon.status", "--json"]).await;
     assert_eq!(compact.stdout.lines().count(), 1, "{compact:?}");
     t.stop().await;
 }
@@ -188,7 +188,7 @@ async fn api_daemon_status_prints_the_result() {
 async fn api_passes_params_through() {
     let t = TestDaemon::start().await;
     let out = t
-        .staffy(&[
+        .hutan(&[
             "api",
             "workspace.create",
             r#"{"name": "via-api", "roots": ["/x"]}"#,
@@ -197,7 +197,7 @@ async fn api_passes_params_through() {
         .await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["name"], "via-api");
-    let list = t.staffy(&["api", "workspace.list", "{}", "--json"]).await;
+    let list = t.hutan(&["api", "workspace.list", "{}", "--json"]).await;
     assert_eq!(list.json()["workspaces"][1]["roots"], json!(["/x"]));
     t.stop().await;
 }
@@ -205,19 +205,19 @@ async fn api_passes_params_through() {
 #[tokio::test(flavor = "multi_thread")]
 async fn api_error_bodies_go_to_stdout_with_exit_1() {
     let t = TestDaemon::start().await;
-    let unknown_method = t.staffy(&["api", "no.such.method", "--json"]).await;
+    let unknown_method = t.hutan(&["api", "no.such.method", "--json"]).await;
     assert_eq!(unknown_method.code, 1, "{unknown_method:?}");
     assert_eq!(unknown_method.json()["code"], "bad_request");
     assert!(unknown_method.stderr.is_empty(), "{unknown_method:?}");
 
     let bad_params = t
-        .staffy(&["api", "workspace.create", r#"{"nope": 1}"#, "--json"])
+        .hutan(&["api", "workspace.create", r#"{"nope": 1}"#, "--json"])
         .await;
     assert_eq!(bad_params.code, 1, "{bad_params:?}");
     assert_eq!(bad_params.json()["code"], "bad_request");
 
     let remote = t
-        .staffy(&[
+        .hutan(&[
             "api",
             "workspace.close",
             r#"{"workspace_id": "01J00000000000000000000000"}"#,
@@ -233,7 +233,7 @@ async fn api_error_bodies_go_to_stdout_with_exit_1() {
 #[tokio::test(flavor = "multi_thread")]
 async fn api_params_that_are_not_json_are_a_usage_error() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["api", "daemon.status", "{not json"]).await;
+    let out = t.hutan(&["api", "daemon.status", "{not json"]).await;
     assert_eq!(out.code, 2, "{out:?}");
     assert!(out.stderr.contains("not valid JSON"), "{out:?}");
     t.stop().await;
@@ -244,8 +244,8 @@ async fn api_params_that_are_not_json_are_a_usage_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn events_without_follow_prints_current_state_and_exits() {
     let t = TestDaemon::start().await;
-    t.staffy(&["ws", "new", "one"]).await;
-    let out = t.staffy(&["events"]).await;
+    t.hutan(&["ws", "new", "one"]).await;
+    let out = t.hutan(&["events"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     let lines: Vec<Value> = out
         .stdout
@@ -263,9 +263,9 @@ async fn events_without_follow_prints_current_state_and_exits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn events_follow_streams_new_events_as_json_lines() {
     let t = TestDaemon::start().await;
-    t.staffy(&["ws", "new", "before"]).await;
+    t.hutan(&["ws", "new", "before"]).await;
 
-    let mut child = command(Path::new(STAFFY), None, &["events", "--follow"])
+    let mut child = command(Path::new(HUTAN), None, &["events", "--follow"])
         .arg("--socket")
         .arg(&t.paths.socket)
         .stdout(Stdio::piped())
@@ -280,7 +280,7 @@ async fn events_follow_streams_new_events_as_json_lines() {
     assert_eq!(next().await["data"]["workspace"]["name"], "Home");
     let first = next().await;
     assert_eq!(first["data"]["workspace"]["name"], "before");
-    t.staffy(&["ws", "new", "after"]).await;
+    t.hutan(&["ws", "new", "after"]).await;
     let second = next().await;
     assert_eq!(second["event"], "workspace.updated");
     assert_eq!(second["data"]["workspace"]["name"], "after");
@@ -295,7 +295,7 @@ async fn events_follow_streams_new_events_as_json_lines() {
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_stop_shuts_the_daemon_down() {
     let t = TestDaemon::start().await;
-    let out = t.staffy(&["daemon", "stop", "--json"]).await;
+    let out = t.hutan(&["daemon", "stop", "--json"]).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json(), json!({"stopped": true}));
     assert!(!t.paths.socket.exists());
@@ -315,11 +315,11 @@ async fn unreachable_daemon_exits_3() {
         &["api", "daemon.status"],
         &["events"],
     ] {
-        let out = staffy(&socket, args).await;
+        let out = hutan(&socket, args).await;
         assert_eq!(out.code, 3, "{args:?}: {out:?}");
-        assert!(out.stderr.contains("staffy daemon start"), "{out:?}");
+        assert!(out.stderr.contains("hutan daemon start"), "{out:?}");
     }
-    let json = staffy(&socket, &["daemon", "status", "--json"]).await;
+    let json = hutan(&socket, &["daemon", "status", "--json"]).await;
     assert_eq!(json.code, 3);
     assert_eq!(json.json()["running"], false);
 }
@@ -330,7 +330,7 @@ async fn stale_socket_file_counts_as_unreachable() {
     let stale = t.paths.base.join("stale.sock");
     drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
     assert!(stale.exists());
-    let out = staffy(&stale, &["daemon", "status"]).await;
+    let out = hutan(&stale, &["daemon", "status"]).await;
     assert_eq!(out.code, 3, "{out:?}");
     t.stop().await;
 }
@@ -348,19 +348,19 @@ async fn usage_errors_exit_2() {
         &["daemon", "status", "--bogus"],
         &["api"],
     ] {
-        let out = staffy(&socket, args).await;
+        let out = hutan(&socket, args).await;
         assert_eq!(out.code, 2, "{args:?}: {out:?}");
         assert!(out.stdout.is_empty(), "{out:?}");
     }
-    let help = staffy(&socket, &["--help"]).await;
+    let help = hutan(&socket, &["--help"]).await;
     assert_eq!(help.code, 0);
     assert!(help.stdout.contains("daemon"));
 }
 
-// daemon start (real staffyd process) -------------------------------------------------------
+// daemon start (real hutand process) -------------------------------------------------------
 
 /// Stops a spawned daemon even when the test fails — also one that never got as far as
-/// accepting connections, which `daemon stop` cannot reach: the pid in `staffyd.lock` gets a
+/// accepting connections, which `daemon stop` cannot reach: the pid in `hutand.lock` gets a
 /// SIGTERM, then a SIGKILL if it is still there.
 struct DaemonGuard {
     home: PathBuf,
@@ -368,12 +368,12 @@ struct DaemonGuard {
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(STAFFY)
+        let _ = std::process::Command::new(HUTAN)
             .args(["daemon", "stop", "--stop-sessions"])
-            .env("STAFFY_HOME", &self.home)
-            .env_remove("STAFFY_SOCKET")
+            .env("HUTAN_HOME", &self.home)
+            .env_remove("HUTAN_SOCKET")
             .output();
-        let Some(pid) = std::fs::read_to_string(self.home.join("staffyd.lock"))
+        let Some(pid) = std::fs::read_to_string(self.home.join("hutand.lock"))
             .ok()
             .and_then(|text| text.trim().parse::<u32>().ok())
         else {
@@ -402,15 +402,15 @@ impl Drop for DaemonGuard {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn daemon_start_status_stop_with_staffyd_beside_staffy() {
-    staffyd_dir();
+async fn daemon_start_status_stop_with_hutand_beside_hutan() {
+    hutand_dir();
     let home = tempfile::tempdir().unwrap();
     let _guard = DaemonGuard {
         home: home.path().to_owned(),
     };
     let run = |args: &'static [&'static str]| {
-        let mut cmd = command(Path::new(STAFFY), None, args);
-        cmd.env("STAFFY_HOME", home.path());
+        let mut cmd = command(Path::new(HUTAN), None, args);
+        cmd.env("HUTAN_HOME", home.path());
         finish(cmd)
     };
 
@@ -428,14 +428,14 @@ async fn daemon_start_status_stop_with_staffyd_beside_staffy() {
 
     let status = run(&["daemon", "status", "--json"]).await;
     assert_eq!(status.json()["pid"], pid);
-    assert!(home.path().join("staffyd.sock").exists());
+    assert!(home.path().join("hutand.sock").exists());
 
     let ws = run(&["ws", "new", "real", "--json"]).await;
     assert_eq!(ws.code, 0, "{ws:?}");
 
     let stopped = run(&["daemon", "stop"]).await;
     assert_eq!(stopped.code, 0, "{stopped:?}");
-    assert!(!home.path().join("staffyd.sock").exists());
+    assert!(!home.path().join("hutand.sock").exists());
     assert_eq!(run(&["daemon", "status"]).await.code, 3);
 
     // A fresh start after a stop works (the lock was released).
@@ -445,47 +445,47 @@ async fn daemon_start_status_stop_with_staffyd_beside_staffy() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn daemon_start_finds_staffyd_on_path() {
-    let bin_dir = staffyd_dir();
+async fn daemon_start_finds_hutand_on_path() {
+    let bin_dir = hutand_dir();
     let home = tempfile::tempdir().unwrap();
     let _guard = DaemonGuard {
         home: home.path().to_owned(),
     };
-    // A copy of `staffy` somewhere without a sibling staffyd.
+    // A copy of `hutan` somewhere without a sibling hutand.
     let lonely = tempfile::tempdir().unwrap();
-    let copy = lonely.path().join("staffy");
-    std::fs::copy(STAFFY, &copy).unwrap();
+    let copy = lonely.path().join("hutan");
+    std::fs::copy(HUTAN, &copy).unwrap();
 
     let mut missing = command(&copy, None, &["daemon", "start"]);
     missing
-        .env("STAFFY_HOME", home.path())
+        .env("HUTAN_HOME", home.path())
         .env("PATH", lonely.path());
     let out = finish(missing).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(
-        out.stderr.contains("staffyd not found") && out.stderr.contains("PATH"),
+        out.stderr.contains("hutand not found") && out.stderr.contains("PATH"),
         "{out:?}"
     );
 
     let mut found = command(&copy, None, &["daemon", "start", "--json"]);
-    found.env("STAFFY_HOME", home.path()).env("PATH", &bin_dir);
+    found.env("HUTAN_HOME", home.path()).env("PATH", &bin_dir);
     let out = finish(found).await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["started"], true);
 }
 
-// daemon restart (real staffyd process) ------------------------------------------------------
+// daemon restart (real hutand process) ------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_restart_without_sessions_gives_a_new_daemon() {
-    staffyd_dir();
+    hutand_dir();
     let home = tempfile::tempdir().unwrap();
     let _guard = DaemonGuard {
         home: home.path().to_owned(),
     };
     let run = |args: &'static [&'static str]| {
-        let mut cmd = command(Path::new(STAFFY), None, args);
-        cmd.env("STAFFY_HOME", home.path());
+        let mut cmd = command(Path::new(HUTAN), None, args);
+        cmd.env("HUTAN_HOME", home.path());
         finish(cmd)
     };
 
@@ -535,19 +535,19 @@ async fn daemon_restart_without_sessions_gives_a_new_daemon() {
     assert_eq!(status["epoch"], second["epoch"]);
 
     let human = run(&["daemon", "restart"]).await.ok();
-    assert!(human.stdout.starts_with("restarted: staffyd"), "{human:?}");
+    assert!(human.stdout.starts_with("restarted: hutand"), "{human:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
-    staffyd_dir();
+    hutand_dir();
     let home = tempfile::tempdir().unwrap();
     let _guard = DaemonGuard {
         home: home.path().to_owned(),
     };
     let run = |args: &'static [&'static str]| {
-        let mut cmd = command(Path::new(STAFFY), None, args);
-        cmd.env("STAFFY_HOME", home.path());
+        let mut cmd = command(Path::new(HUTAN), None, args);
+        cmd.env("HUTAN_HOME", home.path());
         finish(cmd)
     };
 

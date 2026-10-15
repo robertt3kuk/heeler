@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{App, BackgroundExecutor, Context, SharedString, Task, Window};
+use hutan_client::{ClientError, Connection, ConnectionState, StoreState};
+use hutan_protocol::ErrorCode;
+use hutan_protocol::messages::{DaemonShutdown, DaemonStatusInfo, Empty, Request};
 use serde_json::Value;
-use staffy_client::{ClientError, Connection, ConnectionState, StoreState};
-use staffy_protocol::ErrorCode;
-use staffy_protocol::messages::{DaemonShutdown, DaemonStatusInfo, Empty, Request};
 use tokio::sync::watch;
 
 use super::modal::{Modal, ModalCheckbox, ModalChoice};
@@ -41,9 +41,9 @@ pub enum DaemonBusy {
 impl DaemonBusy {
     fn label(self) -> &'static str {
         match self {
-            DaemonBusy::Stopping => "stopping staffyd…",
-            DaemonBusy::Starting => "starting staffyd…",
-            DaemonBusy::Restarting => "restarting staffyd…",
+            DaemonBusy::Stopping => "stopping hutand…",
+            DaemonBusy::Starting => "starting hutand…",
+            DaemonBusy::Restarting => "restarting hutand…",
         }
     }
 }
@@ -69,7 +69,7 @@ pub(crate) struct DaemonControl {
     menu: Option<DaemonMenu>,
     task: Option<Task<()>>,
     fetch: Option<Task<()>>,
-    /// `staffyd.log`, as `Open Logs` reveals it and the popover shows it.
+    /// `hutand.log`, as `Open Logs` reveals it and the popover shows it.
     pub log_path: Option<PathBuf>,
     /// Reveals a file in Finder (also for workspace folders).
     pub reveal: RevealHandler,
@@ -93,9 +93,9 @@ impl DaemonControl {
     }
 }
 
-/// `staffyd.log` where the daemon writes it, next to `desktop.log` ([`crate::crash::log_dir`]).
+/// `hutand.log` where the daemon writes it, next to `desktop.log` ([`crate::crash::log_dir`]).
 pub fn log_file() -> Option<PathBuf> {
-    crate::crash::log_dir().map(|dir| dir.join("staffyd.log"))
+    crate::crash::log_dir().map(|dir| dir.join("hutand.log"))
 }
 
 fn sessions_phrase(live: usize) -> String {
@@ -125,7 +125,7 @@ async fn shutdown_and_wait(
             .spawn(async move { wait_socket_gone(&socket, STOP_WAIT) })
             .await;
         if !gone {
-            tracing::warn!("staffyd accepted the shutdown but its socket is still there");
+            tracing::warn!("hutand accepted the shutdown but its socket is still there");
         }
     }
     Ok(())
@@ -220,7 +220,7 @@ impl Workbench {
         connection_label(state)
     }
 
-    /// The text of the connection status item ("staffyd connected", "staffyd stopped", …).
+    /// The text of the connection status item ("hutand connected", "hutand stopped", …).
     pub fn daemon_status_line(&self, cx: &App) -> String {
         self.daemon_line(cx).0
     }
@@ -342,7 +342,7 @@ impl Workbench {
         self.open_confirm(
             "Stop the daemon?",
             format!(
-                "{} will be stopped with the daemon. Staffy stays open.",
+                "{} will be stopped with the daemon. Hutan stays open.",
                 sessions_phrase(live)
             ),
             "Stop Sessions & Daemon",
@@ -380,7 +380,7 @@ impl Workbench {
         );
     }
 
-    /// `daemon::Start`: starts `staffyd` and reconnects.
+    /// `daemon::Start`: starts `hutand` and reconnects.
     pub fn start_daemon(&mut self, cx: &mut Context<Self>) {
         if self.daemon.busy.is_some() {
             return;
@@ -392,7 +392,7 @@ impl Workbench {
         self.begin_start(false, cx);
     }
 
-    /// `daemon::OpenLogs`: reveals `staffyd.log` in Finder. Nothing else happens.
+    /// `daemon::OpenLogs`: reveals `hutand.log` in Finder. Nothing else happens.
     pub fn open_daemon_logs(&mut self, cx: &mut Context<Self>) {
         match self.daemon.log_path.clone() {
             Some(path) if path.is_file() => (self.daemon.reveal)(&path, cx),
@@ -403,7 +403,7 @@ impl Workbench {
         }
     }
 
-    /// Where `Open Logs` looks for `staffyd.log` (default: the daemon's own log location).
+    /// Where `Open Logs` looks for `hutand.log` (default: the daemon's own log location).
     pub fn set_daemon_log_path(&mut self, path: PathBuf) {
         self.daemon.log_path = Some(path);
     }
@@ -459,7 +459,7 @@ impl Workbench {
         }
     }
 
-    /// Allows autostart again (which reconnects at once and starts `staffyd`) and waits for the
+    /// Allows autostart again (which reconnects at once and starts `hutand`) and waits for the
     /// connection.
     fn begin_start(&mut self, restarting: bool, cx: &mut Context<Self>) {
         let connection = self.connection(cx);
@@ -544,12 +544,12 @@ impl Workbench {
     fn open_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live_sessions(cx);
         let message = format!(
-            "{} still running. Keep them running in the background (staffyd keeps them), \
+            "{} still running. Keep them running in the background (hutand keeps them), \
              or stop them together with the daemon?",
             sessions_phrase(live)
         );
         let modal = Modal {
-            title: "Quit Staffy?".into(),
+            title: "Quit Hutan?".into(),
             message: SharedString::from(message),
             confirm_label: "Keep sessions running".into(),
             input: None,

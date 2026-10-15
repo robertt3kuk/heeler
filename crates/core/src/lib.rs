@@ -1,4 +1,4 @@
-//! Staffy domain types: identifiers, session lifecycle, the agent event model, and the agent
+//! Hutan domain types: identifiers, session lifecycle, the agent event model, and the agent
 //! observation tree. No I/O lives here.
 
 pub mod agent;

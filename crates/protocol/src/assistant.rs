@@ -5,8 +5,8 @@
 //! `chat.agent = "assistant"`. Its scope follows from its workspace: the Home workspace has the
 //! `global` assistant, every other workspace has `workspace` ones.
 
+use hutan_core::{AgentEvent, TerminalId, WorkspaceId};
 use serde::{Deserialize, Serialize};
-use staffy_core::{AgentEvent, TerminalId, WorkspaceId};
 
 use crate::messages::SessionInfo;
 
@@ -132,7 +132,7 @@ pub enum Attachment {
     /// scrollback.
     ShellRecent { terminal_id: TerminalId, lines: u32 },
     /// The last `last_turns` (1 to [`TRANSCRIPT_MAX_TURNS`]) turns of a conversation:
-    /// a Staffy chat session id (read from its journal), or the id of a Claude Code, Codex or
+    /// a Hutan chat session id (read from its journal), or the id of a Claude Code, Codex or
     /// OMP session (read from the history index).
     AgentTranscript { session_id: String, last_turns: u32 },
     /// A file under the roots of the session's workspace (the Home folder for the global

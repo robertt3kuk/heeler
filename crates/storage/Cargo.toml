@@ -1,13 +1,13 @@
 [package]
-name = "staffy-storage"
-description = "Staffy durable storage: SQLite behind a single writer actor thread, embedded migrations (ADR 0006)"
+name = "hutan-storage"
+description = "Hutan durable storage: SQLite behind a single writer actor thread, embedded migrations (ADR 0006)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-staffy-core.workspace = true
+hutan-core.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

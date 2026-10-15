@@ -7,8 +7,8 @@ use gpui::{
     AnyElement, App, AppContext as _, Hsla, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
 };
-use staffy_core::{SessionId, SessionKind};
-use staffy_protocol::messages::SessionInfo;
+use hutan_core::{SessionId, SessionKind};
+use hutan_protocol::messages::SessionInfo;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

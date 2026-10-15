@@ -1,6 +1,6 @@
 [package]
-name = "staffy-index"
-description = "Staffy session history index: SQLite FTS5 over Staffy blocks and external agent transcripts, incremental scanning, redaction"
+name = "hutan-index"
+description = "Hutan session history index: SQLite FTS5 over Hutan blocks and external agent transcripts, incremental scanning, redaction"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

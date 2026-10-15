@@ -1,27 +1,27 @@
 [package]
-name = "staffy-desktop"
-description = "staffy-desktop: GPUI workbench (docks, pane tree, panels, palette, presets)"
+name = "hutan-desktop"
+description = "hutan-desktop: GPUI workbench (docks, pane tree, panels, palette, presets)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_desktop"
+name = "hutan_desktop"
 
 [[bin]]
-name = "staffy-desktop"
+name = "hutan-desktop"
 path = "src/main.rs"
 
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-staffy-chat-view.workspace = true
-staffy-client.workspace = true
-staffy-core.workspace = true
-staffy-protocol.workspace = true
-staffy-settings.workspace = true
-staffy-terminal-view.workspace = true
+hutan-chat-view.workspace = true
+hutan-client.workspace = true
+hutan-core.workspace = true
+hutan-protocol.workspace = true
+hutan-settings.workspace = true
+hutan-terminal-view.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,10 +33,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-staffy-agents.workspace = true
-staffy-daemon.workspace = true
-staffy-gateway = { workspace = true, features = ["test-support"] }
-staffy-storage.workspace = true
+hutan-agents.workspace = true
+hutan-daemon.workspace = true
+hutan-gateway = { workspace = true, features = ["test-support"] }
+hutan-storage.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

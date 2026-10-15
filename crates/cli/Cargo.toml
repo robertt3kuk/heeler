@@ -1,25 +1,25 @@
 [package]
-name = "staffy-cli"
-description = "staffy: command-line client for staffyd, and the host-terminal renderer used by attach"
+name = "hutan-cli"
+description = "hutan: command-line client for hutand, and the host-terminal renderer used by attach"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "staffy_cli"
+name = "hutan_cli"
 
 [[bin]]
-name = "staffy"
+name = "hutan"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
-staffy-client.workspace = true
-staffy-core.workspace = true
-staffy-protocol.workspace = true
+hutan-client.workspace = true
+hutan-core.workspace = true
+hutan-protocol.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
@@ -27,9 +27,9 @@ tokio = { workspace = true, features = ["rt", "macros", "signal", "sync", "time"
 unicode-width.workspace = true
 
 [dev-dependencies]
-staffy-agents.workspace = true
-staffy-daemon.workspace = true
-staffy-gateway = { workspace = true, features = ["test-support"] }
+hutan-agents.workspace = true
+hutan-daemon.workspace = true
+hutan-gateway = { workspace = true, features = ["test-support"] }
 parking_lot.workspace = true
 portable-pty.workspace = true
 tempfile.workspace = true

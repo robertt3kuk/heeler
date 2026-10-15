@@ -1,15 +1,15 @@
 //! Agent chat sessions and approvals (protocol 0.9, capability `chat.codex`; direct chats since
 //! 0.11, capability `chat.direct`): DTOs of
 //! `chat.*`, `approval.*` and their events. The event itself is the core
-//! [`AgentEvent`](staffy_core::AgentEvent).
+//! [`AgentEvent`](hutan_core::AgentEvent).
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-use staffy_core::agent::{PermissionKind, PermissionOption};
-use staffy_core::{
+use hutan_core::agent::{PermissionKind, PermissionOption};
+use hutan_core::{
     AgentEvent, ApprovalId, ApprovalPolicy, ModelInfo, SandboxMode, SessionId, TurnId, WorkspaceId,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::assistant::Attachment;
 

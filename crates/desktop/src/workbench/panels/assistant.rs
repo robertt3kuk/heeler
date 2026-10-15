@@ -17,11 +17,11 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, div, prelude::*, px,
 };
-use staffy_client::{ClientError, ConnectionState};
-use staffy_core::{SessionId, WorkspaceId};
-use staffy_protocol::ErrorCode;
-use staffy_protocol::assistant::{AGENT_ASSISTANT, AssistantOpen, AssistantScope};
-use staffy_protocol::messages::{WorkspaceInfo, WorkspaceKind};
+use hutan_client::{ClientError, ConnectionState};
+use hutan_core::{SessionId, WorkspaceId};
+use hutan_protocol::ErrorCode;
+use hutan_protocol::assistant::{AGENT_ASSISTANT, AssistantOpen, AssistantScope};
+use hutan_protocol::messages::{WorkspaceInfo, WorkspaceKind};
 
 use crate::workbench::actions::ManageProviders;
 use crate::workbench::chat::{ButtonKind, ChatModel, ChatView, ContextChip, Look, button};
@@ -267,7 +267,7 @@ impl AssistantPanel {
     fn opened(
         &mut self,
         key: ScopeKey,
-        result: Result<staffy_protocol::messages::SessionInfo, ClientError>,
+        result: Result<hutan_protocol::messages::SessionInfo, ClientError>,
         cx: &mut Context<Self>,
     ) {
         match result {
@@ -574,7 +574,7 @@ impl AssistantPanel {
         .into_any_element();
         if !self.connected(cx) {
             return self.notice(
-                "Not connected to staffyd",
+                "Not connected to hutand",
                 vec!["The assistant opens as soon as the daemon is back.".to_owned()],
                 Vec::new(),
                 look,
@@ -597,7 +597,7 @@ impl AssistantPanel {
                     message,
                     "Add a provider (and its key) in Models, then name it under [assistant] \
                      (`provider`, and `model` if it should not use the provider's default) in \
-                     the daemon's daemon.toml and restart staffyd. Staffy never picks a \
+                     the daemon's daemon.toml and restart hutand. Hutan never picks a \
                      provider or model for you, and nothing is sent anywhere until you do."
                         .to_owned(),
                 ],
@@ -605,7 +605,7 @@ impl AssistantPanel {
                 look,
             ),
             Opened::Failed(Failure::Unsupported) => self.notice(
-                "This staffyd has no assistant",
+                "This hutand has no assistant",
                 vec![
                     "Restart the daemon (Daemon → Restart) to run the version of this app."
                         .to_owned(),

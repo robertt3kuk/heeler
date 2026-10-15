@@ -3,16 +3,16 @@
 Agent: implementer   Depends on: M17-A merged (protocol 0.8; this slice takes **0.9**)   Branch: slice/M4-A
 
 ## Context
-Read `AGENTS.md`, ADR 0005 (agent integration strategy — normative), ADR 0006 (SQLite), ADR 0008 (credentials), `docs/spikes/2026-10-13-agent-protocols.md` (+ `/tmp/staffy-spikes/agents/REPORT.md` if present), `docs/roadmap.md` § M4, `docs/protocol.md`, `crates/storage`, `crates/daemon/src/{registry,restore}.rs`, M3-B agent reports (`SessionInfo.agent`), `SessionKind` in `crates/core`.
+Read `AGENTS.md`, ADR 0005 (agent integration strategy — normative), ADR 0006 (SQLite), ADR 0008 (credentials), `docs/spikes/2026-10-13-agent-protocols.md` (+ `/tmp/hutan-spikes/agents/REPORT.md` if present), `docs/roadmap.md` § M4, `docs/protocol.md`, `crates/storage`, `crates/daemon/src/{registry,restore}.rs`, M3-B agent reports (`SessionInfo.agent`), `SessionKind` in `crates/core`.
 
 Installed: `codex-cli 0.162.1` (the spike used 0.144.2 — regenerate everything from 0.162.1). `codex app-server generate-json-schema --out <dir>` / `generate-ts` produce the wire schema.
 
 ## Scope (contract changes authorized for this slice)
 - `crates/core`: the internal `AgentEvent` model exactly as ADR 0005 § Decision lists (local session/turn/item ids + provider ids, seq, ts, `live|replay`, opaque provider payload; variants message start/delta/end, reasoning, tool start/update/end, command output, file diff, permission requested/resolved with the original offered options, plan, usage with optional fields, turn completed/failed/cancelled, resume locator). `SessionKind::Chat` (or existing equivalent) for chat sessions.
-- New crate `crates/agents` (`staffy-agents`): `AgentAdapter` trait + `CodexAppServerAdapter` (spawn `codex app-server` over stdio JSON-RPC, initialize, `model/list`, `thread/start` / `thread/resume`, `turn/start`, `turn/interrupt`, notifications → `AgentEvent`, server→client approval requests → pending approvals). Typed structs only for the messages used, generated/checked against the 0.162.1 schema; unknown notifications kept as opaque payload events, never a crash. Supported version range pinned (`>=0.160, <0.170`), checked at spawn with a clear error.
-- `crates/daemon`: chat session lifecycle (create with cwd + model + approval policy + sandbox; one adapter process per chat session), **approval engine** (pending decisions in daemon state, survive client disconnect, answerable only with an offered option, expire when the turn resolves, audit rows), journal persistence (storage migration: `chat_items` / `chat_turns` / `approvals` tables — Staffy's journal is the source of history; provider resume only continues the agent), restore after daemon restart (`thread/resume` with the stored provider thread id; history shown from our journal).
+- New crate `crates/agents` (`hutan-agents`): `AgentAdapter` trait + `CodexAppServerAdapter` (spawn `codex app-server` over stdio JSON-RPC, initialize, `model/list`, `thread/start` / `thread/resume`, `turn/start`, `turn/interrupt`, notifications → `AgentEvent`, server→client approval requests → pending approvals). Typed structs only for the messages used, generated/checked against the 0.162.1 schema; unknown notifications kept as opaque payload events, never a crash. Supported version range pinned (`>=0.160, <0.170`), checked at spawn with a clear error.
+- `crates/daemon`: chat session lifecycle (create with cwd + model + approval policy + sandbox; one adapter process per chat session), **approval engine** (pending decisions in daemon state, survive client disconnect, answerable only with an offered option, expire when the turn resolves, audit rows), journal persistence (storage migration: `chat_items` / `chat_turns` / `approvals` tables — Hutan's journal is the source of history; provider resume only continues the agent), restore after daemon restart (`thread/resume` with the stored provider thread id; history shown from our journal).
 - `crates/protocol` **0.9**, capability `chat.codex`: `chat.create { workspace_id?, cwd, agent: "codex", model?, approval_policy?, sandbox? }`, `chat.send { session_id, text }`, `chat.interrupt`, `chat.history { session_id, before_seq?, limit }`, `chat.models { agent }`, `approval.list`, `approval.respond { approval_id, option_id }`; events `chat.event { session_id, event: AgentEvent DTO }` (streamed, seq'd per session; attach/replay from journal like terminals), `approval.required`, `approval.resolved`. Golden fixtures for all.
-- `crates/client` helpers + store; `crates/cli`: `staffy chat new [--cwd] [--model]`, `staffy chat send <id> "<text>" [--wait]` (prints streamed text; tool calls as one-line summaries), `staffy chat log <id>`, `staffy chat attach <id>` (live tail), `staffy approvals` + `staffy approve <id> <option>`.
+- `crates/client` helpers + store; `crates/cli`: `hutan chat new [--cwd] [--model]`, `hutan chat send <id> "<text>" [--wait]` (prints streamed text; tool calls as one-line summaries), `hutan chat log <id>`, `hutan chat attach <id>` (live tail), `hutan approvals` + `hutan approve <id> <option>`.
 - No desktop UI (M4-B).
 
 ## Testing rules
@@ -22,8 +22,8 @@ Installed: `codex-cli 0.162.1` (the spike used 0.144.2 — regenerate everything
 
 ## Acceptance
 - All tests above pass; `just check` green; protocol 0.9 documented in `docs/protocol.md`; `docs/agents.md` (new) explains the adapter, event model, approvals, journal, and how to re-record fixtures.
-- Manual: with the real Codex, `staffy chat new` → `send` a tiny prompt that triggers a command approval → `staffy approvals` shows it → `staffy approve` → reply streams; report the transcript summary (no secrets).
+- Manual: with the real Codex, `hutan chat new` → `send` a tiny prompt that triggers a command approval → `hutan approvals` shows it → `hutan approve` → reply streams; report the transcript summary (no secrets).
 - Committed on `slice/M4-A`.
 
 ## Rules
-Inline `STAFFY_HOME=<temp dir>`; never touch `/tmp/hh-*` or the real Staffy home. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase. Never commit content from the user's real `~/.codex` sessions.
+Inline `HUTAN_HOME=<temp dir>`; never touch `/tmp/hh-*` or the real Hutan home. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase. Never commit content from the user's real `~/.codex` sessions.

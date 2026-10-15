@@ -9,9 +9,9 @@ use gpui::{
     App, AppContext as _, Bounds, Context, Menu, MenuItem, SystemMenuType, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
-use staffy_client::{ConnectOptions, Connection};
-use staffy_protocol::messages::{ClientInfo, ClientKind};
-use staffy_settings::{SettingsPaths, SettingsStore};
+use hutan_client::{ConnectOptions, Connection};
+use hutan_protocol::messages::{ClientInfo, ClientKind};
+use hutan_settings::{SettingsPaths, SettingsStore};
 use std::path::{Path, PathBuf};
 
 /// What the `Daemon` menu shows: the working mode (checked) and whether the daemon is up
@@ -79,14 +79,14 @@ pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
         )
     });
     vec![
-        Menu::new("Staffy").items([
-            MenuItem::action("About Staffy", actions::About),
+        Menu::new("Hutan").items([
+            MenuItem::action("About Hutan", actions::About),
             MenuItem::separator(),
             MenuItem::action("Settings…", actions::OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Quit Staffy", actions::Quit),
+            MenuItem::action("Quit Hutan", actions::Quit),
         ]),
         Menu::new("Session").items([
             MenuItem::action("New Terminal", actions::NewTerminal),
@@ -163,7 +163,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
-            title: Some("Staffy".into()),
+            title: Some("Hutan".into()),
             appears_transparent: true,
             traffic_light_position: Some(point(px(13.0), px(11.0))),
         }),
@@ -183,35 +183,35 @@ pub fn open_workbench(
     let handle = cx.open_window(window_options, move |window, cx| {
         cx.new(|cx| {
             let workbench = Workbench::new(options, window, cx);
-            window.on_next_frame(|_, _| staffy_terminal_view::trace::startup("first_frame"));
+            window.on_next_frame(|_, _| hutan_terminal_view::trace::startup("first_frame"));
             crate::bench::start(window, cx);
             workbench
         })
     })?;
-    staffy_terminal_view::trace::startup("window_opened");
+    hutan_terminal_view::trace::startup("window_opened");
     cx.activate(true);
     Ok(handle)
 }
 
-/// `staffyd` next to the running binary (`target/debug`, an app bundle), else the name for a
+/// `hutand` next to the running binary (`target/debug`, an app bundle), else the name for a
 /// `PATH` lookup.
-pub fn staffyd_path() -> PathBuf {
-    staffyd_beside(std::env::current_exe().ok().as_deref())
+pub fn hutand_path() -> PathBuf {
+    hutand_beside(std::env::current_exe().ok().as_deref())
 }
 
-fn staffyd_beside(exe: Option<&Path>) -> PathBuf {
+fn hutand_beside(exe: Option<&Path>) -> PathBuf {
     exe.and_then(Path::parent)
-        .map(|dir| dir.join("staffyd"))
+        .map(|dir| dir.join("hutand"))
         .filter(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from("staffyd"))
+        .unwrap_or_else(|| PathBuf::from("hutand"))
 }
 
-/// Connection options of the desktop: the standard socket (`STAFFY_SOCKET` / `STAFFY_HOME`
-/// respected) with `staffyd` autostarted when nothing listens.
+/// Connection options of the desktop: the standard socket (`HUTAN_SOCKET` / `HUTAN_HOME`
+/// respected) with `hutand` autostarted when nothing listens.
 pub fn connect_options() -> ConnectOptions {
     ConnectOptions {
         socket: None,
-        autostart: Some(staffyd_path()),
+        autostart: Some(hutand_path()),
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -219,18 +219,18 @@ pub fn connect_options() -> ConnectOptions {
     }
 }
 
-/// The settings store over `settings.toml` / `keymap.toml` in the Staffy home.
+/// The settings store over `settings.toml` / `keymap.toml` in the Hutan home.
 pub fn settings_store() -> SettingsStore {
     let paths = SettingsPaths::from_env().unwrap_or_else(|err| {
         tracing::warn!("{err}; settings are kept in the temp directory");
-        SettingsPaths::in_dir(std::env::temp_dir().join("staffy"))
+        SettingsPaths::in_dir(std::env::temp_dir().join("hutan"))
     });
     SettingsStore::new(paths)
 }
 
-/// Binary entry point: `STAFFY_HOME=/tmp/x staffy-desktop`.
+/// Binary entry point: `HUTAN_HOME=/tmp/x hutan-desktop`.
 pub fn run() {
-    staffy_terminal_view::trace::startup("main");
+    hutan_terminal_view::trace::startup("main");
     if let Some(path) = crate::crash::default_log_path() {
         crate::crash::install(path);
     }
@@ -280,26 +280,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staffyd_is_found_beside_the_binary_else_on_path() {
+    fn hutand_is_found_beside_the_binary_else_on_path() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("staffy-desktop");
-        assert_eq!(staffyd_beside(Some(&exe)), PathBuf::from("staffyd"));
-        std::fs::write(dir.path().join("staffyd"), "").unwrap();
-        assert_eq!(staffyd_beside(Some(&exe)), dir.path().join("staffyd"));
-        assert_eq!(staffyd_beside(None), PathBuf::from("staffyd"));
+        let exe = dir.path().join("hutan-desktop");
+        assert_eq!(hutand_beside(Some(&exe)), PathBuf::from("hutand"));
+        std::fs::write(dir.path().join("hutand"), "").unwrap();
+        assert_eq!(hutand_beside(Some(&exe)), dir.path().join("hutand"));
+        assert_eq!(hutand_beside(None), PathBuf::from("hutand"));
     }
 
     #[test]
     fn the_desktop_of_an_app_bundle_starts_the_bundled_daemon() {
         let dir = tempfile::tempdir().unwrap();
-        let macos = dir.path().join("Staffy.app/Contents/MacOS");
+        let macos = dir.path().join("Hutan.app/Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
-        for name in ["staffy-desktop", "staffyd", "staffy"] {
+        for name in ["hutan-desktop", "hutand", "hutan"] {
             std::fs::write(macos.join(name), "").unwrap();
         }
         assert_eq!(
-            staffyd_beside(Some(&macos.join("staffy-desktop"))),
-            macos.join("staffyd")
+            hutand_beside(Some(&macos.join("hutan-desktop"))),
+            macos.join("hutand")
         );
     }
 }

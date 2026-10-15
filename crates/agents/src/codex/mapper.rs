@@ -6,14 +6,14 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
-use staffy_core::agent::{
+use hutan_core::agent::{
     FileChange, FileChangeKind, MAX_OUTPUT_BYTES, MAX_PAYLOAD_BYTES, MessageRole, NoticeLevel,
     PermissionKind, PermissionOption, PermissionOptionKind, PermissionOutcome, PlanStep,
     PlanStepStatus, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
-use staffy_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
+use hutan_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 use tracing::debug;
 
 use super::wire::{
@@ -53,7 +53,7 @@ const IGNORED: &[&str] = &[
 #[derive(Debug, Default)]
 pub struct Mapped {
     pub drafts: Vec<AgentEventDraft>,
-    /// Answer to send right away (requests Staffy does not support); approvals are answered
+    /// Answer to send right away (requests Hutan does not support); approvals are answered
     /// later through [`Mapper::answer`].
     pub reply: Option<Reply>,
 }
@@ -850,9 +850,7 @@ impl Mapper {
     fn refuse(&mut self, id: Value, method: &str, params: Value) -> Mapped {
         let notice = self.notice(
             NoticeLevel::Warning,
-            format!(
-                "the agent sent `{method}`, which Staffy does not support yet; it was declined"
-            ),
+            format!("the agent sent `{method}`, which Hutan does not support yet; it was declined"),
             &params,
         );
         Mapped {
@@ -1122,7 +1120,7 @@ fn file_change(change: &FileUpdateChange) -> FileChange {
         _ => FileChangeKind::Update,
     };
     // Added files carry their content, deleted files the old content; updates a unified diff.
-    // Staffy's model keeps the provider's text in `patch` in every case.
+    // Hutan's model keeps the provider's text in `patch` in every case.
     FileChange {
         path: change.path.clone(),
         kind,

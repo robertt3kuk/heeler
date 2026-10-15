@@ -77,7 +77,7 @@ impl Http {
             let _ = rustls::crypto::ring::default_provider().install_default();
         });
         let mut builder = Client::builder()
-            .user_agent(concat!("staffy/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("hutan/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(config.connect_timeout)
             .read_timeout(config.read_timeout)
             // A redirect could carry a vendor header (`x-api-key`) to another host.
@@ -448,7 +448,7 @@ pub fn validate_base_url(text: &str) -> Result<String, GatewayError> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(GatewayError::InvalidUrl(
-            "a base URL must not contain a user name or password; use `staffy provider key`".into(),
+            "a base URL must not contain a user name or password; use `hutan provider key`".into(),
         ));
     }
     if url.query().is_some() || url.fragment().is_some() {

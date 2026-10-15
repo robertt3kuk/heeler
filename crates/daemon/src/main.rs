@@ -1,7 +1,7 @@
-//! `staffyd`: the Staffy daemon.
+//! `hutand`: the Hutan daemon.
 //!
-//! Environment: `STAFFY_HOME` (base directory), `STAFFY_SOCKET` (socket path only),
-//! `STAFFY_LOG` or `RUST_LOG` (log filter, default `info`). Exit codes: 0 clean stop,
+//! Environment: `HUTAN_HOME` (base directory), `HUTAN_SOCKET` (socket path only),
+//! `HUTAN_LOG` or `RUST_LOG` (log filter, default `info`). Exit codes: 0 clean stop,
 //! 1 failure, 2 another daemon already holds the lock.
 
 use std::fs::OpenOptions;
@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 use anyhow::Context;
-use staffy_daemon::{DaemonConfig, DaemonError, Paths};
+use hutan_daemon::{DaemonConfig, DaemonError, Paths};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("staffyd: {error:#}");
+            eprintln!("hutand: {error:#}");
             match error.downcast_ref::<DaemonError>() {
                 Some(DaemonError::AlreadyRunning { .. }) => ExitCode::from(EXIT_ALREADY_RUNNING),
                 _ => ExitCode::FAILURE,
@@ -42,7 +42,7 @@ fn run() -> anyhow::Result<()> {
         .build()
         .context("starting the async runtime")?;
     runtime.block_on(async {
-        let daemon = staffy_daemon::start(DaemonConfig::new(paths)).await?;
+        let daemon = hutan_daemon::start(DaemonConfig::new(paths)).await?;
 
         let token = daemon.shutdown_token();
         let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
@@ -62,7 +62,7 @@ fn run() -> anyhow::Result<()> {
     })
 }
 
-/// Logs to stderr and to `staffyd.log`.
+/// Logs to stderr and to `hutand.log`.
 fn init_logging(paths: &Paths) -> anyhow::Result<()> {
     let log_path = paths.log_file();
     let file = OpenOptions::new()
@@ -70,7 +70,7 @@ fn init_logging(paths: &Paths) -> anyhow::Result<()> {
         .append(true)
         .open(&log_path)
         .with_context(|| format!("opening log file {}", log_path.display()))?;
-    let filter = EnvFilter::try_from_env("STAFFY_LOG")
+    let filter = EnvFilter::try_from_env("HUTAN_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()

@@ -1,4 +1,4 @@
-//! Harness for the `Connection` tests: an in-process daemon on a temporary `STAFFY_HOME`, a
+//! Harness for the `Connection` tests: an in-process daemon on a temporary `HUTAN_HOME`, a
 //! small Unix-socket proxy between it and the connection under test (so tests can sever the
 //! link without restarting the daemon), and a client-side model of one terminal screen.
 
@@ -10,18 +10,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use staffy_client::{
+use hutan_client::{
     Client, ConnectOptions, Connection, ConnectionState, Notice, StoreState, TerminalHandle,
     TerminalUpdate,
 };
-use staffy_core::{SessionId, TerminalId, WorkspaceId};
-use staffy_daemon::bus::RingLimits;
-use staffy_daemon::{DaemonConfig, Paths, RunningDaemon};
-use staffy_protocol::messages::{
+use hutan_core::{SessionId, TerminalId, WorkspaceId};
+use hutan_daemon::bus::RingLimits;
+use hutan_daemon::{DaemonConfig, Paths, RunningDaemon};
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, Empty, Request, SessionCreate, SessionInfo, SessionResult,
     SessionSnapshot, SessionSpec, TerminalSize, TerminalSpec, WorkspaceCreate, WorkspaceInfo,
 };
-use staffy_protocol::render::{Row, TerminalRender};
+use hutan_protocol::render::{Row, TerminalRender};
 use tempfile::TempDir;
 use tokio::io::copy_bidirectional;
 use tokio::net::{UnixListener, UnixStream};
@@ -169,7 +169,7 @@ async fn start_daemon(paths: &Paths, ring: Option<RingLimits>) -> RunningDaemon 
     if let Some(ring) = ring {
         config.ring = ring;
     }
-    staffy_daemon::start(config).await.unwrap()
+    hutan_daemon::start(config).await.unwrap()
 }
 
 pub fn size(cols: u16, rows: u16) -> TerminalSize {

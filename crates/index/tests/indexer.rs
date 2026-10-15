@@ -1,4 +1,4 @@
-//! The running indexer: FSEvents-driven indexing, Staffy records, clear, rebuild, and that
+//! The running indexer: FSEvents-driven indexing, Hutan records, clear, rebuild, and that
 //! nothing is read when no source is configured.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -7,8 +7,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use staffy_index::{
-    IndexConfig, IndexHandle, Indexer, Role, SearchQuery, SessionTextQuery, Source, StaffyRecord,
+use hutan_index::{
+    HutanRecord, IndexConfig, IndexHandle, Indexer, Role, SearchQuery, SessionTextQuery, Source,
 };
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -63,12 +63,12 @@ fn env() -> Env {
     }
 }
 
-fn config(env: &Env, staffy: bool) -> IndexConfig {
+fn config(env: &Env, hutan: bool) -> IndexConfig {
     IndexConfig {
         db_path: env.db.clone(),
         range_days: 0,
         roots: vec![(Source::Claude, env.claude.clone())],
-        staffy,
+        hutan,
     }
 }
 
@@ -140,8 +140,8 @@ fn clear_empties_the_index_and_rebuild_reads_everything_again() {
     wait_for("the startup pass", || {
         keys(&handle, "elasticsearch") == ["s"]
     });
-    assert!(handle.push_staffy(StaffyRecord {
-        session_key: "01STAFFYSESSION".to_owned(),
+    assert!(handle.push_hutan(HutanRecord {
+        session_key: "01HUTANSESSION".to_owned(),
         title: Some("shell".to_owned()),
         cwd: Some("/work/app".to_owned()),
         role: Role::Command,
@@ -150,7 +150,7 @@ fn clear_empties_the_index_and_rebuild_reads_everything_again() {
         ext_key: "b:1:1".to_owned(),
     }));
     handle.flush().unwrap();
-    assert_eq!(keys(&handle, "kubectl pods"), ["01STAFFYSESSION"]);
+    assert_eq!(keys(&handle, "kubectl pods"), ["01HUTANSESSION"]);
 
     handle.clear().unwrap();
     assert!(keys(&handle, "elasticsearch").is_empty());
@@ -161,13 +161,13 @@ fn clear_empties_the_index_and_rebuild_reads_everything_again() {
         "{status:?}"
     );
 
-    // Reads the file again: rebuild restores transcript rows, Staffy rows are gone with clear.
+    // Reads the file again: rebuild restores transcript rows, Hutan rows are gone with clear.
     handle.rebuild().unwrap();
     wait_for("the rebuild", || keys(&handle, "elasticsearch") == ["s"]);
 
-    // Staffy rows survive a rebuild.
-    assert!(handle.push_staffy(StaffyRecord {
-        session_key: "01STAFFYSESSION".to_owned(),
+    // Hutan rows survive a rebuild.
+    assert!(handle.push_hutan(HutanRecord {
+        session_key: "01HUTANSESSION".to_owned(),
         title: None,
         cwd: None,
         role: Role::Output,
@@ -180,11 +180,11 @@ fn clear_empties_the_index_and_rebuild_reads_everything_again() {
     wait_for("the second rebuild", || {
         keys(&handle, "elasticsearch") == ["s"]
     });
-    assert_eq!(keys(&handle, "pods listed"), ["01STAFFYSESSION"]);
+    assert_eq!(keys(&handle, "pods listed"), ["01HUTANSESSION"]);
 }
 
 #[test]
-fn staffy_records_are_replaced_by_their_key_and_redacted() {
+fn hutan_records_are_replaced_by_their_key_and_redacted() {
     let env = env();
     let indexer = Indexer::start(IndexConfig {
         roots: Vec::new(),
@@ -192,7 +192,7 @@ fn staffy_records_are_replaced_by_their_key_and_redacted() {
     })
     .unwrap();
     let handle = indexer.handle();
-    let record = |text: &str| StaffyRecord {
+    let record = |text: &str| HutanRecord {
         session_key: "S1".to_owned(),
         title: Some("build".to_owned()),
         cwd: Some("/work/app".to_owned()),
@@ -201,27 +201,27 @@ fn staffy_records_are_replaced_by_their_key_and_redacted() {
         text: text.to_owned(),
         ext_key: "b:3:1790000000000".to_owned(),
     };
-    handle.push_staffy(record("compiling widgets with token=abcdef0123456789xyz"));
+    handle.push_hutan(record("compiling widgets with token=abcdef0123456789xyz"));
     handle.flush().unwrap();
     assert_eq!(keys(&handle, "widgets"), ["S1"]);
     assert!(keys(&handle, "abcdef0123456789xyz").is_empty());
 
-    handle.push_staffy(record("compiling gadgets"));
+    handle.push_hutan(record("compiling gadgets"));
     handle.flush().unwrap();
     assert!(keys(&handle, "widgets").is_empty());
     assert_eq!(keys(&handle, "gadgets"), ["S1"]);
     let status = handle.status().unwrap();
-    let staffy = status
+    let hutan = status
         .sources
         .iter()
-        .find(|s| s.source == Source::Staffy)
+        .find(|s| s.source == Source::Hutan)
         .unwrap();
-    assert_eq!(staffy.rows, 1);
-    assert!(staffy.last_indexed_ms.is_some());
+    assert_eq!(hutan.rows, 1);
+    assert!(hutan.last_indexed_ms.is_some());
 }
 
 #[test]
-fn staffy_records_are_ignored_when_the_source_is_off() {
+fn hutan_records_are_ignored_when_the_source_is_off() {
     let env = env();
     let indexer = Indexer::start(IndexConfig {
         roots: Vec::new(),
@@ -229,7 +229,7 @@ fn staffy_records_are_ignored_when_the_source_is_off() {
     })
     .unwrap();
     let handle = indexer.handle();
-    handle.push_staffy(StaffyRecord {
+    handle.push_hutan(HutanRecord {
         session_key: "S1".to_owned(),
         title: None,
         cwd: None,
@@ -307,7 +307,7 @@ fn stopping_joins_the_worker_and_further_calls_fail() {
     handle.flush().unwrap();
     indexer.stop();
     assert!(handle.flush().is_err());
-    assert!(!handle.push_staffy(StaffyRecord {
+    assert!(!handle.push_hutan(HutanRecord {
         session_key: "S".to_owned(),
         title: None,
         cwd: None,
@@ -336,7 +336,7 @@ fn the_rows_of_a_session_come_back_in_conversation_order_filtered_and_bounded() 
     .into_iter()
     .enumerate()
     {
-        handle.push_staffy(StaffyRecord {
+        handle.push_hutan(HutanRecord {
             session_key: "CHAT".to_owned(),
             title: Some("A chat".to_owned()),
             cwd: None,
@@ -388,7 +388,7 @@ fn the_rows_of_a_session_come_back_in_conversation_order_filtered_and_bounded() 
         handle
             .session_text(&SessionTextQuery {
                 key: "conv".to_owned(),
-                sources: vec![Source::Staffy],
+                sources: vec![Source::Hutan],
                 roles: Vec::new(),
                 limit: 10,
             })

@@ -1,10 +1,10 @@
-//! Finding local model servers: on request (`provider.discover`), never on a timer, Staffy asks
+//! Finding local model servers: on request (`provider.discover`), never on a timer, Hutan asks
 //! the two well-known loopback ports whether a server is there and which models it has.
 
 use std::time::Duration;
 
 use futures::future::join_all;
-use staffy_core::ModelInfo;
+use hutan_core::ModelInfo;
 
 use crate::error::GatewayError;
 use crate::http::{Http, HttpConfig};
@@ -20,7 +20,7 @@ pub struct ProbeTarget {
     pub base_url: String,
 }
 
-/// The servers Staffy knows by port: Ollama on 11434, LM Studio on 1234.
+/// The servers Hutan knows by port: Ollama on 11434, LM Studio on 1234.
 pub fn default_targets() -> Vec<ProbeTarget> {
     vec![
         ProbeTarget {

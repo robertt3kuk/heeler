@@ -5,7 +5,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use staffy_core::{Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
+use hutan_core::{Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
 use tempfile::TempDir;
 
 use crate::migrate::Migration;
@@ -14,10 +14,10 @@ use crate::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, ProviderRow,
     RecentProject, SessionRow, Storage, StorageError, WorkspaceKind, WorkspaceRow, Write, migrate,
 };
-use staffy_core::ApprovalId;
+use hutan_core::ApprovalId;
 
 fn db(dir: &TempDir) -> PathBuf {
-    dir.path().join("staffy.db")
+    dir.path().join("hutan.db")
 }
 
 fn workspace(name: &str, position: i64) -> WorkspaceRow {
@@ -181,7 +181,7 @@ fn a_backup_is_made_before_a_pending_migration() {
     assert_eq!(files.len(), 1, "{files:?}");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
-        name.starts_with("staffy-") && name.ends_with("-v2.db"),
+        name.starts_with("hutan-") && name.ends_with("-v2.db"),
         "{name}"
     );
     // The backup is the pre-migration database: version 1, data present, no `extra` table.
@@ -255,7 +255,7 @@ fn only_the_newest_five_backups_are_kept() {
     let backup_dir = dir.path().join("backups");
     fs::create_dir_all(&backup_dir).unwrap();
     for stamp in 1..=7_u64 {
-        fs::write(backup_dir.join(format!("staffy-{stamp:013}-v1.db")), b"old").unwrap();
+        fs::write(backup_dir.join(format!("hutan-{stamp:013}-v1.db")), b"old").unwrap();
     }
     fs::write(backup_dir.join("notes.txt"), b"not a backup").unwrap();
 
@@ -268,7 +268,7 @@ fn only_the_newest_five_backups_are_kept() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(
-        names.iter().filter(|n| n.starts_with("staffy-")).count(),
+        names.iter().filter(|n| n.starts_with("hutan-")).count(),
         5,
         "{names:?}"
     );
@@ -277,8 +277,8 @@ fn only_the_newest_five_backups_are_kept() {
         "foreign files stay: {names:?}"
     );
     // The oldest fakes went; the new backup (current time) is the newest.
-    assert!(!names.contains(&"staffy-0000000000001-v1.db".to_owned()));
-    assert!(names.iter().any(|n| n.as_str() > "staffy-0001000000000"));
+    assert!(!names.contains(&"hutan-0000000000001-v1.db".to_owned()));
+    assert!(names.iter().any(|n| n.as_str() > "hutan-0001000000000"));
 }
 
 #[test]
@@ -717,8 +717,8 @@ fn killing_the_process_mid_batch_leaves_the_database_consistent() {
     let ws_id = WorkspaceId::new();
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["tests::crash_child", "--exact", "--nocapture"])
-        .env("STAFFY_STORAGE_CRASH_DB", &path)
-        .env("STAFFY_STORAGE_CRASH_WS", ws_id.to_string())
+        .env("HUTAN_STORAGE_CRASH_DB", &path)
+        .env("HUTAN_STORAGE_CRASH_WS", ws_id.to_string())
         .output()
         .unwrap();
     assert_eq!(
@@ -750,8 +750,8 @@ fn killing_the_process_mid_batch_leaves_the_database_consistent() {
 #[test]
 fn crash_child() {
     let (Some(path), Some(ws)) = (
-        std::env::var_os("STAFFY_STORAGE_CRASH_DB"),
-        std::env::var("STAFFY_STORAGE_CRASH_WS").ok(),
+        std::env::var_os("HUTAN_STORAGE_CRASH_DB"),
+        std::env::var("HUTAN_STORAGE_CRASH_WS").ok(),
     ) else {
         return;
     };
@@ -1080,7 +1080,7 @@ fn provider(id: &str, created: u64) -> ProviderRow {
         name: format!("{id} name"),
         base_url: "http://127.0.0.1:1234/v1".to_owned(),
         default_model: Some("m1".to_owned()),
-        keychain_ref: format!("dev.staffy.provider/{id}"),
+        keychain_ref: format!("dev.hutan.provider/{id}"),
         created_at_ms: created,
     }
 }

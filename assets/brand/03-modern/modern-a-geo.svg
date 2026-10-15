@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600">
+<rect width="1200" height="600" fill="#FFF6EC"/>
+<g transform="translate(70 80) scale(0.859375)">
+<circle cx="256" cy="256" r="220" fill="#E8641C"/>
+<ellipse cx="256" cy="272" rx="162" ry="178" fill="#5E2C1A"/>
+<g fill="#F2C9A8">
+  <circle cx="198" cy="226" r="58"/><circle cx="314" cy="226" r="58"/>
+  <circle cx="256" cy="352" r="112"/>
+</g>
+<circle cx="204" cy="230" r="17" fill="#140C09"/><circle cx="308" cy="230" r="17" fill="#140C09"/>
+<circle cx="242" cy="316" r="8" fill="#5E2C1A"/><circle cx="270" cy="316" r="8" fill="#5E2C1A"/>
+<path d="M214 380 Q258 402 304 374" fill="none" stroke="#5E2C1A" stroke-width="12" stroke-linecap="round"/></g>
+<text x="580" y="335" font-family="'Avenir Next', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="800" font-size="150" letter-spacing="-6" fill="#1B1714">hutan</text>
+<text x="588" y="395" font-family="'Avenir Next', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="500" font-size="30" fill="#E8641C">the friendly code environment</text>
+
+</svg>

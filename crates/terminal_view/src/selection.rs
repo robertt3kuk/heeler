@@ -1,6 +1,6 @@
 //! Text selection over absolute lines (GPUI-free). See the model docs for line numbering.
 
-use staffy_protocol::render::Row;
+use hutan_protocol::render::Row;
 
 use crate::model::{Cell, TerminalModel, row_cells, row_width};
 
@@ -257,7 +257,7 @@ fn trim_blanks(out: &mut String, floor: usize) {
 mod tests {
     use super::*;
     use crate::model::fixtures::*;
-    use staffy_protocol::render::{Row, TerminalSnapshot};
+    use hutan_protocol::render::{Row, TerminalSnapshot};
 
     fn model_with(rows: Vec<Row>, cols: u16, history_len: u32) -> TerminalModel {
         let mut m = TerminalModel::new();
@@ -381,15 +381,15 @@ mod tests {
 
     #[test]
     fn double_click_selects_a_word() {
-        let m = text_model(&["cd ~/src/staffy-wt now"], 40);
+        let m = text_model(&["cd ~/src/hutan-wt now"], 40);
         let word = |col| sel(&m, SelectionKind::Word, p(0, col), p(0, col));
         assert_eq!(word(0).as_deref(), Some("cd"));
         assert_eq!(word(1).as_deref(), Some("cd"));
-        assert_eq!(word(5).as_deref(), Some("~/src/staffy-wt"));
+        assert_eq!(word(5).as_deref(), Some("~/src/hutan-wt"));
         assert_eq!(word(2).as_deref(), Some(" "));
-        assert_eq!(word(17).as_deref(), Some("~/src/staffy-wt"));
-        assert_eq!(word(18).as_deref(), Some(" "));
-        assert_eq!(word(19).as_deref(), Some("now"));
+        assert_eq!(word(16).as_deref(), Some("~/src/hutan-wt"));
+        assert_eq!(word(17).as_deref(), Some(" "));
+        assert_eq!(word(18).as_deref(), Some("now"));
     }
 
     #[test]

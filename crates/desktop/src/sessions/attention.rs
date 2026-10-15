@@ -11,8 +11,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use staffy_core::{Epoch, SessionId, SessionState};
-use staffy_protocol::messages::{AgentReport, AgentState, SessionInfo};
+use hutan_core::{Epoch, SessionId, SessionState};
+use hutan_protocol::messages::{AgentReport, AgentState, SessionInfo};
 
 /// Why a session wants a look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,13 +300,13 @@ fn present_agent(report: &AgentReport) -> Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use staffy_core::WorkspaceId;
+    use hutan_core::WorkspaceId;
 
     fn info(id: SessionId, state: SessionState) -> SessionInfo {
         SessionInfo {
             id,
             workspace_id: WorkspaceId::new(),
-            kind: staffy_core::SessionKind::Terminal,
+            kind: hutan_core::SessionKind::Terminal,
             title: "t".into(),
             state,
             command: vec![],
@@ -487,12 +487,12 @@ mod tests {
 
     fn chat(state: SessionState, turn_active: bool, pending: u32) -> SessionInfo {
         let mut session = info(SessionId::new(), state);
-        session.kind = staffy_core::SessionKind::Harness;
-        session.chat = Some(staffy_protocol::chat::ChatInfo {
+        session.kind = hutan_core::SessionKind::Harness;
+        session.chat = Some(hutan_protocol::chat::ChatInfo {
             agent: "codex".into(),
             model: "gpt-6.1-sol".into(),
-            approval_policy: staffy_core::ApprovalPolicy::OnRequest,
-            sandbox: staffy_core::SandboxMode::WorkspaceWrite,
+            approval_policy: hutan_core::ApprovalPolicy::OnRequest,
+            sandbox: hutan_core::SandboxMode::WorkspaceWrite,
             turn_active,
             pending_approvals: pending,
             provider_id: None,

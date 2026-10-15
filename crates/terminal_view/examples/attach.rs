@@ -1,10 +1,10 @@
-//! Opens one window that shows a staffyd terminal: manual verification of the terminal view.
+//! Opens one window that shows a hutand terminal: manual verification of the terminal view.
 //!
 //! ```text
-//! cargo run -p staffy-terminal-view --example attach -- [--socket PATH] <terminal_id>
+//! cargo run -p hutan-terminal-view --example attach -- [--socket PATH] <terminal_id>
 //! ```
 //!
-//! The terminal id is `terminal_id` from `staffy ls --json`. The window attaches, draws the
+//! The terminal id is `terminal_id` from `hutan ls --json`. The window attaches, draws the
 //! render stream, and sends typing, resizes, acks and scrollback requests back. GPUI runs on the
 //! main thread; the protocol client lives on a Tokio runtime thread and the two talk over
 //! bounded channels.
@@ -17,17 +17,17 @@ use std::time::Duration;
 use futures::channel::mpsc as ui_mpsc;
 use futures::{SinkExt as _, StreamExt as _};
 use gpui::{AppContext as _, Focusable as _, WindowOptions};
-use serde_json::Value;
-use staffy_client::{Client, ClientError, ConnectOptions};
-use staffy_core::TerminalId;
-use staffy_protocol::messages::{
+use hutan_client::{Client, ClientError, ConnectOptions};
+use hutan_core::TerminalId;
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, Empty, Event, Request, Subscribed, TerminalAck, TerminalAttach,
     TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize, TerminalSize,
 };
-use staffy_terminal_view::{
+use hutan_terminal_view::{
     DefaultColors, Row, TerminalBackend, TerminalRender, TerminalView, TerminalViewEvent,
     TerminalViewSettings, ViewStatus,
 };
+use serde_json::Value;
 use tokio::sync::mpsc as cmd_mpsc;
 
 /// What the view asks of the connection.
@@ -82,14 +82,14 @@ impl TerminalBackend for ChannelBackend {
 
     fn set_default_colors(&self, colors: DefaultColors) {
         // The protocol has no message for this yet (the daemon answers OSC 10/11/12 with its
-        // own #d4d4d4/#1e1e1e defaults, which match staffy-dark).
+        // own #d4d4d4/#1e1e1e defaults, which match hutan-dark).
         eprintln!("attach: default colors {colors:?}");
     }
 
     fn block_text(
         &self,
         _block_id: u64,
-        _part: staffy_terminal_view::BlockPart,
+        _part: hutan_terminal_view::BlockPart,
     ) -> gpui::Task<Option<String>> {
         // This example does not fetch blocks, so no block is ever offered to copy.
         gpui::Task::ready(None)
@@ -164,7 +164,7 @@ fn main() -> ExitCode {
         commands: command_tx,
     });
     gpui_platform::application().run(move |cx| {
-        staffy_terminal_view::bind_default_keys(cx);
+        hutan_terminal_view::bind_default_keys(cx);
         cx.on_window_closed(|cx, _window| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -176,7 +176,7 @@ fn main() -> ExitCode {
                 TerminalView::new(backend.clone(), TerminalViewSettings::default(), window, cx)
             });
             window.focus(&view.focus_handle(cx), cx);
-            window.set_window_title("staffy attach");
+            window.set_window_title("hutan attach");
             cx.subscribe(&view, |_, event: &TerminalViewEvent, _cx| match event {
                 TerminalViewEvent::TitleChanged(title) => {
                     eprintln!("attach: title = {title:?}");

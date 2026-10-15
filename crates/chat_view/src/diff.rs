@@ -4,7 +4,7 @@
 //! a unified diff (updated), and a turn's changes as one `git`-style patch of many files.
 //! [`from_change`] and [`split_patch`] read both into the same [`FileDiff`].
 
-use staffy_core::agent::{FileChange, FileChangeKind};
+use hutan_core::agent::{FileChange, FileChangeKind};
 
 /// Lines of one file that a view draws before it cuts the diff short.
 pub const MAX_LINES: usize = 500;

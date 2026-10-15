@@ -1,6 +1,6 @@
 //! Workbench behavior around the session history index (M17-B): focusing the History panel,
 //! the ⌘J `?` search, and what a hit does — Resume (a new terminal session running the
-//! agent's resume command), Copy command, and Open block / Open session for Staffy hits.
+//! agent's resume command), Copy command, and Open block / Open session for Hutan hits.
 //!
 //! Resume starts in the active workspace when one of its folders holds the hit's directory;
 //! otherwise `workspace.open` finds (or creates) the workspace that contains it and the window
@@ -13,16 +13,16 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{ClipboardItem, Context, Entity, Window};
-use staffy_client::ClientError;
-use staffy_core::SessionId;
-use staffy_protocol::ErrorCode;
-use staffy_protocol::history::{HistoryHit, HistoryHits, HistorySource};
-use staffy_protocol::messages::{TerminalSpec, WorkspaceInfo, WorkspaceKind};
+use hutan_client::ClientError;
+use hutan_core::SessionId;
+use hutan_protocol::ErrorCode;
+use hutan_protocol::history::{HistoryHit, HistoryHits, HistorySource};
+use hutan_protocol::messages::{TerminalSpec, WorkspaceInfo, WorkspaceKind};
 
 use super::model::PanelId;
 use super::panels::{
     HISTORY_DEBOUNCE, HISTORY_PICKER_LIMIT, HistoryFilters, HistoryPanel, HistoryResume,
-    StaffyTarget, age_label, hit_title, parse_snippet, short_path, source_icon, source_label,
+    HutanTarget, age_label, hit_title, parse_snippet, short_path, source_icon, source_label,
 };
 use super::view::Workbench;
 use super::workspaces::{HistoryState, PickerAction, PickerEntry};
@@ -154,7 +154,7 @@ impl Workbench {
         if !connection.supports_history() {
             picker.history.clear();
             picker.history_state =
-                if store.connection_state() == staffy_client::ConnectionState::Connected {
+                if store.connection_state() == hutan_client::ConnectionState::Connected {
                     HistoryState::Unsupported
                 } else {
                     HistoryState::Failed("the daemon is not connected".to_owned())
@@ -336,12 +336,12 @@ impl Workbench {
         .detach();
     }
 
-    /// Shows the Staffy session a hit points at and, for a block, scrolls its terminal to the
+    /// Shows the Hutan session a hit points at and, for a block, scrolls its terminal to the
     /// block when it still exists. The block is found by its start time (the index keeps no
     /// block id).
     pub fn open_history_hit(
         &mut self,
-        target: StaffyTarget,
+        target: HutanTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

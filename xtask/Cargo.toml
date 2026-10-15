@@ -9,9 +9,10 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-staffy-client.workspace = true
-staffy-core.workspace = true
-staffy-protocol.workspace = true
+hutan-client.workspace = true
+hutan-core.workspace = true
+hutan-protocol.workspace = true
+resvg.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

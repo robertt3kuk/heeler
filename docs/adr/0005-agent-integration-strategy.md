@@ -25,7 +25,7 @@ Key facts from the spike:
 ## Decision
 - `agents` crate hosts adapters implementing one `AgentAdapter` trait: `CodexAppServerAdapter` (M4), `AcpV1Adapter` (M8). Daemon owns subprocess (via `runtime`), transport, request-ID maps, pending approvals.
 - Internal `AgentEvent` (in `core`) carries: local session/turn/item IDs + provider IDs, sequence, timestamp, `live|replay` marker, opaque provider payload, and variants for message start/delta/end, reasoning, tool start/update/end, command output, file diff (patch or before/after), permission requested/resolved (original offered options preserved), plan, usage (optional fields, never zero-filled), turn completed/failed/cancelled, resume locator.
-- **Staffy's own journal is the source of conversation history** (SQLite, ADR 0006); provider resume is used to continue the agent, not to rebuild our UI history.
+- **Hutan's own journal is the source of conversation history** (SQLite, ADR 0006); provider resume is used to continue the agent, not to rebuild our UI history.
 - Pending approvals live in daemon state, survive client disconnects, are answered only with an option the provider actually offered, and expire when the turn resolves.
 - Pin the supported Codex version range; generate schema from the installed binary in CI fixtures; pick models from `model/list`, never trust a config default blindly.
 - TUI agents in terminals remain first-class; their state detection (M7) uses integration hooks first, screen manifests as fallback (Herdr model).

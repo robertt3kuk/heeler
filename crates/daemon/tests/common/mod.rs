@@ -1,5 +1,5 @@
-//! Shared harness for the session tests: an in-process daemon on a temporary `STAFFY_HOME`,
-//! `staffy-client` connections to its real socket, and a client-side model of a terminal screen
+//! Shared harness for the session tests: an in-process daemon on a temporary `HUTAN_HOME`,
+//! `hutan-client` connections to its real socket, and a client-side model of a terminal screen
 //! that applies the render snapshots and frames the daemon sends.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -7,15 +7,15 @@
 
 use std::time::Duration;
 
-use staffy_client::{Client, ClientError, ConnectOptions};
-use staffy_core::{Seq, SessionId, TerminalId, WorkspaceId};
-use staffy_daemon::{DaemonConfig, Paths, RunningDaemon};
-use staffy_protocol::ErrorCode;
-use staffy_protocol::messages::{
+use hutan_client::{Client, ClientError, ConnectOptions};
+use hutan_core::{Seq, SessionId, TerminalId, WorkspaceId};
+use hutan_daemon::{DaemonConfig, Paths, RunningDaemon};
+use hutan_protocol::ErrorCode;
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, Empty, Event, Request, SessionCreate, SessionInfo, SessionResult,
     Subscribed, TerminalAck, TerminalAttach, TerminalAttached, TerminalSize, TerminalSpec,
 };
-use staffy_protocol::render::{Row, TerminalRender};
+use hutan_protocol::render::{Row, TerminalRender};
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
@@ -34,7 +34,7 @@ impl TestDaemon {
     }
 
     /// Starts with `daemon.toml` containing `toml` and `tweak` applied to the config. The Home
-    /// folder defaults to `Staffy` inside the temporary `STAFFY_HOME`, never to `~/Staffy`.
+    /// folder defaults to `Hutan` inside the temporary `HUTAN_HOME`, never to `~/Hutan`.
     pub async fn start_with(toml: &str, tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         // Daemon logs show up for failing tests; filter with RUST_LOG.
         let _ = tracing_subscriber::fmt()
@@ -48,7 +48,7 @@ impl TestDaemon {
         }
         let mut config = DaemonConfig::new(paths.clone());
         tweak(&mut config);
-        let daemon = staffy_daemon::start(config).await.unwrap();
+        let daemon = hutan_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,
@@ -87,7 +87,7 @@ impl TestDaemon {
         timeout(WAIT, self.daemon.wait()).await.unwrap().unwrap();
     }
 
-    /// Stops this daemon, then starts a new one on the same `STAFFY_HOME` (a daemon restart:
+    /// Stops this daemon, then starts a new one on the same `HUTAN_HOME` (a daemon restart:
     /// new epoch, same database).
     pub async fn restart(self) -> Self {
         let Self {
@@ -97,7 +97,7 @@ impl TestDaemon {
         } = self;
         daemon.shutdown();
         timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
-        let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
+        let daemon = hutan_daemon::start(DaemonConfig::new(paths.clone()))
             .await
             .unwrap();
         Self {
@@ -123,8 +123,8 @@ impl TestDaemon {
         // milliseconds late.
         let daemon = timeout(WAIT, async {
             loop {
-                match staffy_daemon::start(config.clone()).await {
-                    Err(staffy_daemon::DaemonError::AlreadyRunning { .. }) => {
+                match hutan_daemon::start(config.clone()).await {
+                    Err(hutan_daemon::DaemonError::AlreadyRunning { .. }) => {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                     other => return other.unwrap(),
@@ -141,7 +141,7 @@ impl TestDaemon {
     }
 
     /// Waits for a daemon that stopped itself (a `daemon.shutdown` request), then starts a new
-    /// one on the same `STAFFY_HOME`.
+    /// one on the same `HUTAN_HOME`.
     pub async fn restart_after_shutdown_request(self) -> Self {
         let Self {
             _dir,
@@ -149,7 +149,7 @@ impl TestDaemon {
             daemon,
         } = self;
         timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
-        let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
+        let daemon = hutan_daemon::start(DaemonConfig::new(paths.clone()))
             .await
             .unwrap();
         Self {
@@ -190,7 +190,7 @@ pub async fn create_in(
     client
         .call::<SessionResult>(Request::SessionCreate(SessionCreate {
             workspace_id,
-            spec: staffy_protocol::messages::SessionSpec::Terminal(spec),
+            spec: hutan_protocol::messages::SessionSpec::Terminal(spec),
         }))
         .await
         .unwrap()
@@ -207,9 +207,9 @@ pub fn terminal_of(session: &SessionInfo) -> TerminalId {
 
 pub async fn stop(client: &Client, id: SessionId) -> Result<SessionInfo, ClientError> {
     client
-        .call::<SessionResult>(Request::SessionStop(
-            staffy_protocol::messages::SessionRef { session_id: id },
-        ))
+        .call::<SessionResult>(Request::SessionStop(hutan_protocol::messages::SessionRef {
+            session_id: id,
+        }))
         .await
         .map(|c| c.session)
 }

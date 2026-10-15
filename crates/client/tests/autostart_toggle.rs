@@ -1,7 +1,7 @@
 //! `Connection::set_autostart`: a daemon stopped while autostart is off stays down, and turning
 //! autostart on starts it at once, inside the 10 s autostart interval.
 //!
-//! Own test binary: it sets `STAFFY_HOME` for the daemon process it spawns.
+//! Own test binary: it sets `HUTAN_HOME` for the daemon process it spawns.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // `set_var` is unsafe in edition 2024.
@@ -13,36 +13,36 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use common::*;
-use staffy_client::{ConnectOptions, Connection, ConnectionState};
-use staffy_daemon::{DaemonConfig, Paths};
-use staffy_protocol::messages::{
+use hutan_client::{ConnectOptions, Connection, ConnectionState};
+use hutan_daemon::{DaemonConfig, Paths};
+use hutan_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Request,
 };
 use tokio::time::{sleep, timeout};
 
-/// `staffyd` next to the test binaries (same profile). Tests never build it: `just test`
+/// `hutand` next to the test binaries (same profile). Tests never build it: `just test`
 /// builds the workspace binaries first.
-fn staffyd() -> PathBuf {
+fn hutand() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
-    let binary = profile_dir.join("staffyd");
+    let binary = profile_dir.join("hutand");
     assert!(
         binary.is_file(),
-        "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
+        "hutand not built: run `cargo build -p hutan-daemon --bin hutand` (or `just test`)"
     );
     binary
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stopped_daemon_stays_down_until_autostart_is_turned_on_again() {
-    let binary = staffyd();
+    let binary = hutand();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: this binary has a single test, so nothing else reads or writes the environment
     // while it is changed; the spawned daemon inherits it.
-    unsafe { std::env::set_var("STAFFY_HOME", home.path()) };
+    unsafe { std::env::set_var("HUTAN_HOME", home.path()) };
     let paths = Paths::in_home(home.path());
     // In this process, so the connection has not used its autostart interval yet.
-    let first = staffy_daemon::start(DaemonConfig::new(paths.clone()))
+    let first = hutan_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
 
@@ -74,7 +74,7 @@ async fn a_stopped_daemon_stays_down_until_autostart_is_turned_on_again() {
     sleep(Duration::from_millis(1500)).await;
     assert!(
         !paths.socket.exists(),
-        "staffyd was started although autostart is off"
+        "hutand was started although autostart is off"
     );
     assert!(matches!(
         state.borrow().connection,

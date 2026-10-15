@@ -13,21 +13,21 @@
 Bundle layout:
 
 ```text
-Staffy.app/
-  Contents/MacOS/Staffy                      # GPUI desktop
-  Contents/MacOS/staffyd                     # daemon (signed, same team)
-  Contents/MacOS/staffy                      # CLI (symlinked to /usr/local/bin by user action)
-  Contents/Library/LaunchAgents/dev.staffy.daemon.plist
-  Contents/Helpers/Staffy Notifier.app       # LSUIElement helper, own bundle id
+Hutan.app/
+  Contents/MacOS/Hutan                      # GPUI desktop
+  Contents/MacOS/hutand                     # daemon (signed, same team)
+  Contents/MacOS/hutan                      # CLI (symlinked to /usr/local/bin by user action)
+  Contents/Library/LaunchAgents/dev.hutan.daemon.plist
+  Contents/Helpers/Hutan Notifier.app       # LSUIElement helper, own bundle id
 ```
 
 - Daemon is started by the desktop/CLI on demand (spawn + wait for socket), or by launchd when the user enables "keep agents running" (SMAppService registration done from the desktop).
-- Notifications: daemon emits `notification.intent` events; **Staffy Notifier** (a protocol client with AppKit run loop) posts them and sends `approval.decide` / `ui.open` commands back. When the desktop is running, it may display in-app UI instead; dedup by intent ID.
+- Notifications: daemon emits `notification.intent` events; **Hutan Notifier** (a protocol client with AppKit run loop) posts them and sends `approval.decide` / `ui.open` commands back. When the desktop is running, it may display in-app UI instead; dedup by intent ID.
 - Development builds: `cargo-bundle` or an `xtask bundle` producing an ad-hoc-signed bundle.
 
 ## Open questions (M6 spike)
-- Can `staffyd` inside `Contents/MacOS` post notifications directly under the app's bundle id? `[UNVERIFIED]` If yes, the Notifier helper may be unnecessary.
-- Keychain access prompts for `staffyd` vs app identity across rebuilds during development.
+- Can `hutand` inside `Contents/MacOS` post notifications directly under the app's bundle id? `[UNVERIFIED]` If yes, the Notifier helper may be unnecessary.
+- Keychain access prompts for `hutand` vs app identity across rebuilds during development.
 
 ## Evidence
 - mac-usernotifications bundling requirement: <https://docs.rs/mac-usernotifications/0.3.1/mac_usernotifications/>

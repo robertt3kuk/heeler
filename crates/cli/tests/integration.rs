@@ -1,4 +1,4 @@
-//! `staffy integration install | uninstall | status` on temporary copies of real-shaped agent
+//! `hutan integration install | uninstall | status` on temporary copies of real-shaped agent
 //! configuration. Every command gets `--dir` or a temporary `HOME`/`CODEX_HOME`/
 //! `CLAUDE_CONFIG_DIR`/`PI_CODING_AGENT_DIR`: nothing here can reach the user's own agents.
 
@@ -10,12 +10,12 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use common::{Out, STAFFY, command, finish};
+use common::{HUTAN, Out, command, finish};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-async fn staffy(args: &[&str], env: &[(&str, &Path)]) -> Out {
-    let mut command = command(Path::new(STAFFY), None, args);
+async fn hutan(args: &[&str], env: &[(&str, &Path)]) -> Out {
+    let mut command = command(Path::new(HUTAN), None, args);
     for (key, value) in env {
         command.env(key, value);
     }
@@ -25,7 +25,7 @@ async fn staffy(args: &[&str], env: &[(&str, &Path)]) -> Out {
 async fn run(args: &[&str], dir: &Path) -> Out {
     let mut full = args.to_vec();
     full.extend(["--dir", dir.to_str().unwrap()]);
-    staffy(&full, &[("HOME", dir)]).await
+    hutan(&full, &[("HOME", dir)]).await
 }
 
 /// JSON as the agents write it: two-space indentation and a trailing newline.
@@ -43,7 +43,7 @@ fn backups(dir: &Path, name: &str) -> Vec<PathBuf> {
             path.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with(&format!("{name}.staffy-"))
+                .starts_with(&format!("{name}.hutan-"))
         })
         .collect();
     found.sort();
@@ -94,13 +94,13 @@ fn command_of(hook: &Value) -> &str {
     hook["command"].as_str().unwrap()
 }
 
-/// Every Staffy hook command in a hooks document.
-fn staffy_commands(doc: &Value) -> Vec<(String, String)> {
+/// Every Hutan hook command in a hooks document.
+fn hutan_commands(doc: &Value) -> Vec<(String, String)> {
     let mut found = Vec::new();
     for (event, groups) in doc["hooks"].as_object().unwrap() {
         for group in groups.as_array().unwrap() {
             for hook in group["hooks"].as_array().unwrap() {
-                if command_of(hook).contains("staffy-integration=") {
+                if command_of(hook).contains("hutan-integration=") {
                     found.push((event.clone(), command_of(hook).to_owned()));
                 }
             }
@@ -123,7 +123,7 @@ async fn codex_install_keeps_other_hooks_and_uninstall_restores_the_original() {
 
     // Only additions: every original entry is still there, in place.
     let installed: Value = serde_json::from_str(&fs::read_to_string(&hooks_file).unwrap()).unwrap();
-    let ours = staffy_commands(&installed);
+    let ours = hutan_commands(&installed);
     let mut events: Vec<_> = ours.iter().map(|(event, _)| event.as_str()).collect();
     events.sort_unstable();
     assert_eq!(
@@ -152,7 +152,7 @@ async fn codex_install_keeps_other_hooks_and_uninstall_restores_the_original() {
     );
 
     // The command runs the installed script, quoted for sh.
-    let script = dir.join("staffy-agent-state.sh");
+    let script = dir.join("hutan-agent-state.sh");
     assert!(script.is_file());
     assert_eq!(
         fs::metadata(&script).unwrap().permissions().mode() & 0o111,
@@ -162,7 +162,7 @@ async fn codex_install_keeps_other_hooks_and_uninstall_restores_the_original() {
     assert_eq!(
         command,
         &format!(
-            ": staffy-integration=codex; sh '{}' codex",
+            ": hutan-integration=codex; sh '{}' codex",
             script.to_str().unwrap().replace('\'', "'\\''")
         )
     );
@@ -189,7 +189,7 @@ async fn codex_install_keeps_other_hooks_and_uninstall_restores_the_original() {
         .ok();
     assert_eq!(status.json()["status"], "installed");
 
-    // Uninstalling leaves exactly the original bytes and removes only Staffy's script.
+    // Uninstalling leaves exactly the original bytes and removes only Hutan's script.
     let out = run(&["integration", "uninstall", "codex"], &dir).await.ok();
     assert!(out.stdout.contains("codex: removed"), "{out:?}");
     assert_eq!(fs::read_to_string(&hooks_file).unwrap(), original);
@@ -216,7 +216,7 @@ async fn claude_install_keeps_settings_and_hooks_and_uninstall_restores_the_orig
     for key in ["model", "statusLine", "theme"] {
         assert_eq!(installed[key], claude_settings()[key], "{key}");
     }
-    let events: Vec<String> = staffy_commands(&installed)
+    let events: Vec<String> = hutan_commands(&installed)
         .into_iter()
         .map(|(event, _)| event)
         .collect();
@@ -262,7 +262,7 @@ async fn claude_install_keeps_settings_and_hooks_and_uninstall_restores_the_orig
         installed["hooks"]["Stop"][0],
         claude_settings()["hooks"]["Stop"][0]
     );
-    let script = dir.join("hooks").join("staffy-agent-state.sh");
+    let script = dir.join("hooks").join("hutan-agent-state.sh");
     assert!(script.is_file());
     assert_eq!(backups(&dir, "settings.json").len(), 1);
 
@@ -302,7 +302,7 @@ async fn files_keep_their_own_indentation_and_missing_files_are_created() {
     run(&["integration", "install", "codex"], &fresh).await.ok();
     let created: Value =
         serde_json::from_str(&fs::read_to_string(fresh.join("hooks.json")).unwrap()).unwrap();
-    assert_eq!(staffy_commands(&created).len(), 5);
+    assert_eq!(hutan_commands(&created).len(), 5);
     assert!(
         backups(&fresh, "hooks.json").is_empty(),
         "nothing to back up"
@@ -311,7 +311,7 @@ async fn files_keep_their_own_indentation_and_missing_files_are_created() {
         .await
         .ok();
     assert!(!fresh.join("hooks.json").exists());
-    assert!(!fresh.join("staffy-agent-state.sh").exists());
+    assert!(!fresh.join("hutan-agent-state.sh").exists());
 }
 
 #[tokio::test]
@@ -336,9 +336,9 @@ async fn omp_extension_is_added_next_to_the_others_and_removed_alone() {
 
     let out = run(&["integration", "install", "omp"], &dir).await.ok();
     assert!(out.stdout.contains("omp: installed"), "{out:?}");
-    let ours = extensions.join("staffy-agent-state.ts");
+    let ours = extensions.join("hutan-agent-state.ts");
     let text = fs::read_to_string(&ours).unwrap();
-    assert!(text.starts_with("// staffy-managed"), "{text}");
+    assert!(text.starts_with("// hutan-managed"), "{text}");
     assert!(text.contains("omp-extension") && text.contains("--resume="));
     for (name, original) in others {
         assert_eq!(fs::read_to_string(extensions.join(name)).unwrap(), original);
@@ -359,7 +359,7 @@ async fn omp_extension_is_added_next_to_the_others_and_removed_alone() {
     );
 
     // An outdated copy is reported and repaired by the next install.
-    fs::write(&ours, "// staffy-managed: old\n").unwrap();
+    fs::write(&ours, "// hutan-managed: old\n").unwrap();
     let status = run(&["integration", "status", "omp", "--json"], &dir)
         .await
         .ok()
@@ -379,14 +379,14 @@ async fn omp_extension_is_added_next_to_the_others_and_removed_alone() {
 async fn foreign_files_and_unreadable_configuration_are_never_overwritten() {
     let root = TempDir::new().unwrap();
 
-    // A file of the same name that Staffy did not write.
+    // A file of the same name that Hutan did not write.
     let omp = root.path().join("omp");
     fs::create_dir_all(omp.join("extensions")).unwrap();
-    let foreign = omp.join("extensions").join("staffy-agent-state.ts");
+    let foreign = omp.join("extensions").join("hutan-agent-state.ts");
     fs::write(&foreign, "// somebody else's\n").unwrap();
     let out = run(&["integration", "install", "omp"], &omp).await;
     assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stderr.contains("was not written by Staffy"), "{out:?}");
+    assert!(out.stderr.contains("was not written by Hutan"), "{out:?}");
     assert_eq!(
         fs::read_to_string(&foreign).unwrap(),
         "// somebody else's\n"
@@ -394,7 +394,7 @@ async fn foreign_files_and_unreadable_configuration_are_never_overwritten() {
     run(&["integration", "uninstall", "omp"], &omp).await.ok();
     assert!(
         foreign.exists(),
-        "uninstall leaves files that are not Staffy's"
+        "uninstall leaves files that are not Hutan's"
     );
 
     // Configuration that is not JSON, or not the documented shape.
@@ -412,7 +412,7 @@ async fn foreign_files_and_unreadable_configuration_are_never_overwritten() {
         assert_eq!(fs::read_to_string(dir.join("hooks.json")).unwrap(), content);
         assert!(backups(&dir, "hooks.json").is_empty());
         assert!(
-            !dir.join("staffy-agent-state.sh").exists(),
+            !dir.join("hutan-agent-state.sh").exists(),
             "no script without a hook to run it"
         );
     }
@@ -437,11 +437,11 @@ async fn the_default_directory_comes_from_the_agents_own_environment() {
         ("PI_CODING_AGENT_DIR", omp_dir.as_path()),
     ];
     for target in ["codex", "claude", "omp"] {
-        staffy(&["integration", "install", target], &env).await.ok();
+        hutan(&["integration", "install", target], &env).await.ok();
     }
     assert!(codex_home.join("hooks.json").is_file());
     assert!(claude_dir.join("settings.json").is_file());
-    assert!(omp_dir.join("extensions/staffy-agent-state.ts").is_file());
+    assert!(omp_dir.join("extensions/hutan-agent-state.ts").is_file());
     assert_eq!(
         fs::read_dir(&home).unwrap().count(),
         0,
@@ -449,20 +449,16 @@ async fn the_default_directory_comes_from_the_agents_own_environment() {
     );
 
     // Defaults under HOME otherwise.
-    let mut command = common::command(
-        Path::new(STAFFY),
-        None,
-        &["integration", "install", "codex"],
-    );
+    let mut command = common::command(Path::new(HUTAN), None, &["integration", "install", "codex"]);
     command.env("HOME", &home).env_remove("CODEX_HOME");
     finish(command).await.ok();
     assert!(home.join(".codex/hooks.json").is_file());
     for (target, expected) in [
         ("claude", ".claude/settings.json"),
-        ("omp", ".omp/agent/extensions/staffy-agent-state.ts"),
+        ("omp", ".omp/agent/extensions/hutan-agent-state.ts"),
     ] {
         let mut command =
-            common::command(Path::new(STAFFY), None, &["integration", "install", target]);
+            common::command(Path::new(HUTAN), None, &["integration", "install", target]);
         command
             .env("HOME", &home)
             .env_remove("CLAUDE_CONFIG_DIR")
@@ -473,16 +469,16 @@ async fn the_default_directory_comes_from_the_agents_own_environment() {
 }
 
 #[tokio::test]
-async fn the_installed_script_reports_inside_staffy_and_is_silent_outside() {
+async fn the_installed_script_reports_inside_hutan_and_is_silent_outside() {
     let root = TempDir::new().unwrap();
     let dir = awkward_dir(&root, "codex home");
     run(&["integration", "install", "codex"], &dir).await.ok();
     let hooks: Value =
         serde_json::from_str(&fs::read_to_string(dir.join("hooks.json")).unwrap()).unwrap();
-    let (_, hook_command) = staffy_commands(&hooks).remove(0);
+    let (_, hook_command) = hutan_commands(&hooks).remove(0);
 
-    // A stand-in for `staffy` that records how it was called and what it read.
-    let bin = root.path().join("fake-staffy");
+    // A stand-in for `hutan` that records how it was called and what it read.
+    let bin = root.path().join("fake-hutan");
     let record = root.path().join("record");
     fs::write(
         &bin,
@@ -520,17 +516,17 @@ async fn the_installed_script_reports_inside_staffy_and_is_silent_outside() {
         child.wait_with_output().unwrap()
     };
 
-    // Outside Staffy: nothing runs, nothing is said, the exit code is 0.
-    let out = run_hook(&[("STAFFY_BIN", bin.to_str().unwrap())]);
+    // Outside Hutan: nothing runs, nothing is said, the exit code is 0.
+    let out = run_hook(&[("HUTAN_BIN", bin.to_str().unwrap())]);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
     assert!(!record.exists());
 
-    // Inside: `staffy agent hook codex` with the hook's stdin.
+    // Inside: `hutan agent hook codex` with the hook's stdin.
     let out = run_hook(&[
-        ("STAFFY_ENV", "1"),
-        ("STAFFY_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
-        ("STAFFY_BIN", bin.to_str().unwrap()),
+        ("HUTAN_ENV", "1"),
+        ("HUTAN_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
+        ("HUTAN_BIN", bin.to_str().unwrap()),
     ]);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
@@ -542,9 +538,9 @@ async fn the_installed_script_reports_inside_staffy_and_is_silent_outside() {
     // A missing CLI never breaks the hook either.
     fs::remove_file(&record).unwrap();
     let out = run_hook(&[
-        ("STAFFY_ENV", "1"),
-        ("STAFFY_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
-        ("STAFFY_BIN", "/nonexistent/staffy"),
+        ("HUTAN_ENV", "1"),
+        ("HUTAN_SESSION_ID", "01K7F3B5N2Q9W8E4R6T1Y0V3KM"),
+        ("HUTAN_BIN", "/nonexistent/hutan"),
     ]);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty() && out.stderr.is_empty());

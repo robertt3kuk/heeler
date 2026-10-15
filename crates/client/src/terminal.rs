@@ -1,8 +1,8 @@
 //! Durable terminal attachments: [`TerminalHandle`] outlives individual connections.
 
-use staffy_core::TerminalId;
-use staffy_protocol::messages::{TerminalColors, TerminalSize};
-use staffy_protocol::render::TerminalRender;
+use hutan_core::TerminalId;
+use hutan_protocol::messages::{TerminalColors, TerminalSize};
+use hutan_protocol::render::TerminalRender;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

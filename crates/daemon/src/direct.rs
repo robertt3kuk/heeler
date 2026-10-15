@@ -13,17 +13,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures::StreamExt;
-use parking_lot::Mutex;
-use serde_json::json;
-use staffy_agents::{AdapterMessage, ExitInfo};
-use staffy_core::agent::{MessageRole, NoticeLevel, TokenCounts};
-use staffy_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId, TurnId};
-use staffy_gateway::{
+use hutan_agents::{AdapterMessage, ExitInfo};
+use hutan_core::agent::{MessageRole, NoticeLevel, TokenCounts};
+use hutan_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId, TurnId};
+use hutan_gateway::{
     ChatMessage, ChatRequest, GatewayError, GatewayEvent, Provider, Role, is_length_cut,
 };
-use staffy_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
-use staffy_protocol::control::{ErrorBody, ErrorCode};
-use staffy_storage::Storage;
+use hutan_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
+use hutan_protocol::control::{ErrorBody, ErrorCode};
+use hutan_storage::Storage;
+use parking_lot::Mutex;
+use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

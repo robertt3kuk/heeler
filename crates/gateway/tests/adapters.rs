@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use staffy_core::agent::TokenCounts;
-use staffy_gateway::testing::{MockServer, Reply, Step};
-use staffy_gateway::{
+use hutan_core::agent::TokenCounts;
+use hutan_gateway::testing::{MockServer, Reply, Step};
+use hutan_gateway::{
     ChatMessage, ChatRequest, GatewayError, GatewayEvent, Http, HttpConfig, Provider,
     ProviderConfig, ProviderKind, Role, Secret, connect,
 };

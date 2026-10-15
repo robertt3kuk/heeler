@@ -1,11 +1,9 @@
-//! `staffy agents`: the agents and subagents the daemon observes (`agent.tree`), as a tree per
+//! `hutan agents`: the agents and subagents the daemon observes (`agent.tree`), as a tree per
 //! session; with `--watch`, again whenever a tree changes.
 
-use staffy_client::Client;
-use staffy_core::{
-    AgentNode, AgentObservation, Liveness, NodeOutcome, NodeState, SessionId, Usage,
-};
-use staffy_protocol::messages::{Empty, Event, Request, SessionInfo, Subscribed};
+use hutan_client::Client;
+use hutan_core::{AgentNode, AgentObservation, Liveness, NodeOutcome, NodeState, SessionId, Usage};
+use hutan_protocol::messages::{Empty, Event, Request, SessionInfo, Subscribed};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::Ctx;
@@ -18,7 +16,7 @@ impl Ctx {
         let client = self.connect().await?;
         if !client.supports_agent_tree() {
             return Err(CliError::Failed(
-                "this daemon does not observe agent trees (protocol 0.10); restart it with a newer staffyd"
+                "this daemon does not observe agent trees (protocol 0.10); restart it with a newer hutand"
                     .to_owned(),
             ));
         }
@@ -175,7 +173,7 @@ fn compact(n: u64) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use staffy_core::{NodeKind, NodeOutcome};
+    use hutan_core::{NodeKind, NodeOutcome};
 
     use super::*;
 

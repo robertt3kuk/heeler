@@ -1,7 +1,7 @@
-//! Staffy terminal: PTY ownership, the VT engine and render-state extraction (ADR 0004).
+//! Hutan terminal: PTY ownership, the VT engine and render-state extraction (ADR 0004).
 //!
 //! The daemon is the only VT parser. [`Terminal`] owns a child process in a PTY and keeps the
-//! canonical screen state; clients get [`staffy_protocol::render`] DTOs produced per client
+//! canonical screen state; clients get [`hutan_protocol::render`] DTOs produced per client
 //! through a [`RenderTracker`]. [`Emulator`] is the same engine without a PTY (corpus replay,
 //! recorder, benchmarks). Engine types never appear in this crate's public API.
 

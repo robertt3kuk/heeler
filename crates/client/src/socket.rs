@@ -2,14 +2,14 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Where the daemon listens, mirroring the daemon's own resolution (architecture.md § Paths):
-/// `STAFFY_SOCKET`, else `$STAFFY_HOME/staffyd.sock`, else
-/// `~/Library/Application Support/Staffy/staffyd.sock`.
+/// `HUTAN_SOCKET`, else `$HUTAN_HOME/hutand.sock`, else
+/// `~/Library/Application Support/Hutan/hutand.sock`.
 ///
 /// The client may not depend on the daemon crate, so the rule is repeated here.
 pub fn default_socket_path() -> Option<PathBuf> {
     resolve(
-        std::env::var_os("STAFFY_SOCKET"),
-        std::env::var_os("STAFFY_HOME"),
+        std::env::var_os("HUTAN_SOCKET"),
+        std::env::var_os("HUTAN_HOME"),
         std::env::home_dir(),
     )
 }
@@ -23,9 +23,9 @@ fn resolve(
         return Some(PathBuf::from(socket));
     }
     if let Some(home) = home.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(home).join("staffyd.sock"));
+        return Some(PathBuf::from(home).join("hutand.sock"));
     }
-    Some(user_home?.join("Library/Application Support/Staffy/staffyd.sock"))
+    Some(user_home?.join("Library/Application Support/Hutan/hutand.sock"))
 }
 
 #[cfg(test)]
@@ -50,7 +50,7 @@ mod tests {
     fn home_override_next() {
         assert_eq!(
             resolve(None, os("/tmp/hh"), Some("/Users/u".into())).as_deref(),
-            Some(Path::new("/tmp/hh/staffyd.sock"))
+            Some(Path::new("/tmp/hh/hutand.sock"))
         );
     }
 
@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(
             resolve(os(""), os(""), Some("/Users/u".into())).as_deref(),
             Some(Path::new(
-                "/Users/u/Library/Application Support/Staffy/staffyd.sock"
+                "/Users/u/Library/Application Support/Hutan/hutand.sock"
             ))
         );
     }

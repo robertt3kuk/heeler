@@ -12,7 +12,7 @@ use alacritty_terminal::grid::Row as GridRow;
 use alacritty_terminal::index::Column;
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::vte::ansi::Color as EngineColor;
-use staffy_protocol::render::{CellFlags, Color, Cursor, Link, Modes, Palette, Row, Run};
+use hutan_protocol::render::{CellFlags, Color, Cursor, Link, Modes, Palette, Row, Run};
 
 /// Upper bound on distinct hyperlinks remembered per terminal (ids are stable for the
 /// terminal's lifetime, so the table cannot shrink). Links beyond the cap render unlinked.
