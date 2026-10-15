@@ -427,6 +427,9 @@ impl Workbench {
                 this.open_history_hit(a.0.clone(), window, cx);
             }),
         )
+        .on_action(cx.listener(|this, a: &actions::RevealHistoryFile, _, cx| {
+            this.reveal_history_file(&a.0, cx);
+        }))
         .on_action(cx.listener(|this, _: &actions::ShowAgentMonitor, _, cx| {
             this.show_agent_monitor(cx);
         }))

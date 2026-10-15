@@ -23,6 +23,7 @@
 //! - [`context`]: redaction, budget, headers and assembly of attached context.
 //! - [`context_file`]: file attachments, read below the workspace roots without following symlinks.
 //! - [`notify`]: notification intents derived from the event stream, `notify.*`, `client.focus`.
+//! - [`partial`]: journaled snapshots of streaming chat text (protocol 0.15).
 
 pub mod agent;
 pub mod assistant;
@@ -37,6 +38,7 @@ pub mod direct;
 pub mod error;
 pub mod history;
 pub mod notify;
+pub mod partial;
 pub mod paths;
 pub mod placement;
 pub mod projects;

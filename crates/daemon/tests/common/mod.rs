@@ -71,6 +71,13 @@ impl TestDaemon {
         Client::connect(self.options()).await.unwrap()
     }
 
+    /// A connection that says it is a `kind` client in its `hello`.
+    pub async fn connect_as(&self, kind: ClientKind) -> Client {
+        let mut options = self.options();
+        options.client.kind = kind;
+        Client::connect(options).await.unwrap()
+    }
+
     /// A connection that is already subscribed to events; the receiver sees everything after.
     pub async fn connect_subscribed(&self) -> (Client, broadcast::Receiver<(Seq, Event)>) {
         let client = self.connect().await;

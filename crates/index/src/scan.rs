@@ -236,6 +236,7 @@ fn index_entry(
             entry.role,
             ts_ms,
             None,
+            None,
             piece,
             &idents(piece),
         )?;

@@ -1011,6 +1011,8 @@ impl Mapper {
             AgentEventKind::PermissionResolved {
                 approval_id: pending.approval,
                 outcome,
+                // The daemon knows who answered; the provider does not.
+                decided_by: None,
             },
         );
         draft.provider.request_id = Some(pending.rpc_id.to_string());

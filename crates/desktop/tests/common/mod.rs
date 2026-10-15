@@ -222,6 +222,20 @@ impl TestDaemon {
         })
     }
 
+    /// Like [`call`](Self::call), on a connection that says it is a `kind` client.
+    pub fn call_as<T: DeserializeOwned + Send + 'static>(
+        &self,
+        kind: ClientKind,
+        request: Request,
+    ) -> T {
+        let mut options = self.options();
+        options.client.kind = kind;
+        self.rt().block_on(async move {
+            let client = Client::connect(options).await.unwrap();
+            client.call(request).await.unwrap()
+        })
+    }
+
     pub fn create_workspace(&self, name: &str, roots: &[&Path]) -> WorkspaceInfo {
         self.call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.to_owned(),

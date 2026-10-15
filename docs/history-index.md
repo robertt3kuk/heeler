@@ -50,7 +50,7 @@ A title falls back to the first line (80 characters) of the first user message. 
 ```text
 sources   path, source, size, mtime_ns, offset, tail_hash, format_version, adapter state (JSON), rows, errors, last_indexed_ms
 sessions  one per transcript file or Hutan session: source, key, title, cwd
-entries   one per chunk: session, role, ts_ms, ext_key (Hutan records)
+entries   one per chunk: session, role, ts_ms, ext_key (Hutan records), terminal_id + block_id (Hutan block rows, schema 2)
 fts       FTS5(body, idents; tokenize = 'unicode61 remove_diacritics 2'), rowid = entries.id
 meta      small facts
 ```
@@ -59,7 +59,8 @@ meta      small facts
 - **Identifiers get their own column.** `idents` holds paths (`crates/daemon/src/lib.rs`), flags (`--locked`, `-p`), Rust paths (`crate::paths`), symbols (`parse_line`, `FooBar`, `run()`) and backticked spans of the chunk; for a `command` row, the whole command line. The tokenizer splits on punctuation, so `cargo test -p daemon` is the phrase-free word set `cargo`, `test`, `p`, `daemon` in both columns.
 - **Ranking.** `bm25(fts, 1.0, 2.0)` (identifier column counts double) multiplied by a role weight in SQL: command 1.4, user 1.3, assistant 1.0, tool 0.7, output 0.6. Then one hit per session: the best row, with the number of matching rows (`ROW_NUMBER`/`COUNT` window over the session), best session first; the snippet comes from FTS5 `snippet()` with `«»` around matches.
 - **Query language.** Words and `"quoted phrases"`, all must match; no operators (everything is quoted before it reaches FTS5), so punctuation can never raise a syntax error. Filters: sources, roles, project (cwd prefix), `since_ms`/`until_ms`.
-- The database is a cache: a schema version (`PRAGMA user_version`, 1) that is not the build's drops it and starts empty.
+- **Where a hit comes from** (schema 2, protocol 0.15). A hit of a transcript source carries the absolute `path` of the file (`sources.path` of its session). A `hutan` command or output row stores the `terminal_id` and `block_id` of the block it was indexed from (`HutanRecord.block`), and its hit carries them. `terminal_id`s belong to one daemon run, `block_id`s to one terminal: a client compares the hit's terminal with the session's current one before it jumps to the block. Agent-report and chat rows have none, and neither have Hutan rows written before schema 2.
+- The database is a cache: a schema version (`PRAGMA user_version`) that is neither 1 nor the build's (2) drops it and starts empty. **Schema 1 → 2 is upgraded in place**: `terminal_id` and `block_id` are added to `entries`, the rows of the transcript files and their `sources` rows are dropped so that the first stat pass finds every file new and reads it again (their hits then carry `path`), and the Hutan rows stay (nothing can derive them again; they have no block). A crash in the middle leaves schema 1 and the upgrade runs again.
 
 ## Incremental scanning
 
@@ -108,5 +109,5 @@ Unit-level numbers on real-format data: copies of 222 real transcript files (12 
 - A source root that appears after indexing started is picked up on the next enable/restart.
 - Hutan rows only cover blocks and reports seen while indexing was on; terminal output without shell integration (no OSC 133 marks) has no blocks.
 - OpenCode, Cursor and Gemini adapters are not implemented (M17 roadmap lists them; OpenCode is deferred above).
-- The desktop History panel and the ⌘K / ⌘J integration are in (`docs/design.md` § History panel); assistant `@search` is M16. A hit carries neither the transcript's path (so the panel cannot reveal the file) nor the id of a Hutan block (the panel finds the block by its start time, `ts_ms`).
+- The desktop History panel and the ⌘K / ⌘J integration are in (`docs/design.md` § History panel); assistant `@search` is M16. Since 0.15 a hit names its origin: the transcript's `path` (the panel's **Reveal File**) and, for a Hutan block, `terminal_id` + `block_id` (**Open Block** jumps to it exactly). The id of a block is only meaningful while the daemon run that indexed it lives: after a daemon restart the session has another terminal and the panel says the block is gone.
 - Chat journals (Codex, direct, assistant) are indexed as source `hutan` since M16-A (`docs/assistant.md` § Indexing of chats); `history.search` hits of Hutan sessions carry `session_id`. `IndexHandle::session_text` returns the rows of one session in order (used by the assistant's `agent_transcript` and `search` attachments); the assistant's `@search` is now the `search` attachment.

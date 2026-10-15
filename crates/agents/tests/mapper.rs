@@ -706,7 +706,8 @@ fn a_resolved_request_reports_the_chosen_option_or_expiry() {
             approval_id: first,
             outcome: PermissionOutcome::Selected {
                 option_id: "decline".into()
-            }
+            },
+            decided_by: None,
         }
     );
 
@@ -728,7 +729,8 @@ fn a_resolved_request_reports_the_chosen_option_or_expiry() {
         resolved.kind,
         AgentEventKind::PermissionResolved {
             approval_id: second,
-            outcome: PermissionOutcome::Expired
+            outcome: PermissionOutcome::Expired,
+            decided_by: None,
         }
     );
     // Unknown request ids are ignored.
@@ -753,7 +755,8 @@ fn a_turn_ending_resolves_what_is_still_pending_before_its_own_event() {
         drafts[0].kind,
         AgentEventKind::PermissionResolved {
             approval_id,
-            outcome: PermissionOutcome::Expired
+            outcome: PermissionOutcome::Expired,
+            decided_by: None,
         }
     );
     assert_eq!(drafts[1].kind, AgentEventKind::TurnCancelled);

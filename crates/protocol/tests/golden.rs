@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hutan_core::agent::{
-    FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
+    DecidedBy, FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
     PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
 };
 use hutan_core::{
@@ -1282,6 +1282,10 @@ fn events() -> Vec<(&'static str, Event)> {
                         outcome: PermissionOutcome::Selected {
                             option_id: "accept".into(),
                         },
+                        decided_by: Some(DecidedBy {
+                            client_kind: "desktop".into(),
+                            client_name: None,
+                        }),
                     },
                 )),
             },
@@ -1347,6 +1351,10 @@ fn events() -> Vec<(&'static str, Event)> {
                 outcome: PermissionOutcome::Selected {
                     option_id: "accept".into(),
                 },
+                decided_by: Some(DecidedBy {
+                    client_kind: "cli".into(),
+                    client_name: None,
+                }),
             },
         ),
         (
@@ -1355,6 +1363,7 @@ fn events() -> Vec<(&'static str, Event)> {
                 approval_id: approval(),
                 session_id: sid(),
                 outcome: PermissionOutcome::Expired,
+                decided_by: None,
             },
         ),
         (
@@ -1479,6 +1488,54 @@ fn events() -> Vec<(&'static str, Event)> {
                     }),
                     ..session_info()
                 },
+            },
+        ),
+        (
+            "approval_resolved_selected_named",
+            Event::ApprovalResolved {
+                approval_id: approval(),
+                session_id: sid(),
+                outcome: PermissionOutcome::Selected {
+                    option_id: "accept".into(),
+                },
+                decided_by: Some(DecidedBy {
+                    client_kind: "desktop".into(),
+                    client_name: Some("window-2".into()),
+                }),
+            },
+        ),
+        (
+            "chat_event_message_partial",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(
+                    agent_event(
+                        52,
+                        AgentEventKind::MessagePartial {
+                            message_id: item(),
+                            phase: Some("final_answer".into()),
+                            text: "Hel".into(),
+                        },
+                    )
+                    .replayed(),
+                ),
+            },
+        ),
+        (
+            "chat_event_reasoning_partial",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(
+                    agent_event(
+                        53,
+                        AgentEventKind::ReasoningPartial {
+                            reasoning_id: item(),
+                            summary: "Planning the test run".into(),
+                            content: String::new(),
+                        },
+                    )
+                    .replayed(),
+                ),
             },
         ),
     ]
@@ -1842,6 +1899,12 @@ fn responses_match_fixtures() {
                                 "5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60".into(),
                             ]),
                             session_id: None,
+                            path: Some(
+                                "/Users/u/.claude/projects/-work-app/5f3e1c1a-8d51-4a7e-9c0d-1b2c3d4e5f60.jsonl"
+                                    .into(),
+                            ),
+                            terminal_id: None,
+                            block_id: None,
                         },
                         HistoryHit {
                             source: HistorySource::Hutan,
@@ -1855,6 +1918,9 @@ fn responses_match_fixtures() {
                             matches: 1,
                             resume_argv: None,
                             session_id: Some(sid()),
+                            path: None,
+                            terminal_id: Some(TID),
+                            block_id: Some(12),
                         },
                     ],
                 },
@@ -1979,6 +2045,15 @@ fn responses_match_fixtures() {
                         )
                         .replayed(),
                         agent_event(46, AgentEventKind::TurnCancelled).replayed(),
+                        agent_event(
+                            58,
+                            AgentEventKind::MessagePartial {
+                                message_id: item(),
+                                phase: None,
+                                text: "All three".into(),
+                            },
+                        )
+                        .replayed(),
                     ],
                     has_more: true,
                     last_seq: 60,

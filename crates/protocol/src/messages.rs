@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use hutan_core::agent::PermissionOutcome;
+use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
     AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, Seq, SessionId, SessionKind,
     SessionState, TerminalId, WorkspaceId,
@@ -791,6 +791,10 @@ pub enum Event {
         session_id: SessionId,
         #[serde(flatten)]
         outcome: PermissionOutcome,
+        /// Capability `chat.provenance` (protocol 0.15): the client that answered; absent
+        /// when the request expired.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<DecidedBy>,
     },
     /// Capability `agent.tree` (protocol 0.10): nodes of a session's observation tree changed
     /// or were dropped. Coalesced: at most 4 per second per session. `nodes_changed` carries

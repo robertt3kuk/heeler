@@ -13,8 +13,8 @@ use std::sync::Arc;
 use hutan_core::agent::MessageRole;
 use hutan_core::{AgentEvent, AgentEventKind, SessionId, TerminalId};
 use hutan_index::{
-    HutanRecord, IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery, SessionText,
-    SessionTextQuery, Source,
+    BlockRef, HutanRecord, IndexConfig, IndexError, IndexHandle, Indexer, Role, SearchQuery,
+    SessionText, SessionTextQuery, Source,
 };
 use hutan_protocol::blocks::{BlockPart, BlockState, TerminalBlockText};
 use hutan_protocol::control::{ErrorBody, ErrorCode};
@@ -427,6 +427,9 @@ fn hit_out(hit: hutan_index::Hit) -> HistoryHit {
         matches: hit.matches,
         resume_argv,
         session_id,
+        path: hit.path,
+        terminal_id: hit.block.map(|block| TerminalId(block.terminal_id)),
+        block_id: hit.block.map(|block| block.block_id),
     }
 }
 
@@ -534,6 +537,7 @@ impl Consumer {
             ts_ms: agent.updated_at_ms,
             text,
             ext_key: format!("a:{}", agent.updated_at_ms),
+            block: None,
         });
     }
 }
@@ -583,6 +587,10 @@ async fn consume(
                     ts_ms: block.started_at_ms,
                     text: text.to_owned(),
                     ext_key: format!("b:{}:{}{suffix}", block.id, block.started_at_ms),
+                    block: Some(BlockRef {
+                        terminal_id: terminal_id.0,
+                        block_id: block.id,
+                    }),
                 };
                 handle.push_hutan(record(Role::Command, command, ""));
                 let output = hub.block_text(TerminalBlockText {
@@ -611,6 +619,7 @@ async fn consume(
                         ts_ms: event.ts_ms,
                         text,
                         ext_key: key,
+                        block: None,
                     });
                 }
             }

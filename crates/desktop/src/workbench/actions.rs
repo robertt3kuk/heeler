@@ -207,6 +207,8 @@ data_actions! {
     CopyHistoryCommand(String);
     /// Show the Hutan session (and block) a history hit points at.
     OpenHistoryHit(HutanTarget);
+    /// Reveal the transcript file of a history hit of another tool in Finder.
+    RevealHistoryFile(String);
 }
 
 /// Where to open the context menu of a workspace.

@@ -1,5 +1,7 @@
 //! Hutan IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
 //!
+//! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
+//!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
 //! - [`assistant`]: assistant chat DTOs and context attachments (protocol 0.12).
 //! - [`notify`]: notification intents, `client.focus` (protocol 0.13).
 //! - [`blocks`]: terminal block DTOs (protocol 0.5).
@@ -37,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 14,
+    minor: 15,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

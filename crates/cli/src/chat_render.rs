@@ -50,6 +50,16 @@ impl ChatPrinter {
                 self.open_line = !text.ends_with('\n');
                 text.clone()
             }
+            // The journal's snapshot of a message that is still streaming (`chat log`, or the
+            // backlog of `chat attach`): what was written so far, as if it had just streamed.
+            // The deltas that follow (`attach`) and the end event carry on from it.
+            AgentEventKind::MessagePartial {
+                message_id, text, ..
+            } => {
+                self.streamed.insert(*message_id);
+                self.open_line = !text.ends_with('\n');
+                text.clone()
+            }
             AgentEventKind::MessageEnd { role, text, .. } => match role {
                 MessageRole::Assistant => {
                     let streamed = event
@@ -134,11 +144,21 @@ impl ChatPrinter {
             AgentEventKind::PermissionResolved {
                 approval_id,
                 outcome,
+                decided_by,
             } => {
                 let mut out = self.close_line();
                 match outcome {
                     PermissionOutcome::Selected { option_id } => {
-                        out.push_str(&format!("  approval {approval_id}: {option_id}\n"));
+                        let by = match decided_by {
+                            Some(by) => match &by.client_name {
+                                Some(name) => {
+                                    format!(" (decided by {}: {name})", by.client_kind)
+                                }
+                                None => format!(" (decided by {})", by.client_kind),
+                            },
+                            None => String::new(),
+                        };
+                        out.push_str(&format!("  approval {approval_id}: {option_id}{by}\n"));
                     }
                     PermissionOutcome::Expired => {
                         out.push_str(&format!("  approval {approval_id}: expired\n"));
@@ -184,6 +204,7 @@ impl ChatPrinter {
             AgentEventKind::TurnStarted
             | AgentEventKind::MessageStart { .. }
             | AgentEventKind::ReasoningStart
+            | AgentEventKind::ReasoningPartial { .. }
             | AgentEventKind::ReasoningDelta { .. }
             | AgentEventKind::ReasoningEnd { .. }
             | AgentEventKind::ToolUpdate { .. }
@@ -193,6 +214,12 @@ impl ChatPrinter {
             | AgentEventKind::ResumeLocator { .. }
             | AgentEventKind::Opaque { .. } => String::new(),
         }
+    }
+
+    /// What ends the output after the last event: a newline when it stopped mid-line (a
+    /// message that was still streaming).
+    pub fn finish(&mut self) -> String {
+        self.close_line()
     }
 
     /// A newline when the output stopped mid-line, else nothing.
@@ -226,6 +253,7 @@ fn status_text(status: ToolStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use hutan_core::DecidedBy;
     use hutan_core::agent::{PermissionKind, PermissionOption, PermissionOptionKind, ToolKind};
     use hutan_core::{AgentEventDraft, ApprovalId, SessionId};
 
@@ -343,6 +371,96 @@ mod tests {
             out.contains(&format!("hutan approve {approval} <accept|cancel>")),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_resolution_says_who_answered() {
+        let mut p = ChatPrinter::new();
+        let approval = ApprovalId::new();
+        let resolved = |outcome, decided_by| {
+            event(
+                None,
+                AgentEventKind::PermissionResolved {
+                    approval_id: approval,
+                    outcome,
+                    decided_by,
+                },
+            )
+        };
+        let selected = || PermissionOutcome::Selected {
+            option_id: "accept".into(),
+        };
+        let by = |kind: &str, name: Option<&str>| {
+            Some(DecidedBy {
+                client_kind: kind.into(),
+                client_name: name.map(str::to_owned),
+            })
+        };
+        assert_eq!(
+            p.render(&resolved(selected(), by("cli", None))),
+            format!("  approval {approval}: accept (decided by cli)\n")
+        );
+        assert_eq!(
+            p.render(&resolved(selected(), by("desktop", Some("window-2")))),
+            format!("  approval {approval}: accept (decided by desktop: window-2)\n")
+        );
+        // Journaled before protocol 0.15, or nobody answered.
+        assert_eq!(
+            p.render(&resolved(selected(), None)),
+            format!("  approval {approval}: accept\n")
+        );
+        assert_eq!(
+            p.render(&resolved(PermissionOutcome::Expired, None)),
+            format!("  approval {approval}: expired\n")
+        );
+    }
+
+    #[test]
+    fn a_snapshot_of_a_streaming_message_prints_its_text_and_the_stream_carries_on() {
+        let mut p = ChatPrinter::new();
+        let item = ItemId::new();
+        let out = p.render(&event(
+            Some(item),
+            AgentEventKind::MessagePartial {
+                message_id: item,
+                phase: None,
+                text: "so far".into(),
+            },
+        ));
+        assert_eq!(out, "so far");
+        // `attach`: the live deltas continue on the same line, the end adds nothing.
+        assert_eq!(
+            p.render(&event(
+                Some(item),
+                AgentEventKind::MessageDelta {
+                    text: " and on".into()
+                },
+            )),
+            " and on"
+        );
+        assert_eq!(
+            p.render(&event(
+                Some(item),
+                AgentEventKind::MessageEnd {
+                    role: MessageRole::Assistant,
+                    phase: None,
+                    text: "so far and on".into(),
+                },
+            )),
+            "\n"
+        );
+        // `log`: a snapshot is the last thing; the line is closed at the end.
+        let mut p = ChatPrinter::new();
+        p.render(&event(
+            Some(item),
+            AgentEventKind::MessagePartial {
+                message_id: item,
+                phase: None,
+                text: "cut".into(),
+            },
+        ));
+        assert_eq!(p.finish(), "\n");
+        assert_eq!(p.finish(), "");
     }
 
     #[test]

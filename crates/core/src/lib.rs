@@ -7,7 +7,8 @@ pub mod observation;
 pub mod session;
 
 pub use agent::{
-    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalPolicy, Delivery, ModelInfo, SandboxMode,
+    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalPolicy, DecidedBy, Delivery, ModelInfo,
+    SandboxMode,
 };
 pub use ids::{
     ApprovalId, Epoch, ItemId, ParseIdError, Seq, SessionId, TerminalId, TurnId, WorkspaceId,

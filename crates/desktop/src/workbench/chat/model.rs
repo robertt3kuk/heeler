@@ -1,9 +1,11 @@
 //! [`ChatModel`]: one chat session's transcript and composer, shared by every view of it.
 //!
-//! It loads the journal (`chat.history`), then follows the connection's chat events. A
-//! reconnect or a lagging receiver reads the journal again and applies only what is new; a
-//! daemon restart (another epoch) starts the transcript over. See `hutan_chat_view::model` for
-//! why applying an event twice is harmless.
+//! It loads the journal (`chat.history`), then follows the connection's chat events. The first
+//! read is the newest [`HISTORY_DEFAULT_LIMIT`] events; [`load_earlier`](ChatModel::load_earlier)
+//! pages back with `before_seq` until the journal has no more. A reconnect or a lagging
+//! receiver reads the journal again and applies only what is new; a daemon restart (another
+//! epoch) starts the transcript over. See `hutan_chat_view::model` for why applying an event
+//! twice is harmless.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,15 +15,16 @@ use hutan_client::{ChatUpdate, ClientError, Connection};
 use hutan_core::{AgentEvent, ApprovalId, Epoch, ItemId, SessionId};
 use hutan_protocol::ErrorCode;
 use hutan_protocol::assistant::{AttachmentKind, AttachmentMeta, attachments_meta};
-use hutan_protocol::chat::HISTORY_MAX_LIMIT;
+use hutan_protocol::chat::{HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::chip::{Chip, compose};
 use super::context::{ContextChip, refused_by};
 use super::input::TextInput;
 
-/// Journal pages read per load; older events than this many pages are not shown.
-const MAX_PAGES: usize = 10;
+/// Pages of [`HISTORY_MAX_LIMIT`] events a reload reads at most to catch up with what happened
+/// while it was not listening.
+const MAX_CATCH_UP_PAGES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadStatus {
@@ -36,7 +39,21 @@ struct History {
     /// Oldest first.
     events: Vec<AgentEvent>,
     /// The journal has more before the first event.
-    cut: bool,
+    more_before: bool,
+}
+
+/// What of the journal the transcript holds, from the front.
+#[derive(Debug, Clone, Copy, Default)]
+struct Earlier {
+    /// The oldest `seq` read: the next page is the one before it.
+    first_seq: Option<u64>,
+    /// The journal has events before `first_seq`.
+    more: bool,
+    /// A page is on its way.
+    loading: bool,
+    /// Bumped when the transcript starts over, so that a page that was asked for before is
+    /// ignored when it arrives.
+    generation: u64,
 }
 
 pub struct ChatModel {
@@ -44,8 +61,8 @@ pub struct ChatModel {
     connection: Connection,
     transcript: Transcript,
     status: LoadStatus,
-    /// Events older than the pages read exist.
-    history_cut: bool,
+    /// How much of the journal's front is loaded.
+    earlier: Earlier,
     input: TextInput,
     chips: Vec<Chip>,
     /// Structured context for the next message (assistant chats): the daemon reads it.
@@ -120,7 +137,10 @@ impl ChatModel {
                             // The daemon restarted: its sequence numbers start over.
                             let alive = this.update(cx, |this, cx| {
                                 this.transcript.reset();
-                                this.history_cut = false;
+                                this.earlier = Earlier {
+                                    generation: this.earlier.generation + 1,
+                                    ..Earlier::default()
+                                };
                                 cx.notify();
                             });
                             if alive.is_err() {
@@ -140,7 +160,7 @@ impl ChatModel {
             connection,
             transcript: Transcript::new(),
             status: LoadStatus::Loading,
-            history_cut: false,
+            earlier: Earlier::default(),
             input: TextInput::new(),
             chips: Vec::new(),
             context: Vec::new(),
@@ -160,11 +180,15 @@ impl ChatModel {
     ) {
         match history {
             Ok(history) => {
+                if self.transcript.is_empty() {
+                    // The first page of this transcript: the front of what is loaded.
+                    self.earlier.first_seq = history.events.first().map(|event| event.seq);
+                    self.earlier.more = history.more_before;
+                }
                 for event in &history.events {
                     self.note_attachments(event);
                     self.transcript.apply(event);
                 }
-                self.history_cut |= history.cut;
                 if let Some(pending) = pending {
                     let ids: HashSet<ApprovalId> = pending.iter().map(|a| a.id).collect();
                     self.transcript.expire_missing(&ids);
@@ -195,9 +219,62 @@ impl ChatModel {
         &self.status
     }
 
-    /// The journal has events older than the ones shown.
-    pub fn history_cut(&self) -> bool {
-        self.history_cut
+    /// The journal has events older than the ones shown ("Load earlier").
+    pub fn has_earlier(&self) -> bool {
+        self.earlier.more
+    }
+
+    /// A page of earlier events is on its way.
+    pub fn loading_earlier(&self) -> bool {
+        self.earlier.loading
+    }
+
+    /// Reads the page of the journal before the oldest event shown and puts it in front of the
+    /// transcript. Nothing happens when the journal has nothing more or a page is on its way.
+    pub fn load_earlier(&mut self, cx: &mut Context<Self>) {
+        let Some(before) = self.earlier.first_seq.filter(|_| self.earlier.more) else {
+            return;
+        };
+        if self.earlier.loading {
+            return;
+        }
+        self.earlier.loading = true;
+        let generation = self.earlier.generation;
+        let connection = self.connection.clone();
+        let session = self.session;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let page = connection
+                .chat_history(session, Some(before), HISTORY_DEFAULT_LIMIT)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.earlier.generation != generation {
+                    // The transcript started over meanwhile: this page is of another life.
+                    return;
+                }
+                this.earlier.loading = false;
+                match page {
+                    Ok(page) => {
+                        for event in &page.events {
+                            this.note_attachments(event);
+                        }
+                        this.transcript.prepend(&page.events, !page.has_more);
+                        if let Some(first) = page.events.first() {
+                            this.earlier.first_seq = Some(first.seq);
+                        }
+                        // A page without events ends the paging whatever it says.
+                        this.earlier.more = page.has_more && !page.events.is_empty();
+                    }
+                    Err(error) => {
+                        this.error =
+                            Some(format!("Could not load earlier messages: {error}").into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn input(&self) -> &TextInput {
@@ -410,42 +487,41 @@ fn refusal_of(error: &ClientError) -> Option<(Option<String>, String)> {
     Some((setting, body.message.clone()))
 }
 
-/// The journal's newest pages, oldest event first, down to (and including) the page that holds
-/// `stop_at` when one is given, else down to the start or [`MAX_PAGES`] pages.
+/// The journal's newest events, oldest first. Without `stop_at` (the first read of a
+/// transcript) that is one page of [`HISTORY_DEFAULT_LIMIT`] events; with it (a reload that
+/// catches up with what happened meanwhile) pages are read back to, and including, the one that
+/// holds `stop_at`, at most [`MAX_CATCH_UP_PAGES`] of them.
 async fn fetch_history(
     connection: &Connection,
     session: SessionId,
     stop_at: Option<u64>,
 ) -> Result<History, ClientError> {
+    let Some(stop_at) = stop_at else {
+        let page = connection
+            .chat_history(session, None, HISTORY_DEFAULT_LIMIT)
+            .await?;
+        return Ok(History {
+            events: page.events,
+            more_before: page.has_more,
+        });
+    };
     let mut pages: Vec<Vec<AgentEvent>> = Vec::new();
     let mut before = None;
-    let mut cut = false;
-    for page_number in 0..MAX_PAGES {
+    for _ in 0..MAX_CATCH_UP_PAGES {
         let page = connection
             .chat_history(session, before, HISTORY_MAX_LIMIT)
             .await?;
         let first = page.events.first().map(|event| event.seq);
-        let more = page.has_more;
         pages.push(page.events);
-        let reached = match (first, stop_at) {
-            (Some(first), Some(stop)) => first <= stop,
-            _ => false,
-        };
         match first {
-            Some(first) if more && !reached => {
-                before = Some(first);
-                cut = page_number + 1 == MAX_PAGES;
-            }
-            _ => {
-                cut = false;
-                break;
-            }
+            Some(first) if page.has_more && first > stop_at => before = Some(first),
+            _ => break,
         }
     }
     pages.reverse();
     Ok(History {
         events: pages.into_iter().flatten().collect(),
-        // Merging into a transcript that already has the newer events leaves nothing missing.
-        cut: cut && stop_at.is_none(),
+        // Merging into a transcript that already has the older events leaves nothing missing.
+        more_before: false,
     })
 }

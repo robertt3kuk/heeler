@@ -279,6 +279,11 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
         log.contains("• shell:") && log.contains(&format!("approval {approval_id}: accept")),
         "{log}"
     );
+    // ... and who answered it: this CLI.
+    assert!(
+        log.contains(&format!("approval {approval_id}: accept (decided by cli)")),
+        "{log}"
+    );
     c.t.stop().await;
 }
 

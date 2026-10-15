@@ -28,7 +28,7 @@ pub use indexer::{IndexConfig, IndexHandle, Indexer};
 pub use scan::Metrics;
 pub use sys::process_cpu_micros;
 pub use types::{
-    Entry, Hit, HutanRecord, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, SessionText,
+    BlockRef, Entry, Hit, HutanRecord, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, SessionText,
     SessionTextQuery, Source, SourceStatus, Status,
 };
 

@@ -928,6 +928,38 @@ fn approvals_record_the_request_and_the_decision() {
 }
 
 #[test]
+fn a_snapshot_event_is_replaced_in_place_and_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    storage
+        .chat()
+        .append(chat_item(id, 1, "turn_started"))
+        .unwrap();
+    storage
+        .chat()
+        .append(chat_item(id, 2, "message_partial"))
+        .unwrap();
+    for (old, new) in [(2, 5), (5, 9)] {
+        storage
+            .chat()
+            .replace(old, chat_item(id, new, "message_partial"))
+            .unwrap();
+        let seqs: Vec<u64> = storage
+            .chat()
+            .items(id, None, 10)
+            .unwrap()
+            .iter()
+            .map(|row| row.seq)
+            .collect();
+        assert_eq!(seqs, [1, new], "one snapshot, never appended");
+    }
+    storage.chat().delete(id, 9).unwrap();
+    assert_eq!(storage.chat().items(id, None, 10).unwrap().len(), 1);
+    storage.close();
+}
+
+#[test]
 fn deleting_a_session_deletes_its_journal_and_approvals() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();

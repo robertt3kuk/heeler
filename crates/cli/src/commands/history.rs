@@ -276,6 +276,9 @@ mod tests {
             matches: 3,
             session_id: None,
             resume_argv: Some(vec!["claude".into(), "--resume".into(), "s1".into()]),
+            path: None,
+            terminal_id: None,
+            block_id: None,
         }
     }
 

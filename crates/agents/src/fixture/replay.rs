@@ -10,6 +10,8 @@
 //! A mismatch ends the process with exit code 3 and a message on stderr; the request that did
 //! not match is answered with a JSON-RPC error first. `{"dir": "exit", "code": N}` ends the
 //! process, and the end of the transcript keeps it alive until stdin closes.
+//! `{"dir": "hold", "file": PATH}` pauses the replay until the file exists (at most
+//! [`HOLD_LIMIT`]), so a test can stop a stream half way and release it when it is ready.
 //!
 //! When the transcript path is a directory, each spawn takes the next `*.jsonl` file in name
 //! order (spawns are counted with marker files), so a test can script a session across daemon
@@ -18,11 +20,14 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 /// Exit code of a replay that met an unexpected client message.
 pub const EXIT_MISMATCH: i32 = 3;
+/// How long a `hold` entry waits for its file.
+pub const HOLD_LIMIT: Duration = Duration::from_secs(60);
 /// Exit code of a replay that has no transcript left for this spawn.
 pub const EXIT_NO_TRANSCRIPT: i32 = 4;
 
@@ -31,6 +36,7 @@ enum Entry {
     Out(Value),
     In(Value),
     Exit(i32),
+    Hold(PathBuf),
 }
 
 fn parse(transcript: &str) -> io::Result<Vec<Entry>> {
@@ -51,6 +57,12 @@ fn parse(transcript: &str) -> io::Result<Vec<Entry>> {
         entries.push(match (dir, msg) {
             ("out", Some(msg)) => Entry::Out(msg),
             ("in", Some(msg)) => Entry::In(msg),
+            ("hold", _) => Entry::Hold(PathBuf::from(
+                value
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("`hold` needs a `file`"))?,
+            )),
             ("exit", _) => Entry::Exit(
                 value
                     .get("code")
@@ -58,7 +70,7 @@ fn parse(transcript: &str) -> io::Result<Vec<Entry>> {
                     .and_then(|c| i32::try_from(c).ok())
                     .unwrap_or(0),
             ),
-            _ => return Err(invalid("expected `dir` out|in|exit and a `msg`")),
+            _ => return Err(invalid("expected `dir` out|in|exit|hold and a `msg`")),
         });
     }
     Ok(entries)
@@ -162,6 +174,16 @@ impl<R: BufRead, W: Write> Server<R, W> {
         for entry in entries {
             match entry {
                 Entry::Exit(code) => return Ok(Some(*code)),
+                Entry::Hold(file) => {
+                    let start = Instant::now();
+                    while !file.exists() {
+                        if start.elapsed() > HOLD_LIMIT {
+                            eprintln!("fixture: {} never appeared", file.display());
+                            return Ok(Some(EXIT_MISMATCH));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 Entry::In(message) => {
                     let mut message = message.clone();
                     let is_response = method_of(&message).is_none() && message.get("id").is_some();
@@ -319,6 +341,30 @@ mod tests {
     fn an_exit_entry_ends_the_replay_with_its_code() {
         let (code, _) = serve(r#"{"dir":"exit","code":9}"#, "");
         assert_eq!(code, Some(9));
+    }
+
+    #[test]
+    fn a_hold_entry_waits_for_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("go");
+        let transcript = format!(
+            "{}\n{}\n",
+            json!({"dir": "in", "msg": {"method": "before"}}),
+            json!({"dir": "hold", "file": gate}),
+        ) + &json!({"dir": "in", "msg": {"method": "after"}}).to_string();
+        let opener = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                fs::write(gate, "").unwrap();
+            })
+        };
+        let start = Instant::now();
+        let (code, output) = serve(&transcript, "");
+        opener.join().unwrap();
+        assert_eq!(code, None);
+        assert!(start.elapsed() >= Duration::from_millis(100), "it waited");
+        assert_eq!(output.lines().count(), 2);
     }
 
     #[test]

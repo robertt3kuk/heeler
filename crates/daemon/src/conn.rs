@@ -42,6 +42,7 @@ pub const CAPABILITIES: &[&str] = &[
     "assistant",
     "notify.intents",
     "worktree",
+    "chat.provenance",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

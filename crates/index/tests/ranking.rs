@@ -29,7 +29,7 @@ impl Db {
             } else {
                 idents(text)
             };
-            store::insert_entry(&self.conn, id, *role, Some(*ts), None, text, &ids).unwrap();
+            store::insert_entry(&self.conn, id, *role, Some(*ts), None, None, text, &ids).unwrap();
         }
     }
 

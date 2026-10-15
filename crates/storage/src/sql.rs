@@ -72,6 +72,11 @@ pub enum Write {
     RecordEpoch(EpochRecord),
     /// Adds one event to a chat journal (an existing `(session, seq)` is left alone).
     AppendChatItem(Box<ChatItemRow>),
+    /// Removes one event of a chat journal (a snapshot that a final event supersedes).
+    DeleteChatItem {
+        session_id: SessionId,
+        seq: u64,
+    },
     /// Inserts a chat turn or replaces its status, end time and error.
     UpsertChatTurn(ChatTurnRow),
     /// Inserts an approval or replaces how it ended.
@@ -194,6 +199,13 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         Write::SetMeta { key, value } => set_meta(conn, key, value)?,
         Write::RecordEpoch(record) => record_epoch(conn, *record)?,
         Write::AppendChatItem(row) => append_chat_item(conn, row)?,
+        Write::DeleteChatItem { session_id, seq } => {
+            conn.execute(
+                "DELETE FROM chat_items WHERE session_id = ?1 AND seq = ?2",
+                params![session_id.to_string(), ms(*seq)],
+            )
+            .map_err(StorageError::sqlite("removing a chat event"))?;
+        }
         Write::UpsertChatTurn(row) => upsert_chat_turn(conn, row)?,
         Write::UpsertApproval(row) => upsert_approval(conn, row)?,
         Write::UpsertProvider(row) => {

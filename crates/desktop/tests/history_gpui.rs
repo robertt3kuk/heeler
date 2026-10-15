@@ -11,6 +11,9 @@
 
 mod common;
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use common::history::{CLAUDE_ID, CODEX_ID, GONE_CWD, GONE_ID, HistoryEnv, OMP_ID, UNRESUMABLE_ID};
@@ -249,6 +252,35 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
             ][..]
         )
     );
+
+    // The Claude hit names its transcript; "Reveal File" shows that file in Finder (here: the
+    // window's reveal handler), a Hutan hit has no file.
+    let transcript = std::path::PathBuf::from(hit.path.clone().expect("the transcript file"));
+    assert!(
+        transcript.is_absolute() && transcript.is_file(),
+        "{transcript:?}"
+    );
+    assert_eq!(
+        hutan_desktop::workbench::panels::transcript_path(hit),
+        Some(transcript.as_path())
+    );
+    let revealed: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    view.update(cx, |wb, _| {
+        let revealed = Rc::clone(&revealed);
+        wb.set_reveal_handler(move |path, _| revealed.borrow_mut().push(path.to_owned()));
+    });
+    cx.dispatch_action(actions::RevealHistoryFile(
+        transcript.to_string_lossy().into_owned(),
+    ));
+    assert_eq!(*revealed.borrow(), std::slice::from_ref(&transcript));
+    // A file that is gone is not revealed; the window says so.
+    cx.dispatch_action(actions::RevealHistoryFile(
+        env.base.join("gone.jsonl").to_string_lossy().into_owned(),
+    ));
+    assert_eq!(revealed.borrow().len(), 1);
+    assert!(view.read_with(cx, |wb, _| {
+        wb.notice().is_some_and(|n| n.contains("no longer exists"))
+    }));
 
     // Three sessions share the word: one row each, from three sources.
     search(&history, cx, "hutantest", |p| p.hits().len() == 3);
@@ -492,6 +524,20 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
                 .is_some_and(|c| c.contains("hutanblockword"))
         })
         .expect("the daemon has the block");
+    // The hit names the block it came from: the terminal that ran it and the block's id.
+    assert_eq!(block_hit.terminal_id, Some(terminal));
+    assert_eq!(block_hit.block_id, Some(block.id));
+    let target = hutan_desktop::workbench::panels::HutanTarget {
+        session: block_session.id.to_string(),
+        block: Some(hutan_desktop::workbench::panels::BlockTarget {
+            terminal_id: terminal,
+            block_id: block.id,
+        }),
+    };
+    assert_eq!(
+        hutan_desktop::workbench::panels::hutan_target(&block_hit),
+        Some(target)
+    );
     cx.simulate_keystrokes("down enter");
     pump_until(cx, "the terminal to scroll to the block", |cx| {
         view.read_with(cx, |wb, _| wb.terminal_view_of(block_session.id))

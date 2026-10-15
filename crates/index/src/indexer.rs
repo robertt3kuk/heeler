@@ -528,6 +528,7 @@ impl Worker {
                     record.role,
                     Some(record.ts_ms),
                     Some(&key),
+                    record.block,
                     piece,
                     &idents,
                 )?;

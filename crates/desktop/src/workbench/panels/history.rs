@@ -5,7 +5,7 @@
 //! it is on: a debounced search field, filter chips, one row per matching session with its best
 //! snippet, and a footer with the index's size and per-source state, **Clear** and **Rebuild**
 //! (both ask first). The panel only sends `history.*` requests; the actions that start sessions
-//! (`ResumeHistoryHit`, `OpenHistoryHit`) are the workbench's.
+//! (`ResumeHistoryHit`, `OpenHistoryHit`, `RevealHistoryFile`) are the workbench's.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -23,13 +23,13 @@ use super::common::{age_label, panel_header};
 use super::history_model::{
     DEBOUNCE, Filters, HistoryResume, HutanTarget, PANEL_LIMIT, ROLES, SOURCES, format_bytes,
     hit_title, hutan_target, parse_snippet, resume_blocker, role_label, shell_join, short_path,
-    source_icon, source_label,
+    source_icon, source_label, transcript_path,
 };
 use crate::settings::{HistoryRange, HistoryScope, HistorySettings};
 use crate::theme::{DensityExt as _, Theme, Tokens};
 use crate::workbench::Region;
 use crate::workbench::actions::{
-    CopyHistoryCommand, OpenHistoryHit, OpenSettingsFor, ResumeHistoryHit,
+    CopyHistoryCommand, OpenHistoryHit, OpenSettingsFor, ResumeHistoryHit, RevealHistoryFile,
 };
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
@@ -1148,11 +1148,26 @@ impl HistoryPanel {
                 note = resume_blocker(hit).map(|why| format!("Cannot resume: {why}"));
             }
         }
+        if let Some(path) = transcript_path(hit) {
+            let path = path.to_string_lossy().into_owned();
+            actions = actions.child(
+                button(
+                    format!("history-reveal-{index}"),
+                    "Reveal File",
+                    true,
+                    theme,
+                    tokens,
+                )
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(Box::new(RevealHistoryFile(path.clone())), cx);
+                }),
+            );
+        }
         if let Some(target) = hutan_target(hit) {
-            let label = if target.block_started_at_ms.is_some() {
-                "Open block"
+            let label = if target.block.is_some() {
+                "Open Block"
             } else {
-                "Open session"
+                "Open Session"
             };
             if self.session_exists(&target, cx) {
                 actions = actions.child(

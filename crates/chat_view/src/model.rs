@@ -4,13 +4,19 @@
 //! most once (by its `seq`), streaming text only grows an item that is still open, and an item is
 //! found by its id, so a reconnect that replays what was already seen, or a history reload that
 //! overlaps live events, changes nothing twice. Deltas are not journaled: text that streamed
-//! while nobody listened is complete again when the item's `*_end` event arrives.
+//! while nobody listened is complete again when the item's `*_end` event arrives, or sooner when
+//! the journal's `message_partial` / `reasoning_partial` snapshot of the open item arrives: it
+//! holds the text of every delta with a smaller `seq`, so the item takes it and the deltas that
+//! came live before it are neither lost nor added twice.
+//!
+//! [`Transcript::prepend`] folds in an older page of the journal ("Load earlier") in front of
+//! what is there, without disturbing the state of the turn in progress.
 
 use std::collections::{HashMap, HashSet};
 
 use hutan_core::agent::{
-    FileChange, NoticeLevel, PermissionKind, PermissionOption, PermissionOutcome, PlanStep,
-    TokenCounts, ToolKind, ToolStatus,
+    DecidedBy, FileChange, NoticeLevel, PermissionKind, PermissionOption, PermissionOptionKind,
+    PermissionOutcome, PlanStep, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
 use hutan_core::{AgentEvent, AgentEventKind, ApprovalId, ItemId, TurnId};
 use serde_json::Value;
@@ -27,6 +33,69 @@ pub struct Message {
     pub phase: Option<String>,
     /// The `message_end` event arrived (or the turn ended).
     pub done: bool,
+    stream: Stream,
+}
+
+/// What an open item needs to reconcile a journal snapshot with the deltas that came live.
+#[derive(Debug, Clone, Default)]
+struct Stream {
+    /// The highest `seq` whose delta (or snapshot) the text includes.
+    through: u64,
+    /// The item was first seen through a delta: the start of its text is missing until a
+    /// snapshot (or the end event) brings it.
+    prefix_missing: bool,
+    /// The deltas seen while the prefix is missing, to put back after a snapshot.
+    tail: Vec<(u64, Option<ReasoningPart>, String)>,
+}
+
+impl Stream {
+    /// A streamed piece at `seq`; `true` when it extends the text (it does not when a snapshot
+    /// already included it). `known`: the item had been seen before this piece.
+    fn delta(&mut self, seq: u64, known: bool, part: Option<ReasoningPart>, text: &str) -> bool {
+        if seq <= self.through {
+            return false;
+        }
+        if !known {
+            self.prefix_missing = true;
+        }
+        if self.prefix_missing {
+            self.tail.push((seq, part, text.to_owned()));
+        }
+        self.through = seq;
+        true
+    }
+
+    /// A snapshot journaled at `seq` holds every piece with a smaller `seq`. `parts` (one text
+    /// per part, `[summary, content]`; a message only has the first) become what they should
+    /// be and `true` is returned, or `false` when the text already includes more than the
+    /// snapshot.
+    fn snapshot_parts(&mut self, seq: u64, parts: &mut [String; 2]) -> bool {
+        let through = seq.saturating_sub(1);
+        if self.prefix_missing {
+            // Pieces that came live while the start was missing; those the snapshot already has
+            // are dropped, the later ones go after it.
+            for (at, part, piece) in self.tail.drain(..) {
+                if at > through {
+                    let slot = usize::from(part == Some(ReasoningPart::Content));
+                    parts[slot].push_str(&piece);
+                }
+            }
+            self.prefix_missing = false;
+            self.through = self.through.max(through);
+            true
+        } else if through > self.through {
+            self.through = through;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn snapshot(&mut self, seq: u64, text: &str) -> Option<String> {
+        let mut parts = [text.to_owned(), String::new()];
+        self.snapshot_parts(seq, &mut parts)
+            .then(|| std::mem::take(&mut parts[0]))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +104,7 @@ pub struct Reasoning {
     pub summary: String,
     pub content: String,
     pub done: bool,
+    stream: Stream,
 }
 
 #[derive(Debug, Clone)]
@@ -118,9 +188,44 @@ pub struct Approval {
     pub detail: Option<String>,
     pub options: Vec<PermissionOption>,
     pub state: ApprovalState,
+    /// Who answered (protocol 0.15); absent while pending, after an expiry, and for answers
+    /// journaled by an older daemon.
+    pub decided_by: Option<DecidedBy>,
 }
 
 impl Approval {
+    /// What was decided, in the past tense ("Allowed once"); the option's own label for a
+    /// decision this build has no wording for, "Answered" when the option is not among those
+    /// offered.
+    pub fn decision_text(&self) -> String {
+        match self.chosen() {
+            Some(option) => match option.kind {
+                PermissionOptionKind::AllowOnce => "Allowed once".to_owned(),
+                PermissionOptionKind::AllowAlways => "Always allowed".to_owned(),
+                PermissionOptionKind::RejectOnce => "Denied once".to_owned(),
+                PermissionOptionKind::RejectAlways => "Always denied".to_owned(),
+                PermissionOptionKind::Cancel => "Cancelled".to_owned(),
+                PermissionOptionKind::Other => option.label.clone(),
+            },
+            None => "Answered".to_owned(),
+        }
+    }
+
+    /// Where the answer came from, for a label ("Allowed once · from CLI"): `here` says this
+    /// window sent it. A kind this build does not know, an answer journaled before protocol
+    /// 0.15 and one the daemon could not attribute are "another client".
+    pub fn answered_from(&self, here: bool) -> &'static str {
+        if here {
+            return "from this window";
+        }
+        match self.decided_by.as_ref().map(|by| by.client_kind.as_str()) {
+            Some("cli") => "from CLI",
+            Some("desktop") => "from another window",
+            Some("notifier") => "from a notification",
+            _ => "from another client",
+        }
+    }
+
     /// The option that was chosen, when one was.
     pub fn chosen(&self) -> Option<&PermissionOption> {
         match &self.state {
@@ -214,12 +319,23 @@ pub struct Transcript {
     max_seq: u64,
     rev: u64,
     epoch: u64,
+    /// Entries ever put in front by [`prepend`](Self::prepend), since the last reset.
+    prepended: u64,
     next_id: u64,
     active_turn: bool,
     /// Index of the first entry of the turn in progress.
     turn_start: usize,
     usage: Option<(TokenCounts, Option<u64>)>,
     usage_at_turn_start: TokenCounts,
+    /// The usage before the turn is not known (an older page of the journal is being read
+    /// and the one before it is not): the footer then reports no per-turn figures.
+    usage_baseline_unknown: bool,
+    /// Answers that arrived before their request (the request is in an older page).
+    early_answers: HashMap<ApprovalId, (ApprovalState, Option<DecidedBy>)>,
+    /// A page older than the transcript is being folded in.
+    backfill: bool,
+    /// ... and the page before that one is not known either.
+    blind_start: bool,
 }
 
 impl Transcript {
@@ -249,6 +365,13 @@ impl Transcript {
     /// must treat as an entirely new list.
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// How many entries [`prepend`](Self::prepend) has put in front since the transcript was
+    /// last replaced wholesale: a view that keeps per-entry state by position shifts it by the
+    /// difference it has not seen yet.
+    pub fn prepended(&self) -> u64 {
+        self.prepended
     }
 
     /// The highest `seq` applied.
@@ -310,6 +433,69 @@ impl Transcript {
 
     // ---- applying events -------------------------------------------------------------------
 
+    /// Folds in a page of the journal that is older than everything applied so far ("Load
+    /// earlier"): its entries go in front of the others, and what is already there is not
+    /// disturbed: an event applied before is skipped, an item that also has newer events is
+    /// completed in place, and the state of the turn in progress (`turn_active`, the usage its
+    /// footer will report) stays as it was. `reached_start`: no page precedes this one, which
+    /// tells the first turn's footer that its usage started from zero.
+    ///
+    /// Returns how many entries were added in front (the others moved down by that many).
+    pub fn prepend(&mut self, events: &[AgentEvent], reached_start: bool) -> usize {
+        let before = self.entries.len();
+        let saved = (
+            self.active_turn,
+            self.turn_start,
+            self.usage.take(),
+            std::mem::take(&mut self.usage_at_turn_start),
+            self.usage_baseline_unknown,
+        );
+        self.backfill = true;
+        self.blind_start = !reached_start;
+        self.usage_baseline_unknown = false;
+        // Entries of the older page are appended while it is read; those of the turn that ends
+        // inside it are the ones that ending closes.
+        self.turn_start = before;
+        for event in events {
+            self.apply(event);
+        }
+        self.backfill = false;
+        self.blind_start = false;
+        (
+            self.active_turn,
+            self.turn_start,
+            self.usage,
+            self.usage_at_turn_start,
+            self.usage_baseline_unknown,
+        ) = saved;
+
+        let added = self.entries.len() - before;
+        if added == 0 {
+            return 0;
+        }
+        // The new entries were appended; they belong in front.
+        self.entries.rotate_left(before);
+        let remap = |at: usize| {
+            if at >= before {
+                at - before
+            } else {
+                at + added
+            }
+        };
+        for at in self
+            .by_item
+            .values_mut()
+            .chain(self.approval_entry.values_mut())
+            .chain(self.turn_plan.values_mut())
+            .chain(self.turn_diff.values_mut())
+        {
+            *at = remap(*at);
+        }
+        self.turn_start += added;
+        self.prepended += added as u64;
+        added
+    }
+
     /// Folds `event` in. `false` when it was applied before.
     pub fn apply(&mut self, event: &AgentEvent) -> bool {
         if !self.seen.insert(event.seq) {
@@ -323,6 +509,7 @@ impl Transcript {
                 self.active_turn = true;
                 self.turn_start = self.entries.len();
                 self.usage_at_turn_start = self.usage.map(|(total, _)| total).unwrap_or_default();
+                self.usage_baseline_unknown = self.blind_start && self.usage.is_none();
             }
             AgentEventKind::MessageStart { role, phase } => {
                 let at = self.message_entry(*role, item, turn, event.ts_ms);
@@ -332,6 +519,7 @@ impl Transcript {
                 self.touch(at);
             }
             AgentEventKind::MessageDelta { text } => {
+                let known = item.is_some_and(|i| self.by_item.contains_key(&i));
                 let at = self.message_entry(
                     hutan_core::agent::MessageRole::Assistant,
                     item,
@@ -340,10 +528,34 @@ impl Transcript {
                 );
                 if let Some(message) = self.message_mut(at)
                     && !message.done
+                    && message.stream.delta(event.seq, known, None, text)
                 {
                     message.text.push_str(text);
                     self.touch(at);
                 }
+            }
+            AgentEventKind::MessagePartial {
+                message_id,
+                phase,
+                text,
+            } => {
+                let at = self.message_entry(
+                    hutan_core::agent::MessageRole::Assistant,
+                    Some(*message_id),
+                    turn,
+                    event.ts_ms,
+                );
+                if let Some(message) = self.message_mut(at)
+                    && !message.done
+                {
+                    if message.phase.is_none() {
+                        message.phase.clone_from(phase);
+                    }
+                    if let Some(text) = message.stream.snapshot(event.seq, text) {
+                        message.text = text;
+                    }
+                }
+                self.touch(at);
             }
             AgentEventKind::MessageEnd { role, phase, text } => {
                 let at = self.message_entry(*role, item, turn, event.ts_ms);
@@ -351,6 +563,7 @@ impl Transcript {
                     message.text.clone_from(text);
                     message.phase = phase.clone();
                     message.done = true;
+                    message.stream = Stream::default();
                 }
                 self.touch(at);
             }
@@ -359,20 +572,38 @@ impl Transcript {
                 self.touch(at);
             }
             AgentEventKind::ReasoningDelta { part, text } => {
+                let known = item.is_some_and(|i| self.by_item.contains_key(&i));
                 let at = self.reasoning_entry(item, turn, event.ts_ms);
                 if let Body::Reasoning(reasoning) = &mut self.entries[at].body
                     && !reasoning.done
+                    && reasoning.stream.delta(event.seq, known, Some(*part), text)
                 {
                     match part {
-                        hutan_core::agent::ReasoningPart::Summary => {
-                            reasoning.summary.push_str(text);
-                        }
-                        hutan_core::agent::ReasoningPart::Content => {
-                            reasoning.content.push_str(text);
-                        }
+                        ReasoningPart::Summary => reasoning.summary.push_str(text),
+                        ReasoningPart::Content => reasoning.content.push_str(text),
                     }
                     self.touch(at);
                 }
+            }
+            AgentEventKind::ReasoningPartial {
+                reasoning_id,
+                summary,
+                content,
+            } => {
+                let at = self.reasoning_entry(Some(*reasoning_id), turn, event.ts_ms);
+                if let Body::Reasoning(reasoning) = &mut self.entries[at].body
+                    && !reasoning.done
+                {
+                    // A snapshot of both parts at once: the summary and the content are
+                    // reconciled together, as one text per part.
+                    let mut parts = [summary.clone(), content.clone()];
+                    if reasoning.stream.snapshot_parts(event.seq, &mut parts) {
+                        let [summary, content] = parts;
+                        reasoning.summary = summary;
+                        reasoning.content = content;
+                    }
+                }
+                self.touch(at);
             }
             AgentEventKind::ReasoningEnd { summary, content } => {
                 let at = self.reasoning_entry(item, turn, event.ts_ms);
@@ -380,6 +611,7 @@ impl Transcript {
                     reasoning.summary = summary.join("\n\n");
                     reasoning.content = content.join("\n\n");
                     reasoning.done = true;
+                    reasoning.stream = Stream::default();
                 }
                 self.touch(at);
             }
@@ -461,6 +693,7 @@ impl Transcript {
                         detail: detail.clone(),
                         options: options.clone(),
                         state: ApprovalState::Pending,
+                        decided_by: None,
                     },
                     event.ts_ms,
                 );
@@ -468,6 +701,7 @@ impl Transcript {
             AgentEventKind::PermissionResolved {
                 approval_id,
                 outcome,
+                decided_by,
             } => {
                 let state = match outcome {
                     PermissionOutcome::Selected { option_id } => ApprovalState::Selected {
@@ -475,7 +709,7 @@ impl Transcript {
                     },
                     PermissionOutcome::Expired => ApprovalState::Expired,
                 };
-                self.set_approval_state(*approval_id, state);
+                self.resolve_approval(*approval_id, state, decided_by.clone());
             }
             AgentEventKind::Plan {
                 explanation,
@@ -494,7 +728,10 @@ impl Transcript {
                 };
                 let at = match existing {
                     Some(at) => {
-                        self.entries[at].body = Body::Plan(plan);
+                        // An older page never overwrites what a newer event already said.
+                        if !self.backfill {
+                            self.entries[at].body = Body::Plan(plan);
+                        }
                         at
                     }
                     None => {
@@ -596,6 +833,7 @@ impl Transcript {
             text: String::new(),
             phase: None,
             done: false,
+            stream: Stream::default(),
         };
         let body = match role {
             hutan_core::agent::MessageRole::User => Body::User(message),
@@ -620,6 +858,7 @@ impl Transcript {
                 summary: String::new(),
                 content: String::new(),
                 done: false,
+                stream: Stream::default(),
             }),
         );
         if let Some(item) = item {
@@ -685,9 +924,11 @@ impl Transcript {
         {
             match self.turn_diff.get(&turn).copied() {
                 Some(at) => {
-                    self.entries[at].body = Body::TurnDiff(TurnDiff {
-                        patch: patch.to_owned(),
-                    });
+                    if !self.backfill {
+                        self.entries[at].body = Body::TurnDiff(TurnDiff {
+                            patch: patch.to_owned(),
+                        });
+                    }
                     self.touch(at);
                 }
                 None => {
@@ -716,6 +957,12 @@ impl Transcript {
         if self.approvals.contains_key(&id) {
             return;
         }
+        let mut approval = approval;
+        // Its answer may have been read first (the request is in an older page).
+        if let Some((state, decided_by)) = self.early_answers.remove(&id) {
+            approval.state = state;
+            approval.decided_by = decided_by;
+        }
         self.approvals.insert(id, approval);
         let at = match self.known_tool(item) {
             Some(at) => {
@@ -731,8 +978,25 @@ impl Transcript {
     }
 
     fn set_approval_state(&mut self, id: ApprovalId, state: ApprovalState) {
-        if let Some(approval) = self.approvals.get_mut(&id) {
-            approval.state = state;
+        self.resolve_approval(id, state, None);
+    }
+
+    fn resolve_approval(
+        &mut self,
+        id: ApprovalId,
+        state: ApprovalState,
+        decided_by: Option<DecidedBy>,
+    ) {
+        match self.approvals.get_mut(&id) {
+            Some(approval) => {
+                approval.state = state;
+                if decided_by.is_some() {
+                    approval.decided_by = decided_by;
+                }
+            }
+            None => {
+                self.early_answers.insert(id, (state, decided_by));
+            }
         }
         if let Some(at) = self.approval_entry.get(&id).copied() {
             self.touch(at);
@@ -784,6 +1048,13 @@ impl Transcript {
 
     fn turn_usage(&self) -> Option<TurnUsage> {
         let (now, window) = self.usage?;
+        if self.usage_baseline_unknown {
+            return Some(TurnUsage {
+                conversation_tokens: now.total_tokens,
+                context_window: window,
+                ..TurnUsage::default()
+            });
+        }
         let before = self.usage_at_turn_start;
         let delta = |now: Option<u64>, before: Option<u64>| {
             now.map(|n| n.saturating_sub(before.unwrap_or(0)))
@@ -1151,11 +1422,19 @@ mod tests {
                 outcome: PermissionOutcome::Selected {
                     option_id: "accept".into(),
                 },
+                decided_by: Some(DecidedBy {
+                    client_kind: "cli".into(),
+                    client_name: None,
+                }),
             },
         ));
         assert!(t.pending_approvals().is_empty());
         let approval = t.approval(id).unwrap();
         assert_eq!(approval.chosen().unwrap().label, "Allow once");
+        assert_eq!(approval.decision_text(), "Allowed once");
+        assert_eq!(approval.decided_by.as_ref().unwrap().client_kind, "cli");
+        assert_eq!(approval.answered_from(false), "from CLI");
+        assert_eq!(approval.answered_from(true), "from this window");
         assert!(
             t.entries()[0].rev > before,
             "the tool's card is drawn again"
@@ -1401,5 +1680,402 @@ mod tests {
         ));
         assert!(t.entries()[0].rev > first);
         assert!(t.rev() >= t.entries()[0].rev);
+    }
+
+    // ---- snapshots, provenance, earlier pages ------------------------------------------------
+
+    fn delta(s: &mut Script, item: ItemId, text: &str) -> AgentEvent {
+        s.event(
+            Some(item),
+            AgentEventKind::MessageDelta { text: text.into() },
+        )
+    }
+
+    fn partial(s: &mut Script, item: ItemId, text: &str) -> AgentEvent {
+        s.event(
+            Some(item),
+            AgentEventKind::MessagePartial {
+                message_id: item,
+                phase: Some("final_answer".into()),
+                text: text.into(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_snapshot_then_live_deltas_end_with_exactly_the_final_text() {
+        // A window opened mid-stream: the journal's snapshot, then what streams on.
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let item = ItemId::new();
+        s.seq = 9; // deltas 1..=9 went out before the window opened
+        let snapshot = partial(&mut s, item, "Hello, ");
+        assert_eq!(snapshot.seq, 10);
+        t.apply(&snapshot);
+        assert_eq!(assistant(&t, 0).text, "Hello, ");
+        assert_eq!(assistant(&t, 0).phase.as_deref(), Some("final_answer"));
+        assert!(!assistant(&t, 0).done);
+        for piece in ["wor", "ld"] {
+            let event = delta(&mut s, item, piece);
+            t.apply(&event);
+        }
+        assert_eq!(assistant(&t, 0).text, "Hello, world");
+        let end = s.event(
+            Some(item),
+            AgentEventKind::MessageEnd {
+                role: MessageRole::Assistant,
+                phase: Some("final_answer".into()),
+                text: "Hello, world".into(),
+            },
+        );
+        t.apply(&end);
+        assert_eq!(assistant(&t, 0).text, "Hello, world");
+        assert!(assistant(&t, 0).done);
+        assert_eq!(t.len(), 1, "one message, not one per snapshot");
+    }
+
+    #[test]
+    fn live_deltas_that_came_before_the_snapshot_are_neither_lost_nor_doubled() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let item = ItemId::new();
+        // Deltas 1 and 2 ("Hel", "lo, ") went out before the window opened; the history reply
+        // carries the snapshot taken after them (seq 3). Deltas 4 and 5 are live, and they
+        // reach the window before the reply is applied (the message start was missed too).
+        s.seq = 2;
+        let snapshot = partial(&mut s, item, "Hello, ");
+        let live_a = delta(&mut s, item, "wor");
+        let live_b = delta(&mut s, item, "ld");
+        assert_eq!((snapshot.seq, live_a.seq, live_b.seq), (3, 4, 5));
+        t.apply(&live_a);
+        t.apply(&live_b);
+        assert_eq!(assistant(&t, 0).text, "world", "what there is so far");
+        t.apply(&snapshot);
+        assert_eq!(assistant(&t, 0).text, "Hello, world");
+        // Deltas the snapshot has, delivered late, change nothing; later ones still append.
+        let mut old = delta(&mut s, item, "lo, ");
+        old.seq = 2;
+        t.apply(&old);
+        assert_eq!(assistant(&t, 0).text, "Hello, world");
+        let more = delta(&mut s, item, "!");
+        t.apply(&more);
+        assert_eq!(assistant(&t, 0).text, "Hello, world!");
+    }
+
+    #[test]
+    fn an_older_snapshot_never_shortens_the_text() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let item = ItemId::new();
+        let start = s.event(
+            Some(item),
+            AgentEventKind::MessageStart {
+                role: MessageRole::Assistant,
+                phase: None,
+            },
+        );
+        t.apply(&start);
+        let first = delta(&mut s, item, "abc");
+        let mut stale = partial(&mut s, item, "ab");
+        stale.seq = 1; // covers nothing the transcript does not have
+        let second = delta(&mut s, item, "def");
+        t.apply(&first);
+        t.apply(&second);
+        t.apply(&stale);
+        assert_eq!(assistant(&t, 0).text, "abcdef");
+    }
+
+    #[test]
+    fn a_reasoning_snapshot_reconciles_summary_and_content() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let item = ItemId::new();
+        s.seq = 3; // the start and two deltas went out before the window opened
+        let snapshot = s.event(
+            Some(item),
+            AgentEventKind::ReasoningPartial {
+                reasoning_id: item,
+                summary: "Plan".into(),
+                content: "details".into(),
+            },
+        );
+        let live = s.event(
+            Some(item),
+            AgentEventKind::ReasoningDelta {
+                part: ReasoningPart::Summary,
+                text: " more".into(),
+            },
+        );
+        assert_eq!((snapshot.seq, live.seq), (4, 5));
+        t.apply(&live);
+        t.apply(&snapshot);
+        let Body::Reasoning(reasoning) = &t.entries()[0].body else {
+            panic!()
+        };
+        assert_eq!(
+            (reasoning.summary.as_str(), reasoning.content.as_str()),
+            ("Plan more", "details")
+        );
+        assert!(!reasoning.done);
+        let end = s.event(
+            Some(item),
+            AgentEventKind::ReasoningEnd {
+                summary: vec!["Plan more".into()],
+                content: vec!["details".into()],
+            },
+        );
+        t.apply(&end);
+        let Body::Reasoning(reasoning) = &t.entries()[0].body else {
+            panic!()
+        };
+        assert!(reasoning.done);
+        assert_eq!(reasoning.summary, "Plan more");
+    }
+
+    #[test]
+    fn who_answered_comes_with_the_resolution_even_when_it_was_read_first() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let id = ApprovalId::new();
+        let ask = request(&mut s, None, id);
+        let answer = s.event(
+            None,
+            AgentEventKind::PermissionResolved {
+                approval_id: id,
+                outcome: PermissionOutcome::Selected {
+                    option_id: "accept".into(),
+                },
+                decided_by: Some(DecidedBy {
+                    client_kind: "desktop".into(),
+                    client_name: None,
+                }),
+            },
+        );
+        // The newer page, with the answer, is read before the page that has the request.
+        t.apply(&answer);
+        assert!(t.approval(id).is_none());
+        t.prepend(&[ask], true);
+        let approval = t.approval(id).unwrap();
+        assert_eq!(
+            approval.state,
+            ApprovalState::Selected {
+                option_id: "accept".into()
+            }
+        );
+        assert_eq!(approval.decided_by.as_ref().unwrap().client_kind, "desktop");
+        assert!(t.pending_approvals().is_empty());
+    }
+
+    /// A journal of two turns: a message, a command that ends in the second turn's page, and
+    /// footers with usage.
+    fn journal() -> Vec<AgentEvent> {
+        let mut s = Script::new();
+        let mut events = Vec::new();
+        let usage = |s: &mut Script, total: u64| {
+            s.event(
+                None,
+                AgentEventKind::Usage {
+                    total: Some(TokenCounts {
+                        total_tokens: Some(total),
+                        ..TokenCounts::default()
+                    }),
+                    last: None,
+                    context_window: Some(1000),
+                },
+            )
+        };
+        for (turn, total) in [(1_u64, 100_u64), (2, 250)] {
+            s.turn = TurnId::new();
+            events.push(s.event(None, AgentEventKind::TurnStarted));
+            let user = ItemId::new();
+            events.push(s.event(
+                Some(user),
+                AgentEventKind::MessageEnd {
+                    role: MessageRole::User,
+                    phase: None,
+                    text: format!("question {turn}"),
+                },
+            ));
+            let command = ItemId::new();
+            events.push(s.event(
+                Some(command),
+                AgentEventKind::ToolStart {
+                    tool: ToolKind::Command,
+                    name: "shell".into(),
+                    title: format!("run {turn}"),
+                    input: None,
+                },
+            ));
+            events.push(s.event(
+                Some(command),
+                AgentEventKind::ToolEnd {
+                    tool: ToolKind::Command,
+                    status: ToolStatus::Completed,
+                    output: Some(format!("out {turn}")),
+                    truncated: false,
+                    exit_code: Some(0),
+                    duration_ms: None,
+                },
+            ));
+            let answer = ItemId::new();
+            events.push(s.event(
+                Some(answer),
+                AgentEventKind::MessageEnd {
+                    role: MessageRole::Assistant,
+                    phase: None,
+                    text: format!("answer {turn}"),
+                },
+            ));
+            events.push(usage(&mut s, total));
+            events.push(s.event(
+                None,
+                AgentEventKind::TurnCompleted {
+                    duration_ms: Some(turn),
+                },
+            ));
+        }
+        events
+    }
+
+    fn shape(t: &Transcript) -> Vec<String> {
+        t.entries()
+            .iter()
+            .map(|e| match &e.body {
+                Body::User(m) => format!("user {}", m.text),
+                Body::Assistant(m) => format!("assistant {}", m.text),
+                Body::Tool(tool) => format!("tool {} -> {}", tool.title, tool.output),
+                Body::Footer(f) => format!("footer {:?} {:?}", f.duration_ms, f.usage),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn earlier_pages_go_in_front_without_duplicates_and_match_one_read_from_the_start() {
+        let events = journal();
+        let mut whole = Transcript::new();
+        for event in &events {
+            whole.apply(event);
+        }
+
+        // Newest page first; the page boundary cuts the second turn after its command started.
+        let cut = events
+            .iter()
+            .position(|e| matches!(e.kind, AgentEventKind::ToolStart { .. }))
+            .unwrap()
+            + 8; // the second turn's tool_start
+        let mut paged = Transcript::new();
+        for event in &events[cut..] {
+            paged.apply(event);
+        }
+        let newest_len = paged.len();
+        let first_id = paged.entries()[0].id;
+        // The older page overlaps the newer one by two events (a reload that was not exact).
+        let added = paged.prepend(&events[..cut + 2], true);
+        assert!(added > 0);
+        assert_eq!(paged.len(), newest_len + added);
+        assert_eq!(
+            paged.entries().iter().filter(|e| e.id == first_id).count(),
+            1,
+            "entries are the same ones, moved"
+        );
+        assert_eq!(
+            shape(&paged)
+                .into_iter()
+                .filter(|line| line.starts_with("user "))
+                .collect::<Vec<_>>(),
+            ["user question 1", "user question 2"]
+        );
+        // The command that spans the boundary is one card with its start and its end.
+        let commands: Vec<String> = shape(&paged)
+            .into_iter()
+            .filter(|l| l.starts_with("tool "))
+            .collect();
+        assert_eq!(commands, ["tool run 1 -> out 1", "tool run 2 -> out 2"]);
+        // Applying everything again changes nothing.
+        for event in &events {
+            assert!(!paged.apply(event));
+        }
+        assert!(
+            shape(&paged)
+                .iter()
+                .filter(|l| l.starts_with("footer "))
+                .count()
+                == 2
+        );
+        assert!(!paged.turn_active());
+        assert_eq!(paged.max_seq(), whole.max_seq());
+        // The footers of both turns carry their own usage, as in the whole read.
+        let footers = |t: &Transcript| -> Vec<Option<u64>> {
+            t.entries()
+                .iter()
+                .filter_map(|e| match &e.body {
+                    Body::Footer(f) => Some(f.usage.and_then(|u| u.total_tokens)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(footers(&whole), [Some(100), Some(150)]);
+        assert_eq!(footers(&paged)[0], Some(100));
+    }
+
+    #[test]
+    fn prepending_leaves_the_turn_in_progress_alone() {
+        let mut s = Script::new();
+        let older = vec![
+            s.event(None, AgentEventKind::TurnStarted),
+            s.event(None, AgentEventKind::TurnCancelled),
+        ];
+        let mut t = Transcript::new();
+        s.turn = TurnId::new();
+        let item = ItemId::new();
+        t.apply(&s.event(None, AgentEventKind::TurnStarted));
+        t.apply(&s.event(
+            Some(item),
+            AgentEventKind::MessageStart {
+                role: MessageRole::Assistant,
+                phase: None,
+            },
+        ));
+        assert!(t.turn_active());
+        t.prepend(&older, true);
+        assert!(t.turn_active(), "the old turn's end is not this turn's");
+        // The open message was not closed by the old turn's end, and later deltas still grow it.
+        let more = s.event(
+            Some(item),
+            AgentEventKind::MessageDelta { text: "x".into() },
+        );
+        t.apply(&more);
+        let last = t.entries().last().unwrap();
+        assert!(matches!(&last.body, Body::Assistant(m) if m.text == "x" && !m.done));
+    }
+
+    #[test]
+    fn a_page_cut_in_the_middle_of_a_turn_reports_no_made_up_usage() {
+        let events = journal();
+        // Only the second turn's end and what follows the cut: the usage before it is unknown.
+        let second = events
+            .iter()
+            .rposition(|e| matches!(e.kind, AgentEventKind::TurnStarted))
+            .unwrap();
+        let mut t = Transcript::new();
+        for event in &events[second..] {
+            t.apply(event);
+        }
+        // An older page that holds the first turn (not the start of the journal).
+        t.prepend(&events[..second], false);
+        let totals: Vec<(Option<u64>, Option<u64>)> = t
+            .entries()
+            .iter()
+            .filter_map(|e| match &e.body {
+                Body::Footer(f) => f.usage.map(|u| (u.total_tokens, u.conversation_tokens)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            totals,
+            [(None, Some(100)), (Some(250), Some(250))],
+            "the older turn names the conversation total but no per-turn figure"
+        );
     }
 }

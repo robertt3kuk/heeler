@@ -245,7 +245,8 @@ async fn a_command_turn_with_an_approval_maps_to_the_unified_events() {
             approval_id: approval,
             outcome: PermissionOutcome::Selected {
                 option_id: "accept".into()
-            }
+            },
+            decided_by: None,
         }
     );
     let tool_end = kinds(&rest)
@@ -495,7 +496,8 @@ async fn a_pending_approval_expires_when_the_turn_is_interrupted() {
         kinds[kinds.len() - 2],
         &AgentEventKind::PermissionResolved {
             approval_id: approval,
-            outcome: PermissionOutcome::Expired
+            outcome: PermissionOutcome::Expired,
+            decided_by: None,
         }
     );
     assert_eq!(kinds[kinds.len() - 1], &AgentEventKind::TurnCancelled);

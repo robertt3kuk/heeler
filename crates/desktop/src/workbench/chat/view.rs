@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, FocusHandle, Focusable, FollowMode,
-    InteractiveElement, IntoElement, KeyDownEvent, ListAlignment, ListState, MouseButton,
-    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, StyledText,
-    Subscription, TextRun, Window, div, font, list, prelude::*, px,
+    InteractiveElement, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
+    MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    StyledText, Subscription, TextRun, Window, div, font, list, prelude::*, px,
 };
 use hutan_chat_view::markdown::Block;
 use hutan_client::ConnectionState;
@@ -49,6 +49,8 @@ pub struct ChatView {
     focus_handle: FocusHandle,
     pub(super) list: ListState,
     seen_epoch: u64,
+    /// `Transcript::prepended` as of the last sync.
+    synced_front: u64,
     synced_len: usize,
     synced_rev: u64,
     /// Things the user opened or closed, against each card's default: `(entry id, part)`.
@@ -98,6 +100,16 @@ impl ChatView {
     ) -> Self {
         let list = ListState::new(0, ListAlignment::Top, px(800.0));
         list.set_follow_mode(FollowMode::Tail);
+        // Scrolling to the first entry asks for the page before it, until the journal has no
+        // more (the banner's "Load earlier" does the same for a list that fits the window).
+        let earlier = model.clone();
+        list.set_scroll_handler(move |event, _, cx| {
+            if event.visible_range.start == 0 && !event.is_following_tail {
+                let earlier = earlier.clone();
+                // Updated once the scroll has been handled: the list is in the middle of it.
+                cx.defer(move |cx| earlier.update(cx, |model, cx| model.load_earlier(cx)));
+            }
+        });
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
@@ -111,6 +123,7 @@ impl ChatView {
             focus_handle: cx.focus_handle(),
             list,
             seen_epoch: 0,
+            synced_front: 0,
             synced_len: 0,
             synced_rev: 0,
             toggled: HashSet::new(),
@@ -134,6 +147,22 @@ impl ChatView {
         &self.model
     }
 
+    /// The id of the transcript entry at the top of the list, with how far into it the list is
+    /// scrolled: what "keep the reader's place" keeps when earlier entries arrive.
+    pub fn scroll_anchor(&self, cx: &App) -> Option<(u64, Pixels)> {
+        let top = self.list.logical_scroll_top();
+        let model = self.model.read(cx);
+        let entries = model.transcript().entries();
+        entries
+            .get(top.item_ix)
+            .map(|entry| (entry.id, top.offset_in_item))
+    }
+
+    /// Whether the list follows the end of the transcript (the reader has not scrolled away).
+    pub fn following_tail(&self) -> bool {
+        self.list.is_following_tail()
+    }
+
     /// Brings the list's item heights in line with the transcript: items whose entry changed are
     /// measured again, new ones are added; a transcript that was replaced starts a new list.
     fn sync_list(&mut self, cx: &App) {
@@ -143,7 +172,25 @@ impl ChatView {
             self.list.reset(len);
             self.parsed.clear();
             self.seen_epoch = transcript.epoch();
+            self.synced_front = transcript.prepended();
         } else {
+            // Earlier entries went in front: their slots go in front of the list's, and the
+            // position the reader was at stays on the same entry (the list moves its own
+            // scroll position with the splice; one that was never scrolled sits at the first
+            // item, which is now an older one).
+            let added = (transcript.prepended() - self.synced_front) as usize;
+            if added > 0 {
+                let top = self.list.logical_scroll_top();
+                self.list.splice(0..0, added);
+                self.synced_len += added;
+                self.synced_front = transcript.prepended();
+                if !self.list.is_following_tail() {
+                    self.list.scroll_to(ListOffset {
+                        item_ix: top.item_ix + added,
+                        offset_in_item: top.offset_in_item,
+                    });
+                }
+            }
             for (at, entry) in transcript
                 .entries()
                 .iter()
@@ -560,11 +607,6 @@ impl ChatView {
                 theme.warning,
                 false,
             ),
-            (None, _) if model.history_cut() => (
-                "Older history is not shown (`hutan chat log` has all of it).".to_owned(),
-                theme.muted,
-                false,
-            ),
             _ => return None,
         };
         let hover = theme.hover;
@@ -599,6 +641,57 @@ impl ChatView {
                     )
                 })
                 .child(probe(&self.regions, Region::Chat("banner")))
+                .into_any_element(),
+        )
+    }
+
+    /// The row above the transcript while the journal has events before the first one shown:
+    /// "Load earlier" reads the page before it (scrolling to the top does the same).
+    fn render_earlier(&self, look: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let model = self.model.read(cx);
+        if !model.has_earlier() {
+            return None;
+        }
+        let loading = model.loading_earlier();
+        let load = button(
+            "chat-load-earlier",
+            if loading {
+                "Loading…"
+            } else {
+                "Load earlier"
+            },
+            ButtonKind::Plain,
+            !loading,
+            look,
+        );
+        let load = if loading {
+            load
+        } else {
+            load.on_click(cx.listener(|this, _, _, cx| {
+                this.model.update(cx, |model, cx| model.load_earlier(cx));
+            }))
+        };
+        Some(
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(tokens.spacing * 2.0))
+                .px(px(tokens.spacing * 3.0))
+                .py(px(tokens.spacing))
+                .border_b_1()
+                .border_color(theme.border)
+                .text_color(theme.muted)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child("Earlier messages are not shown."),
+                )
+                .child(load.child(probe(&self.regions, Region::Chat("load-earlier"))))
+                .child(probe(&self.regions, Region::Chat("earlier")))
                 .into_any_element(),
         )
     }
@@ -894,6 +987,7 @@ impl Render for ChatView {
         let gate = self.gate(info.as_ref(), cx);
         let header = self.render_header(info.as_ref(), &look, cx);
         let banner = self.render_banner(&look, cx);
+        let earlier = self.render_earlier(&look, cx);
         let attach = self.render_attach(&look, cx);
         let composer = self.render_composer(&gate, window, &look, cx);
         let empty = self.model.read(cx).transcript().is_empty();
@@ -941,6 +1035,7 @@ impl Render for ChatView {
             .bg(theme.surface)
             .child(header)
             .children(banner)
+            .children(earlier)
             .child(div().relative().flex_1().min_h_0().child(body))
             .children(attach)
             .child(composer)

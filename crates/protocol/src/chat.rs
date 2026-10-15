@@ -92,6 +92,12 @@ pub struct ChatHistoryRequest {
 
 /// Result of `chat.history`. Events are marked `replay`. Streaming deltas are not journaled,
 /// so `seq` has gaps; the `*_end` events carry the complete text.
+///
+/// Protocol 0.15 (capability `chat.provenance`): a message or reasoning block that is still
+/// streaming appears as its latest `message_partial` / `reasoning_partial`, which includes
+/// every delta with a smaller `seq` (the newest page carries a fresh snapshot stamped with a
+/// `seq` of its own, no greater than `last_seq`); the live deltas that follow have a greater
+/// `seq`. Once the item ends, its partial is gone and `message_end` / `reasoning_end` stand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatHistory {
     pub events: Vec<AgentEvent>,

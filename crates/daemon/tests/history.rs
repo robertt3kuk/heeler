@@ -290,6 +290,9 @@ async fn enabled_daemon_indexes_new_transcripts_from_file_events_and_searches_th
     assert_eq!(hit.role, HistoryRole::User);
     assert_eq!(hit.cwd.as_deref(), Some("/work/app"));
     assert_eq!(hit.title.as_deref(), Some("Scheduler stall investigation"));
+    // Where the transcript is, so that a client can reveal it; no block.
+    assert_eq!(hit.path.as_deref(), Some(claude.to_str().unwrap()));
+    assert_eq!((hit.terminal_id, hit.block_id), (None, None));
     assert!(hit.snippet.contains("«quokka»"), "{}", hit.snippet);
     assert_eq!(
         hit.resume_argv.as_deref(),
@@ -309,6 +312,7 @@ async fn enabled_daemon_indexes_new_transcripts_from_file_events_and_searches_th
         "0198aaaa-bbbb-cccc-dddd-eeeeffff0000"
     );
     assert_eq!(codex_hit.cwd.as_deref(), Some("/work/codex-app"));
+    assert_eq!(codex_hit.path.as_deref(), Some(codex.to_str().unwrap()));
     assert_eq!(
         codex_hit.resume_argv.as_deref(),
         Some(
@@ -324,6 +328,7 @@ async fn enabled_daemon_indexes_new_transcripts_from_file_events_and_searches_th
     assert_eq!(omp_hit.source, HistorySource::Omp);
     assert_eq!(omp_hit.session_key, "0f4c7d52");
     assert_eq!(omp_hit.title.as_deref(), Some("Axolotl cache design"));
+    assert_eq!(omp_hit.path.as_deref(), Some(omp.to_str().unwrap()));
     assert_eq!(
         omp_hit.resume_argv.as_deref(),
         Some(&["omp".to_owned(), "--resume=0f4c7d52".to_owned()][..])
@@ -404,9 +409,28 @@ async fn hutan_blocks_and_agent_reports_are_indexed() {
     assert_eq!(hits[0].role, HistoryRole::Command);
     assert_eq!(hits[0].session_key, session.id.to_string());
     assert_eq!(hits[0].resume_argv, None);
+    assert_eq!(hits[0].path, None);
+    // The hit names the block it came from, in the terminal that ran it.
+    let terminal = terminal_of(&session);
+    let blocks = client
+        .terminal_blocks(terminal, None, 500)
+        .await
+        .unwrap()
+        .blocks;
+    let block = blocks
+        .iter()
+        .find(|b| b.command.as_deref() == Some("cargo test -p daemon"))
+        .expect("the block exists");
+    assert_eq!(hits[0].terminal_id, Some(terminal));
+    assert_eq!(hits[0].block_id, Some(block.id));
     let output = wait_hits(&client, "flibbertigibbet").await;
     assert_eq!(output[0].role, HistoryRole::Output);
     assert_eq!(output[0].session_key, session.id.to_string());
+    assert_eq!(
+        (output[0].terminal_id, output[0].block_id),
+        (Some(terminal), Some(block.id)),
+        "the output row belongs to the same block"
+    );
 
     let applied: AgentApplied = client
         .call(Request::AgentReport(AgentReportRequest {
@@ -429,6 +453,11 @@ async fn hutan_blocks_and_agent_reports_are_indexed() {
         report[0].snippet.contains("claude working"),
         "{}",
         report[0].snippet
+    );
+    assert_eq!(
+        (report[0].terminal_id, report[0].block_id),
+        (None, None),
+        "an agent report is no block"
     );
 
     stop(&client, session.id).await.unwrap();

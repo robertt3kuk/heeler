@@ -214,6 +214,11 @@ impl Ctx {
         for event in &history.events {
             self.show(&mut printer, event)?;
         }
+        // A message that is still streaming ends the log in the middle of a line.
+        let end = printer.finish();
+        if !end.is_empty() {
+            print!("{end}");
+        }
         Ok(())
     }
 

@@ -10,8 +10,8 @@ use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
 use crate::workbench::render::probe;
 use crate::workbench::view::Region;
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    AnyElement, App, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use hutan_chat_view::diff::{self, DiffLine, FileDiff, LineKind, MAX_LINES};
 use hutan_chat_view::markdown::{self, Block as MdBlock};
@@ -780,6 +780,26 @@ impl ChatView {
 
     // ---- approvals -------------------------------------------------------------------------
 
+    /// What a resolved card says: what was decided and where the answer came from ("Allowed
+    /// once · from CLI"); nothing while the request is open or when it expired.
+    fn resolution_line(&self, approval: &Approval, cx: &App) -> Option<String> {
+        if !matches!(approval.state, ApprovalState::Selected { .. }) {
+            return None;
+        }
+        let here = self.sessions.read(cx).answered_here(approval.id).is_some();
+        Some(format!(
+            "{} · {}",
+            approval.decision_text(),
+            approval.answered_from(here)
+        ))
+    }
+
+    /// The line a resolved approval's card shows (`None` while it is open or when it expired).
+    pub fn resolution_text(&self, id: ApprovalId, cx: &App) -> Option<String> {
+        let model = self.model.read(cx);
+        self.resolution_line(model.transcript().approval(id)?, cx)
+    }
+
     pub(super) fn approval_card(
         &self,
         approval: &Approval,
@@ -803,13 +823,7 @@ impl ChatView {
                     }
                     _ => theme.muted,
                 };
-                let what = option.map_or("Answered", |o| o.label.as_str());
-                let by = if self.sessions.read(cx).answered_here(approval.id).is_some() {
-                    "answered here"
-                } else {
-                    "answered from another client"
-                };
-                Some((format!("{what} · {by}"), tone))
+                self.resolution_line(approval, cx).map(|line| (line, tone))
             }
             ApprovalState::Expired => Some((
                 "No answer: the turn ended or the agent withdrew the request".to_owned(),

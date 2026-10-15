@@ -12,7 +12,7 @@ use std::time::Duration;
 use common::{TestDaemon, WAIT, create, remote_code, spec, stop, wait_event};
 use hutan_agents::CodexConfig;
 use hutan_client::Client;
-use hutan_core::agent::PermissionOutcome;
+use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode, SessionId};
 use hutan_core::{Seq, SessionState};
 use hutan_protocol::ErrorCode;
@@ -21,7 +21,8 @@ use hutan_protocol::chat::{
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent,
 };
 use hutan_protocol::messages::{
-    Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef, SessionResult,
+    ClientKind, Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef,
+    SessionResult,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -513,20 +514,30 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
         }))
         .await
         .unwrap();
-    let outcome = wait_event(&mut t.events, "approval.resolved", |event| match event {
-        Event::ApprovalResolved {
-            approval_id,
-            outcome,
-            ..
-        } if *approval_id == info.id => Some(outcome.clone()),
-        _ => None,
-    })
-    .await;
+    let (outcome, decided_by) =
+        wait_event(&mut t.events, "approval.resolved", |event| match event {
+            Event::ApprovalResolved {
+                approval_id,
+                outcome,
+                decided_by,
+                ..
+            } if *approval_id == info.id => Some((outcome.clone(), decided_by.clone())),
+            _ => None,
+        })
+        .await;
     assert_eq!(
         outcome,
         PermissionOutcome::Selected {
             option_id: "accept".into()
         }
+    );
+    assert_eq!(
+        decided_by,
+        Some(DecidedBy {
+            client_kind: "cli".into(),
+            client_name: None
+        }),
+        "answered over a CLI connection"
     );
     wait_event(
         &mut other_events,
@@ -580,6 +591,14 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
         (row.3.as_deref(), row.4.as_deref(), row.5.as_deref()),
         (Some("selected"), Some("accept"), Some("cli"))
     );
+    // The journal says it too, so that a client opened later can show it.
+    assert_eq!(
+        resolved_in_history(&t, created.id, info.id).await,
+        Some(DecidedBy {
+            client_kind: "cli".into(),
+            client_name: None
+        })
+    );
     t.stop().await;
 }
 
@@ -602,16 +621,19 @@ async fn a_pending_approval_expires_when_its_turn_ends() {
         }))
         .await
         .unwrap();
-    let outcome = wait_event(&mut t.events, "approval.resolved", |event| match event {
-        Event::ApprovalResolved {
-            approval_id,
-            outcome,
-            ..
-        } if *approval_id == info.id => Some(outcome.clone()),
-        _ => None,
-    })
-    .await;
+    let (outcome, decided_by) =
+        wait_event(&mut t.events, "approval.resolved", |event| match event {
+            Event::ApprovalResolved {
+                approval_id,
+                outcome,
+                decided_by,
+                ..
+            } if *approval_id == info.id => Some((outcome.clone(), decided_by.clone())),
+            _ => None,
+        })
+        .await;
     assert_eq!(outcome, PermissionOutcome::Expired);
+    assert_eq!(decided_by, None, "nobody answered");
     next_chat_event(&mut t.events, "turn_cancelled", |e| {
         matches!(e.kind, AgentEventKind::TurnCancelled)
     })
@@ -641,6 +663,105 @@ async fn a_pending_approval_expires_when_its_turn_ends() {
         )
         .unwrap();
     assert_eq!((outcome.as_str(), decided_by), ("expired", None));
+    // Nor does the journal name anybody.
+    let history = t.history(created.id, None, 200).await;
+    assert!(history.events.iter().any(|e| matches!(
+        &e.kind,
+        AgentEventKind::PermissionResolved {
+            approval_id,
+            outcome: PermissionOutcome::Expired,
+            decided_by: None,
+        } if *approval_id == info.id
+    )));
+    t.stop().await;
+}
+
+/// `decided_by` of the `permission_resolved` event of `approval` as `chat.history` replays it.
+async fn resolved_in_history(
+    t: &Chat,
+    session: SessionId,
+    approval: ApprovalId,
+) -> Option<DecidedBy> {
+    let history = t.history(session, None, 200).await;
+    let resolved: Vec<_> = history
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            AgentEventKind::PermissionResolved {
+                approval_id,
+                decided_by,
+                ..
+            } if *approval_id == approval => Some((e.delivery, decided_by.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resolved.len(), 1, "one resolution in the journal");
+    assert_eq!(resolved[0].0, hutan_core::Delivery::Replay);
+    resolved[0].1.clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_from_the_desktop_is_attributed_to_it_and_replayed() {
+    let mut t = Chat::with_fixture("approval-touch").await;
+    let created = t
+        .create_with(
+            None,
+            Some(ApprovalPolicy::Untrusted),
+            Some(SandboxMode::ReadOnly),
+        )
+        .await;
+    t.send(created.id, "Run `touch hi.txt`, then say done.")
+        .await;
+    let info = wait_event(&mut t.events, "approval.required", |event| match event {
+        Event::ApprovalRequired { approval } => Some((**approval).clone()),
+        _ => None,
+    })
+    .await;
+    let desktop = t.daemon.connect_as(ClientKind::Desktop).await;
+    // A refused attempt takes no credit.
+    let refused = desktop
+        .call::<Empty>(Request::ApprovalRespond(ApprovalRespond {
+            approval_id: info.id,
+            option_id: "decline".to_owned(),
+        }))
+        .await;
+    assert_eq!(remote_code(refused), ErrorCode::OptionNotOffered);
+    desktop
+        .call::<Empty>(Request::ApprovalRespond(ApprovalRespond {
+            approval_id: info.id,
+            option_id: "accept".to_owned(),
+        }))
+        .await
+        .unwrap();
+    let live = next_chat_event(&mut t.events, "permission_resolved", |e| {
+        matches!(e.kind, AgentEventKind::PermissionResolved { .. })
+    })
+    .await;
+    let expected = DecidedBy {
+        client_kind: "desktop".into(),
+        client_name: None,
+    };
+    assert!(
+        matches!(
+            &live.kind,
+            AgentEventKind::PermissionResolved { decided_by: Some(by), .. } if *by == expected
+        ),
+        "{live:?}"
+    );
+    assert_eq!(
+        resolved_in_history(&t, created.id, info.id).await,
+        Some(expected.clone())
+    );
+    // The journal's copy is the one in the event.
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    let decided_by: String = db
+        .query_row(
+            "SELECT decided_by FROM approvals WHERE id = ?1",
+            [info.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decided_by, "desktop");
     t.stop().await;
 }
 
@@ -1150,5 +1271,235 @@ async fn an_agent_that_dies_mid_turn_fails_the_session_and_ends_the_turn() {
         )
         .await;
     assert!(!session.chat.unwrap().turn_active);
+    t.stop().await;
+}
+
+/// `plain-turn` with its one `"pong"` delta replaced by a stream that stops at two gates: the
+/// message is `"Hello, "`, then (after the first gate) 40 one-character deltas and `"world"`,
+/// then (after the second gate) the rest. Returns the transcript and the final text.
+fn gated_stream(dir: &Path, gates: [&Path; 2]) -> (PathBuf, String) {
+    let real = std::fs::read_to_string(fixtures().join("plain-turn.jsonl")).unwrap();
+    let lines: Vec<&str> = real.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("\"item/agentMessage/delta\""))
+        .unwrap();
+    let delta = |text: &str| {
+        let mut message: Value = serde_json::from_str(lines[at]).unwrap();
+        message["msg"]["params"]["delta"] = Value::String(text.to_owned());
+        message.to_string()
+    };
+    let hold = |gate: &Path| serde_json::json!({"dir": "hold", "file": gate}).to_string();
+    let middle: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN".to_owned();
+    assert_eq!(middle.len(), 40);
+    let full = format!("Hello, {middle}world");
+
+    let mut out: Vec<String> = lines[..at].iter().map(|l| (*l).to_owned()).collect();
+    out.push(delta("Hel"));
+    out.push(delta("lo, "));
+    out.push(hold(gates[0]));
+    for c in middle.chars() {
+        out.push(delta(&c.to_string()));
+    }
+    out.push(delta("world"));
+    out.push(hold(gates[1]));
+    // The completed item has the whole text.
+    let mut completed: Value = serde_json::from_str(lines[at + 1]).unwrap();
+    assert_eq!(completed["msg"]["method"], "item/completed");
+    completed["msg"]["params"]["item"]["text"] = Value::String(full.clone());
+    out.push(completed.to_string());
+    out.extend(lines[at + 2..].iter().map(|l| (*l).to_owned()));
+    let transcript = dir.join("stream.jsonl");
+    std::fs::write(&transcript, out.join("\n") + "\n").unwrap();
+    (transcript, full)
+}
+
+/// `(kind, event_json)` of the journal rows of `session`, oldest first.
+fn journal_rows(t: &Chat, session: SessionId) -> Vec<(String, String)> {
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    let mut stmt = db
+        .prepare("SELECT kind, event_json FROM chat_items WHERE session_id = ?1 ORDER BY seq")
+        .unwrap();
+    stmt.query_map([session.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn journaled_partial(rows: &[(String, String)]) -> Vec<AgentEvent> {
+    rows.iter()
+        .filter(|(kind, _)| kind == "message_partial")
+        .map(|(_, json)| serde_json::from_str(json).unwrap())
+        .collect()
+}
+
+fn partial_text(event: &AgentEvent) -> &str {
+    match &event.kind {
+        AgentEventKind::MessagePartial { text, .. } => text,
+        other => panic!("not a partial: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_joins_mid_stream_gets_the_text_so_far_and_then_the_live_deltas() {
+    let work = tempfile::tempdir().unwrap();
+    let gate_one = work.path().join("gate-one");
+    let gate_two = work.path().join("gate-two");
+    let (transcript, full) = gated_stream(work.path(), [&gate_one, &gate_two]);
+    let config = replay(&transcript, &work.path().join("received.jsonl"));
+    let daemon = TestDaemon::start_with("", move |c| c.codex = Some(config)).await;
+    let (client, events) = daemon.connect_subscribed().await;
+    let mut t = Chat {
+        daemon,
+        work,
+        client,
+        events,
+    };
+    let created = t.create().await;
+    t.send(created.id, "say hello").await;
+
+    // The stream stops at the first gate with "Hello, " written.
+    let item = loop {
+        let event = next_chat_event(&mut t.events, "the first deltas", |e| {
+            matches!(e.kind, AgentEventKind::MessageDelta { .. })
+        })
+        .await;
+        if matches!(&event.kind, AgentEventKind::MessageDelta { text } if text == "lo, ") {
+            break event.item_id.unwrap();
+        }
+    };
+    // Within a second the daemon has journaled a snapshot of it.
+    let rows = timeout(WAIT, async {
+        loop {
+            let rows = journal_rows(&t, created.id);
+            if !journaled_partial(&rows).is_empty() {
+                return rows;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("a snapshot is journaled while the message streams");
+    let journaled = journaled_partial(&rows);
+    assert_eq!(journaled.len(), 1);
+    assert_eq!(partial_text(&journaled[0]), "Hello, ");
+    assert_eq!(journaled[0].item_id, Some(item));
+    let rows_at_first_gate = rows.len();
+
+    // A second client opens the chat now, subscribed before it reads the journal.
+    let (late, mut late_events) = t.daemon.connect_subscribed().await;
+    let history: ChatHistory = late
+        .call(Request::ChatHistory(ChatHistoryRequest {
+            session_id: created.id,
+            before_seq: None,
+            limit: 200,
+        }))
+        .await
+        .unwrap();
+    let partials: Vec<&AgentEvent> = history
+        .events
+        .iter()
+        .filter(|e| e.kind.name() == "message_partial")
+        .collect();
+    assert_eq!(partials.len(), 1, "one partial per open message");
+    let snapshot = partials[0];
+    assert_eq!(partial_text(snapshot), "Hello, ");
+    assert_eq!(snapshot.delivery, hutan_core::Delivery::Replay);
+    assert!(snapshot.seq <= history.last_seq);
+    assert!(
+        history.events.iter().all(|e| !matches!(
+            &e.kind,
+            AgentEventKind::MessageEnd {
+                role: hutan_core::agent::MessageRole::Assistant,
+                ..
+            }
+        )),
+        "the message is not over"
+    );
+
+    // The rest streams: the client shows the snapshot, then appends every live delta after it.
+    std::fs::write(&gate_one, "").unwrap();
+    let mut shown = partial_text(snapshot).to_owned();
+    let mut last = snapshot.seq;
+    let mut deltas = 0;
+    while shown.len() < "Hello, ".len() + 40 + "world".len() {
+        let event = next_chat_event(&mut late_events, "deltas", |_| true).await;
+        if let AgentEventKind::MessageDelta { text } = &event.kind {
+            assert!(
+                event.seq > last,
+                "live deltas arrive in order after the snapshot"
+            );
+            assert_eq!(event.item_id, Some(item));
+            last = event.seq;
+            shown.push_str(text);
+            deltas += 1;
+        }
+    }
+    assert_eq!(deltas, 41);
+    assert_eq!(shown, full);
+
+    // Stopped at the second gate: another snapshot replaced the first, and 41 deltas did not
+    // make the journal any longer.
+    let rows = timeout(WAIT, async {
+        loop {
+            let rows = journal_rows(&t, created.id);
+            let partial = journaled_partial(&rows);
+            if partial.len() == 1 && partial_text(&partial[0]) == full {
+                return rows;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the snapshot is replaced by a newer one");
+    assert_eq!(
+        rows.len(),
+        rows_at_first_gate,
+        "the journal did not grow with the deltas"
+    );
+    let replaced = &journaled_partial(&rows)[0];
+    assert!(
+        replaced.seq > snapshot.seq,
+        "a newer snapshot, in place of the old one"
+    );
+
+    // The message ends: the snapshot is superseded, the journal has exactly the final text.
+    std::fs::write(&gate_two, "").unwrap();
+    let end = next_chat_event(&mut t.events, "message_end", |e| {
+        matches!(e.kind, AgentEventKind::MessageEnd { .. })
+    })
+    .await;
+    let AgentEventKind::MessageEnd { text, .. } = &end.kind else {
+        unreachable!()
+    };
+    assert_eq!(*text, full);
+    next_chat_event(&mut t.events, "the turn to end", is_turn_end).await;
+    t.wait_state(created.id, SessionState::Idle).await;
+    let rows = journal_rows(&t, created.id);
+    assert!(
+        journaled_partial(&rows).is_empty(),
+        "superseded by message_end"
+    );
+    let history = t.history(created.id, None, 200).await;
+    assert!(
+        history
+            .events
+            .iter()
+            .all(|e| e.kind.name() != "message_partial")
+    );
+    let finals: Vec<&str> = history
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            AgentEventKind::MessageEnd {
+                role: hutan_core::agent::MessageRole::Assistant,
+                text,
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finals, [full.as_str()]);
+    drop(late);
     t.stop().await;
 }

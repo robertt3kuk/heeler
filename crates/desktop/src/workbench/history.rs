@@ -336,9 +336,20 @@ impl Workbench {
         .detach();
     }
 
+    /// Reveals the transcript file of a hit of another tool in Finder.
+    pub fn reveal_history_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        let path = Path::new(path);
+        if path.is_file() {
+            (self.daemon.reveal)(path, cx);
+        } else {
+            self.set_notice(format!("{} no longer exists", path.display()), cx);
+        }
+    }
+
     /// Shows the Hutan session a hit points at and, for a block, scrolls its terminal to the
-    /// block when it still exists. The block is found by its start time (the index keeps no
-    /// block id).
+    /// block: the block the index recorded, by its id, in the terminal that ran it. A session
+    /// whose terminal is another one (the daemon started it again since) has lost the block,
+    /// and a block the terminal no longer keeps cannot be shown; both say so.
     pub fn open_history_hit(
         &mut self,
         target: HutanTarget,
@@ -364,27 +375,15 @@ impl Workbench {
             }
         };
         self.open_session(session, window, cx);
-        let (Some(started_at), Some(terminal)) = (target.block_started_at_ms, terminal) else {
+        let Some(block) = target.block else {
             return;
         };
-        let connection = self.sessions.read(cx).connection().clone();
+        if terminal != Some(block.terminal_id) {
+            self.set_notice("That block is no longer in the terminal", cx);
+            return;
+        }
+        let block = block.block_id;
         cx.spawn_in(window, async move |this, cx| {
-            let blocks = cx
-                .background_executor()
-                .spawn(async move { connection.fetch_blocks(terminal).await })
-                .await;
-            let block = blocks.ok().and_then(|list| {
-                list.iter()
-                    .find(|block| block.started_at_ms == started_at)
-                    .map(|block| block.id)
-            });
-            let Some(block) = block else {
-                this.update(cx, |this, cx| {
-                    this.set_notice("That block is no longer in the terminal", cx);
-                })
-                .ok();
-                return;
-            };
             // The terminal view exists once the session has been drawn, and knows its blocks a
             // moment after that.
             for _ in 0..JUMP_TRIES {
@@ -393,11 +392,16 @@ impl Workbench {
                         view.update(cx, |view, cx| view.jump_to_block(block, cx))
                     })
                 });
-                if done.unwrap_or(true) {
-                    return;
+                match done {
+                    Ok(true) => return,
+                    Ok(false) => cx.background_executor().timer(JUMP_RETRY).await,
+                    Err(_) => return,
                 }
-                cx.background_executor().timer(JUMP_RETRY).await;
             }
+            this.update(cx, |this, cx| {
+                this.set_notice("That block is no longer in the terminal", cx);
+            })
+            .ok();
         })
         .detach();
     }

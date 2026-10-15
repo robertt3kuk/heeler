@@ -4,13 +4,17 @@
 //! sources   one row per transcript file: path, size, mtime, offset, tail hash, format version,
 //!           adapter state, counters
 //! sessions  one row per indexed session (a transcript file, or a Hutan session)
-//! entries   one row per indexed chunk: role, timestamp, optional external key
+//! entries   one row per indexed chunk: role, timestamp, optional external key, and for a
+//!           Hutan block row the terminal and block it came from
 //! fts       FTS5 (body, idents), rowid = entries.id
 //! meta      small facts (last Hutan write)
 //! ```
 //!
-//! The database is a derived cache: a schema version other than [`SCHEMA_VERSION`] drops it and
-//! starts empty (the next scan rebuilds it from the transcripts).
+//! The database is a derived cache: a schema version this build does not know drops it and
+//! starts empty (the next scan rebuilds it from the transcripts). Version 1 (before protocol
+//! 0.15) is upgraded in place: the block columns are added, Hutan rows stay (nothing can derive
+//! them again), and the rows of the transcripts are dropped so that the next scan reads every
+//! file again.
 
 use std::collections::HashMap;
 use std::fs;
@@ -23,9 +27,12 @@ use tracing::{info, warn};
 
 use crate::adapters::ParseState;
 use crate::error::{IndexError, Result};
-use crate::types::{Role, SessionText, Source, SourceStatus};
+use crate::types::{BlockRef, Role, SessionText, Source, SourceStatus};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// The last schema [`open`] upgrades in place instead of rebuilding.
+const UPGRADABLE_FROM: u32 = 1;
 
 const SCHEMA: &str = "
 CREATE TABLE sources (
@@ -56,7 +63,9 @@ CREATE TABLE entries (
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     ts_ms INTEGER,
-    ext_key TEXT
+    ext_key TEXT,
+    terminal_id INTEGER,
+    block_id INTEGER
 );
 CREATE INDEX entries_session ON entries(session_id);
 CREATE INDEX entries_ts ON entries(ts_ms);
@@ -97,7 +106,14 @@ pub fn open(path: &Path) -> Result<Connection> {
     let version: u32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(IndexError::sqlite("reading the index schema version"))?;
-    if version != SCHEMA_VERSION {
+    if version == UPGRADABLE_FROM {
+        info!(
+            found = version,
+            wanted = SCHEMA_VERSION,
+            "history index schema changed; upgrading it and re-reading the transcripts"
+        );
+        upgrade_from_v1(&mut conn)?;
+    } else if version != SCHEMA_VERSION {
         if version != 0 {
             info!(
                 found = version,
@@ -122,6 +138,23 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
     }
     Ok(conn)
+}
+
+/// Schema 1 → 2: entries gain `terminal_id` and `block_id`. Rows of transcripts are dropped
+/// (with their `sources` rows, so the stat pass finds every file new and reads it again);
+/// Hutan rows are kept, without a block they can point at.
+fn upgrade_from_v1(conn: &mut Connection) -> Result<()> {
+    let context = "upgrading the index schema";
+    let tx = conn.transaction().map_err(IndexError::sqlite(context))?;
+    tx.execute_batch(
+        "ALTER TABLE entries ADD COLUMN terminal_id INTEGER;
+         ALTER TABLE entries ADD COLUMN block_id INTEGER;",
+    )
+    .map_err(IndexError::sqlite(context))?;
+    delete_external(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(IndexError::sqlite(context))?;
+    tx.commit().map_err(IndexError::sqlite(context))
 }
 
 fn open_raw(path: &Path) -> Result<Connection> {
@@ -367,20 +400,30 @@ pub fn ensure_session(
 }
 
 /// Adds one chunk. With an `ext_key`, an earlier row of the session with the same key is
-/// replaced.
+/// replaced. `block` says which terminal block a Hutan command or output row came from.
+#[expect(clippy::too_many_arguments, reason = "one row, one column each")]
 pub fn insert_entry(
     conn: &Connection,
     session_id: i64,
     role: Role,
     ts_ms: Option<u64>,
     ext_key: Option<&str>,
+    block: Option<BlockRef>,
     body: &str,
     idents: &str,
 ) -> Result<()> {
     let context = "writing an index row";
     conn.execute(
-        "INSERT INTO entries (session_id, role, ts_ms, ext_key) VALUES (?1, ?2, ?3, ?4)",
-        params![session_id, role.as_str(), ts_ms.map(to_i64), ext_key],
+        "INSERT INTO entries (session_id, role, ts_ms, ext_key, terminal_id, block_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            session_id,
+            role.as_str(),
+            ts_ms.map(to_i64),
+            ext_key,
+            block.map(|b| to_i64(b.terminal_id)),
+            block.map(|b| to_i64(b.block_id)),
+        ],
     )
     .map_err(IndexError::sqlite(context))?;
     let id = conn.last_insert_rowid();

@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use rusqlite::types::Value;
 
 use crate::error::{IndexError, Result};
-use crate::types::{Hit, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, Source};
+use crate::types::{BlockRef, Hit, Role, SNIPPET_CLOSE, SNIPPET_OPEN, SearchQuery, Source};
 
 /// `bm25` weights of the `body` and `idents` columns: a match on an identifier (path, flag,
 /// command) counts twice as much as the same word in prose.
@@ -116,6 +116,7 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<Hit>> {
     let sql = format!(
         "WITH hits AS (
              SELECT e.id AS id, e.session_id AS session_id, e.role AS role, e.ts_ms AS ts_ms,
+                    e.terminal_id AS terminal_id, e.block_id AS block_id,
                     bm25(fts, ?, ?) * (CASE e.role {role_cases} ELSE 1.0 END) AS score
              FROM fts
              JOIN entries e ON e.id = fts.rowid
@@ -127,8 +128,11 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<Hit>> {
                     COUNT(*) OVER (PARTITION BY session_id) AS n
              FROM hits
          )
-         SELECT r.id, r.score, r.n, r.role, r.ts_ms, s.source, s.key, s.title, s.cwd
-         FROM ranked r JOIN sessions s ON s.id = r.session_id
+         SELECT r.id, r.score, r.n, r.role, r.ts_ms, s.source, s.key, s.title, s.cwd,
+                src.path, r.terminal_id, r.block_id
+         FROM ranked r
+         JOIN sessions s ON s.id = r.session_id
+         LEFT JOIN sources src ON src.id = s.source_id
          WHERE r.rn = 1
          ORDER BY r.score ASC, r.ts_ms DESC
          LIMIT ?"
@@ -147,6 +151,8 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<Hit>> {
         let role: String = row.get(3).map_err(IndexError::sqlite(context))?;
         let ts_ms: Option<i64> = row.get(4).map_err(IndexError::sqlite(context))?;
         let source: String = row.get(5).map_err(IndexError::sqlite(context))?;
+        let terminal_id: Option<i64> = row.get(10).map_err(IndexError::sqlite(context))?;
+        let block_id: Option<i64> = row.get(11).map_err(IndexError::sqlite(context))?;
         found.push((
             id,
             Hit {
@@ -159,6 +165,13 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<Hit>> {
                 snippet: String::new(),
                 score: -score,
                 matches: u32::try_from(matches).unwrap_or(u32::MAX),
+                path: row.get(9).map_err(IndexError::sqlite(context))?,
+                block: terminal_id.zip(block_id).and_then(|(terminal, block)| {
+                    Some(BlockRef {
+                        terminal_id: u64::try_from(terminal).ok()?,
+                        block_id: u64::try_from(block).ok()?,
+                    })
+                }),
             },
         ));
     }

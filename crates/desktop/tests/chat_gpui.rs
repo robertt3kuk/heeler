@@ -640,7 +640,7 @@ fn an_approval_card_answers_through_the_daemon_and_resolves(cx: &mut TestAppCont
     let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
     let info = daemon.create_chat(&env.cwd());
     let (view, cx) = open(cx, &daemon);
-    let (_chat, model) = open_chat(&view, cx, info.id);
+    let (chat, model) = open_chat(&view, cx, info.id);
     say(
         cx,
         "Run `touch hi.txt` in a shell, then reply with the word done.",
@@ -731,6 +731,21 @@ fn an_approval_card_answers_through_the_daemon_and_resolves(cx: &mut TestAppCont
             "this window remembers it answered"
         );
     });
+    // The card says what was decided and where the answer came from.
+    assert_eq!(
+        chat.read_with(cx, |c, cx| c.resolution_text(approval, cx))
+            .as_deref(),
+        Some("Allowed once · from this window")
+    );
+    assert_eq!(
+        transcript(&model, cx, |t| t
+            .approval(approval)
+            .unwrap()
+            .decided_by
+            .clone())
+        .map(|by| by.client_kind),
+        Some("desktop".to_owned())
+    );
     pump(cx, "the turn to end", |cx| {
         count(&model, cx, is_footer) == 1
     });
@@ -787,7 +802,7 @@ fn an_approval_answered_from_another_client_resolves_the_card_live(cx: &mut Test
     let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
     let info = daemon.create_chat(&env.cwd());
     let (view, cx) = open(cx, &daemon);
-    let (_chat, model) = open_chat(&view, cx, info.id);
+    let (chat, model) = open_chat(&view, cx, info.id);
     say(cx, "go");
     pump(cx, "the approval card", |cx| {
         !pending(&model, cx).is_empty()
@@ -795,10 +810,13 @@ fn an_approval_answered_from_another_client_resolves_the_card_live(cx: &mut Test
     let (approval, _) = pending(&model, cx).remove(0);
 
     // `hutan approve <id> cancel`, as the CLI sends it.
-    let _: Empty = daemon.call(Request::ApprovalRespond(ApprovalRespond {
-        approval_id: approval,
-        option_id: "cancel".into(),
-    }));
+    let _: Empty = daemon.call_as(
+        hutan_protocol::messages::ClientKind::Cli,
+        Request::ApprovalRespond(ApprovalRespond {
+            approval_id: approval,
+            option_id: "cancel".into(),
+        }),
+    );
     pump(cx, "the card to resolve", |cx| {
         pending(&model, cx).is_empty()
     });
@@ -815,6 +833,12 @@ fn an_approval_answered_from_another_client_resolves_the_card_live(cx: &mut Test
         assert_eq!(store.answered_here(approval), None, "answered elsewhere");
         assert!(store.approvals().is_empty());
     });
+    // The CLI says it answered, and the card says so.
+    assert_eq!(
+        chat.read_with(cx, |c, cx| c.resolution_text(approval, cx))
+            .as_deref(),
+        Some("Cancelled · from CLI")
+    );
     draw(cx);
     assert!(
         region(&view, cx, Region::ChatOption(0)).is_none(),
@@ -1535,4 +1559,300 @@ fn history_shows_after_the_tab_is_closed_and_opened_again(cx: &mut TestAppContex
         "the journal gives the same list"
     );
     assert_eq!(assistant_texts(&again, cx), ["pong"]);
+}
+
+#[gpui::test]
+fn an_answer_from_another_window_says_so_and_so_does_a_reopened_journal(cx: &mut TestAppContext) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("approval-touch"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "go");
+    pump(cx, "the approval card", |cx| {
+        !pending(&model, cx).is_empty()
+    });
+    let (approval, _) = pending(&model, cx).remove(0);
+
+    // Another desktop window answers.
+    let _: Empty = daemon.call_as(
+        hutan_protocol::messages::ClientKind::Desktop,
+        Request::ApprovalRespond(ApprovalRespond {
+            approval_id: approval,
+            option_id: "accept".into(),
+        }),
+    );
+    pump(cx, "the card to resolve", |cx| {
+        pending(&model, cx).is_empty()
+    });
+    assert_eq!(
+        chat.read_with(cx, |c, cx| c.resolution_text(approval, cx))
+            .as_deref(),
+        Some("Allowed once · from another window")
+    );
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+
+    // A window that opens the chat later reads the answer's origin from the journal.
+    let (second, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&second, cx, info.id);
+    assert_eq!(
+        transcript(&model, cx, |t| t
+            .approval(approval)
+            .unwrap()
+            .decided_by
+            .clone())
+        .map(|by| by.client_kind),
+        Some("desktop".to_owned())
+    );
+    assert_eq!(
+        chat.read_with(cx, |c, cx| c.resolution_text(approval, cx))
+            .as_deref(),
+        Some("Allowed once · from another window"),
+        "this window did not answer it"
+    );
+}
+
+/// `plain-turn` with its turn repeated `turns` times, ids made unique.
+fn many_turns(env: &ChatEnv, turns: usize) -> hutan_agents::CodexConfig {
+    env.edited("plain-turn", |entries| {
+        let turn: Vec<Value> = entries.split_off(9);
+        for k in 1..=turns {
+            for entry in &turn {
+                let text = entry
+                    .to_string()
+                    .replace("000000000002", &format!("{k:010x}02"))
+                    .replace("000000000003", &format!("{k:010x}03"))
+                    .replace("msg_fixture_1", &format!("msg_fixture_{k}"))
+                    .replace(
+                        "Reply with the single word pong and nothing else.",
+                        &format!("message {k}"),
+                    )
+                    .replace("\"pong\"", &format!("\"answer {k}\""));
+                entries.push(serde_json::from_str(&text).unwrap());
+            }
+        }
+    })
+}
+
+fn wait_idle(daemon: &TestDaemon, id: SessionId) {
+    let start = std::time::Instant::now();
+    while session_state(daemon, id) != SessionState::Idle {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the turn never ended"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[gpui::test]
+fn load_earlier_pages_back_to_the_start_keeping_the_readers_place(cx: &mut TestAppContext) {
+    const TURNS: usize = 60;
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(many_turns(&env, TURNS));
+    let info = daemon.create_chat(&env.cwd());
+    for turn in 1..=TURNS {
+        let _: hutan_protocol::chat::ChatSent =
+            daemon.call(Request::ChatSend(hutan_protocol::chat::ChatSend {
+                session_id: info.id,
+                text: format!("message {turn}"),
+                attachments: vec![],
+            }));
+        // Each turn waits for the one before: the session returns to idle when it ends.
+        std::thread::sleep(Duration::from_millis(5));
+        wait_idle(&daemon, info.id);
+    }
+    let journal: hutan_protocol::chat::ChatHistory = daemon.call(Request::ChatHistory(
+        hutan_protocol::chat::ChatHistoryRequest {
+            session_id: info.id,
+            before_seq: None,
+            limit: hutan_protocol::chat::HISTORY_MAX_LIMIT,
+        },
+    ));
+    assert!(
+        journal.events.len() > 2 * hutan_protocol::chat::HISTORY_DEFAULT_LIMIT as usize,
+        "{} events: more than two pages",
+        journal.events.len()
+    );
+
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+    // The first page is the newest events only.
+    assert!(model.read_with(cx, |m, _| m.has_earlier()));
+    let first_page = transcript(&model, cx, |t| t.len());
+    let users = count(&model, cx, is_user);
+    assert!(
+        users < TURNS,
+        "{users} of {TURNS} messages on the first page"
+    );
+    assert!(first_page > 0);
+    draw(cx);
+    assert!(
+        region(&view, cx, Region::Chat("load-earlier")).is_some(),
+        "a Load earlier row is offered"
+    );
+
+    // Scrolling away from the end and to the top reads the page before it; the list keeps
+    // showing the entry the reader was at.
+    let bounds = region(&view, cx, Region::Chat("earlier")).unwrap();
+    let over_list = gpui::point(bounds.center().x, bounds.bottom() + gpui::px(200.0));
+    let scroll_up = |cx: &mut VisualTestContext| {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: over_list,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(100_000.0))),
+            modifiers: Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+    };
+    // The list measures what is near the reader as it goes: scroll until the top is reached.
+    let oldest = transcript(&model, cx, |t| t.entries()[0].id);
+    let mut scrolls = 0;
+    while transcript(&model, cx, |t| t.len()) == first_page {
+        assert!(scrolls < 40, "never reached the top");
+        scroll_up(cx);
+        scrolls += 1;
+        // The page is on its way (or, when it landed during the draw, here).
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !chat.read_with(cx, |c, _| c.following_tail()),
+        "scrolled away from the end"
+    );
+    pump(cx, "the earlier page", |cx| {
+        !model.read_with(cx, |m, _| m.loading_earlier())
+    });
+    draw(cx);
+    let after = chat
+        .read_with(cx, |c, cx| c.scroll_anchor(cx))
+        .expect("an anchor");
+    assert_eq!(
+        after.0, oldest,
+        "the reader is still at the entry that was the oldest"
+    );
+    assert!(
+        transcript(&model, cx, |t| t.entries()[0].id) != oldest,
+        "the older entries are in front"
+    );
+
+    // Keep scrolling to the top until the journal has nothing more.
+    for _ in 0..20 {
+        if !model.read_with(cx, |m, _| m.has_earlier()) {
+            break;
+        }
+        scroll_up(cx);
+        pump(cx, "the page to land", |cx| {
+            !model.read_with(cx, |m, _| m.loading_earlier())
+        });
+    }
+    assert!(
+        !model.read_with(cx, |m, _| m.has_earlier()),
+        "paged to the start"
+    );
+    draw(cx);
+    assert!(
+        region(&view, cx, Region::Chat("load-earlier")).is_none(),
+        "nothing more to load"
+    );
+    // Every message exactly once, oldest first.
+    let sent: Vec<String> = transcript(&model, cx, |t| {
+        t.entries()
+            .iter()
+            .filter_map(|e| match &e.body {
+                Body::User(m) => Some(m.text.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    let expected: Vec<String> = (1..=TURNS).map(|k| format!("message {k}")).collect();
+    assert_eq!(sent, expected);
+    assert_eq!(count(&model, cx, is_footer), TURNS);
+    assert_eq!(
+        assistant_texts(&model, cx),
+        (1..=TURNS)
+            .map(|k| format!("answer {k}"))
+            .collect::<Vec<_>>()
+    );
+    let ids: std::collections::HashSet<u64> =
+        transcript(&model, cx, |t| t.entries().iter().map(|e| e.id).collect());
+    assert_eq!(
+        ids.len(),
+        transcript(&model, cx, |t| t.len()),
+        "no entry twice"
+    );
+}
+
+#[gpui::test]
+fn a_window_opened_mid_stream_shows_the_text_so_far_and_ends_with_the_final_text(
+    cx: &mut TestAppContext,
+) {
+    let env = ChatEnv::new();
+    let gate_one = env.work.path().join("gate-one");
+    let gate_two = env.work.path().join("gate-two");
+    let config = env.edited("plain-turn", |entries| {
+        let at = entries
+            .iter()
+            .position(|e| e["msg"]["method"] == "item/agentMessage/delta")
+            .unwrap();
+        let template = entries[at].clone();
+        let delta = |text: &str| {
+            let mut entry = template.clone();
+            entry["msg"]["params"]["delta"] = json!(text);
+            entry
+        };
+        let mut completed = entries[at + 1].clone();
+        completed["msg"]["params"]["item"]["text"] = json!("Hello, brave world");
+        let tail: Vec<Value> = entries.split_off(at + 2);
+        entries.truncate(at);
+        entries.extend([
+            delta("Hello, "),
+            json!({"dir": "hold", "file": gate_one}),
+            delta("brave "),
+            delta("world"),
+            json!({"dir": "hold", "file": gate_two}),
+            completed,
+        ]);
+        entries.extend(tail);
+    });
+    let daemon = TestDaemon::start_with_codex(config);
+    let info = daemon.create_chat(&env.cwd());
+    let _: hutan_protocol::chat::ChatSent =
+        daemon.call(Request::ChatSend(hutan_protocol::chat::ChatSend {
+            session_id: info.id,
+            text: "greet me".to_owned(),
+            attachments: vec![],
+        }));
+    // The stream is stopped at the first gate; give the daemon a moment to have read it.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    pump(cx, "the text so far", |cx| {
+        assistant_texts(&model, cx) == ["Hello, "]
+    });
+    assert!(transcript(&model, cx, |t| t.turn_active()));
+    transcript(&model, cx, |t| {
+        let Body::Assistant(message) = &t.entries().last().unwrap().body else {
+            panic!("the message is the last entry");
+        };
+        assert!(!message.done, "it is still streaming");
+    });
+
+    // The rest streams in live: the window continues from the text it has.
+    std::fs::write(&gate_one, "").unwrap();
+    pump(cx, "the live deltas", |cx| {
+        assistant_texts(&model, cx) == ["Hello, brave world"]
+    });
+    std::fs::write(&gate_two, "").unwrap();
+    pump(cx, "the end of the turn", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    assert_eq!(assistant_texts(&model, cx), ["Hello, brave world"]);
+    assert_eq!(
+        count(&model, cx, is_assistant),
+        1,
+        "one message, not one per snapshot"
+    );
 }

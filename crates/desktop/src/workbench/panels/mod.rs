@@ -26,9 +26,9 @@ pub use assistant::{AssistantPanel, Choice as AssistantChoice, Failure, Opened, 
 pub use common::{age_label, agent_badge, kind_icon, placement_badge, state_dot, tone_color};
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
-    DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HistoryResume, HutanTarget,
-    PICKER_LIMIT as HISTORY_PICKER_LIMIT, Snippet, hit_title, parse_snippet, shell_join,
-    short_path, source_icon, source_label,
+    BlockTarget, DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HistoryResume,
+    HutanTarget, PICKER_LIMIT as HISTORY_PICKER_LIMIT, Snippet, hit_title, hutan_target,
+    parse_snippet, shell_join, short_path, source_icon, source_label, transcript_path,
 };
 pub use inspector::{BlockRow, InspectorPanel};
 pub use overview::OverviewPanel;

@@ -379,6 +379,26 @@ impl Chat<'_> {
         self.0.write(Write::AppendChatItem(Box::new(row)))
     }
 
+    /// Removes one event: a snapshot that a final event supersedes.
+    pub fn delete(&self, session: SessionId, seq: u64) -> Result<()> {
+        self.0.write(Write::DeleteChatItem {
+            session_id: session,
+            seq,
+        })
+    }
+
+    /// Replaces the event at `old_seq` with `row` (at another `seq`) in one transaction: a
+    /// snapshot that is kept up to date without the journal growing.
+    pub fn replace(&self, old_seq: u64, row: ChatItemRow) -> Result<()> {
+        self.0.batch(vec![
+            Write::DeleteChatItem {
+                session_id: row.session_id,
+                seq: old_seq,
+            },
+            Write::AppendChatItem(Box::new(row)),
+        ])
+    }
+
     /// Up to `limit` events with `seq < before` (the newest of them), oldest first.
     pub fn items(
         &self,

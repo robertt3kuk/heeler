@@ -1,7 +1,7 @@
 //! Session history search (protocol 0.8, capability `history.search`): the local FTS index over
 //! Hutan terminal blocks and external agent transcripts (`docs/history-index.md`).
 
-use hutan_core::SessionId;
+use hutan_core::{SessionId, TerminalId};
 use serde::{Deserialize, Serialize};
 
 /// Most hits one `history.search` returns, whatever `limit` asks for.
@@ -114,6 +114,18 @@ pub struct HistoryHit {
     /// that a client can open it; absent for transcripts of other tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
+    /// Protocol 0.15 (capability `chat.provenance`): the external transcript file (absolute)
+    /// of a `claude`, `codex` or `omp` hit, so that a client can reveal it; absent for `hutan`
+    /// hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Protocol 0.15: for a `hutan` hit on a terminal block, the terminal the block was in
+    /// (`terminal_id`s are per daemon run: a client compares it with the session's current
+    /// terminal before jumping) and the block's id there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<TerminalId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

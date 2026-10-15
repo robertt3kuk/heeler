@@ -877,7 +877,7 @@ fn a_history_hit_of_an_assistant_conversation_opens_it_in_the_panel_and_continue
     // The same conversation is also what the History panel opens a second time.
     let again = actions::OpenHistoryHit(hutan_desktop::workbench::panels::HutanTarget {
         session: global.to_string(),
-        block_started_at_ms: None,
+        block: None,
     });
     cx.dispatch_action(again);
     assert_eq!(panel.read_with(cx, |p, cx| p.session(cx)), Some(global));

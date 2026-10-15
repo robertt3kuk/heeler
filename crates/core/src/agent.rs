@@ -217,6 +217,16 @@ pub struct PermissionOption {
     pub provider: Option<Value>,
 }
 
+/// Who answered a permission request (protocol 0.15): the kind of client, as the daemon saw it
+/// in the client's `hello` (`desktop`, `cli`, `notifier`, `other`; a newer daemon may add
+/// more), and its name when the client gave one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecidedBy {
+    pub client_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PermissionOutcome {
@@ -284,11 +294,31 @@ pub enum AgentEventKind {
         phase: Option<String>,
         text: String,
     },
+    /// Protocol 0.15: the text of the open assistant message `message_id` so far, journaled
+    /// (replaced in place, at most every 500 ms) while it streams so that a client that
+    /// joins mid-stream starts from the full text. It includes every `message_delta` of the
+    /// message with a smaller `seq`; the message's `message_end` supersedes it. Never
+    /// streamed live.
+    MessagePartial {
+        message_id: ItemId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+        text: String,
+    },
     ReasoningStart,
     /// Streamed reasoning text; not journaled.
     ReasoningDelta {
         part: ReasoningPart,
         text: String,
+    },
+    /// Protocol 0.15: like [`MessagePartial`](Self::MessagePartial) for an open reasoning
+    /// block: the streamed summary and content so far.
+    ReasoningPartial {
+        reasoning_id: ItemId,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        content: String,
     },
     ReasoningEnd {
         #[serde(default)]
@@ -344,6 +374,10 @@ pub enum AgentEventKind {
         approval_id: ApprovalId,
         #[serde(flatten)]
         outcome: PermissionOutcome,
+        /// Protocol 0.15: the client that answered; absent when nobody did (expiry), and for
+        /// events journaled before 0.15.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<DecidedBy>,
     },
     Plan {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,8 +440,10 @@ impl AgentEventKind {
             Self::MessageStart { .. } => "message_start",
             Self::MessageDelta { .. } => "message_delta",
             Self::MessageEnd { .. } => "message_end",
+            Self::MessagePartial { .. } => "message_partial",
             Self::ReasoningStart => "reasoning_start",
             Self::ReasoningDelta { .. } => "reasoning_delta",
+            Self::ReasoningPartial { .. } => "reasoning_partial",
             Self::ReasoningEnd { .. } => "reasoning_end",
             Self::ToolStart { .. } => "tool_start",
             Self::ToolUpdate { .. } => "tool_update",
@@ -603,9 +639,14 @@ mod tests {
             outcome: PermissionOutcome::Selected {
                 option_id: "accept".into(),
             },
+            decided_by: Some(DecidedBy {
+                client_kind: "cli".into(),
+                client_name: None,
+            }),
         };
         let json = serde_json::to_value(&kind).unwrap();
         assert_eq!(json["type"], "permission_resolved");
+        assert_eq!(json["decided_by"], json!({"client_kind": "cli"}));
         assert_eq!(json["outcome"], "selected");
         assert_eq!(json["option_id"], "accept");
         assert_eq!(
@@ -615,9 +656,11 @@ mod tests {
         let expired = serde_json::to_value(AgentEventKind::PermissionResolved {
             approval_id: approval,
             outcome: PermissionOutcome::Expired,
+            decided_by: None,
         })
         .unwrap();
         assert_eq!(expired["outcome"], "expired");
+        assert!(expired.get("decided_by").is_none());
     }
 
     #[test]
@@ -645,6 +688,35 @@ mod tests {
         assert!(!AgentEventKind::TurnCancelled.is_streaming());
         assert!(AgentEventKind::TurnCancelled.ends_turn());
         assert!(!AgentEventKind::TurnStarted.ends_turn());
+    }
+
+    #[test]
+    fn partials_round_trip_and_are_journaled() {
+        let item = ItemId::new();
+        let message = AgentEventKind::MessagePartial {
+            message_id: item,
+            phase: None,
+            text: "so far".into(),
+        };
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["type"], "message_partial");
+        assert!(json.get("phase").is_none());
+        assert_eq!(
+            serde_json::from_value::<AgentEventKind>(json).unwrap(),
+            message
+        );
+        let reasoning = AgentEventKind::ReasoningPartial {
+            reasoning_id: item,
+            summary: "thinking".into(),
+            content: String::new(),
+        };
+        assert_eq!(reasoning.name(), "reasoning_partial");
+        let json = serde_json::to_value(&reasoning).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AgentEventKind>(json).unwrap(),
+            reasoning
+        );
+        assert!(!message.is_streaming() && !reasoning.is_streaming());
     }
 
     #[test]

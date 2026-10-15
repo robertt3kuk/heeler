@@ -8,9 +8,13 @@
 //!
 //! Approvals live here, in daemon state: they survive client disconnects, are answered only
 //! with an option the agent offered, expire when their turn ends (or the agent goes away),
-//! and every request and decision is written to the `approvals` table.
+//! and every request and decision is written to the `approvals` table. A decision says who made
+//! it (`decided_by`, protocol 0.15): the answering client's kind, journaled with the event.
+//!
+//! Streaming text is journaled as coalesced snapshots of the open message ([`crate::partial`]),
+//! so a client that joins mid-stream starts from the text so far.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -20,9 +24,9 @@ use hutan_agents::{
     AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter, CodexConfig, CodexSession,
     ExitInfo, StartSpec, Started,
 };
-use hutan_core::agent::PermissionOutcome;
+use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
-    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ModelInfo,
+    AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
     SandboxMode, SessionId, TurnId,
 };
 use hutan_protocol::chat::{
@@ -41,6 +45,7 @@ use tracing::{debug, error, info, warn};
 use crate::bus::EventBus;
 use crate::context::Attached;
 use crate::direct::{DirectSession, Target};
+use crate::partial::{Flush, PARTIAL_INTERVAL, Partials};
 use crate::providers::ProviderService;
 use crate::registry::{self, ChatNotifier};
 
@@ -103,6 +108,9 @@ struct Live {
     open_turn: Mutex<Option<TurnId>>,
     /// The user (or a daemon shutdown) asked to end the session.
     stopping: AtomicBool,
+    /// The open messages and reasoning blocks of the running turn. Numbering an event and
+    /// folding it in happen under this lock, so a snapshot is exact (see [`crate::partial`]).
+    partials: Mutex<Partials>,
 }
 
 #[derive(Debug)]
@@ -236,6 +244,7 @@ impl ChatManager {
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            partials: Mutex::new(Partials::default()),
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, model = %started.model, resumed = started.resumed, "chat agent started");
@@ -296,6 +305,7 @@ impl ChatManager {
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            partials: Mutex::new(Partials::default()),
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, provider = %provider_id, %model, "direct chat started");
@@ -466,7 +476,11 @@ impl ChatManager {
                 error.data = Some(serde_json::json!({ "offered": offered }));
                 return Err(error);
             }
-            pending.decided_by = Some(client_name(client));
+            // The first answer to reach the agent is the one that counts: a second client's
+            // is refused below, and must not take the credit.
+            if pending.decided_by.is_none() {
+                pending.decided_by = Some(client_name(client));
+            }
             pending.info.session_id
         };
         let live = self.live(session)?;
@@ -482,11 +496,19 @@ impl ChatManager {
                 ErrorCode::InvalidState,
                 format!("approval {approval} was already answered"),
             )),
-            Err(AgentError::OptionNotOffered { option }) => Err(ErrorBody::new(
-                ErrorCode::OptionNotOffered,
-                format!("option `{option}` was not offered"),
-            )),
-            Err(error) => Err(ErrorBody::new(ErrorCode::ProviderError, error.to_string())),
+            Err(error) => {
+                // Nobody answered: the claim goes with the failed attempt.
+                if let Some(pending) = lock(&self.approvals).get_mut(&approval) {
+                    pending.decided_by = None;
+                }
+                Err(match error {
+                    AgentError::OptionNotOffered { option } => ErrorBody::new(
+                        ErrorCode::OptionNotOffered,
+                        format!("option `{option}` was not offered"),
+                    ),
+                    error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+                })
+            }
         }
     }
 
@@ -494,9 +516,26 @@ impl ChatManager {
 
     pub async fn history(&self, req: ChatHistoryRequest) -> Result<ChatHistory, ErrorBody> {
         let limit = req.limit.clamp(1, HISTORY_MAX_LIMIT);
-        let live_last = lock(&self.live)
-            .get(&req.session_id)
-            .map(|live| live.next_seq.load(Ordering::Acquire).saturating_sub(1));
+        // What is still streaming is answered from memory, as it is right now: the journal's
+        // snapshot of it is up to 500 ms old. Taken together with `last_seq`, so that every
+        // live delta after this reply has a greater `seq` than the text it carries.
+        let live = lock(&self.live).get(&req.session_id).cloned();
+        let (open, fresh, live_last) = match &live {
+            Some(live) => {
+                let partials = lock(&live.partials);
+                let open: HashSet<ItemId> = partials.open_items().collect();
+                let fresh = if req.before_seq.is_none() {
+                    partials.view(live.id, registry::now_ms(), || {
+                        live.next_seq.fetch_add(1, Ordering::AcqRel)
+                    })
+                } else {
+                    Vec::new()
+                };
+                let last = live.next_seq.load(Ordering::Acquire).saturating_sub(1);
+                (open, fresh, Some(last))
+            }
+            None => (HashSet::new(), Vec::new(), None),
+        };
         let storage = self.storage.clone();
         let (mut rows, journaled) = tokio::task::spawn_blocking(move || {
             let rows =
@@ -513,8 +552,18 @@ impl ChatManager {
         if has_more {
             rows.remove(0);
         }
-        let events = rows
+        let mut events: Vec<AgentEvent> = rows
             .iter()
+            .filter(|row| {
+                // The journal's snapshot of an item that is still streaming is stale.
+                let snapshot = row.kind == "message_partial" || row.kind == "reasoning_partial";
+                !(snapshot
+                    && row
+                        .item_id
+                        .as_deref()
+                        .and_then(|id| id.parse::<ItemId>().ok())
+                        .is_some_and(|id| open.contains(&id)))
+            })
             .filter_map(|row| match serde_json::from_str::<AgentEvent>(&row.event_json) {
                 Ok(event) => Some(event.replayed()),
                 Err(error) => {
@@ -523,6 +572,7 @@ impl ChatManager {
                 }
             })
             .collect();
+        events.extend(fresh.into_iter().map(AgentEvent::replayed));
         Ok(ChatHistory {
             events,
             has_more,
@@ -566,17 +616,56 @@ impl ChatManager {
     /// Numbers, journals and publishes the events of one session until its agent is gone.
     async fn pump(self: Arc<Self>, live: Arc<Live>, mut events: mpsc::Receiver<AdapterMessage>) {
         let mut exit = ExitInfo::default();
-        while let Some(message) = events.recv().await {
-            match message {
-                AdapterMessage::Event(draft) => self.handle(&live, *draft).await,
-                AdapterMessage::Node(update) => self.notifier.node(live.id, *update).await,
-                AdapterMessage::Exited(info) => {
-                    exit = info;
-                    break;
+        // When the snapshots of streaming text are next journaled: set when text first arrives
+        // that no snapshot has, not moved by further deltas (so a steady stream is still
+        // written every interval). No timer runs while nothing streams.
+        let mut snapshot_at: Option<tokio::time::Instant> = None;
+        loop {
+            let due = async {
+                match snapshot_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                message = events.recv() => {
+                    let Some(message) = message else { break };
+                    match message {
+                        AdapterMessage::Event(draft) => self.handle(&live, *draft).await,
+                        AdapterMessage::Node(update) => self.notifier.node(live.id, *update).await,
+                        AdapterMessage::Exited(info) => {
+                            exit = info;
+                            break;
+                        }
+                    }
+                    if snapshot_at.is_none() && lock(&live.partials).has_dirty() {
+                        snapshot_at = Some(tokio::time::Instant::now() + PARTIAL_INTERVAL);
+                    }
+                }
+                () = due => {
+                    snapshot_at = None;
+                    self.flush_partials(&live, Flush::Dirty);
                 }
             }
         }
         self.finish(&live, exit).await;
+    }
+
+    /// Journals snapshots of the open streaming items (see [`Partials::flush`]).
+    fn flush_partials(&self, live: &Live, flush: Flush) {
+        let mut partials = lock(&live.partials);
+        self.flush_locked(live, &mut partials, flush);
+    }
+
+    fn flush_locked(&self, live: &Live, partials: &mut Partials, flush: Flush) {
+        let written = partials.flush(flush, live.id, registry::now_ms(), || {
+            live.next_seq.fetch_add(1, Ordering::AcqRel)
+        });
+        // Queued while the lock is held: two snapshots of one item reach the writer in the
+        // order they were taken.
+        for snapshot in written {
+            self.journal_replacing(&snapshot.event, snapshot.replaces);
+        }
     }
 
     /// The agent is gone: nothing pending can be answered, an open turn is over.
@@ -590,6 +679,7 @@ impl ChatManager {
             let draft = AgentEventDraft::new(AgentEventKind::PermissionResolved {
                 approval_id: approval,
                 outcome: PermissionOutcome::Expired,
+                decided_by: None,
             });
             self.handle(live, draft).await;
         }
@@ -608,19 +698,38 @@ impl ChatManager {
             // `handle` clears `busy` and tells the registry the turn ended.
             self.handle(live, draft).await;
         }
+        // Text no turn end claimed (the agent died between messages) is kept as it is.
+        self.flush_partials(live, Flush::Final);
         lock(&self.live).remove(&live.id);
         info!(session = %live.id, code = ?exit.code, signal = ?exit.signal, "chat agent exited");
         self.notifier.exited(live.id, exit).await;
     }
 
     async fn handle(&self, live: &Live, draft: AgentEventDraft) {
-        let seq = live.next_seq.fetch_add(1, Ordering::AcqRel);
         let ts_ms = registry::now_ms();
-        let event = draft.into_event(live.id, seq, ts_ms);
+        let ends_turn = draft.kind.ends_turn();
+        let mut event = {
+            // Numbered and folded into the open items in one step: see `Live::partials`.
+            let mut partials = lock(&live.partials);
+            if ends_turn {
+                // Text of a turn that ended without its `*_end` events is all there is of it.
+                self.flush_locked(live, &mut partials, Flush::Final);
+            }
+            let seq = live.next_seq.fetch_add(1, Ordering::AcqRel);
+            let event = draft.into_event(live.id, seq, ts_ms);
+            if let Some(snapshot) = partials.observe(&event) {
+                registry::log_write(
+                    self.storage.chat().delete(live.id, snapshot),
+                    "a superseded chat snapshot",
+                );
+            }
+            event
+        };
+        self.attribute(&mut event);
 
         let mut turn_flag = None;
         let mut required: Option<ApprovalInfo> = None;
-        let mut resolved: Option<(ApprovalId, PermissionOutcome)> = None;
+        let mut resolved: Option<(ApprovalId, PermissionOutcome, Option<DecidedBy>)> = None;
         match &event.kind {
             AgentEventKind::TurnStarted => {
                 *lock(&live.open_turn) = event.turn_id;
@@ -670,11 +779,12 @@ impl ChatManager {
             AgentEventKind::PermissionResolved {
                 approval_id,
                 outcome,
+                decided_by,
             } => {
                 let pending = lock(&self.approvals).remove(approval_id);
                 if let Some(pending) = pending {
                     self.write_approval_outcome(&pending, outcome, ts_ms);
-                    resolved = Some((*approval_id, outcome.clone()));
+                    resolved = Some((*approval_id, outcome.clone(), decided_by.clone()));
                 }
             }
             _ => {}
@@ -693,11 +803,12 @@ impl ChatManager {
                 approval: Box::new(info),
             });
         }
-        if let Some((approval_id, outcome)) = resolved {
+        if let Some((approval_id, outcome, decided_by)) = resolved {
             self.emit(&Event::ApprovalResolved {
                 approval_id,
                 session_id: live.id,
                 outcome,
+                decided_by,
             });
         }
         // The session's state follows what happened: the registry is told after the events
@@ -714,6 +825,25 @@ impl ChatManager {
         }
     }
 
+    /// Says on a `permission_resolved` event who answered: the client that reached the agent
+    /// first (see [`respond`](Self::respond)); nobody for an expiry.
+    fn attribute(&self, event: &mut AgentEvent) {
+        let AgentEventKind::PermissionResolved {
+            approval_id,
+            outcome: PermissionOutcome::Selected { .. },
+            decided_by,
+        } = &mut event.kind
+        else {
+            return;
+        };
+        if let Some(pending) = lock(&self.approvals).get(approval_id) {
+            *decided_by = Some(DecidedBy {
+                client_kind: pending.decided_by.unwrap_or("other").to_owned(),
+                client_name: None,
+            });
+        }
+    }
+
     fn emit(&self, event: &Event) {
         if let Err(error) = self.bus.publish(event) {
             error!(%error, "failed to publish a chat event");
@@ -721,6 +851,12 @@ impl ChatManager {
     }
 
     fn journal(&self, event: &AgentEvent) {
+        self.journal_replacing(event, None);
+    }
+
+    /// Journals `event`; with `replaces` the journal row at that `seq` goes in the same
+    /// transaction (a snapshot that is kept up to date).
+    fn journal_replacing(&self, event: &AgentEvent, replaces: Option<u64>) {
         let event_json = match serde_json::to_string(event) {
             Ok(json) => json,
             Err(error) => {
@@ -737,7 +873,12 @@ impl ChatManager {
             kind: event.kind.name().to_owned(),
             event_json,
         };
-        registry::log_write(self.storage.chat().append(row), "a chat event");
+        let chat = self.storage.chat();
+        let result = match replaces {
+            Some(old) => chat.replace(old, row),
+            None => chat.append(row),
+        };
+        registry::log_write(result, "a chat event");
     }
 
     fn write_turn(&self, event: &AgentEvent, status: ChatTurnStatus, error: Option<String>) {

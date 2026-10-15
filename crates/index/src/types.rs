@@ -135,6 +135,15 @@ pub struct HutanRecord {
     pub text: String,
     /// Identifies the record inside its session: pushing it again replaces the rows.
     pub ext_key: String,
+    /// The terminal block the record is the command or output of.
+    pub block: Option<BlockRef>,
+}
+
+/// Where a terminal block lives: `terminal_id`s are per daemon run, `block_id`s per terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockRef {
+    pub terminal_id: u64,
+    pub block_id: u64,
 }
 
 /// A search request.
@@ -166,6 +175,10 @@ pub struct Hit {
     pub score: f64,
     /// Rows of the session that match.
     pub matches: u32,
+    /// The transcript file of a hit of an external source (absolute, as it was scanned).
+    pub path: Option<String>,
+    /// The terminal block of the matching row, for a Hutan command or output row.
+    pub block: Option<BlockRef>,
 }
 
 pub const SNIPPET_OPEN: &str = "«";

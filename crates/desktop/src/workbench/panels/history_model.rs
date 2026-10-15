@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
 
+use hutan_core::TerminalId;
 use hutan_protocol::history::{HistoryHit, HistoryRole, HistorySearch, HistorySource};
 
 use crate::settings::{HistoryRange, HistoryScope, HistorySettings};
@@ -280,8 +281,18 @@ pub fn format_bytes(bytes: u64) -> String {
 pub struct HutanTarget {
     /// The Hutan session id.
     pub session: String,
-    /// The block the hit is about: a block's command or output (matched by its start time).
-    pub block_started_at_ms: Option<u64>,
+    /// The block the hit is about, when it is a block's command or output (and the index knows
+    /// which).
+    pub block: Option<BlockTarget>,
+}
+
+/// A terminal block, as the index recorded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockTarget {
+    /// The terminal the block was in. Terminal ids belong to one daemon run: a session whose
+    /// terminal is another one has been restarted since, and the block is gone with it.
+    pub terminal_id: TerminalId,
+    pub block_id: u64,
 }
 
 /// The Hutan session (and block) a hit of the `hutan` source points at.
@@ -289,11 +300,23 @@ pub fn hutan_target(hit: &HistoryHit) -> Option<HutanTarget> {
     if hit.source != HistorySource::Hutan {
         return None;
     }
-    let block = matches!(hit.role, HistoryRole::Command | HistoryRole::Output);
     Some(HutanTarget {
         session: hit.session_key.clone(),
-        block_started_at_ms: block.then_some(hit.ts_ms).flatten(),
+        block: hit
+            .terminal_id
+            .zip(hit.block_id)
+            .map(|(terminal_id, block_id)| BlockTarget {
+                terminal_id,
+                block_id,
+            }),
     })
+}
+
+/// The transcript file a hit of another tool came from, for "Reveal File": absolute, as the
+/// index scanned it.
+pub fn transcript_path(hit: &HistoryHit) -> Option<&Path> {
+    let path = Path::new(hit.path.as_deref()?);
+    (hit.source != HistorySource::Hutan && path.is_absolute()).then_some(path)
 }
 
 /// The hit's title, or the first words of what matched when the session has none.
@@ -328,6 +351,9 @@ mod tests {
             matches: 1,
             resume_argv: None,
             session_id: None,
+            path: None,
+            terminal_id: None,
+            block_id: None,
         }
     }
 
@@ -436,12 +462,41 @@ mod tests {
     }
 
     #[test]
-    fn hutan_blocks_are_found_by_their_start_time() {
-        let block = hutan_target(&hit(HistorySource::Hutan, HistoryRole::Output)).unwrap();
-        assert_eq!(block.block_started_at_ms, Some(42));
+    fn hutan_blocks_are_found_by_their_id_not_by_time() {
+        let mut output = hit(HistorySource::Hutan, HistoryRole::Output);
+        output.terminal_id = Some(TerminalId(7));
+        output.block_id = Some(12);
+        // Whatever the hit's time says (here 42) names no block.
+        let target = hutan_target(&output).unwrap();
+        assert_eq!(
+            target.block,
+            Some(BlockTarget {
+                terminal_id: TerminalId(7),
+                block_id: 12
+            })
+        );
+        // A row the index wrote before it kept block ids, and a report, name none.
+        let old = hutan_target(&hit(HistorySource::Hutan, HistoryRole::Output)).unwrap();
+        assert_eq!(old.block, None);
         let report = hutan_target(&hit(HistorySource::Hutan, HistoryRole::Tool)).unwrap();
-        assert_eq!(report.block_started_at_ms, None);
+        assert_eq!(report.block, None);
         assert!(hutan_target(&hit(HistorySource::Claude, HistoryRole::User)).is_none());
+    }
+
+    #[test]
+    fn only_hits_of_other_tools_with_an_absolute_file_can_be_revealed() {
+        let mut claude = hit(HistorySource::Claude, HistoryRole::User);
+        assert_eq!(transcript_path(&claude), None);
+        claude.path = Some("/Users/me/.claude/projects/-w/s.jsonl".into());
+        assert_eq!(
+            transcript_path(&claude),
+            Some(Path::new("/Users/me/.claude/projects/-w/s.jsonl"))
+        );
+        claude.path = Some("relative/s.jsonl".into());
+        assert_eq!(transcript_path(&claude), None);
+        let mut hutan = hit(HistorySource::Hutan, HistoryRole::Command);
+        hutan.path = Some("/somewhere".into());
+        assert_eq!(transcript_path(&hutan), None);
     }
 
     #[test]

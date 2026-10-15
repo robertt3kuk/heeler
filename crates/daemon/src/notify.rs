@@ -797,6 +797,7 @@ mod tests {
                 approval_id: info.id,
                 session_id: session,
                 outcome: hutan_core::agent::PermissionOutcome::Expired,
+                decided_by: None,
             },
             1_002,
         );
