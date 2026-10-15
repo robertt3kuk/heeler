@@ -82,6 +82,57 @@ async fn a_command_that_cannot_start_fails_the_command() {
     t.stop().await;
 }
 
+/// `hutan new -- tool` runs the tool from the environment the user's login shell builds, so a
+/// tool that only the shell configuration puts on `PATH` is found. A stand-in script plays the
+/// login shell (`<shell> -l -c '/usr/bin/env -0'`).
+#[tokio::test(flavor = "multi_thread")]
+async fn new_finds_a_tool_the_login_shell_puts_on_path() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tools = dir.path().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    let write = |path: &std::path::Path, text: String| {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS vets the first execution of a new executable, which can take tens of seconds on
+        // a loaded machine; do that here, outside the timeouts the test is about.
+        let _ = std::process::Command::new(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    };
+    write(
+        &tools.join("stand-in-tool"),
+        "#!/bin/sh\necho \"TOOL-RAN $B1_FROM_LOGIN\"\nexec cat\n".to_owned(),
+    );
+    let shell = dir.path().join("login-shell");
+    write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport PATH=\"{}:$PATH\" B1_FROM_LOGIN=yes\nexec /usr/bin/env -0\n",
+            tools.display()
+        ),
+    );
+    let t = TestDaemon::start_with(|config| config.login_shell = Some(shell.clone())).await;
+
+    // A spawn waits at most two seconds for the first capture of the login shell; on a loaded
+    // machine an early one can miss it ("failed to start") and a later one finds the tool.
+    let mut id = None;
+    for _ in 0..10 {
+        let out = t.hutan(&["new", "--json", "--", "stand-in-tool"]).await;
+        if out.code == 0 {
+            id = Some(out.json()["session"]["id"].as_str().unwrap().to_owned());
+            break;
+        }
+        assert!(out.stderr.contains("failed to start"), "{out:?}");
+    }
+    let id = id.expect("the tool was never found");
+    wait_history(&t, &id, "TOOL-RAN yes").await;
+    t.stop().await;
+}
+
 /// Polls `hutan history` until it contains `needle`.
 async fn wait_history(t: &TestDaemon, target: &str, needle: &str) {
     let result = timeout(WAIT, async {

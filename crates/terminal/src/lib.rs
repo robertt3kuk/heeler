@@ -15,6 +15,7 @@ pub mod env;
 #[cfg(test)]
 mod equivalence;
 mod error;
+mod login_env;
 mod queries;
 mod render;
 mod scrollback;

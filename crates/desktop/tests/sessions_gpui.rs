@@ -907,6 +907,13 @@ fn terminal_shell_and_env_settings_reach_new_sessions_with_workspace_overrides(
     )
     .unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS vets the first execution of a new executable, which can take tens of seconds on a
+    // loaded machine; do that here, outside the timeouts the test is about.
+    let _ = std::process::Command::new(&shell)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     write(
         daemon.home(),
         "settings.toml",

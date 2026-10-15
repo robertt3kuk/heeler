@@ -117,8 +117,9 @@ impl Workbench {
                 }
             };
             let starting = this.update(cx, |this, cx| {
+                let spec = this.new_terminal_spec(Some(workspace), Some(path), cx);
                 this.sessions.update(cx, |store, cx| {
-                    store.create_terminal(Some(workspace), Some(path), cx)
+                    store.create_session(Some(workspace), spec, cx)
                 })
             });
             let Ok(starting) = starting else { return };

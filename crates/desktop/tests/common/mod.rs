@@ -126,13 +126,24 @@ impl TestDaemon {
         Self::start_with(Some(daemon_toml))
     }
 
+    /// A daemon whose `daemon.toml` is `daemon_toml` and whose login environment is captured from
+    /// `login_shell` (a stand-in script) as soon as it starts, so no test session waits for it.
+    pub fn start_with_login_shell(daemon_toml: &str, login_shell: &Path) -> Self {
+        Self::start_configured(
+            Some(daemon_toml),
+            None,
+            hutan_daemon::GatewayConfig::default(),
+            Some(login_shell.to_owned()),
+        )
+    }
+
     /// A daemon whose `codex app-server` is `codex` (a replay of a recorded transcript).
     pub fn start_with_codex(codex: hutan_agents::CodexConfig) -> Self {
         Self::start_inner(None, Some(codex))
     }
 
     pub fn start_with_gateway(gateway: hutan_daemon::GatewayConfig) -> Self {
-        Self::start_configured(None, None, gateway)
+        Self::start_configured(None, None, gateway, None)
     }
 
     pub fn http_mock(&self) -> hutan_gateway::testing::MockServer {
@@ -145,13 +156,19 @@ impl TestDaemon {
     }
 
     fn start_inner(daemon_toml: Option<&str>, codex: Option<hutan_agents::CodexConfig>) -> Self {
-        Self::start_configured(daemon_toml, codex, hutan_daemon::GatewayConfig::default())
+        Self::start_configured(
+            daemon_toml,
+            codex,
+            hutan_daemon::GatewayConfig::default(),
+            None,
+        )
     }
 
     fn start_configured(
         daemon_toml: Option<&str>,
         codex: Option<hutan_agents::CodexConfig>,
         gateway: hutan_daemon::GatewayConfig,
+        login_shell: Option<PathBuf>,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
@@ -167,6 +184,7 @@ impl TestDaemon {
         let mut config = DaemonConfig::new(paths.clone());
         config.codex = codex;
         config.gateway = gateway;
+        config.login_shell = login_shell;
         let daemon = runtime.block_on(hutan_daemon::start(config)).unwrap();
         Self {
             dir,

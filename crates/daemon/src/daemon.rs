@@ -66,6 +66,11 @@ pub struct DaemonConfig {
     /// Credential store, HTTP policy and discovery targets of the model gateway; the default is
     /// the Keychain and the well-known local ports.
     pub gateway: GatewayConfig,
+    /// The shell of sessions whose spec names none (as `SHELL` in the session environment),
+    /// instead of the account's login shell; `None` keeps the account's. Also the shell whose
+    /// login environment explicit-command sessions start from. For tests, which need a
+    /// deterministic one.
+    pub login_shell: Option<PathBuf>,
 }
 
 impl DaemonConfig {
@@ -79,6 +84,7 @@ impl DaemonConfig {
             activity_interval: registry::ACTIVITY_INTERVAL,
             codex: None,
             gateway: GatewayConfig::default(),
+            login_shell: None,
         }
     }
 }
@@ -179,7 +185,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     if settings.terminal.env_inherit == hutan_terminal::EnvInherit::Login {
         // The facts of the login environment come from a few subprocesses; do not make the
         // first session (or a restored one) wait for them.
-        hutan_terminal::env::warm_up();
+        hutan_terminal::env::warm_up(
+            config
+                .login_shell
+                .as_ref()
+                .map(|shell| shell.to_string_lossy().into_owned()),
+        );
     }
     let restoring = stored.sessions.len();
     let providers = ProviderService::new(
@@ -203,6 +214,10 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             socket: paths.socket.clone(),
             shell_integration_dir,
             env_inherit: settings.terminal.env_inherit,
+            login_shell: config
+                .login_shell
+                .as_ref()
+                .map(|shell| shell.to_string_lossy().into_owned()),
             hutan_bin: config.hutan_bin.unwrap_or_else(agent::resolve_hutan_bin),
             storage: storage.clone(),
             restore: settings.restore_sessions,

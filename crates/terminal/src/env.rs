@@ -23,6 +23,7 @@ use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
 
+use crate::login_env::LoginEnv;
 use crate::sys;
 
 /// Where the child's environment comes from (`daemon.toml [terminal] env_inherit`).
@@ -275,13 +276,34 @@ pub fn system_facts() -> SystemFacts {
     }
 }
 
-/// Gathers [`system_facts`] on a background thread so the first session does not wait for the
-/// subprocesses. Call once when the daemon starts.
-pub fn warm_up() {
+/// The login environment of `shell` as its login shell builds it ([`crate::login_env`]), for a
+/// session that runs an explicit command and so has no shell of its own to build one: the last
+/// good capture (refreshed in the background), `None` when there is none yet or capturing
+/// failed, in which case the session starts from the base environment alone.
+pub fn login_env(shell: &str, facts: &SystemFacts) -> Option<BTreeMap<String, String>> {
+    LOGIN_ENV.get(shell, &capture_base(shell, facts))
+}
+
+/// What the capturing shell starts from: the base, with `SHELL` naming the shell itself.
+fn capture_base(shell: &str, facts: &SystemFacts) -> BTreeMap<String, String> {
+    let mut base = base_env(facts);
+    base.insert("SHELL".to_owned(), shell.to_owned());
+    base
+}
+
+static LOGIN_ENV: LazyLock<LoginEnv> = LazyLock::new(LoginEnv::default);
+
+/// Gathers [`system_facts`] and the login environment of `shell` (default: the account's login
+/// shell) on a background thread so the first session does not wait for the subprocesses. Call
+/// once when the daemon starts in login mode.
+pub fn warm_up(shell: Option<String>) {
     let spawned = std::thread::Builder::new()
         .name("hutan-env-facts".into())
-        .spawn(|| {
-            system_facts();
+        .spawn(move || {
+            let facts = system_facts();
+            if let Some(shell) = shell.or_else(|| facts.shell.clone()) {
+                LOGIN_ENV.request(&shell, &capture_base(&shell, &facts));
+            }
         });
     if let Err(error) = spawned {
         tracing::debug!(%error, "could not warm up the session environment facts");

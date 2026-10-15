@@ -1,13 +1,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
-#![allow(unsafe_code)] // `set_var`, see below
 //! The History panel (M17-B) end to end, against an in-process daemon whose `daemon.toml`
 //! points the index at synthetic Claude / Codex / OMP transcripts in temporary roots:
 //! disabled → **Enable indexing** (a real click) → indexed → search shows one row per session
 //! with highlighted snippets → filters narrow → Resume starts the hit's `resume_argv` in a new
 //! terminal session → ⌘J `?` finds the same hits → Open block → Clear empties → Rebuild fills.
 //!
-//! This binary holds a single test because it puts stand-in agents first on `PATH` (so Resume
-//! never runs the real `claude`, `codex` or `omp`) before the daemon starts.
+//! Resume never runs the real `claude`, `codex` or `omp`: `terminal.shell` names a stand-in login
+//! shell that puts stand-in agents on `PATH`, which is how the daemon (in its default login mode)
+//! finds an explicit command.
 
 mod common;
 
@@ -143,15 +143,14 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     let env = HistoryEnv::new();
     env.write_fixtures();
     env.install_stand_ins();
-    let path = format!(
-        "{}:{}",
-        env.bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    // SAFETY: this binary has a single test, and nothing else reads the environment yet.
-    unsafe { std::env::set_var("PATH", path) };
-
-    let daemon = TestDaemon::start_with_config(&env.daemon_toml(false));
+    let shell = env.install_login_shell();
+    // Captured at start (not on the first Resume), so the click does not race the capture.
+    let daemon = TestDaemon::start_with_login_shell(&env.daemon_toml(false), &shell);
+    std::fs::write(
+        daemon.home().join("settings.toml"),
+        format!("[terminal]\nshell = \"{}\"\n", shell.display()),
+    )
+    .unwrap();
     let app_a = daemon.create_workspace("app-a", &[&env.project_a]);
     let (view, cx) = open_with(
         cx,

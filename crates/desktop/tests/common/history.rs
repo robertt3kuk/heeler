@@ -102,10 +102,9 @@ impl HistoryEnv {
     }
 
     /// A `daemon.toml` that points every source at the temporary roots.
-    /// `env_inherit = "daemon"`: the stand-in agents are found through the test process's `PATH`.
     pub fn daemon_toml(&self, enabled: bool) -> String {
         format!(
-            "[terminal]\nenv_inherit = \"daemon\"\n[history]\nenabled = {enabled}\n[history.roots]\nclaude = \"{}\"\ncodex = \"{}\"\nomp = \"{}\"\n",
+            "[history]\nenabled = {enabled}\n[history.roots]\nclaude = \"{}\"\ncodex = \"{}\"\nomp = \"{}\"\n",
             self.claude.display(),
             self.codex.display(),
             self.omp.display()
@@ -189,6 +188,37 @@ impl HistoryEnv {
             )
             .unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            settle(&script);
         }
     }
+
+    /// A stand-in login shell that puts `bin` on `PATH`, like a user's shell configuration does,
+    /// and prints its environment as `<shell> -l -c '/usr/bin/env -0'` is asked to; returns its
+    /// path (for the `terminal.shell` setting, so Resume finds the stand-in agents the way real
+    /// ones are found).
+    pub fn install_login_shell(&self) -> PathBuf {
+        let shell = self.base.join("login-shell");
+        fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nexec /usr/bin/env -0\n",
+                self.bin.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+        settle(&shell);
+        shell
+    }
+}
+
+/// Runs a freshly written script once and waits for it. macOS vets the first execution of a new
+/// executable, which can take tens of seconds on a loaded machine; doing that here keeps it out
+/// of the timeouts of what the test is about.
+fn settle(path: &std::path::Path) {
+    let _ = std::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }

@@ -1,8 +1,8 @@
 //! `hutan search --resume N`: a new session in the hit's working directory running the agent's
-//! resume command. The only test of this binary because it changes the process `PATH` (so that
-//! `claude` is a stand-in script, never the real agent) before the in-process daemon starts.
+//! resume command. `claude` is a stand-in script, never the real agent: the daemon runs in the
+//! default login mode, so the stand-in is found the way a real agent is, through the `PATH` that
+//! the (here fake) login shell exports.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
-#![allow(unsafe_code)] // `set_var`, see above
 
 mod common;
 
@@ -13,6 +13,17 @@ use std::time::{Duration, Instant};
 use common::{TestDaemon, WAIT};
 use hutan_daemon::{DaemonConfig, Paths};
 use tokio::time::sleep;
+
+/// Runs a freshly written script once and waits for it. macOS vets the first execution of a new
+/// executable, which can take tens of seconds on a loaded machine; doing that here keeps it out
+/// of the timeouts of what the test is about.
+fn settle(path: &std::path::Path) {
+    let _ = std::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
@@ -35,24 +46,36 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    // SAFETY: this binary has a single test and no other thread reads the environment yet.
-    unsafe { std::env::set_var("PATH", path) };
+    settle(&script);
+    // The login shell: puts `bin` on `PATH` like a user's shell configuration does and prints
+    // its environment, as `<shell> -l -c '/usr/bin/env -0'` is asked to.
+    let shell = base.join("login-shell");
+    fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nexec /usr/bin/env -0\n",
+            bin.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    settle(&shell);
 
-    // The stand-in is found through the daemon's own `PATH`; a login environment would not have
-    // the temporary `bin` directory.
     fs::write(
         home.join("daemon.toml"),
         format!(
-            "[terminal]\nenv_inherit = \"daemon\"\n[history]\nenabled = true\ncodex = false\nomp = false\nhutan = false\n[history.roots]\nclaude = \"{}\"\n",
+            "[history]\nenabled = true\ncodex = false\nomp = false\nhutan = false\n[history.roots]\nclaude = \"{}\"\n",
             claude.display()
         ),
     )
     .unwrap();
     let paths = Paths::in_home(&home);
-    let daemon = hutan_daemon::start(DaemonConfig::new(paths.clone()))
-        .await
-        .unwrap();
+    let daemon = hutan_daemon::start(DaemonConfig {
+        login_shell: Some(shell),
+        ..DaemonConfig::new(paths.clone())
+    })
+    .await
+    .unwrap();
     let t = TestDaemon {
         _dir: tempfile::tempdir().unwrap(),
         paths,

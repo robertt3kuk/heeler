@@ -6,6 +6,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt as _;
 
 use common::*;
 use hutan_protocol::messages::{Event, TerminalSpec};
@@ -14,8 +15,15 @@ const SENTINEL: &str = "HUTAN_B1_DAEMON_SENTINEL";
 
 /// Runs `/usr/bin/env` as a session of a daemon configured with `daemon_toml` and returns what
 /// it printed.
-async fn session_env(daemon_toml: &str, client_env: &[(&str, &str)]) -> BTreeMap<String, String> {
-    let t = TestDaemon::start_with(daemon_toml, |_| {}).await;
+async fn session_env(
+    daemon_toml: &str,
+    login_shell: &std::path::Path,
+    client_env: &[(&str, &str)],
+) -> BTreeMap<String, String> {
+    let t = TestDaemon::start_with(daemon_toml, |config| {
+        config.login_shell = Some(login_shell.to_owned());
+    })
+    .await;
     let (client, mut events) = t.connect_subscribed().await;
     let session = create(
         &client,
@@ -59,6 +67,23 @@ async fn session_env(daemon_toml: &str, client_env: &[(&str, &str)]) -> BTreeMap
 async fn sessions_get_a_login_environment_unless_the_daemon_environment_is_asked_for() {
     // SAFETY: see above; set before the first daemon starts.
     unsafe { std::env::set_var(SENTINEL, "from-the-daemon") };
+    // A stand-in login shell (what `<shell> -l -c '/usr/bin/env -0'` asks for), so the test does
+    // not depend on the account's shell and its configuration.
+    let dir = tempfile::tempdir().unwrap();
+    let shell = dir.path().join("login-shell");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\nexport FROM_LOGIN_SHELL=yes CLIENT_VARIABLE=from-login-shell\nexec /usr/bin/env -0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS vets the first execution of a new executable, which can take tens of seconds on a
+    // loaded machine; do that here, outside the timeouts the test is about.
+    let _ = std::process::Command::new(&shell)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     let client_env = [
         ("HUTAN_SESSION_ID", "forged"),
         ("HUTAN_ENV", "forged"),
@@ -68,7 +93,16 @@ async fn sessions_get_a_login_environment_unless_the_daemon_environment_is_asked
 
     // The default is `login`.
     for toml in ["", "[terminal]\nenv_inherit = \"login\"\n"] {
-        let env = session_env(toml, &client_env).await;
+        // The login shell is captured in the background and a spawn waits at most two seconds
+        // for the first capture; on a loaded machine an early session can miss it, a later one
+        // (the capture is cached for the process) does not.
+        let mut env = session_env(toml, &shell, &client_env).await;
+        for _ in 0..10 {
+            if env.contains_key("FROM_LOGIN_SHELL") {
+                break;
+            }
+            env = session_env(toml, &shell, &client_env).await;
+        }
         assert!(!env.contains_key(SENTINEL), "leaked ({toml:?}): {env:?}");
         assert!(
             !env.contains_key("CARGO_MANIFEST_DIR"),
@@ -94,7 +128,11 @@ async fn sessions_get_a_login_environment_unless_the_daemon_environment_is_asked
         ] {
             assert!(env.contains_key(key), "{key} missing ({toml:?}): {env:?}");
         }
-        assert_eq!(env["CLIENT_VARIABLE"], "kept");
+        assert_eq!(
+            env["CLIENT_VARIABLE"], "kept",
+            "the client beats the login shell"
+        );
+        assert_eq!(env["FROM_LOGIN_SHELL"], "yes", "{toml:?}");
         // Daemon-managed variables beat the client's; terminal variables beat the client's.
         assert_ne!(env["HUTAN_SESSION_ID"], "forged");
         assert_eq!(env["HUTAN_ENV"], "1");
@@ -102,9 +140,15 @@ async fn sessions_get_a_login_environment_unless_the_daemon_environment_is_asked
         assert_eq!(env["TERM_PROGRAM"], "hutan");
     }
 
-    let env = session_env("[terminal]\nenv_inherit = \"daemon\"\n", &client_env).await;
+    let env = session_env(
+        "[terminal]\nenv_inherit = \"daemon\"\n",
+        &shell,
+        &client_env,
+    )
+    .await;
     assert_eq!(env[SENTINEL], "from-the-daemon", "{env:?}");
     assert!(env.contains_key("CARGO_MANIFEST_DIR"), "{env:?}");
     assert_ne!(env["HUTAN_SESSION_ID"], "forged");
     assert_eq!(env["CLIENT_VARIABLE"], "kept");
+    assert!(!env.contains_key("FROM_LOGIN_SHELL"), "{env:?}");
 }

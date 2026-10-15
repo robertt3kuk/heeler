@@ -12,6 +12,28 @@ use tokio::time::timeout;
 
 const SENTINEL: &str = "HUTAN_B1_SENTINEL";
 
+/// A stand-in login shell: exports two variables and prints its environment, as `<shell> -l -c
+/// '/usr/bin/env -0'` is asked to. It keeps the test off the account's real shell and its
+/// configuration.
+fn fake_login_shell(dir: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join("login-shell");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nexport FROM_LOGIN_SHELL=yes EDITOR=from-login-shell PWD=/dropped\nexec /usr/bin/env -0\n",
+    )
+    .expect("write the fake shell");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    // macOS vets the first execution of a new executable, which can take tens of seconds on a
+    // loaded machine; do that here, outside the timeouts the test is about.
+    let _ = std::process::Command::new(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    path.to_string_lossy().into_owned()
+}
+
 /// Runs `/usr/bin/env` with `client_env` and returns what it printed as a map.
 async fn child_env(
     env_inherit: EnvInherit,
@@ -62,7 +84,21 @@ async fn login_mode_hides_the_daemons_environment_and_daemon_mode_keeps_it() {
     // SAFETY: see above; set before anything else runs.
     unsafe { std::env::set_var(SENTINEL, "from-the-daemon") };
 
-    let login = child_env(EnvInherit::Login, &[("EDITOR", "ed")]).await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let shell = fake_login_shell(dir.path());
+    // A spawn waits at most two seconds for the first capture of the login shell; on a loaded
+    // machine an early one can miss it, a later one (cached for the process) does not.
+    let mut login = child_env(EnvInherit::Login, &[("EDITOR", "ed"), ("SHELL", &shell)]).await;
+    for _ in 0..10 {
+        if login.contains_key("FROM_LOGIN_SHELL") {
+            break;
+        }
+        login = child_env(EnvInherit::Login, &[("EDITOR", "ed"), ("SHELL", &shell)]).await;
+    }
+    // The explicit command starts from the login shell's environment; the client's wins.
+    assert_eq!(login["FROM_LOGIN_SHELL"], "yes");
+    assert_eq!(login["EDITOR"], "ed");
+    assert_ne!(login.get("PWD").map(String::as_str), Some("/dropped"));
     assert!(!login.contains_key(SENTINEL), "leaked: {login:?}");
     for key in [
         "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "TERM", "EDITOR",
@@ -89,7 +125,11 @@ async fn login_mode_hides_the_daemons_environment_and_daemon_mode_keeps_it() {
         "{login:?}"
     );
 
-    let daemon = child_env(EnvInherit::Daemon, &[]).await;
+    let daemon = child_env(EnvInherit::Daemon, &[("SHELL", &shell)]).await;
+    assert!(
+        !daemon.contains_key("FROM_LOGIN_SHELL"),
+        "no capture in daemon mode"
+    );
     assert_eq!(daemon[SENTINEL], "from-the-daemon");
     assert_eq!(daemon["TERM"], "xterm-256color");
 }

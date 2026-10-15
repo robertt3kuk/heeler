@@ -265,19 +265,31 @@ pub fn default_shell(env: &BTreeMap<String, String>) -> String {
 /// daemon's environment for [`EnvInherit::Daemon`].
 struct EnvSource {
     facts: SystemFacts,
+    /// The login shell's own environment, for sessions with an explicit command (login mode);
+    /// layered over the facts.
+    login_env: Option<BTreeMap<String, String>>,
     daemon_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
 impl EnvSource {
     /// This machine and this process.
-    fn system(inherit: EnvInherit) -> Self {
-        match inherit {
-            EnvInherit::Login => Self {
-                facts: env::system_facts(),
-                daemon_env: Vec::new(),
-            },
+    fn system(cfg: &TerminalConfig) -> Self {
+        match cfg.env_inherit {
+            EnvInherit::Login => {
+                let facts = env::system_facts();
+                // A login shell builds its own environment; a plain command has none to do it.
+                let login_env = (!cfg.argv.is_empty())
+                    .then(|| env::login_env(&default_shell(&cfg.env), &facts))
+                    .flatten();
+                Self {
+                    facts,
+                    login_env,
+                    daemon_env: Vec::new(),
+                }
+            }
             EnvInherit::Daemon => Self {
                 facts: SystemFacts::default(),
+                login_env: None,
                 daemon_env: std::env::vars_os().collect(),
             },
         }
@@ -295,7 +307,11 @@ fn command(cfg: &TerminalConfig, source: &EnvSource) -> CommandBuilder {
     cmd.env_clear();
     match cfg.env_inherit {
         EnvInherit::Login => {
-            for (key, value) in env::base_env(&source.facts) {
+            let mut base = env::base_env(&source.facts);
+            if let Some(login) = &source.login_env {
+                base.extend(login.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            for (key, value) in base {
                 cmd.env(key, value);
             }
         }
@@ -348,7 +364,7 @@ impl Terminal {
             .first()
             .cloned()
             .unwrap_or_else(|| "$SHELL".to_owned());
-        let cmd = command(&cfg, &EnvSource::system(cfg.env_inherit));
+        let cmd = command(&cfg, &EnvSource::system(&cfg));
 
         let (child, master, reader, writer) = {
             let _spawn = SPAWN_LOCK.lock();
@@ -759,6 +775,7 @@ mod tests {
                 path_helper: Some("PATH=\"/usr/local/bin:/usr/bin:/bin\"; export PATH;".into()),
                 ..SystemFacts::default()
             },
+            login_env: None,
             daemon_env: vec![
                 (OsString::from("HUTAN_SENTINEL"), OsString::from("leaked")),
                 (OsString::from("PATH"), OsString::from("/daemon/bin")),
@@ -843,6 +860,42 @@ mod tests {
         assert_eq!(env["COLORTERM"], "truecolor");
         assert_eq!(env["TERM_PROGRAM"], "hutan");
         assert_eq!(env["USER"], "ada", "untouched base facts stay");
+    }
+
+    #[test]
+    fn explicit_commands_start_from_base_then_login_shell_then_client_then_terminal() {
+        let mut source = source();
+        source.login_env = Some(BTreeMap::from([
+            ("PATH".to_owned(), "/login/bin:/usr/bin".to_owned()),
+            ("HOMEBREW_PREFIX".to_owned(), "/opt/homebrew".to_owned()),
+            ("EDITOR".to_owned(), "from-login".to_owned()),
+            ("TERM".to_owned(), "from-login".to_owned()),
+            ("HUTAN_SESSION_ID".to_owned(), "from-login".to_owned()),
+        ]));
+        let cfg = config(
+            EnvInherit::Login,
+            &[
+                ("EDITOR", "from-client"),
+                ("HUTAN_SESSION_ID", "daemon-managed"),
+            ],
+        );
+        let env = env_of(&command(&cfg, &source));
+        assert_eq!(
+            env["PATH"], "/login/bin:/usr/bin",
+            "login shell beats the base"
+        );
+        assert_eq!(env["HOMEBREW_PREFIX"], "/opt/homebrew");
+        assert_eq!(
+            env["USER"], "ada",
+            "base facts the login shell did not set stay"
+        );
+        assert_eq!(env["EDITOR"], "from-client", "client beats the login shell");
+        assert_eq!(
+            env["TERM"], "xterm-256color",
+            "terminal variables beat both"
+        );
+        assert_eq!(env["HUTAN_SESSION_ID"], "daemon-managed");
+        assert!(!env.contains_key("VIRTUAL_ENV") && !env.contains_key("HUTAN_SENTINEL"));
     }
 
     #[test]

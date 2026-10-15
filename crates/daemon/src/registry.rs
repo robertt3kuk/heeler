@@ -460,6 +460,8 @@ struct SessionRegistry {
     shell_integration_dir: Option<PathBuf>,
     /// Where new terminals' base environment comes from (`[terminal] env_inherit`).
     env_inherit: EnvInherit,
+    /// `SHELL` of sessions whose spec names none; `None` = the account's login shell.
+    login_shell: Option<String>,
     /// Exported to children as `HUTAN_BIN`.
     hutan_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
@@ -496,6 +498,8 @@ pub struct RegistryConfig {
     pub shell_integration_dir: Option<PathBuf>,
     /// `[terminal] env_inherit`: where new terminals' base environment comes from.
     pub env_inherit: EnvInherit,
+    /// `SHELL` of sessions whose spec names none; `None` = the account's login shell.
+    pub login_shell: Option<String>,
     /// The `hutan` CLI exported to sessions as `HUTAN_BIN`.
     pub hutan_bin: PathBuf,
     pub storage: Storage,
@@ -540,6 +544,7 @@ pub fn spawn(
         socket: config.socket,
         shell_integration_dir: config.shell_integration_dir,
         env_inherit: config.env_inherit,
+        login_shell: config.login_shell,
         hutan_bin: config.hutan_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
         home,
@@ -1454,6 +1459,10 @@ impl SessionRegistry {
         let restore_argv = self.sessions[index].restore_argv.take();
         let session = &self.sessions[index];
         let mut env: BTreeMap<String, String> = session.spec.env.clone();
+        if let Some(shell) = &self.login_shell {
+            env.entry("SHELL".to_owned())
+                .or_insert_with(|| shell.clone());
+        }
         // Daemon-managed variables win over whatever the client asked for.
         env.insert(
             "HUTAN_SOCKET".to_owned(),
