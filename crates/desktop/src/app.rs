@@ -64,6 +64,7 @@ fn with_workbench(
 /// plus `keymap.toml`), which rebinds them live. Quit is decided by the workbench (live
 /// sessions, `app.on_quit`); this handler only catches the action when no window has focus.
 pub fn init(cx: &mut App, presets: &[LayoutPreset]) {
+    crate::workbench::ui::init_prose_font(cx);
     cx.on_action(|_: &actions::Quit, cx| {
         with_workbench(cx, |workbench, window, cx| {
             workbench.request_quit(window, cx)

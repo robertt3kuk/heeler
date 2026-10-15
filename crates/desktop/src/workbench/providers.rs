@@ -22,6 +22,44 @@ pub struct ProvidersState {
     pub models: HashMap<String, Vec<ModelInfo>>,
     pub error: Option<String>,
     pub loading: bool,
+    /// Counts the local changes of `providers` (a provider added, updated or removed). A list
+    /// requested at generation `n` is only applied while it is still `n`: an answer older than
+    /// the latest local change would undo it.
+    generation: u64,
+}
+
+impl ProvidersState {
+    /// The generation a list request is made at.
+    fn request_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Applies a list answered for a request made at `requested`; `false` (nothing applied)
+    /// when a local change happened since.
+    fn apply_list(&mut self, requested: u64, list: Vec<ProviderInfo>) -> bool {
+        if requested != self.generation {
+            return false;
+        }
+        self.providers = list;
+        true
+    }
+
+    /// Records a provider the daemon just answered for.
+    fn remember(&mut self, info: ProviderInfo) {
+        self.generation += 1;
+        if let Some(existing) = self.providers.iter_mut().find(|p| p.id == info.id) {
+            *existing = info;
+        } else {
+            self.providers.push(info);
+        }
+    }
+
+    /// Forgets a removed provider and its models.
+    fn forget(&mut self, id: &str) {
+        self.generation += 1;
+        self.providers.retain(|p| p.id != id);
+        self.models.remove(id);
+    }
 }
 
 impl Workbench {
@@ -78,10 +116,15 @@ impl Workbench {
     pub fn refresh_providers(&mut self, cx: &mut Context<Self>) {
         self.providers.loading = true;
         self.providers.error = None;
+        let requested = self.providers.request_generation();
         self.provider_call(
             Request::ProviderList(Empty {}),
-            |this, list: ProviderList, cx| {
-                this.providers.providers = list.providers;
+            move |this, list: ProviderList, cx| {
+                if !this.providers.apply_list(requested, list.providers) {
+                    // Older than a local change: ask again rather than undo it.
+                    this.refresh_providers(cx);
+                    return;
+                }
                 this.providers.loading = false;
                 if this
                     .agent_picker
@@ -101,16 +144,7 @@ impl Workbench {
     }
 
     fn remember_provider(&mut self, info: ProviderInfo) {
-        if let Some(existing) = self
-            .providers
-            .providers
-            .iter_mut()
-            .find(|p| p.id == info.id)
-        {
-            *existing = info;
-        } else {
-            self.providers.providers.push(info);
-        }
+        self.providers.remember(info);
     }
 
     pub fn set_provider_key(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -165,8 +199,7 @@ impl Workbench {
                         provider_id: id.clone(),
                     }),
                     move |this, _: Empty, _| {
-                        this.providers.providers.retain(|p| p.id != removed);
-                        this.providers.models.remove(&removed);
+                        this.providers.forget(&removed);
                     },
                     cx,
                 );
@@ -639,5 +672,46 @@ impl Workbench {
             .ok();
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(id: &str) -> ProviderInfo {
+        ProviderInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            kind: "openai".to_owned(),
+            base_url: String::new(),
+            default_model: None,
+            has_credential: false,
+            created_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_list_older_than_a_local_change_is_dropped() {
+        let mut state = ProvidersState::default();
+        let requested = state.request_generation();
+        // The user adds a provider while the list is on its way.
+        state.remember(info("new"));
+        assert!(!state.apply_list(requested, Vec::new()));
+        assert_eq!(state.providers.len(), 1, "the new provider survives");
+        // A list requested after the change applies.
+        let requested = state.request_generation();
+        assert!(state.apply_list(requested, vec![info("new"), info("other")]));
+        assert_eq!(state.providers.len(), 2);
+    }
+
+    #[test]
+    fn a_removal_also_outdates_lists_in_flight() {
+        let mut state = ProvidersState::default();
+        state.remember(info("gone"));
+        let requested = state.request_generation();
+        state.forget("gone");
+        assert!(!state.apply_list(requested, vec![info("gone")]));
+        assert!(state.providers.is_empty());
     }
 }

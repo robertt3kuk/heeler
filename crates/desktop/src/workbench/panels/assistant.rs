@@ -27,7 +27,7 @@ use crate::workbench::actions::ManageProviders;
 use crate::workbench::chat::{ButtonKind, ChatModel, ChatView, ContextChip, Look, button};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
-use crate::workbench::ui::{self, Mascot};
+use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
 
 /// A conversation the panel keeps: one per scope.
@@ -547,12 +547,14 @@ impl AssistantPanel {
             .child(ui::mascot(mascot, crate::theme::MASCOT_SIZE))
             .child(
                 div()
+                    .prose(tokens)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(SharedString::from(title.to_owned())),
             )
             .children(detail.into_iter().map(|line| {
                 div()
                     .max_w(px(520.0))
+                    .prose(tokens)
                     .text_color(theme.muted)
                     .child(SharedString::from(line))
             }))

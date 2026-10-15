@@ -32,6 +32,10 @@ pub(crate) struct MacControl {
     in_menu_bar: bool,
     /// The status of the login item the last time it was read.
     login_status: LoginItemStatus,
+    /// The `(keep_running, status)` the system refused to reconcile: the same pair is not tried
+    /// again, so a write-back (ours, or another window's on the same file) cannot start a
+    /// register / refuse / write-back loop. An explicit toggle forgets it.
+    refused: Option<(bool, LoginItemStatus)>,
     /// What the Dock badge shows now (`None` until it was set once).
     badge: Option<usize>,
     /// What the menu bar item shows now (`None`: not on the menu bar).
@@ -70,6 +74,7 @@ impl MacControl {
                 presence,
                 in_menu_bar: false,
                 login_status,
+                refused: None,
                 badge: None,
                 item: None,
                 shortcut_tried: None,
@@ -148,6 +153,8 @@ impl Workbench {
             self.set_notice(format!("Cannot save keep running: {error}"), cx);
             return;
         }
+        // The user asked: whatever was refused before may be tried again.
+        self.mac.refused = None;
         // The settings change would do it too; doing it here keeps the answer immediate.
         self.sync_keep_running(cx);
     }
@@ -164,16 +171,21 @@ impl Workbench {
         if self.keep_running_available() {
             let wanted = self.keep_running_enabled();
             let status = self.mac.login_item.status();
-            if wanted && !status.registered() {
-                self.register_launch_agent(cx);
-            } else if !wanted && status.registered() {
-                self.unregister_launch_agent(cx);
+            let differs = wanted != status.registered();
+            if differs && self.mac.refused != Some((wanted, status)) {
+                let refused = if wanted {
+                    self.register_launch_agent(cx)
+                } else {
+                    self.unregister_launch_agent(cx)
+                };
+                self.mac.refused = refused.then_some((wanted, status));
             }
         }
         self.refresh_login_status(cx);
     }
 
-    fn register_launch_agent(&mut self, cx: &mut Context<Self>) {
+    /// Registers the launch agent; `true` when that failed (the setting was written back).
+    fn register_launch_agent(&mut self, cx: &mut Context<Self>) -> bool {
         let failure = match self.mac.login_item.register() {
             Err(error) => Some(format!("Cannot keep Hutan running: {error}")),
             Ok(()) => match self.mac.login_item.status() {
@@ -191,20 +203,25 @@ impl Workbench {
                 LoginItemStatus::Enabled | LoginItemStatus::NotRegistered => None,
             },
         };
-        if let Some(message) = failure {
-            tracing::warn!("{message}");
-            self.write_keep_running_back(false, cx);
-            self.set_notice(message, cx);
-        }
+        let Some(message) = failure else {
+            return false;
+        };
+        tracing::warn!("{message}");
+        self.write_keep_running_back(false, cx);
+        self.set_notice(message, cx);
+        true
     }
 
-    fn unregister_launch_agent(&mut self, cx: &mut Context<Self>) {
-        if let Err(error) = self.mac.login_item.unregister() {
-            let message = format!("Cannot stop keeping Hutan running: {error}");
-            tracing::warn!("{message}");
-            self.write_keep_running_back(true, cx);
-            self.set_notice(message, cx);
-        }
+    /// Unregisters the launch agent; `true` when that failed (the setting was written back).
+    fn unregister_launch_agent(&mut self, cx: &mut Context<Self>) -> bool {
+        let Err(error) = self.mac.login_item.unregister() else {
+            return false;
+        };
+        let message = format!("Cannot stop keeping Hutan running: {error}");
+        tracing::warn!("{message}");
+        self.write_keep_running_back(true, cx);
+        self.set_notice(message, cx);
+        true
     }
 
     /// Puts `app.keep_running` back to what the system says after a refused change.

@@ -63,11 +63,6 @@ fn configure(view: &Entity<Workbench>, cx: &mut VisualTestContext, mock: &MockSe
         wb.open_models_settings(window, cx);
         wb.edit_provider(None, "openai", window, cx);
     });
-    // The list requested by opening the sheet must land before the new provider does, or it
-    // would replace it.
-    wait_until(cx, "the initial provider list", |cx| {
-        !view.read_with(cx, |wb, _| wb.providers_loading())
-    });
     confirm(view, cx, "Local mock");
     confirm(view, cx, &format!("{}/v1", mock.url()));
     confirm(view, cx, "first");
@@ -409,4 +404,38 @@ fn model_switch_is_unavailable_during_streaming_and_interrupt_restores_it(cx: &m
                 .is_some_and(|p| p.switch_session == Some(session) && p.chosen().is_some())
         })
     });
+}
+
+/// Opening the Models sheet requests the provider list; a provider added before that answer
+/// arrives must not be wiped by it (the answer is older than the change).
+#[gpui::test]
+fn a_provider_added_while_the_list_is_loading_survives_the_list(cx: &mut TestAppContext) {
+    let daemon = daemon();
+    let mock = daemon.http_mock();
+    let (view, cx) = open(cx, &daemon);
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_models_settings(window, cx);
+        wb.edit_provider(None, "openai", window, cx);
+    });
+    assert!(
+        view.read_with(cx, |wb, _| wb.providers_loading()),
+        "the list is still on its way"
+    );
+    confirm(&view, cx, "Raced");
+    confirm(&view, cx, &format!("{}/v1", mock.url()));
+    confirm(&view, cx, "first");
+    wait_until(cx, "the provider and the list", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.providers().iter().any(|p| p.name == "Raced") && !wb.providers_loading()
+        })
+    });
+    // Let any late answer land.
+    for _ in 0..50 {
+        common::draw(cx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        view.read_with(cx, |wb, _| wb.providers().iter().any(|p| p.name == "Raced")),
+        "an older list must not undo the new provider"
+    );
 }

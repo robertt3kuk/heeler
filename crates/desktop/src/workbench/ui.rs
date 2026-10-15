@@ -2,35 +2,75 @@
 //! popover and card surfaces, prose text, section labels and the mascot empty state. Views call
 //! these instead of spelling out colors, radii and fonts, so the look stays in one place.
 
-use std::sync::{Arc, LazyLock};
+use std::borrow::Cow;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use gpui::{
-    AnyElement, FontFallbacks, FontWeight, Hsla, Image, ImageFormat, InteractiveElement,
-    MouseButton, ObjectFit, ParentElement, SharedString, Stateful, Styled, StyledImage, div, img,
+    AnyElement, App, FontWeight, Hsla, Image, ImageFormat, InteractiveElement, MouseButton,
+    ObjectFit, ParentElement, SharedString, Stateful, Styled, StyledImage, div, img,
     prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::theme::{MASCOT_SIZE, PILL_RADIUS, Theme, Tokens};
 
-/// Prose font: the system serif "New York" (macOS 10.15+), Georgia where it is missing.
-pub const PROSE_FONT: &str = "New York";
-pub const PROSE_FALLBACK: &str = "Georgia";
+/// The system serif "New York" and its fallback.
+const NEW_YORK: [&str; 2] = [".New York", "New York"];
+const GEORGIA: &str = "Georgia";
+/// The font files macOS ships New York in. GPUI cannot select the system serif by name (CoreText
+/// lists it as `.New York`, hidden from family lookups), so the files are registered with the
+/// text system and found under that family name.
+const NEW_YORK_FILES: [&str; 2] = [
+    "/System/Library/Fonts/NewYork.ttf",
+    "/System/Library/Fonts/NewYorkItalic.ttf",
+];
 
-/// A GPUI `Font` for prose text with the Georgia fallback.
+static PROSE_FAMILY: OnceLock<SharedString> = OnceLock::new();
+
+/// Picks the prose family once: New York when its files load and resolve to a face of their own,
+/// else Georgia when installed, else the UI font. Call at startup, before the first window.
+pub fn init_prose_font(cx: &App) {
+    let text_system = cx.text_system();
+    let files: Vec<Cow<'static, [u8]>> = NEW_YORK_FILES
+        .iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .map(Cow::Owned)
+        .collect();
+    if !files.is_empty()
+        && let Err(error) = text_system.add_fonts(files)
+    {
+        tracing::warn!("cannot load New York: {error}");
+    }
+    let ui_face = text_system.resolve_font(&gpui::font(".SystemUIFont"));
+    let family = NEW_YORK
+        .into_iter()
+        .chain([GEORGIA])
+        .find(|name| text_system.resolve_font(&gpui::font(*name)) != ui_face)
+        .unwrap_or(".SystemUIFont");
+    if !NEW_YORK.contains(&family) {
+        tracing::info!("prose font: {family}");
+    }
+    let _ = PROSE_FAMILY.set(family.into());
+}
+
+/// The prose family ([`init_prose_font`]); Georgia until it has run.
+pub fn prose_family() -> SharedString {
+    PROSE_FAMILY
+        .get()
+        .cloned()
+        .unwrap_or_else(|| GEORGIA.into())
+}
+
+/// A GPUI `Font` for prose text.
 pub fn prose_font() -> gpui::Font {
-    let mut face = gpui::font(PROSE_FONT);
-    face.fallbacks = Some(FontFallbacks::from_fonts(vec![PROSE_FALLBACK.to_owned()]));
-    face
+    gpui::font(prose_family())
 }
 
 /// Style helpers on any GPUI element.
 pub trait StyledExt: Styled + Sized {
     /// Prose type: serif, 15 px, line height 1.6.
-    fn prose(mut self, tokens: &Tokens) -> Self {
-        let text = self.text_style();
-        text.font_family = Some(PROSE_FONT.into());
-        text.font_fallbacks = Some(FontFallbacks::from_fonts(vec![PROSE_FALLBACK.to_owned()]));
-        self.text_size(px(tokens.prose_font_size))
+    fn prose(self, tokens: &Tokens) -> Self {
+        self.font_family(prose_family())
+            .text_size(px(tokens.prose_font_size))
             .line_height(relative(tokens.prose_line_height))
     }
 
