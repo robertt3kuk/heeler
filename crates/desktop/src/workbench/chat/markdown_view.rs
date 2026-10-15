@@ -12,14 +12,17 @@ use super::view::Regions;
 use crate::theme::{DensityExt as _, Theme, Tokens};
 use crate::workbench::render::probe;
 use crate::workbench::style::{TerminalStyle, UiStyle};
+use crate::workbench::ui::{StyledExt as _, prose_font};
 use crate::workbench::view::Region;
 
-/// What the chat view draws with: chrome colors, density tokens and the monospace font.
+/// What the chat view draws with: chrome colors, density tokens and the monospace font. Message
+/// text is prose (the serif face at 15 px / 1.6) unless the look is [`sans`](Look::sans).
 #[derive(Debug, Clone)]
 pub struct Look {
     pub theme: Theme,
     pub tokens: Tokens,
     pub mono: SharedString,
+    serif: bool,
 }
 
 impl Look {
@@ -29,6 +32,37 @@ impl Look {
             theme: style.theme,
             tokens: style.density.ui(),
             mono: TerminalStyle::get(cx).font_family.into(),
+            serif: true,
+        }
+    }
+
+    /// The same look with message text in the UI sans (the user's own bubble).
+    #[must_use]
+    pub fn sans(&self) -> Self {
+        Self {
+            serif: false,
+            ..self.clone()
+        }
+    }
+
+    /// A container for one paragraph: prose type for the serif look, UI type for the sans one.
+    fn text_box(&self) -> gpui::Div {
+        let tokens = &self.tokens;
+        if self.serif {
+            div().prose(tokens)
+        } else {
+            div()
+                .text_size(px(tokens.font_size + 1.0))
+                .line_height(gpui::relative(1.5))
+        }
+    }
+
+    /// The face of running text: the prose serif, or the UI font.
+    fn text_face(&self) -> Font {
+        if self.serif {
+            prose_font()
+        } else {
+            Font::default()
         }
     }
 }
@@ -93,8 +127,9 @@ fn run(font: Font, len: usize, color: gpui::Hsla) -> TextRun {
     }
 }
 
-/// Text runs for `styled`'s spans; `base` is the paragraph's own weight.
-fn runs(spans: &[Span], look: &Look, base_bold: bool) -> Vec<TextRun> {
+/// Text runs for `styled`'s spans. A `heading` is set in the UI sans at medium weight, a
+/// paragraph in the look's text face.
+fn runs(spans: &[Span], look: &Look, heading: bool) -> Vec<TextRun> {
     let theme = &look.theme;
     spans
         .iter()
@@ -102,10 +137,14 @@ fn runs(spans: &[Span], look: &Look, base_bold: bool) -> Vec<TextRun> {
             let style = &span.style;
             let mut face = if style.code {
                 font(look.mono.clone())
-            } else {
+            } else if heading {
                 Font::default()
+            } else {
+                look.text_face()
             };
-            if style.bold || base_bold {
+            if heading {
+                face.weight = FontWeight::MEDIUM;
+            } else if style.bold {
                 face.weight = FontWeight::BOLD;
             }
             if style.italic {
@@ -121,7 +160,7 @@ fn runs(spans: &[Span], look: &Look, base_bold: bool) -> Vec<TextRun> {
                 },
             );
             if style.code {
-                text_run.background_color = Some(theme.hover);
+                text_run.background_color = Some(theme.surface_hover);
             }
             if style.link.is_some() {
                 text_run.underline = Some(UnderlineStyle {
@@ -149,16 +188,18 @@ pub fn inline_text(content: &[Inline], look: &Look, bold: bool, id: ElementId) -
         .collect();
     let text = StyledText::new(styled.text).with_runs(text_runs);
     if links.is_empty() {
-        return div().child(text).into_any_element();
+        return look.text_box().child(text).into_any_element();
     }
     let ranges = links.iter().map(|(range, _)| range.clone()).collect();
     let urls: Vec<String> = links.into_iter().map(|(_, url)| url).collect();
-    InteractiveText::new(id, text)
-        .on_click(ranges, move |index, _, cx| {
-            if let Some(url) = urls.get(index) {
-                cx.open_url(url);
-            }
-        })
+    look.text_box()
+        .child(
+            InteractiveText::new(id, text).on_click(ranges, move |index, _, cx| {
+                if let Some(url) = urls.get(index) {
+                    cx.open_url(url);
+                }
+            }),
+        )
         .into_any_element()
 }
 
@@ -171,23 +212,21 @@ pub fn code_block(text: &str, lang: Option<&str>, look: &Look, ids: &mut Ids) ->
     let body_id = ids.next("code");
     let copy_probe = ids.copy_probe();
     let copied = text.to_owned();
-    let hover = theme.hover;
+    let hover = theme.surface_hover;
     div()
         .relative()
-        .rounded(px(tokens.radius))
-        .bg(theme.overlay)
-        .border_1()
-        .border_color(theme.border)
+        .card(theme, tokens)
+        .overflow_hidden()
         .child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
                 .px(px(tokens.spacing * 2.0))
-                .h(px(tokens.font_size + 8.0))
+                .h(px(tokens.font_size + 10.0))
                 .border_b_1()
                 .border_color(theme.border)
-                .text_size(px(tokens.section_font_size + 1.0))
+                .text_size(px(tokens.secondary_font_size))
                 .text_color(theme.muted)
                 .child(SharedString::from(lang.unwrap_or("text").to_owned()))
                 .child(
@@ -195,7 +234,7 @@ pub fn code_block(text: &str, lang: Option<&str>, look: &Look, ids: &mut Ids) ->
                         .id(copy_id)
                         .relative()
                         .px(px(tokens.spacing))
-                        .rounded(px(3.0))
+                        .rounded(px(tokens.radius - 2.0))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover).text_color(theme.fg))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -227,7 +266,7 @@ pub fn blocks(items: &[Block], look: &Look, ids: &mut Ids) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(tokens.spacing * 2.0))
+        .gap(px(tokens.spacing * 3.0))
         .children(items.iter().map(|block| block_element(block, look, ids)))
         .into_any_element()
 }
@@ -238,10 +277,10 @@ fn block_element(block: &Block, look: &Look, ids: &mut Ids) -> AnyElement {
         Block::Paragraph(content) => inline_text(content, look, false, ids.next("p")),
         Block::Heading { level, content } => {
             let size = match level {
-                1 => tokens.font_size + 5.0,
-                2 => tokens.font_size + 3.0,
-                3 => tokens.font_size + 1.0,
-                _ => tokens.font_size,
+                1 => tokens.prose_font_size + 5.0,
+                2 => tokens.prose_font_size + 3.0,
+                3 => tokens.prose_font_size + 1.0,
+                _ => tokens.prose_font_size,
             };
             div()
                 .mt(px(tokens.spacing))
@@ -257,7 +296,7 @@ fn block_element(block: &Block, look: &Look, ids: &mut Ids) -> AnyElement {
         } => div()
             .flex()
             .flex_col()
-            .gap(px(tokens.spacing))
+            .gap(px(tokens.spacing * 1.5))
             .children(items.iter().enumerate().map(|(index, item)| {
                 let marker = if *ordered {
                     format!("{}.", start + index as u64)
@@ -270,7 +309,8 @@ fn block_element(block: &Block, look: &Look, ids: &mut Ids) -> AnyElement {
                     .child(
                         div()
                             .flex_none()
-                            .min_w(px(tokens.font_size * 1.4))
+                            .min_w(px(tokens.prose_font_size * 1.4))
+                            .prose(tokens)
                             .text_color(theme.muted)
                             .child(SharedString::from(marker)),
                     )

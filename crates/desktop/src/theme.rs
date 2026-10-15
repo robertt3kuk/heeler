@@ -1,11 +1,11 @@
-//! Density tokens (design.md § Visual system) and the chrome palette.
+//! Density tokens and the chrome palette (design.md § Visual system, v2).
 
-use gpui::{Hsla, Rgba, WindowAppearance, hsla, rgb};
-use hutan_settings::ChromeMode;
+use gpui::{BoxShadow, Hsla, Rgba, WindowAppearance, hsla, point, px, rgb};
+use hutan_settings::{AppearanceMode, SystemAppearance};
 
 pub use hutan_settings::Density;
 
-/// Sizes in logical pixels: the settings crate's density token table plus the UI font sizes.
+/// Sizes in logical pixels: the settings crate's density token table plus the type scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     pub sidebar_row: f32,
@@ -13,18 +13,36 @@ pub struct Tokens {
     pub pane_header: f32,
     pub status_bar: f32,
     pub spacing: f32,
+    /// Corner radius of controls (buttons, rows, inputs): 6 px compact, 8 px comfortable.
     pub radius: f32,
-    /// UI text size: 12 pt compact, 13 pt comfortable.
+    /// Corner radius of cards, the composer, popovers and the palette: 10 px / 12 px.
+    pub card_radius: f32,
+    /// UI body text: 12 pt compact, 13 pt comfortable.
     pub font_size: f32,
-    /// Uppercase section headers: 10 pt semibold.
+    /// Secondary UI text (subtitles, chips, hints): 11 pt compact, 12 pt comfortable.
+    pub secondary_font_size: f32,
+    /// Section labels: 11 pt medium, sentence case.
     pub section_font_size: f32,
-    /// Space between a terminal view's edge and its text on every side: 6 px compact, 8 px
+    /// Prose in the chat view and empty-state copy.
+    pub prose_font_size: f32,
+    /// Prose line height as a multiple of its size.
+    pub prose_line_height: f32,
+    /// Height of buttons and single-line fields.
+    pub control_height: f32,
+    /// Space between a terminal view's edge and its text on every side: 8 px compact, 12 px
     /// comfortable.
     pub terminal_padding: f32,
     /// Width of the block gutter bar at a terminal's left edge, inside the terminal padding:
     /// 3 px compact, 4 px comfortable.
     pub block_gutter: f32,
 }
+
+/// Corner radius of pills, badges and round buttons.
+pub const PILL_RADIUS: f32 = 999.0;
+/// Width of the chat's reading column.
+pub const READING_WIDTH: f32 = 720.0;
+/// Size of the mascot in empty states.
+pub const MASCOT_SIZE: f32 = 96.0;
 
 /// Desktop-side additions to [`Density`] (which lives in `hutan-settings`).
 pub trait DensityExt: Sized {
@@ -37,6 +55,7 @@ pub trait DensityExt: Sized {
 impl DensityExt for Density {
     fn ui(self) -> Tokens {
         let t = self.tokens();
+        let compact = self == Density::Compact;
         Tokens {
             sidebar_row: t.sidebar_row,
             tab_height: t.tab_height,
@@ -44,19 +63,15 @@ impl DensityExt for Density {
             status_bar: t.status_bar,
             spacing: t.spacing,
             radius: t.radius,
-            font_size: match self {
-                Density::Compact => 12.0,
-                Density::Comfortable => 13.0,
-            },
-            section_font_size: 10.0,
-            terminal_padding: match self {
-                Density::Compact => 6.0,
-                Density::Comfortable => 8.0,
-            },
-            block_gutter: match self {
-                Density::Compact => 3.0,
-                Density::Comfortable => 4.0,
-            },
+            card_radius: if compact { 10.0 } else { 12.0 },
+            font_size: if compact { 12.0 } else { 13.0 },
+            secondary_font_size: if compact { 11.0 } else { 12.0 },
+            section_font_size: 11.0,
+            prose_font_size: 15.0,
+            prose_line_height: 1.6,
+            control_height: 28.0,
+            terminal_padding: if compact { 8.0 } else { 12.0 },
+            block_gutter: if compact { 3.0 } else { 4.0 },
         }
     }
 
@@ -75,53 +90,57 @@ impl DensityExt for Density {
     }
 }
 
-/// Sidebar (left dock) tint laid over the window blur: sRGB color plus alpha. This is the single
-/// source for the translucent dock background; contrast of `Theme::muted` and `Theme::fg` against
-/// it is checked in the tests below for a mid-gray worst-case backdrop.
-pub const SIDEBAR_TINT_DARK: (u8, u8, u8, f32) = (28, 28, 30, 0.72);
-pub const SIDEBAR_TINT_LIGHT: (u8, u8, u8, f32) = (246, 246, 246, 0.72);
-
-fn tint((r, g, b, a): (u8, u8, u8, f32)) -> Hsla {
-    Rgba {
-        r: f32::from(r) / 255.0,
-        g: f32::from(g) / 255.0,
-        b: f32::from(b) / 255.0,
-        a,
-    }
-    .into()
-}
-
-/// Chrome colors. Light/dark follows the window appearance; the accent is a fixed system-blue
-/// approximation because GPUI exposes no system accent color.
+/// Chrome colors: exactly the tokens of design.md § Visual system (v2); light and dark. The
+/// terminal keeps its own palette (`hutan-light` / `hutan-dark` in `hutan-settings`), whose
+/// background equals `bg`. These are the only color values in the desktop: every view reads them
+/// from here.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub dark: bool,
-    /// Opaque surface of center, right dock, bottom dock.
-    pub surface: Hsla,
-    /// Left dock: translucent so the blurred window background shows through. See
-    /// [`SIDEBAR_TINT_DARK`]. `muted` is chosen to stay ≥ 4.5:1 on it.
+    /// Window and center panes.
+    pub bg: Hsla,
+    /// Left dock and the title bar strip.
     pub sidebar: Hsla,
-    pub title_bar: Hsla,
+    /// Cards, composer, popovers, palette, modals.
+    pub surface: Hsla,
+    /// Row and button hover.
+    pub surface_hover: Hsla,
+    /// Hairlines (1 px).
     pub border: Hsla,
+    /// Primary text.
     pub fg: Hsla,
+    /// Secondary text and icons.
     pub muted: Hsla,
+    /// Placeholders and disabled text.
+    pub faint: Hsla,
+    /// Primary buttons, selection, focus, links: the brand orange.
     pub accent: Hsla,
-    pub warning: Hsla,
+    /// Selected row, chips, the user message bubble.
+    pub accent_soft: Hsla,
     pub success: Hsla,
-    pub error: Hsla,
-    pub hover: Hsla,
-    pub active_tab: Hsla,
-    pub overlay: Hsla,
-    pub drop_zone: Hsla,
+    pub warning: Hsla,
+    pub danger: Hsla,
 }
 
+/// The palette table as `0xRRGGBB` values, in token order: bg, sidebar, surface, surface_hover,
+/// border, fg, muted, faint, accent, accent_soft, success, warning, danger.
+pub const LIGHT_PALETTE: [u32; 13] = [
+    0xFAF9F5, 0xF3F1EA, 0xFFFFFF, 0xF0EEE6, 0xE6E3D9, 0x1F1E1D, 0x6F6D66, 0xA8A59C, 0xE0692E,
+    0xFBE9DF, 0x3F8F5A, 0xC98A12, 0xC8452F,
+];
+pub const DARK_PALETTE: [u32; 13] = [
+    0x262624, 0x1F1E1D, 0x30302E, 0x3A3936, 0x3D3C39, 0xF5F4EF, 0xA6A49C, 0x6F6D66, 0xEA7A43,
+    0x3E2C23, 0x6BBF85, 0xE2AE45, 0xE87562,
+];
+
 impl Theme {
-    /// The chrome theme for the configured mode; `system` follows the window appearance.
-    pub fn for_chrome(chrome: ChromeMode, appearance: WindowAppearance) -> Self {
+    /// The theme for the `appearance` setting; `system` follows the window appearance, so a macOS
+    /// light/dark switch changes it the next time the workbench re-resolves.
+    pub fn for_chrome(chrome: AppearanceMode, appearance: WindowAppearance) -> Self {
         match chrome {
-            ChromeMode::System => Self::for_appearance(appearance),
-            ChromeMode::Light => Self::light(),
-            ChromeMode::Dark => Self::dark(),
+            AppearanceMode::System => Self::for_appearance(appearance),
+            AppearanceMode::Light => Self::light(),
+            AppearanceMode::Dark => Self::dark(),
         }
     }
 
@@ -133,45 +152,68 @@ impl Theme {
     }
 
     pub fn dark() -> Self {
-        let accent: Hsla = rgb(0x0a84ff).into();
-        Self {
-            dark: true,
-            surface: rgb(0x1e1e1e).into(),
-            sidebar: tint(SIDEBAR_TINT_DARK),
-            title_bar: tint(SIDEBAR_TINT_DARK),
-            border: hsla(0.0, 0.0, 1.0, 0.10),
-            fg: rgb(0xd4d4d4).into(),
-            muted: rgb(0xaaaaaf).into(),
-            accent,
-            warning: rgb(0xff9f0a).into(),
-            success: rgb(0x30d158).into(),
-            error: rgb(0xff453a).into(),
-            hover: hsla(0.0, 0.0, 1.0, 0.07),
-            active_tab: hsla(0.0, 0.0, 1.0, 0.10),
-            overlay: rgb(0x2a2a2c).into(),
-            drop_zone: accent.opacity(0.28),
-        }
+        Self::from_palette(true, DARK_PALETTE)
     }
 
     pub fn light() -> Self {
-        let accent: Hsla = rgb(0x007aff).into();
+        Self::from_palette(false, LIGHT_PALETTE)
+    }
+
+    fn from_palette(dark: bool, p: [u32; 13]) -> Self {
+        let color = |hex: u32| Hsla::from(rgb(hex));
         Self {
-            dark: false,
-            surface: rgb(0xffffff).into(),
-            sidebar: tint(SIDEBAR_TINT_LIGHT),
-            title_bar: tint(SIDEBAR_TINT_LIGHT),
-            border: hsla(0.0, 0.0, 0.0, 0.12),
-            fg: rgb(0x1d1d1f).into(),
-            muted: rgb(0x55555a).into(),
-            accent,
-            warning: rgb(0xff9500).into(),
-            success: rgb(0x248a3d).into(),
-            error: rgb(0xd70015).into(),
-            hover: hsla(0.0, 0.0, 0.0, 0.06),
-            active_tab: hsla(0.0, 0.0, 0.0, 0.08),
-            overlay: rgb(0xf5f5f7).into(),
-            drop_zone: accent.opacity(0.22),
+            dark,
+            bg: color(p[0]),
+            sidebar: color(p[1]),
+            surface: color(p[2]),
+            surface_hover: color(p[3]),
+            border: color(p[4]),
+            fg: color(p[5]),
+            muted: color(p[6]),
+            faint: color(p[7]),
+            accent: color(p[8]),
+            accent_soft: color(p[9]),
+            success: color(p[10]),
+            warning: color(p[11]),
+            danger: color(p[12]),
         }
+    }
+
+    /// What `terminal.theme = "auto"` resolves against: the appearance this theme *is*, so a
+    /// pinned `appearance` also pins the automatic terminal theme.
+    pub fn system_appearance(&self) -> SystemAppearance {
+        if self.dark {
+            SystemAppearance::Dark
+        } else {
+            SystemAppearance::Light
+        }
+    }
+
+    /// Text on an `accent` fill (primary buttons, the send button).
+    pub fn on_accent(&self) -> Hsla {
+        rgb(0xFFFFFF).into()
+    }
+
+    /// The one soft shadow of popovers, the palette and modals: 0 8 24 rgba(0,0,0,.12) light,
+    /// .4 dark.
+    pub fn shadow(&self) -> Vec<BoxShadow> {
+        vec![BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, if self.dark { 0.40 } else { 0.12 }),
+            offset: point(px(0.0), px(8.0)),
+            blur_radius: px(24.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }]
+    }
+
+    /// Dimming layer behind modals and sheets.
+    pub fn scrim(&self) -> Hsla {
+        hsla(0.0, 0.0, 0.0, if self.dark { 0.50 } else { 0.28 })
+    }
+
+    /// Drag-and-drop target highlight.
+    pub fn drop_zone(&self) -> Hsla {
+        self.accent.opacity(if self.dark { 0.28 } else { 0.22 })
     }
 }
 
@@ -196,7 +238,7 @@ impl Theme {
             enabled,
             gutter_width: density.ui().block_gutter,
             success: rgb(self.success),
-            error: rgb(self.error),
+            error: rgb(self.danger),
             neutral: rgb(self.muted),
             accent: rgb(self.accent),
             animate,
@@ -231,6 +273,12 @@ mod tests {
         color.into()
     }
 
+    fn hex(color: Hsla) -> u32 {
+        let c = rgba_of(color);
+        let byte = |v: f32| (v * 255.0).round() as u32;
+        (byte(c.r) << 16) | (byte(c.g) << 8) | byte(c.b)
+    }
+
     fn luminance(c: Rgba) -> f32 {
         let lin = |v: f32| {
             if v <= 0.03928 {
@@ -242,86 +290,146 @@ mod tests {
         0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
     }
 
-    fn over(top: Rgba, backdrop: f32) -> Rgba {
-        let mix = |t: f32| t * top.a + backdrop * (1.0 - top.a);
-        Rgba {
-            r: mix(top.r),
-            g: mix(top.g),
-            b: mix(top.b),
-            a: 1.0,
-        }
-    }
-
-    fn contrast(a: Rgba, b: Rgba) -> f32 {
-        let (la, lb) = (luminance(a), luminance(b));
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        let (la, lb) = (luminance(rgba_of(a)), luminance(rgba_of(b)));
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
     }
 
+    fn table(theme: &Theme) -> [u32; 13] {
+        [
+            hex(theme.bg),
+            hex(theme.sidebar),
+            hex(theme.surface),
+            hex(theme.surface_hover),
+            hex(theme.border),
+            hex(theme.fg),
+            hex(theme.muted),
+            hex(theme.faint),
+            hex(theme.accent),
+            hex(theme.accent_soft),
+            hex(theme.success),
+            hex(theme.warning),
+            hex(theme.danger),
+        ]
+    }
+
     #[test]
-    fn sidebar_tint_per_appearance() {
-        let dark = rgba_of(Theme::for_appearance(WindowAppearance::Dark).sidebar);
-        let light = rgba_of(Theme::for_appearance(WindowAppearance::Light).sidebar);
-        let close = |c: Rgba, (r, g, b, a): (u8, u8, u8, f32)| {
-            (c.r - f32::from(r) / 255.0).abs() < 1e-3
-                && (c.g - f32::from(g) / 255.0).abs() < 1e-3
-                && (c.b - f32::from(b) / 255.0).abs() < 1e-3
-                && (c.a - a).abs() < 1e-3
-        };
-        assert!(close(dark, (28, 28, 30, 0.72)), "{dark:?}");
-        assert!(close(light, (246, 246, 246, 0.72)), "{light:?}");
-        // Vibrant variants follow their base appearance.
+    fn token_table_matches_the_v2_palette() {
+        // bg, sidebar, surface, surface_hover, border, fg, muted, faint, accent, accent_soft,
+        // success, warning, danger: docs/design.md § Visual system.
         assert_eq!(
-            Theme::for_appearance(WindowAppearance::VibrantDark).sidebar,
-            Theme::dark().sidebar
+            table(&Theme::light()),
+            [
+                0xFAF9F5, 0xF3F1EA, 0xFFFFFF, 0xF0EEE6, 0xE6E3D9, 0x1F1E1D, 0x6F6D66, 0xA8A59C,
+                0xE0692E, 0xFBE9DF, 0x3F8F5A, 0xC98A12, 0xC8452F
+            ]
+        );
+        assert_eq!(
+            table(&Theme::dark()),
+            [
+                0x262624, 0x1F1E1D, 0x30302E, 0x3A3936, 0x3D3C39, 0xF5F4EF, 0xA6A49C, 0x6F6D66,
+                0xEA7A43, 0x3E2C23, 0x6BBF85, 0xE2AE45, 0xE87562
+            ]
+        );
+        assert!(Theme::dark().dark && !Theme::light().dark);
+        for theme in [Theme::light(), Theme::dark()] {
+            assert_eq!(rgba_of(theme.border).a, 1.0, "hairlines are opaque tokens");
+        }
+    }
+
+    #[test]
+    fn terminal_background_matches_the_bg_token() {
+        use hutan_settings::themes;
+        for (theme, name) in [
+            (Theme::dark(), themes::DARK),
+            (Theme::light(), themes::LIGHT),
+        ] {
+            let terminal = themes::lookup(name).expect("built-in theme");
+            let bg = (u32::from(terminal.background.r) << 16)
+                | (u32::from(terminal.background.g) << 8)
+                | u32::from(terminal.background.b);
+            assert_eq!(bg, hex(theme.bg), "{name}");
+        }
+    }
+
+    #[test]
+    fn appearance_resolves_system_light_and_dark() {
+        use WindowAppearance::{Dark, Light, VibrantDark, VibrantLight};
+        // `system` follows the window appearance, vibrant variants included.
+        for (window, dark) in [
+            (Light, false),
+            (VibrantLight, false),
+            (Dark, true),
+            (VibrantDark, true),
+        ] {
+            assert_eq!(Theme::for_chrome(AppearanceMode::System, window).dark, dark);
+            assert_eq!(Theme::for_appearance(window).dark, dark);
+            // A pinned mode ignores the system.
+            assert!(Theme::for_chrome(AppearanceMode::Dark, window).dark);
+            assert!(!Theme::for_chrome(AppearanceMode::Light, window).dark);
+        }
+        assert_eq!(
+            hex(Theme::for_chrome(AppearanceMode::System, Dark).bg),
+            0x262624
         );
     }
 
     #[test]
-    fn text_on_the_translucent_sidebar_is_readable_over_any_mid_gray_blur() {
+    fn a_system_switch_changes_a_system_theme_live_and_leaves_a_pinned_one_alone() {
+        let mut system = Theme::for_chrome(AppearanceMode::System, WindowAppearance::Light);
+        let mut pinned = Theme::for_chrome(AppearanceMode::Light, WindowAppearance::Light);
+        assert!(!system.dark && !pinned.dark);
+        // macOS flips to dark: the workbench re-resolves on the appearance change.
+        system = Theme::for_chrome(AppearanceMode::System, WindowAppearance::Dark);
+        pinned = Theme::for_chrome(AppearanceMode::Light, WindowAppearance::Dark);
+        assert!(system.dark && !pinned.dark);
+        assert_eq!(system.system_appearance(), SystemAppearance::Dark);
+        assert_eq!(pinned.system_appearance(), SystemAppearance::Light);
+    }
+
+    #[test]
+    fn text_tokens_are_readable_on_every_surface() {
         for theme in [Theme::dark(), Theme::light()] {
-            // Blur averages from near-black to near-white; the tint pulls it toward its own
-            // color, so the worst cases are the extremes that move *toward* the text color.
-            for backdrop in [0.0, 0.43, 0.5, 0.6, 1.0] {
-                let bg = over(rgba_of(theme.sidebar), backdrop);
-                let muted = contrast(rgba_of(theme.muted), bg);
-                let fg = contrast(rgba_of(theme.fg), bg);
-                let worst_for_theme = if theme.dark {
-                    backdrop <= 0.6
+            for ground in [theme.bg, theme.sidebar, theme.surface, theme.accent_soft] {
+                assert!(contrast(theme.fg, ground) >= 7.0, "fg dark={}", theme.dark);
+                // The spec's light `muted` on `accent_soft` is 4.4:1: large-text AA, used only
+                // for secondary labels on selected rows.
+                let floor = if hex(ground) == hex(theme.accent_soft) {
+                    4.0
                 } else {
-                    backdrop >= 0.43
+                    4.5
                 };
-                if worst_for_theme {
-                    assert!(
-                        muted >= 4.5,
-                        "dark={} backdrop={backdrop}: muted {muted:.2}",
-                        theme.dark
-                    );
-                    assert!(
-                        fg >= 4.5,
-                        "dark={} backdrop={backdrop}: fg {fg:.2}",
-                        theme.dark
-                    );
-                }
+                assert!(
+                    contrast(theme.muted, ground) >= floor,
+                    "muted on {:06x} dark={}: {:.2}",
+                    hex(ground),
+                    theme.dark,
+                    contrast(theme.muted, ground)
+                );
             }
+            // Hover fills must keep secondary text readable too.
+            assert!(contrast(theme.muted, theme.surface_hover) >= 4.0);
+            // Borders stay quieter than text but visible.
+            assert!(contrast(theme.border, theme.bg) > 1.0);
         }
     }
 
     #[test]
     fn block_colors_and_gutter_follow_the_chrome_theme_and_density() {
         let dark = Theme::dark().block_settings(Density::Compact, true, true);
-        assert_eq!(dark.success, hutan_terminal_view::Rgb(0x30, 0xd1, 0x58));
-        assert_eq!(dark.error, hutan_terminal_view::Rgb(0xff, 0x45, 0x3a));
-        assert_eq!(dark.accent, hutan_terminal_view::Rgb(0x0a, 0x84, 0xff));
+        assert_eq!(dark.success, hutan_terminal_view::Rgb(0x6b, 0xbf, 0x85));
+        assert_eq!(dark.error, hutan_terminal_view::Rgb(0xe8, 0x75, 0x62));
+        assert_eq!(dark.accent, hutan_terminal_view::Rgb(0xea, 0x7a, 0x43));
         assert_eq!(dark.gutter_width, 3.0);
         assert!(dark.enabled && dark.animate);
         let light = Theme::light().block_settings(Density::Comfortable, false, false);
-        assert_eq!(light.success, hutan_terminal_view::Rgb(0x24, 0x8a, 0x3d));
+        assert_eq!(light.success, hutan_terminal_view::Rgb(0x3f, 0x8f, 0x5a));
         assert_eq!(light.gutter_width, 4.0);
         assert!(!light.enabled && !light.animate);
     }
 
     #[test]
-    fn tokens_match_design_table() {
+    fn density_tokens_match_the_v2_table() {
         let c = Density::Compact.ui();
         assert_eq!(
             (
@@ -330,9 +438,10 @@ mod tests {
                 c.pane_header,
                 c.status_bar,
                 c.spacing,
-                c.radius
+                c.radius,
+                c.card_radius
             ),
-            (24.0, 28.0, 28.0, 22.0, 4.0, 6.0)
+            (26.0, 30.0, 30.0, 22.0, 4.0, 6.0, 10.0)
         );
         let m = Density::Comfortable.ui();
         assert_eq!(
@@ -342,13 +451,18 @@ mod tests {
                 m.pane_header,
                 m.status_bar,
                 m.spacing,
-                m.radius
+                m.radius,
+                m.card_radius
             ),
-            (30.0, 32.0, 34.0, 26.0, 6.0, 8.0)
+            (30.0, 34.0, 36.0, 26.0, 6.0, 8.0, 12.0)
         );
         assert_eq!((c.font_size, m.font_size), (12.0, 13.0));
-        assert_eq!((c.terminal_padding, m.terminal_padding), (6.0, 8.0));
+        assert_eq!((c.secondary_font_size, m.secondary_font_size), (11.0, 12.0));
+        assert_eq!((c.section_font_size, m.section_font_size), (11.0, 11.0));
+        assert_eq!((c.prose_font_size, c.prose_line_height), (15.0, 1.6));
+        assert_eq!((c.terminal_padding, m.terminal_padding), (8.0, 12.0));
         assert_eq!((c.block_gutter, m.block_gutter), (3.0, 4.0));
+        assert_eq!((c.control_height, m.control_height), (28.0, 28.0));
         assert_eq!(Density::default(), Density::Compact);
     }
 }

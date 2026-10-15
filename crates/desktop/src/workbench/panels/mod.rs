@@ -66,9 +66,9 @@ impl Render for PlaceholderPanel {
             .child(
                 div()
                     .text_size(px(tokens.section_font_size))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(style.theme.muted)
-                    .child(self.title.to_uppercase()),
+                    .child(self.title.clone()),
             )
             .child(
                 div()

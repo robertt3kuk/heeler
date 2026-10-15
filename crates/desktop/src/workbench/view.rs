@@ -31,7 +31,7 @@ use gpui::{
 };
 use hutan_client::Connection;
 use hutan_core::{ApprovalId, SessionId};
-use hutan_settings::{ChromeMode, SettingsStore, SystemAppearance, WatchGuard};
+use hutan_settings::{AppearanceMode, SettingsStore, WatchGuard};
 use hutan_terminal_view::DefaultColors;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -186,12 +186,11 @@ impl Render for DragPreview {
             .px(px(10.0))
             .py(px(4.0))
             .rounded(px(self.style.density.ui().radius))
-            .bg(theme.overlay)
+            .bg(theme.surface)
             .border_1()
             .border_color(theme.accent)
             .text_color(theme.fg)
             .text_size(px(self.style.density.ui().font_size))
-            .shadow_md()
             .child(self.label.clone())
     }
 }
@@ -229,13 +228,6 @@ pub(crate) struct ContextMenu {
     pub entries: Vec<MenuEntry>,
 }
 
-pub(crate) fn system_appearance(appearance: WindowAppearance) -> SystemAppearance {
-    match appearance {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
-        WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
-    }
-}
-
 pub struct Workbench {
     pub(crate) state: WorkbenchState,
     pub(crate) panels: PanelRegistry,
@@ -244,7 +236,7 @@ pub struct Workbench {
     pub(crate) presets: Vec<LayoutPreset>,
     pub(crate) commands: Rc<Vec<Command>>,
     pub(crate) density: Density,
-    pub(crate) chrome: ChromeMode,
+    pub(crate) chrome: AppearanceMode,
     pub(crate) appearance: WindowAppearance,
     pub(crate) theme: Theme,
     pub(crate) settings: SettingsStore,
@@ -360,10 +352,10 @@ impl Workbench {
         }
 
         let window_appearance = window.appearance();
-        let theme = Theme::for_chrome(appearance_settings.chrome, window_appearance);
+        let theme = Theme::for_chrome(appearance_settings.appearance, window_appearance);
         let terminal_style = super::terminals::terminal_style(
             &terminal_settings,
-            system_appearance(window_appearance),
+            theme.system_appearance(),
             &theme,
             appearance_settings.density,
         );
@@ -467,7 +459,7 @@ impl Workbench {
             presets,
             commands,
             density: appearance_settings.density,
-            chrome: appearance_settings.chrome,
+            chrome: appearance_settings.appearance,
             appearance: window_appearance,
             theme,
             settings,

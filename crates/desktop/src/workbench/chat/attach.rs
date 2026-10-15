@@ -29,6 +29,7 @@ use super::view::ChatView;
 use super::widgets::{ButtonKind, button};
 use crate::workbench::panels::{HISTORY_DEBOUNCE, hit_title, source_label};
 use crate::workbench::render::probe;
+use crate::workbench::ui::StyledExt as _;
 use crate::workbench::view::Region;
 
 /// Blocks listed under a terminal (the newest ones).
@@ -656,18 +657,24 @@ impl ChatView {
                         .min_w_0()
                         .truncate()
                         .text_color(theme.accent)
-                        .text_size(px(tokens.section_font_size + 1.0))
+                        .text_size(px(tokens.secondary_font_size))
                         .child(SharedString::from(format!(
                             "@{} · {offer}",
                             mention.kind.token()
                         ))),
                 )
                 .child(
-                    button("chat-mention", "Attach ↹", ButtonKind::Plain, true, look)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.accept_mention(cx);
-                        }))
-                        .child(probe(&self.regions, Region::Attach("mention"))),
+                    button(
+                        "chat-mention",
+                        "Attach ↹",
+                        ButtonKind::Secondary,
+                        true,
+                        look,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.accept_mention(cx);
+                    }))
+                    .child(probe(&self.regions, Region::Attach("mention"))),
                 )
                 .into_any_element(),
         )
@@ -675,20 +682,10 @@ impl ChatView {
 
     /// The Attach button of the composer's footer.
     pub(super) fn render_attach_button(&self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
-        button(
-            "chat-attach",
-            "＋ Attach",
-            if self.attach.is_some() {
-                ButtonKind::Primary
-            } else {
-                ButtonKind::Plain
-            },
-            true,
-            look,
-        )
-        .on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx)))
-        .child(probe(&self.regions, Region::Attach("button")))
-        .into_any_element()
+        super::widgets::round_button("chat-attach", "＋", self.attach.is_some(), true, 28.0, look)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx)))
+            .child(probe(&self.regions, Region::Attach("button")))
+            .into_any_element()
     }
 
     fn field_text(&self, input: &TextInput, placeholder: &str, look: &Look) -> AnyElement {
@@ -748,7 +745,7 @@ impl ChatView {
             .gap(px(tokens.spacing * 2.0))
             .min_h(px(tokens.sidebar_row))
             .px(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius - 2.0))
+            .rounded(px(tokens.radius))
             .child(
                 div()
                     .flex_1()
@@ -762,7 +759,7 @@ impl ChatView {
                     .max_w(px(260.0))
                     .truncate()
                     .text_color(theme.muted)
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(detail.to_owned())),
             )
             .children(buttons)
@@ -787,7 +784,7 @@ impl ChatView {
                 button(
                     format!("attach-{what}-dec"),
                     "−",
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     true,
                     look,
                 )
@@ -799,7 +796,7 @@ impl ChatView {
                 button(
                     format!("attach-{what}-inc"),
                     "+",
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     true,
                     look,
                 )
@@ -828,14 +825,14 @@ impl ChatView {
             .child(
                 div()
                     .flex_1()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(SharedString::from(title)),
             )
             .child(
                 div()
                     .flex_none()
                     .text_color(theme.muted)
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child("Esc closes · nothing is read until you send"),
             )
             .child(
@@ -843,10 +840,10 @@ impl ChatView {
                     .id("chat-attach-close")
                     .relative()
                     .px(px(tokens.spacing))
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius - 2.0))
                     .cursor_pointer()
                     .hover({
-                        let hover = theme.hover;
+                        let hover = theme.surface_hover;
                         move |s| s.bg(hover)
                     })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -868,13 +865,10 @@ impl ChatView {
                 .gap(px(tokens.spacing * 1.5))
                 .mx(px(tokens.spacing * 3.0))
                 .mt(px(tokens.spacing * 2.0))
-                .p(px(tokens.spacing * 2.5))
                 .max_h(px(340.0))
                 .overflow_y_scroll()
-                .rounded(px(tokens.radius + 2.0))
-                .border_1()
-                .border_color(theme.accent.opacity(0.5))
-                .bg(theme.overlay)
+                .popover(theme, tokens)
+                .p(px(tokens.spacing * 2.5))
                 .child(header)
                 .child(body)
                 .into_any_element(),
@@ -888,7 +882,7 @@ impl ChatView {
                 button(
                     format!("chat-attach-{id}"),
                     label,
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     true,
                     look,
                 )
@@ -965,7 +959,8 @@ impl ChatView {
             .relative()
             .px(px(tokens.spacing * 2.0))
             .py(px(tokens.spacing))
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
+            .bg(theme.bg)
             .border_1()
             .border_color(theme.border)
             .child(self.field_text(&arg, placeholder, look))
@@ -990,7 +985,7 @@ impl ChatView {
                         button(
                             format!("attach-recent-{terminal}"),
                             "Recent output",
-                            ButtonKind::Plain,
+                            ButtonKind::Secondary,
                             true,
                             look,
                         )
@@ -1002,7 +997,7 @@ impl ChatView {
                         button(
                             format!("attach-blocks-{terminal}"),
                             if open { "Blocks ▴" } else { "Blocks ▾" },
-                            ButtonKind::Plain,
+                            ButtonKind::Secondary,
                             true,
                             look,
                         )
@@ -1074,7 +1069,7 @@ impl ChatView {
                                             button(
                                                 format!("attach-block-button-{terminal}-{id}"),
                                                 "Attach block",
-                                                ButtonKind::Plain,
+                                                ButtonKind::Secondary,
                                                 true,
                                                 look,
                                             )
@@ -1126,12 +1121,18 @@ impl ChatView {
                 for (at, row) in transcripts.into_iter().enumerate() {
                     let (id, source) = (row.session_id.clone(), row.source.clone());
                     let button_id = format!("attach-transcript-{at}");
-                    let attach = button(button_id.clone(), "Attach", ButtonKind::Plain, true, look)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.attach_transcript(&id, &source, cx);
-                        }))
-                        .child(probe(&self.regions, Region::Attach("transcript")))
-                        .into_any_element();
+                    let attach = button(
+                        button_id.clone(),
+                        "Attach",
+                        ButtonKind::Secondary,
+                        true,
+                        look,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.attach_transcript(&id, &source, cx);
+                    }))
+                    .child(probe(&self.regions, Region::Attach("transcript")))
+                    .into_any_element();
                     rows.push(self.list_row(
                         at,
                         format!("attach-row-{at}"),
@@ -1152,7 +1153,7 @@ impl ChatView {
                 rows.push(
                     div()
                         .text_color(theme.muted)
-                        .text_size(px(tokens.section_font_size + 1.0))
+                        .text_size(px(tokens.secondary_font_size))
                         .child("The daemon reads the file below the workspace folders when you send; this window never opens it.")
                         .into_any_element(),
                 );
@@ -1181,7 +1182,7 @@ impl ChatView {
             .child(field)
             .children(error.map(|error| {
                 div()
-                    .text_color(theme.error)
+                    .text_color(theme.danger)
                     .child(SharedString::from(error))
             }))
             .child(div().flex().flex_col().children(rows))

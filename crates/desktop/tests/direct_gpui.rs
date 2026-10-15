@@ -63,6 +63,11 @@ fn configure(view: &Entity<Workbench>, cx: &mut VisualTestContext, mock: &MockSe
         wb.open_models_settings(window, cx);
         wb.edit_provider(None, "openai", window, cx);
     });
+    // The list requested by opening the sheet must land before the new provider does, or it
+    // would replace it.
+    wait_until(cx, "the initial provider list", |cx| {
+        !view.read_with(cx, |wb, _| wb.providers_loading())
+    });
     confirm(view, cx, "Local mock");
     confirm(view, cx, &format!("{}/v1", mock.url()));
     confirm(view, cx, "first");

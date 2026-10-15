@@ -30,6 +30,7 @@ use crate::workbench::actions::{AgentNodeAt, OpenSession, ShowAgentNodeMenu};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::ui::{self, Mascot};
 
 /// How often the durations (and the working dots) refresh while the panel is drawn.
 pub const TICK: Duration = Duration::from_secs(1);
@@ -274,7 +275,7 @@ impl Render for AgentsPanel {
         let running = self.anything_running(cx);
         self.sync_ticker(running, cx);
         let pulse_dim = !reduce_motion() && (now / 1000) % 2 == 1;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
 
         let chip_row = div()
             .flex()
@@ -357,15 +358,18 @@ impl Render for AgentsPanel {
         if sections.is_empty() {
             let hidden = self.env.sessions.read(cx).agent_trees().next().is_some();
             list = list.child(
-                div()
-                    .px(px(tokens.spacing * 3.0))
-                    .py(px(tokens.spacing * 2.0))
-                    .text_color(theme.muted)
-                    .child(if hidden {
+                ui::empty_state(
+                    Mascot::Empty,
+                    if hidden {
                         "Nothing matches the filters."
                     } else {
                         "No agents reported yet. Coding agents that report to Hutan appear here."
-                    }),
+                    },
+                    None,
+                    &theme,
+                    &tokens,
+                )
+                .h(px(260.0)),
             );
         }
         let mut index = 0usize;
@@ -380,7 +384,7 @@ impl Render for AgentsPanel {
                     .mt(px(tokens.spacing))
                     .px(px(tokens.spacing * 2.0))
                     .text_size(px(tokens.section_font_size))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.muted)
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
@@ -424,7 +428,7 @@ impl AgentsPanel {
         tokens: &crate::theme::Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let color = tone_color(theme, row.tone);
         let menu_node = row.node_id.clone();
         let fold_node = row.node_id.clone();
@@ -479,7 +483,7 @@ impl AgentsPanel {
                     .min_w_0()
                     .truncate()
                     .font_weight(if row.depth == 0 {
-                        gpui::FontWeight::SEMIBOLD
+                        gpui::FontWeight::MEDIUM
                     } else {
                         gpui::FontWeight::NORMAL
                     })
@@ -491,7 +495,7 @@ impl AgentsPanel {
                     .flex_none()
                     .max_w(px(90.0))
                     .truncate()
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(SharedString::from(agent_type.clone())),
             );
@@ -500,7 +504,7 @@ impl AgentsPanel {
             name_line = name_line.child(
                 div()
                     .flex_none()
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(format!("+{}", row.hidden)),
             );
@@ -511,7 +515,7 @@ impl AgentsPanel {
                     .flex_none()
                     .max_w(px(110.0))
                     .truncate()
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(SharedString::from(model.clone())),
             );
@@ -520,7 +524,7 @@ impl AgentsPanel {
             name_line = name_line.child(
                 div()
                     .flex_none()
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(SharedString::from(duration.clone())),
             );
@@ -542,7 +546,7 @@ impl AgentsPanel {
             .pl(px(tokens.spacing + indent))
             .pr(px(tokens.spacing))
             .py(px(1.0))
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
             .cursor_pointer()
             .hover(move |s| s.bg(hover))
             .when(dim, |s| s.opacity(0.55))
@@ -575,7 +579,7 @@ impl AgentsPanel {
                     .pl(px(tokens.spacing * 3.0 + 12.0 + tokens.spacing * 1.5))
                     .pb(px(tokens.spacing / 2.0))
                     .truncate()
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(SharedString::from(detail.join(" · "))),
             );

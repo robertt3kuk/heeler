@@ -25,6 +25,7 @@ use crate::workbench::BadgeSite;
 use crate::workbench::actions::{OpenSessionFromOverview, SessionMenuAt, ShowSessionMenu};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::style::{TerminalStyle, UiStyle};
+use crate::workbench::ui::{self, Mascot, StyledExt as _};
 
 /// Preview text is this fraction of the terminal font size.
 const PREVIEW_SCALE: f32 = 0.5;
@@ -161,7 +162,7 @@ impl Render for OverviewPanel {
         let sessions = self.sorted(&settings, cx);
         self.sync_previews(&sessions, settings.preview, window, cx);
         let (card_width, preview_height) = settings.card_size.dimensions();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
 
         let cards: Vec<AnyElement> = sessions
             .iter()
@@ -197,8 +198,7 @@ impl Render for OverviewPanel {
                     .flex()
                     .flex_col()
                     .w(px(card_width))
-                    .rounded(px(tokens.radius))
-                    .border_1()
+                    .card(&theme, &tokens)
                     .border_color(border)
                     .overflow_hidden()
                     .cursor_pointer()
@@ -246,7 +246,7 @@ impl Render for OverviewPanel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(tokens.section_font_size))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .text_color(tone_color(&theme, presentation.tone))
                                     .child(SharedString::from(subtitle)),
                             ),
@@ -267,7 +267,7 @@ impl Render for OverviewPanel {
                             .justify_between()
                             .h(px(tokens.sidebar_row - 4.0))
                             .px(px(tokens.spacing * 2.0))
-                            .text_size(px(tokens.section_font_size))
+                            .text_size(px(tokens.secondary_font_size))
                             .text_color(theme.muted)
                             .child(SharedString::from(placement(info)))
                             .child(SharedString::from(age_label(info.created_at_ms))),
@@ -277,11 +277,15 @@ impl Render for OverviewPanel {
             .collect();
 
         let body: AnyElement = if cards.is_empty() {
-            div()
-                .p(px(tokens.spacing * 4.0))
-                .text_color(theme.muted)
-                .child("No sessions yet. ⌘T starts a terminal.")
-                .into_any_element()
+            ui::empty_state(
+                Mascot::Empty,
+                "No sessions yet. ⌘T starts a terminal.",
+                None,
+                &theme,
+                &tokens,
+            )
+            .h(px(360.0))
+            .into_any_element()
         } else {
             div()
                 .id("overview-board")

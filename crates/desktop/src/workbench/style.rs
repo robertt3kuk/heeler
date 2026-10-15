@@ -53,7 +53,7 @@ impl gpui::Render for TextTooltip {
             .px(px(8.0))
             .py(px(4.0))
             .rounded(px(style.density.ui().radius - 2.0))
-            .bg(style.theme.overlay)
+            .bg(style.theme.surface)
             .border_1()
             .border_color(style.theme.border)
             .text_color(style.theme.fg)

@@ -34,6 +34,7 @@ use crate::workbench::actions::{
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::ui;
 
 /// How often the index status is read while indexing settles after Enable or Rebuild.
 const SETTLE_POLL: Duration = Duration::from_millis(500);
@@ -614,22 +615,26 @@ pub(super) fn pill(
     theme: &Theme,
     tokens: &Tokens,
 ) -> gpui::Stateful<gpui::Div> {
-    let (hover, accent) = (theme.hover, theme.accent);
+    let (hover, accent) = (theme.surface_hover, theme.accent);
     div()
         .id(id.into())
         .flex_none()
-        .px(px(tokens.spacing * 1.5))
+        .px(px(tokens.spacing * 2.0))
         .h(px(tokens.font_size + 6.0))
         .flex()
         .items_center()
-        .rounded(px(tokens.radius))
+        .rounded(px(crate::theme::PILL_RADIUS))
         .border_1()
-        .border_color(if active { accent } else { theme.border })
-        .text_size(px(tokens.section_font_size + 1.0))
+        .border_color(if active {
+            accent.opacity(0.45)
+        } else {
+            theme.border
+        })
+        .text_size(px(tokens.secondary_font_size))
         .text_color(if active { theme.fg } else { theme.muted })
-        .when(active, move |s| s.bg(accent.opacity(0.22)))
+        .when(active, move |s| s.bg(theme.accent_soft))
         .cursor_pointer()
-        .hover(move |s| s.bg(hover))
+        .when(!active, move |s| s.hover(move |s| s.bg(hover)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(label.into())
 }
@@ -642,28 +647,17 @@ fn button(
     theme: &Theme,
     tokens: &Tokens,
 ) -> gpui::Stateful<gpui::Div> {
-    let (hover, accent) = (theme.hover, theme.accent);
-    let base = div()
-        .id(id.into())
-        .flex_none()
-        .px(px(tokens.spacing * 1.5))
-        .h(px(tokens.font_size + 6.0))
-        .flex()
-        .items_center()
-        .rounded(px(tokens.radius - 2.0))
-        .border_1()
-        .text_size(px(tokens.section_font_size + 1.0))
-        .child(label.into());
-    if enabled {
-        base.border_color(accent.opacity(0.6))
-            .text_color(theme.fg)
-            .cursor_pointer()
-            .hover(move |s| s.bg(hover))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-    } else {
-        base.border_color(theme.border)
-            .text_color(theme.muted.opacity(0.6))
-    }
+    ui::button(
+        id.into(),
+        label,
+        ui::ButtonKind::Secondary,
+        enabled,
+        theme,
+        tokens,
+    )
+    .h(px(tokens.font_size + 8.0))
+    .px(px(tokens.spacing * 2.0))
+    .text_size(px(tokens.secondary_font_size))
 }
 
 fn row_meta(hit: &HistoryHit, home: Option<&std::path::Path>) -> String {
@@ -721,11 +715,13 @@ impl Render for HistoryPanel {
 
 impl HistoryPanel {
     fn render_note(&self, text: &str, theme: &Theme, tokens: &Tokens) -> AnyElement {
-        div()
-            .px(px(tokens.spacing * 3.0))
-            .py(px(tokens.spacing * 2.0))
-            .text_color(theme.muted)
-            .child(SharedString::from(text.to_owned()))
+        let mascot = if text.starts_with("Searching") {
+            ui::Mascot::Thinking
+        } else {
+            ui::Mascot::Empty
+        };
+        ui::empty_state(mascot, text.to_owned(), None, theme, tokens)
+            .h(px(260.0))
             .into_any_element()
     }
 
@@ -759,7 +755,7 @@ impl HistoryPanel {
                         .child(SharedString::from(name.to_owned()))
                         .child(
                             div()
-                                .text_size(px(tokens.section_font_size + 1.0))
+                                .text_size(px(tokens.secondary_font_size))
                                 .text_color(theme.muted)
                                 .child(SharedString::from(place.to_owned())),
                         ),
@@ -777,7 +773,7 @@ impl HistoryPanel {
             .py(px(tokens.spacing * 2.0))
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Search what you and your agents did"),
             )
             .child(line("History indexing is off. Turning it on reads:"))
@@ -847,7 +843,7 @@ impl HistoryPanel {
             .when_some(self.error.clone(), |s, error| {
                 s.child(
                     div()
-                        .text_color(theme.error)
+                        .text_color(theme.danger)
                         .child(SharedString::from(error)),
                 )
             })
@@ -885,7 +881,8 @@ impl HistoryPanel {
             .flex_none()
             .flex()
             .items_center()
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
+            .bg(theme.surface)
             .border_1()
             .border_color(if searching_field {
                 theme.accent
@@ -905,7 +902,7 @@ impl HistoryPanel {
             )
             .child(if self.query.is_empty() {
                 div()
-                    .text_color(theme.muted)
+                    .text_color(theme.faint)
                     .child("⌕ Search sessions, commands, transcripts")
             } else {
                 div().child(self.query.clone())
@@ -932,7 +929,7 @@ impl HistoryPanel {
                     div()
                         .px(px(tokens.spacing * 3.0))
                         .py(px(tokens.spacing * 2.0))
-                        .text_color(theme.error)
+                        .text_color(theme.danger)
                         .child(SharedString::from(format!("Search failed: {error}"))),
                 );
             }
@@ -979,9 +976,9 @@ impl HistoryPanel {
             div()
                 .flex_none()
                 .text_size(px(tokens.section_font_size))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme.muted)
-                .child(SharedString::from(label.to_uppercase()))
+                .child(SharedString::from(label.to_owned()))
         };
         let row = |label: &str| {
             div()
@@ -1084,7 +1081,7 @@ impl HistoryPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self.selected == Some(index);
-        let (hover, accent) = (theme.hover, theme.accent);
+        let hover = theme.surface_hover;
         let snippet = parse_snippet(&hit.snippet);
         let marks: Vec<_> = snippet
             .marks
@@ -1094,7 +1091,7 @@ impl HistoryPanel {
                     range.clone(),
                     HighlightStyle {
                         color: Some(theme.accent),
-                        font_weight: Some(gpui::FontWeight::BOLD),
+                        font_weight: Some(gpui::FontWeight::MEDIUM),
                         ..HighlightStyle::default()
                     },
                 )
@@ -1198,9 +1195,9 @@ impl HistoryPanel {
             .mx(px(tokens.spacing))
             .px(px(tokens.spacing))
             .py(px(tokens.spacing))
-            .rounded(px(tokens.radius - 1.0))
-            .when(selected, move |s| s.bg(accent.opacity(0.18)))
-            .hover(move |s| s.bg(hover))
+            .rounded(px(tokens.radius))
+            .when(selected, move |s| s.bg(theme.accent_soft))
+            .when(!selected, move |s| s.hover(move |s| s.bg(hover)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -1225,13 +1222,13 @@ impl HistoryPanel {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .child(SharedString::from(hit_title(hit))),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(tokens.section_font_size))
+                            .text_size(px(tokens.secondary_font_size))
                             .text_color(theme.muted)
                             .child(SharedString::from(age)),
                     ),
@@ -1239,7 +1236,7 @@ impl HistoryPanel {
             .child(
                 div()
                     .truncate()
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .child(SharedString::from(row_meta(hit, home))),
             )
@@ -1247,7 +1244,7 @@ impl HistoryPanel {
                 s.child(
                     div()
                         .line_clamp(3)
-                        .text_size(px(tokens.section_font_size + 1.0))
+                        .text_size(px(tokens.secondary_font_size))
                         .child(
                             StyledText::new(SharedString::from(snippet.text))
                                 .with_highlights(marks),
@@ -1258,7 +1255,7 @@ impl HistoryPanel {
             .when_some(note, |s, note| {
                 s.child(
                     div()
-                        .text_size(px(tokens.section_font_size))
+                        .text_size(px(tokens.secondary_font_size))
                         .text_color(theme.muted)
                         .child(SharedString::from(note)),
                 )
@@ -1291,7 +1288,7 @@ impl HistoryPanel {
             .collect::<Vec<_>>()
             .join(" · ");
         let busy = self.busy.is_some();
-        let small = px(tokens.section_font_size + 1.0);
+        let small = px(tokens.secondary_font_size);
 
         let controls: AnyElement = match self.confirm {
             Some(what) => {
@@ -1393,7 +1390,7 @@ impl HistoryPanel {
             .when_some(self.error.clone(), |s, error| {
                 s.child(
                     div()
-                        .text_color(theme.error)
+                        .text_color(theme.danger)
                         .child(SharedString::from(error)),
                 )
             })

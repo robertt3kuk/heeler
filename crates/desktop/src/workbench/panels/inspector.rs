@@ -17,6 +17,7 @@ use crate::workbench::actions::{BlockRef, JumpToBlock};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
 
 /// Blocks the info tab lists.
@@ -188,7 +189,6 @@ impl InspectorPanel {
             .session(approval.session_id)
             .map_or_else(|| "a session that is gone".to_owned(), |s| s.title.clone());
         let session = approval.session_id.to_string();
-        let hover = theme.hover;
         let ordinal = self
             .env
             .sessions
@@ -200,52 +200,45 @@ impl InspectorPanel {
         let regions = self.env.regions.clone();
         let buttons = approval.options.iter().enumerate().map(|(number, option)| {
             let (id, option_id) = (approval.id, option.id.clone());
-            div()
-                .id(SharedString::from(format!(
-                    "inspector-approve-{id}-{number}"
-                )))
-                .relative()
-                .px(px(tokens.spacing * 2.0))
-                .h(px(tokens.sidebar_row))
-                .flex()
-                .items_center()
-                .rounded(px(tokens.radius - 1.0))
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let task = this.env.sessions.update(cx, |store, cx| {
-                        store.respond_approval(id, option_id.clone(), cx)
-                    });
-                    cx.spawn(async move |_, _| {
-                        if let Err(error) = task.await {
-                            tracing::warn!("could not answer a permission request: {error}");
-                        }
-                    })
-                    .detach();
-                }))
-                .child(SharedString::from(format!(
-                    "{} {}",
-                    number + 1,
-                    option.label
-                )))
-                .child(probe(
-                    &regions,
-                    Region::InspectorOption(ordinal * 8 + number),
-                ))
+            ui::button(
+                SharedString::from(format!("inspector-approve-{id}-{number}")),
+                SharedString::from(format!("{} {}", number + 1, option.label)),
+                if number == 0 {
+                    ui::ButtonKind::Primary
+                } else {
+                    ui::ButtonKind::Secondary
+                },
+                true,
+                theme,
+                tokens,
+            )
+            .relative()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let task = this.env.sessions.update(cx, |store, cx| {
+                    store.respond_approval(id, option_id.clone(), cx)
+                });
+                cx.spawn(async move |_, _| {
+                    if let Err(error) = task.await {
+                        tracing::warn!("could not answer a permission request: {error}");
+                    }
+                })
+                .detach();
+            }))
+            .child(probe(
+                &regions,
+                Region::InspectorOption(ordinal * 8 + number),
+            ))
         });
         div()
             .flex()
             .flex_col()
             .gap(px(tokens.spacing))
-            .p(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius))
-            .border_1()
+            .p(px(tokens.spacing * 2.5))
+            .card(theme, tokens)
             .border_color(theme.warning)
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(SharedString::from(approval.title.clone())),
             )
             .child(
@@ -292,7 +285,7 @@ impl Render for InspectorPanel {
             .or_else(|| settings.tabs.first())
             .cloned()
             .unwrap_or_default();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let focused = {
             let store = self.env.sessions.read(cx);
             store
@@ -312,14 +305,14 @@ impl Render for InspectorPanel {
                     .h(px(tokens.sidebar_row))
                     .flex()
                     .items_center()
+                    .rounded(px(tokens.radius))
                     .cursor_pointer()
                     .text_color(if selected { theme.fg } else { theme.muted })
                     .when(selected, |s| {
-                        s.font_weight(gpui::FontWeight::SEMIBOLD)
-                            .border_b_2()
-                            .border_color(theme.accent)
+                        s.font_weight(gpui::FontWeight::MEDIUM)
+                            .bg(theme.accent_soft)
                     })
-                    .hover(move |s| s.bg(hover))
+                    .when(!selected, |s| s.hover(move |s| s.bg(hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.active = Some(id.clone());
                         cx.notify();
@@ -340,7 +333,15 @@ impl Render for InspectorPanel {
             "approvals" => {
                 let approvals = self.env.sessions.read(cx).approvals().to_vec();
                 if approvals.is_empty() {
-                    note("No pending approvals.")
+                    ui::empty_state(
+                        Mascot::Success,
+                        "Nothing is waiting for you.",
+                        None,
+                        &theme,
+                        &tokens,
+                    )
+                    .h(px(260.0))
+                    .into_any_element()
                 } else {
                     div()
                         .flex()
@@ -376,7 +377,7 @@ impl Render for InspectorPanel {
                                 .child(state_dot(&theme, &presentation))
                                 .child(
                                     div()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
                                         .child(SharedString::from(info.title.clone())),
                                 )
                                 .child(
@@ -391,9 +392,9 @@ impl Render for InspectorPanel {
                                 .flex_col()
                                 .child(
                                     div()
-                                        .text_size(px(tokens.section_font_size))
+                                        .text_size(px(tokens.secondary_font_size))
                                         .text_color(theme.muted)
-                                        .child(SharedString::from(label.to_uppercase())),
+                                        .child(SharedString::from(label.to_owned())),
                                 )
                                 .child(
                                     div()
@@ -405,9 +406,9 @@ impl Render for InspectorPanel {
                             s.child(
                                 div()
                                     .mt(px(tokens.spacing * 2.0))
-                                    .text_size(px(tokens.section_font_size))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .text_color(theme.muted)
-                                    .child("RECENT COMMANDS"),
+                                    .child("Recent commands"),
                             )
                             .children(block_rows.into_iter().map(|row| {
                                 let tone = match row.state {
@@ -420,7 +421,7 @@ impl Render for InspectorPanel {
                                 };
                                 let color = match tone {
                                     Tone::Success => theme.success,
-                                    Tone::Error => theme.error,
+                                    Tone::Error => theme.danger,
                                     Tone::Neutral => theme.muted,
                                 };
                                 let status = match (row.state, row.exit_code) {
@@ -439,7 +440,7 @@ impl Render for InspectorPanel {
                                     .flex_col()
                                     .px(px(tokens.spacing))
                                     .py(px(tokens.spacing * 0.5))
-                                    .rounded(px(tokens.radius - 2.0))
+                                    .rounded(px(tokens.radius))
                                     .cursor_pointer()
                                     .hover(move |s| s.bg(hover))
                                     .on_click(cx.listener(move |_, _, window, cx| {
@@ -501,8 +502,9 @@ impl Render for InspectorPanel {
                 div()
                     .flex()
                     .flex_none()
-                    .border_b_1()
-                    .border_color(theme.border)
+                    .gap(px(2.0))
+                    .px(px(tokens.spacing * 2.0))
+                    .pb(px(tokens.spacing))
                     .children(tabs),
             )
             .child(

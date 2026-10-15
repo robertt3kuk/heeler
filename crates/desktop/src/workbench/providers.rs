@@ -2,6 +2,7 @@
 
 use super::chat::{ButtonKind, Look, button};
 use super::modal::PromptSpec;
+use super::ui::StyledExt as _;
 use super::view::Workbench;
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
@@ -26,6 +27,11 @@ pub struct ProvidersState {
 impl Workbench {
     pub fn providers(&self) -> &[ProviderInfo] {
         &self.providers.providers
+    }
+
+    /// Whether the provider list requested when the Models sheet opened is still on its way.
+    pub fn providers_loading(&self) -> bool {
+        self.providers.loading
     }
     fn provider_call<T>(
         &mut self,
@@ -342,7 +348,7 @@ impl Workbench {
                 button(
                     format!("provider-add-{kind}"),
                     label,
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     true,
                     &look,
                 )
@@ -359,7 +365,7 @@ impl Workbench {
                     button(
                         "provider-refresh",
                         "Refresh",
-                        ButtonKind::Plain,
+                        ButtonKind::Secondary,
                         true,
                         &look,
                     )
@@ -369,7 +375,7 @@ impl Workbench {
                     button(
                         "provider-discover",
                         "Discover local",
-                        ButtonKind::Plain,
+                        ButtonKind::Secondary,
                         true,
                         &look,
                     )
@@ -382,7 +388,7 @@ impl Workbench {
         if let Some(error) = &self.providers.error {
             body = body.child(
                 div()
-                    .text_color(look.theme.error)
+                    .text_color(look.theme.danger)
                     .child(SharedString::from(error.clone())),
             );
         }
@@ -397,9 +403,9 @@ impl Workbench {
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
-                .p(px(10.0))
-                .border_1()
-                .border_color(look.theme.border)
+                .p(px(12.0))
+                .mb(px(8.0))
+                .card(&look.theme, &look.tokens)
                 .child(SharedString::from(format!(
                     "{} · {} · key {}",
                     provider.name,
@@ -428,7 +434,7 @@ impl Workbench {
                             button(
                                 format!("provider-edit-{id}"),
                                 "Edit",
-                                ButtonKind::Plain,
+                                ButtonKind::Secondary,
                                 true,
                                 &look,
                             )
@@ -442,7 +448,7 @@ impl Workbench {
                             button(
                                 format!("provider-key-{id}"),
                                 "Set key…",
-                                ButtonKind::Plain,
+                                ButtonKind::Secondary,
                                 true,
                                 &look,
                             )
@@ -454,7 +460,7 @@ impl Workbench {
                             button(
                                 format!("provider-clear-{id}"),
                                 "Clear key",
-                                ButtonKind::Plain,
+                                ButtonKind::Secondary,
                                 true,
                                 &look,
                             )
@@ -466,7 +472,7 @@ impl Workbench {
                             button(
                                 format!("provider-models-{id}"),
                                 "Models / refresh",
-                                ButtonKind::Plain,
+                                ButtonKind::Secondary,
                                 true,
                                 &look,
                             )
@@ -480,7 +486,7 @@ impl Workbench {
                             button(
                                 format!("provider-remove-{id}"),
                                 "Remove…",
-                                ButtonKind::Plain,
+                                ButtonKind::Secondary,
                                 true,
                                 &look,
                             )

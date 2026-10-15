@@ -199,13 +199,13 @@ fn creation_reports_the_default_colors(cx: &mut TestAppContext) {
         .expect("set_default_colors on creation");
     assert_eq!(
         colors.background,
-        hutan_terminal_view::Rgb(0x1e, 0x1e, 0x1e)
+        hutan_terminal_view::Rgb(0x26, 0x26, 0x24)
     );
     assert_eq!(
         colors.foreground,
-        hutan_terminal_view::Rgb(0xd4, 0xd4, 0xd4)
+        hutan_terminal_view::Rgb(0xea, 0xe8, 0xe1)
     );
-    assert_eq!(colors.cursor, hutan_terminal_view::Rgb(0xd4, 0xd4, 0xd4));
+    assert_eq!(colors.cursor, hutan_terminal_view::Rgb(0xea, 0x7a, 0x43));
 }
 
 #[gpui::test]
@@ -843,7 +843,7 @@ fn settings_changes_report_new_default_colors(cx: &mut TestAppContext) {
     });
     let calls = recorder.take();
     assert!(
-        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == hutan_terminal_view::Rgb(255, 255, 255))),
+        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == hutan_terminal_view::Rgb(0xfa, 0xf9, 0xf5))),
         "{calls:?}"
     );
 }

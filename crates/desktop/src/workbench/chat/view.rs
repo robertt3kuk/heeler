@@ -22,12 +22,13 @@ use super::context::is_gateway_chat;
 use super::input::TextInput;
 use super::markdown_view::Look;
 use super::model::{ChatModel, LoadStatus};
-use super::widgets::{ButtonKind, button};
+use super::widgets::{ButtonKind, button, round_button};
 use crate::sessions::SessionsStore;
 use crate::settings::ChatSettings;
 use crate::workbench::actions::{self, RestartSessionById};
 use crate::workbench::panels::{kind_icon, state_dot, tone_color};
 use crate::workbench::render::probe;
+use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
 
 pub(crate) type Regions = Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>;
@@ -37,6 +38,8 @@ pub const KEY_CONTEXT: &str = "HutanChat";
 
 /// Tallest the composer's text grows before it scrolls.
 const COMPOSER_MAX_HEIGHT: f32 = 220.0;
+/// Diameter of the composer's round send / stop button.
+const SEND_SIZE: f32 = 32.0;
 /// The caret drawn inside the composer's text.
 const CARET: &str = "▏";
 
@@ -494,7 +497,7 @@ impl ChatView {
             .child(div().text_color(theme.muted).child(kind_icon(info.kind)))
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(SharedString::from(info.title.clone())),
             )
             .child(state_dot(theme, &presentation))
@@ -509,7 +512,7 @@ impl ChatView {
                     .min_w_0()
                     .truncate()
                     .text_color(theme.muted)
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(text))
             }))
             .when(chat.is_some_and(|chat| is_gateway_chat(&chat.agent)), |s| {
@@ -517,7 +520,7 @@ impl ChatView {
                     button(
                         "chat-switch-model",
                         "Switch model…",
-                        ButtonKind::Plain,
+                        ButtonKind::Secondary,
                         chat.is_some_and(|chat| !chat.turn_active),
                         look,
                     )
@@ -565,19 +568,25 @@ impl ChatView {
         {
             let id = chat.provider_id.clone()?;
             Some(
-                button("chat-fix-key", "Set key…", ButtonKind::Plain, true, look)
-                    .child(probe(&self.regions, Region::Chat("fix-key")))
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(Box::new(actions::SetProviderKey(id.clone())), cx)
-                    })
-                    .into_any_element(),
+                button(
+                    "chat-fix-key",
+                    "Set key…",
+                    ButtonKind::Secondary,
+                    true,
+                    look,
+                )
+                .child(probe(&self.regions, Region::Chat("fix-key")))
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(Box::new(actions::SetProviderKey(id.clone())), cx)
+                })
+                .into_any_element(),
             )
         } else if message.contains("not found:") {
             Some(
                 button(
                     "chat-fix-model",
                     "Pick another model…",
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     !chat.turn_active,
                     look,
                 )
@@ -601,7 +610,7 @@ impl ChatView {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let model = self.model.read(cx);
         let (text, color, dismissable) = match (model.error(), model.status()) {
-            (Some(error), _) => (error.to_string(), theme.error, true),
+            (Some(error), _) => (error.to_string(), theme.danger, true),
             (None, LoadStatus::Failed(error)) => (
                 format!("The conversation could not be loaded: {error}"),
                 theme.warning,
@@ -609,7 +618,7 @@ impl ChatView {
             ),
             _ => return None,
         };
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let recovery = self.provider_error_action(&text, look, cx);
         Some(
             div()
@@ -630,7 +639,7 @@ impl ChatView {
                         div()
                             .id("chat-error-dismiss")
                             .px(px(tokens.spacing))
-                            .rounded(px(3.0))
+                            .rounded(px(tokens.radius - 2.0))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -661,7 +670,7 @@ impl ChatView {
             } else {
                 "Load earlier"
             },
-            ButtonKind::Plain,
+            ButtonKind::Secondary,
             !loading,
             look,
         );
@@ -697,27 +706,19 @@ impl ChatView {
     }
 
     fn render_empty(&self, look: &Look, cx: &App) -> AnyElement {
-        let theme = &look.theme;
-        let text = match self.model.read(cx).status() {
-            LoadStatus::Loading => "Loading the conversation…".to_owned(),
-            LoadStatus::Failed(_) => "No conversation to show.".to_owned(),
-            LoadStatus::Ready if self.supports_context(cx) => {
-                "Ask the assistant. Nothing is shared with it unless you attach it: @shell, @omp, @agent, @file or @search, or the Attach button."
-                    .to_owned()
-            }
-            LoadStatus::Ready => {
-                "Ask the agent to do something. Commands, edits and approvals appear here."
-                    .to_owned()
-            }
+        let (mascot, text) = match self.model.read(cx).status() {
+            LoadStatus::Loading => (Mascot::Thinking, "Loading the conversation…"),
+            LoadStatus::Failed(_) => (Mascot::Error, "No conversation to show."),
+            LoadStatus::Ready if self.supports_context(cx) => (
+                Mascot::Empty,
+                "Ask the assistant. Nothing is shared with it unless you attach it: @shell, @omp, @agent, @file or @search, or the Attach button.",
+            ),
+            LoadStatus::Ready => (
+                Mascot::Empty,
+                "Ask the agent to do something. Commands, edits and approvals appear here.",
+            ),
         };
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(theme.muted)
-            .child(SharedString::from(text))
-            .into_any_element()
+        ui::empty_state(mascot, text, None, &look.theme, &look.tokens).into_any_element()
     }
 
     /// The composer's text with the caret in it (when the view has focus), or the placeholder.
@@ -726,7 +727,7 @@ impl ChatView {
         let input = self.model.read(cx).input();
         if input.is_empty() {
             let placeholder = div()
-                .text_color(theme.muted)
+                .text_color(theme.faint)
                 .child(if self.supports_context(cx) {
                     "Ask the assistant… (@shell @file @search to attach context)"
                 } else {
@@ -805,7 +806,7 @@ impl ChatView {
         let session = self.session;
         let chip_row = div().flex().flex_wrap().gap(px(tokens.spacing)).children(
             chips.iter().enumerate().map(|(index, chip)| {
-                let hover = theme.hover;
+                let hover = theme.surface_hover;
                 div()
                     .relative()
                     .flex()
@@ -814,18 +815,16 @@ impl ChatView {
                     .pl(px(tokens.spacing * 2.0))
                     .pr(px(tokens.spacing))
                     .h(px(tokens.sidebar_row - 4.0))
-                    .rounded(px(tokens.radius))
-                    .border_1()
-                    .border_color(theme.accent.opacity(0.5))
-                    .bg(theme.accent.opacity(0.12))
+                    .rounded(px(crate::theme::PILL_RADIUS))
+                    .bg(theme.accent_soft)
                     .font_family(look.mono.clone())
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(chip.label.clone()))
                     .child(
                         div()
                             .id(SharedString::from(format!("chat-chip-remove-{index}")))
                             .px(px(tokens.spacing))
-                            .rounded(px(3.0))
+                            .rounded(px(tokens.radius - 2.0))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -840,9 +839,9 @@ impl ChatView {
         );
         let context_row = div().flex().flex_wrap().gap(px(tokens.spacing)).children(
             context.iter().enumerate().map(|(index, chip)| {
-                let hover = theme.hover;
+                let hover = theme.surface_hover;
                 let color = if chip.refused.is_some() {
-                    theme.error
+                    theme.danger
                 } else {
                     theme.accent
                 };
@@ -854,21 +853,23 @@ impl ChatView {
                     .pl(px(tokens.spacing * 2.0))
                     .pr(px(tokens.spacing))
                     .h(px(tokens.sidebar_row - 4.0))
-                    .rounded(px(tokens.radius))
-                    .border_1()
-                    .border_color(color.opacity(0.6))
-                    .bg(color.opacity(0.12))
+                    .rounded(px(crate::theme::PILL_RADIUS))
+                    .bg(if chip.refused.is_some() {
+                        color.opacity(0.14)
+                    } else {
+                        theme.accent_soft
+                    })
                     .font_family(look.mono.clone())
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(chip.label()))
                     .when(chip.refused.is_some(), |s| {
-                        s.child(div().text_color(theme.error).child("· refused"))
+                        s.child(div().text_color(theme.danger).child("· refused"))
                     })
                     .child(
                         div()
                             .id(SharedString::from(format!("chat-context-remove-{index}")))
                             .px(px(tokens.spacing))
-                            .rounded(px(3.0))
+                            .rounded(px(tokens.radius - 2.0))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -889,40 +890,32 @@ impl ChatView {
             .overflow_y_scroll()
             .child(self.input_text(focused && gate.blocked.is_none(), look, cx));
 
-        let send = button("chat-send", "Send", ButtonKind::Primary, can_send, look)
+        let send = round_button("chat-send", "↑", true, can_send, SEND_SIZE, look)
             .when(can_send, |s| {
                 s.on_click(cx.listener(|this, _, _, cx| {
                     this.send(cx);
                 }))
             })
             .child(probe(&self.regions, Region::Chat("send")));
-        let interrupt = button(
-            "chat-interrupt",
-            "■ Interrupt",
-            ButtonKind::Deny,
-            true,
-            look,
-        )
-        .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
-        .child(probe(&self.regions, Region::Chat("interrupt")));
-        let restart = button("chat-restart", "Restart", ButtonKind::Plain, true, look)
+        let interrupt = round_button("chat-interrupt", "■", true, true, SEND_SIZE, look)
+            .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
+            .child(probe(&self.regions, Region::Chat("interrupt")));
+        let restart = button("chat-restart", "Restart", ButtonKind::Secondary, true, look)
             .on_click(move |_, window, cx| {
                 window.dispatch_action(Box::new(RestartSessionById(session.to_string())), cx);
             })
             .child(probe(&self.regions, Region::Chat("restart")));
 
-        div()
+        let card = div()
             .relative()
             .flex()
             .flex_col()
-            .flex_none()
+            .w_full()
+            .max_w(px(crate::theme::READING_WIDTH))
             .gap(px(tokens.spacing * 1.5))
-            .m(px(tokens.spacing * 3.0))
-            .p(px(tokens.spacing * 2.5))
-            .rounded(px(tokens.radius + 2.0))
-            .border_1()
+            .p(px(tokens.spacing * 3.0))
+            .card(theme, tokens)
             .border_color(if focused { theme.accent } else { theme.border })
-            .bg(theme.overlay)
             .when(!chips.is_empty(), |s| s.child(chip_row))
             .when(!context.is_empty(), |s| s.child(context_row))
             .child(input)
@@ -947,7 +940,7 @@ impl ChatView {
                                     .min_w_0()
                                     .truncate()
                                     .text_color(theme.muted)
-                                    .text_size(px(tokens.section_font_size + 1.0))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .child(SharedString::from(
                                         gate.blocked
                                             .as_ref()
@@ -966,7 +959,16 @@ impl ChatView {
                             }),
                     ),
             )
-            .child(probe(&self.regions, Region::Chat("composer")))
+            .child(probe(&self.regions, Region::Chat("composer")));
+        // The composer sits in the same 720 px reading column as the transcript.
+        div()
+            .flex()
+            .flex_none()
+            .justify_center()
+            .px(px(tokens.spacing * 3.0))
+            .pb(px(tokens.spacing * 3.0))
+            .pt(px(tokens.spacing))
+            .child(card)
             .into_any_element()
     }
 }
@@ -1032,7 +1034,7 @@ impl Render for ChatView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.surface)
+            .bg(theme.bg)
             .child(header)
             .children(banner)
             .children(earlier)

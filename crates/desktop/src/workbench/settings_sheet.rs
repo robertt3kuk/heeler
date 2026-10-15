@@ -21,6 +21,7 @@ use super::settings_schema::{
     CatalogEntry, Field, FieldKind, catalog, fields_of, json_to_toml, namespace_schema, search,
     value_at,
 };
+use super::ui::StyledExt as _;
 use super::view::Workbench;
 use crate::macos::LoginItemStatus;
 use crate::theme::Theme;
@@ -30,7 +31,7 @@ fn status_tone(status: LoginItemStatus, theme: Theme) -> gpui::Hsla {
     match status {
         LoginItemStatus::Enabled => theme.success,
         LoginItemStatus::RequiresApproval => theme.warning,
-        LoginItemStatus::NotFound => theme.error,
+        LoginItemStatus::NotFound => theme.danger,
         LoginItemStatus::NotRegistered => theme.muted,
     }
 }
@@ -528,7 +529,7 @@ impl Workbench {
         let sheet = self.sheet.as_ref()?;
         let theme = self.theme;
         let tokens = self.density.ui();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let accent = theme.accent;
         let selected = sheet.namespace;
         let keep_running = (self.keep_running_available(), self.keep_running_status());
@@ -557,9 +558,9 @@ impl Workbench {
                     .items_center()
                     .h(px(tokens.sidebar_row))
                     .px(px(tokens.spacing * 3.0))
-                    .rounded(px(tokens.radius - 1.0))
+                    .rounded(px(tokens.radius))
                     .cursor_pointer()
-                    .when(ns == selected, move |s| s.bg(accent.opacity(0.22)))
+                    .when(ns == selected, move |s| s.bg(theme.accent_soft))
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_settings_namespace(ns, cx);
@@ -573,13 +574,13 @@ impl Workbench {
             div()
                 .id(id)
                 .px(px(tokens.spacing * 2.0))
-                .h(px(tokens.sidebar_row - 4.0))
+                .h(px(tokens.control_height - 2.0))
                 .flex()
                 .items_center()
-                .rounded(px(tokens.radius - 2.0))
+                .rounded(px(tokens.radius))
                 .border_1()
                 .border_color(if active { accent } else { theme.border })
-                .when(active, move |s| s.bg(accent.opacity(0.2)))
+                .when(active, move |s| s.bg(theme.accent_soft))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .child(label)
@@ -645,7 +646,7 @@ impl Workbench {
                                 } else {
                                     div()
                                         .px(px(tokens.spacing * 2.0))
-                                        .h(px(tokens.sidebar_row - 4.0))
+                                        .h(px(tokens.control_height - 2.0))
                                         .flex()
                                         .items_center()
                                         .text_color(theme.muted)
@@ -714,12 +715,13 @@ impl Workbench {
                                     .flex()
                                     .items_center()
                                     .min_w(px(150.0))
-                                    .h(px(tokens.sidebar_row - 2.0))
+                                    .h(px(tokens.control_height))
                                     .px(px(tokens.spacing * 2.0))
-                                    .rounded(px(tokens.radius - 2.0))
+                                    .rounded(px(tokens.radius))
+                                    .bg(theme.bg)
                                     .border_1()
                                     .border_color(if error.is_some() {
-                                        theme.error
+                                        theme.danger
                                     } else if active.is_some() {
                                         accent
                                     } else {
@@ -737,8 +739,8 @@ impl Workbench {
                             .when_some(error, |s, error| {
                                 s.child(
                                     div()
-                                        .text_size(px(tokens.section_font_size))
-                                        .text_color(theme.error)
+                                        .text_size(px(tokens.secondary_font_size))
+                                        .text_color(theme.danger)
                                         .child(SharedString::from(error)),
                                 )
                             })
@@ -778,8 +780,8 @@ impl Workbench {
                                     .items_center()
                                     .gap(px(tokens.spacing))
                                     .px(px(tokens.spacing * 2.0))
-                                    .h(px(tokens.sidebar_row - 4.0))
-                                    .rounded(px(tokens.radius - 2.0))
+                                    .h(px(tokens.control_height - 2.0))
+                                    .rounded(px(tokens.radius))
                                     .border_1()
                                     .border_color(theme.border)
                                     .child(SharedString::from(item.clone()))
@@ -812,11 +814,11 @@ impl Workbench {
                                     .flex()
                                     .items_center()
                                     .px(px(tokens.spacing * 2.0))
-                                    .h(px(tokens.sidebar_row - 4.0))
-                                    .rounded(px(tokens.radius - 2.0))
+                                    .h(px(tokens.control_height - 2.0))
+                                    .rounded(px(tokens.radius))
                                     .border_1()
                                     .border_color(if edit.error.is_some() {
-                                        theme.error
+                                        theme.danger
                                     } else {
                                         accent
                                     })
@@ -870,12 +872,12 @@ impl Workbench {
                             .min_w_0()
                             .child(
                                 div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(SharedString::from(key.clone())),
                             )
                             .child(
                                 div()
-                                    .text_size(px(tokens.section_font_size + 1.0))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .text_color(theme.muted)
                                     .child(SharedString::from(field.doc.clone())),
                             ),
@@ -896,14 +898,14 @@ impl Workbench {
             .iter()
             .map(|e| {
                 let color = if e.is_error() {
-                    theme.error
+                    theme.danger
                 } else {
                     theme.warning
                 };
                 div()
                     .flex()
                     .gap(px(tokens.spacing * 2.0))
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(
                         div()
                             .flex_none()
@@ -938,7 +940,8 @@ impl Workbench {
             .mx(px(tokens.spacing * 2.0))
             .mb(px(tokens.spacing * 2.0))
             .px(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
+            .bg(theme.surface)
             .border_1()
             .border_color(if editing.is_none() {
                 accent
@@ -952,7 +955,7 @@ impl Workbench {
                 }
             }))
             .child(if query.is_empty() {
-                div().text_color(theme.muted).child("⌕ Search settings")
+                div().text_color(theme.faint).child("⌕ Search settings")
             } else {
                 div().child(SharedString::from(query.clone()))
             });
@@ -966,7 +969,7 @@ impl Workbench {
                 .justify_center()
                 .items_start()
                 .pt(px(48.0))
-                .bg(gpui::black().opacity(0.3))
+                .bg(theme.scrim())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
@@ -980,11 +983,8 @@ impl Workbench {
                         .h(px(600.0))
                         .flex()
                         .flex_col()
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
+                        .popover(&theme, &tokens)
+                        .p(px(0.0))
                         .overflow_hidden()
                         .text_size(px(tokens.font_size))
                         .text_color(theme.fg)
@@ -1007,6 +1007,7 @@ impl Workbench {
                                         .flex_none()
                                         .w(px(220.0))
                                         .py(px(tokens.spacing * 3.0))
+                                        .bg(theme.sidebar)
                                         .border_r_1()
                                         .border_color(theme.border)
                                         .child(search_box)
@@ -1036,12 +1037,12 @@ impl Workbench {
                                                 .border_color(theme.border)
                                                 .child(
                                                     div()
-                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                        .font_weight(gpui::FontWeight::MEDIUM)
                                                         .child(SharedString::from(selected)),
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(tokens.section_font_size))
+                                                        .text_size(px(tokens.secondary_font_size))
                                                         .text_color(theme.muted)
                                                         .child(if overridable {
                                                             "workspace-overridable"
@@ -1072,7 +1073,7 @@ impl Workbench {
                                                 div()
                                                     .px(px(tokens.spacing * 4.0))
                                                     .py(px(tokens.spacing))
-                                                    .text_color(theme.error)
+                                                    .text_color(theme.danger)
                                                     .child(SharedString::from(message)),
                                             )
                                         }),
@@ -1094,16 +1095,16 @@ impl Workbench {
                                 .child(
                                     div()
                                         .text_size(px(tokens.section_font_size))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(if has_errors {
-                                            theme.error
+                                            theme.danger
                                         } else {
                                             theme.muted
                                         })
                                         .child(if errors.is_empty() {
-                                            "PROBLEMS · none"
+                                            "Problems · none"
                                         } else {
-                                            "PROBLEMS"
+                                            "Problems"
                                         }),
                                 )
                                 .children(problems),

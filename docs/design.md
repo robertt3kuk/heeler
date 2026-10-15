@@ -265,7 +265,7 @@ global_shortcut = "alt-space" # system-wide shortcut that opens the Assistant; "
 
 [appearance]
 density = "compact"            # compact | comfortable
-chrome = "system"              # system | light | dark
+appearance = "system"          # system | light | dark (pre-v2 files call this key `chrome`; still read)
 
 [terminal]
 font_family = "Menlo"

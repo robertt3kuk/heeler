@@ -472,10 +472,10 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     };
     let before = cell_height(cx);
     assert!((before - 13.0 * 1.2).abs() < 0.1, "{before}");
-    // Terminal text keeps off the pane edge: 6 px compact, 8 px comfortable.
+    // Terminal text keeps off the pane edge: 8 px compact, 12 px comfortable.
     assert_eq!(
         view.read_with(cx, |wb, _| wb.terminal_view_settings().padding),
-        6.0
+        8.0
     );
     let pane = view
         .read_with(cx, |wb, _| {
@@ -493,7 +493,7 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
         .0
     };
     let cell_w = 13.0 * 0.6;
-    let expected = ((f32::from(pane.size.width) - 12.0) / cell_w).floor() as u16;
+    let expected = ((f32::from(pane.size.width) - 16.0) / cell_w).floor() as u16;
     assert_eq!(
         grid_cols(cx),
         expected,
@@ -517,7 +517,7 @@ fn settings_files_hot_reload_density_and_terminal_font(cx: &mut TestAppContext) 
     );
     assert_eq!(
         view.read_with(cx, |wb, _| wb.terminal_view_settings().padding),
-        8.0
+        12.0
     );
     // Panel geometry follows the density tokens: the status bar is 26 px comfortable.
     draw(cx);
@@ -572,7 +572,7 @@ fn changing_the_terminal_theme_updates_the_daemons_osc_11_answer(cx: &mut TestAp
     );
     wait_until(cx, "the light theme", |cx| {
         view.read_with(cx, |wb, _| wb.terminal_view_settings().palette.background)
-            == hutan_terminal_view::Rgb(0xff, 0xff, 0xff)
+            == hutan_terminal_view::Rgb(0xfa, 0xf9, 0xf5)
     });
     // `terminal.set_colors` travels through the handle; give the connection a moment.
     for _ in 0..30 {
@@ -583,7 +583,7 @@ fn changing_the_terminal_theme_updates_the_daemons_osc_11_answer(cx: &mut TestAp
     wait_screen(&view, cx, info.id, "DONE");
     let screen = screen_of(&view, cx, info.id).unwrap();
     assert!(
-        screen.contains("^[]11;rgb:ffff/ffff/ffff^G"),
+        screen.contains("^[]11;rgb:fafa/f9f9/f5f5^G"),
         "the daemon answers with the theme the user sees:\n{screen}"
     );
 }

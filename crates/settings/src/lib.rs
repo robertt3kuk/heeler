@@ -20,7 +20,7 @@ pub mod themes;
 mod value;
 mod watch;
 
-pub use appearance::{AppearanceSettings, ChromeMode, Density, DensityTokens};
+pub use appearance::{AppearanceMode, AppearanceSettings, Density, DensityTokens};
 pub use error::{SettingsError, Severity};
 pub use keymap::{BindingSpec, Keystroke};
 pub use store::{ChangeSet, KEYMAP_NAMESPACE, SettingsPaths, SettingsStore};

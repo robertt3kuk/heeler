@@ -27,6 +27,7 @@ use crate::workbench::actions::ManageProviders;
 use crate::workbench::chat::{ButtonKind, ChatModel, ChatView, ContextChip, Look, button};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
+use crate::workbench::ui::{self, Mascot};
 use crate::workbench::view::Region;
 
 /// A conversation the panel keeps: one per scope.
@@ -441,13 +442,14 @@ impl AssistantPanel {
             format!("assistant-{id}"),
             label,
             if selected {
-                ButtonKind::Primary
+                ButtonKind::Secondary
             } else {
-                ButtonKind::Plain
+                ButtonKind::Ghost
             },
             enabled,
             look,
         )
+        .when(selected, |b| b.bg(look.theme.accent_soft))
         .when(enabled, |b| {
             b.on_click(cx.listener(move |this, _, _, cx| this.choose(choose, cx)))
         })
@@ -519,7 +521,7 @@ impl AssistantPanel {
                     .min_w_0()
                     .truncate()
                     .text_color(theme.muted)
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(scope_note)),
             )
             .into_any_element()
@@ -527,6 +529,7 @@ impl AssistantPanel {
 
     fn notice(
         &self,
+        mascot: Mascot,
         title: &str,
         detail: Vec<String>,
         buttons: Vec<AnyElement>,
@@ -541,9 +544,10 @@ impl AssistantPanel {
             .justify_center()
             .gap(px(tokens.spacing * 2.0))
             .p(px(tokens.spacing * 4.0))
+            .child(ui::mascot(mascot, crate::theme::MASCOT_SIZE))
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(SharedString::from(title.to_owned())),
             )
             .children(detail.into_iter().map(|line| {
@@ -558,10 +562,16 @@ impl AssistantPanel {
 
     fn render_body(&mut self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
         let key = self.key(cx);
-        let retry = button("assistant-retry", "Retry", ButtonKind::Plain, true, look)
-            .on_click(cx.listener(|this, _, _, cx| this.retry(cx)))
-            .child(probe(&self.env.regions, Region::Assistant("retry")))
-            .into_any_element();
+        let retry = button(
+            "assistant-retry",
+            "Retry",
+            ButtonKind::Secondary,
+            true,
+            look,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.retry(cx)))
+        .child(probe(&self.env.regions, Region::Assistant("retry")))
+        .into_any_element();
         let models = button(
             "assistant-models",
             "Open Models settings…",
@@ -574,6 +584,7 @@ impl AssistantPanel {
         .into_any_element();
         if !self.connected(cx) {
             return self.notice(
+                Mascot::Sleep,
                 "Not connected to hutand",
                 vec!["The assistant opens as soon as the daemon is back.".to_owned()],
                 Vec::new(),
@@ -581,17 +592,28 @@ impl AssistantPanel {
             );
         }
         match self.state(key) {
-            Opened::Idle | Opened::Opening => {
-                self.notice("Opening the assistant…", Vec::new(), Vec::new(), look)
-            }
+            Opened::Idle | Opened::Opening => self.notice(
+                Mascot::Thinking,
+                "Opening the assistant…",
+                Vec::new(),
+                Vec::new(),
+                look,
+            ),
             Opened::Ready(session) => match self.chats.get(&session) {
                 Some(chat) => div()
                     .size_full()
                     .child(chat.view.clone())
                     .into_any_element(),
-                None => self.notice("Opening the assistant…", Vec::new(), Vec::new(), look),
+                None => self.notice(
+                    Mascot::Thinking,
+                    "Opening the assistant…",
+                    Vec::new(),
+                    Vec::new(),
+                    look,
+                ),
             },
             Opened::Failed(Failure::Unconfigured(message)) => self.notice(
+                Mascot::Empty,
                 "The assistant has no provider yet",
                 vec![
                     message,
@@ -605,6 +627,7 @@ impl AssistantPanel {
                 look,
             ),
             Opened::Failed(Failure::Unsupported) => self.notice(
+                Mascot::Error,
                 "This hutand has no assistant",
                 vec![
                     "Restart the daemon (Daemon → Restart) to run the version of this app."
@@ -614,6 +637,7 @@ impl AssistantPanel {
                 look,
             ),
             Opened::Failed(Failure::Other(error)) => self.notice(
+                Mascot::Error,
                 "The assistant could not be opened",
                 vec![error],
                 vec![models, retry],
@@ -642,7 +666,7 @@ impl Render for AssistantPanel {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.surface)
+            .bg(theme.bg)
             .text_color(theme.fg)
             .text_size(px(tokens.font_size))
             .child(header)

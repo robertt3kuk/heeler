@@ -7,6 +7,7 @@ use super::model::{
 };
 use super::registry::{StatusContext, StatusData};
 use super::terminals::session_of_item;
+use super::ui::{self, Mascot, StyledExt as _};
 use super::view::{
     ContextMenu, DragPreview, DraggedItem, Region, Resizing, Workbench, preset_label, steps,
 };
@@ -96,6 +97,7 @@ impl Render for Workbench {
             .size_full()
             .flex()
             .flex_col()
+            .bg(theme.bg)
             .text_size(px(tokens.font_size))
             .text_color(theme.fg)
             .on_mouse_move(cx.listener(|this, event, window, cx| {
@@ -696,20 +698,19 @@ impl Workbench {
         let overview_hint =
             key_hint(window, &actions::ToggleOverview).unwrap_or_else(|| "⌘⇧O".into());
         let preset_name = preset_label(&self.state.preset);
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
 
         let preset_button = div()
             .id("titlebar-preset")
-            .px(px(8.0))
-            .h(px(22.0))
+            .px(px(tokens.spacing * 2.0))
+            .h(px(tokens.control_height - 4.0))
             .flex()
             .items_center()
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(theme.border)
-            .text_size(px(11.0))
+            .rounded(px(tokens.radius))
+            .text_size(px(tokens.secondary_font_size))
+            .text_color(theme.muted)
             .cursor_pointer()
-            .hover(move |s| s.bg(hover))
+            .hover(move |s| s.bg(hover).text_color(theme.fg))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                 this.show_preset_menu(event.position(), window, cx);
@@ -719,21 +720,16 @@ impl Workbench {
         let accent = theme.accent;
         let overview_button = div()
             .id("titlebar-overview")
-            .px(px(8.0))
-            .h(px(22.0))
+            .px(px(tokens.spacing * 2.0))
+            .h(px(tokens.control_height - 4.0))
             .flex()
             .items_center()
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(if overview_active {
-                accent
-            } else {
-                theme.border
-            })
-            .text_size(px(11.0))
+            .rounded(px(tokens.radius))
+            .text_size(px(tokens.secondary_font_size))
+            .text_color(if overview_active { accent } else { theme.muted })
             .cursor_pointer()
-            .hover(move |s| s.bg(hover))
-            .when(overview_active, move |s| s.bg(accent.opacity(0.18)))
+            .hover(move |s| s.bg(hover).text_color(theme.fg))
+            .when(overview_active, move |s| s.bg(theme.accent_soft))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx)))
             .child(format!("⊞ Overview {overview_hint}"));
@@ -752,9 +748,7 @@ impl Workbench {
                 TRAFFIC_LIGHT_INSET
             }))
             .pr(px(10.0))
-            .bg(theme.surface)
-            .border_b_1()
-            .border_color(theme.border)
+            .bg(theme.sidebar)
             .on_mouse_down(MouseButton::Left, |event, window, _| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -794,8 +788,10 @@ impl Workbench {
         let theme = self.theme;
         let tokens = self.density.ui();
         let is_left = pos == DockPosition::Left;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let accent = theme.accent;
+        // Tabs are rounded chips inset 4 px in their strip.
+        let tab_inner = tokens.tab_height - 8.0;
 
         let tabs: Vec<AnyElement> = dock
             .panels
@@ -828,11 +824,14 @@ impl Workbench {
                     .items_center()
                     .gap(px(tokens.spacing))
                     .px(px(tokens.spacing * 2.0))
-                    .h_full()
+                    .h(px(tab_inner))
+                    .rounded(px(tokens.radius))
                     .cursor_pointer()
                     .text_color(if active { theme.fg } else { theme.muted })
-                    .when(active, |s| s.bg(theme.active_tab))
-                    .hover(move |s| s.bg(hover))
+                    .when(active, |s| {
+                        s.bg(theme.surface).border_1().border_color(theme.border)
+                    })
+                    .when(!active, |s| s.hover(move |s| s.bg(hover)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let panel = click_panel.clone();
                         this.mutate(cx, |s| {
@@ -923,11 +922,7 @@ impl Workbench {
             .flex()
             .flex_col()
             .flex_none()
-            .bg(if is_left {
-                theme.sidebar
-            } else {
-                theme.surface
-            })
+            .bg(if is_left { theme.sidebar } else { theme.bg })
             .border_color(theme.border)
             .on_mouse_down(
                 MouseButton::Left,
@@ -967,6 +962,8 @@ impl Workbench {
                     .items_center()
                     .h(px(tokens.tab_height))
                     .w_full()
+                    .px(px(4.0))
+                    .gap(px(2.0))
                     .border_b_1()
                     .border_color(theme.border)
                     .text_size(px(tokens.font_size))
@@ -1089,7 +1086,7 @@ impl Workbench {
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .bg(theme.surface)
+            .bg(theme.bg)
             .child(body)
             .child(probe(&self.regions, Region::Center))
             .into_any_element()
@@ -1228,6 +1225,8 @@ impl Workbench {
             .items_center()
             .h(px(tokens.tab_height))
             .w_full()
+            .px(px(4.0))
+            .gap(px(2.0))
             .overflow_hidden()
             .border_b_1()
             .border_color(theme.border)
@@ -1275,14 +1274,14 @@ impl Workbench {
 
         let content = match pane.active_item() {
             Some(item) => self.render_item(pane_id, item, window, cx),
-            None => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.muted)
-                .child("No open items — ⌘T for a new tab, ⌘K for commands")
-                .into_any_element(),
+            None => ui::empty_state(
+                Mascot::Empty,
+                "No open items — ⌘T for a new tab, ⌘K for commands",
+                None,
+                &theme,
+                &tokens,
+            )
+            .into_any_element(),
         };
 
         let zones: Vec<AnyElement> = if dragging {
@@ -1356,7 +1355,7 @@ impl Workbench {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.surface)
+            .bg(theme.bg)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| this.focus_pane(pane_id, window, cx)),
@@ -1378,7 +1377,7 @@ impl Workbench {
                         .absolute()
                         .inset_0()
                         .border_1()
-                        .border_color(accent.opacity(0.8)),
+                        .border_color(accent.opacity(0.5)),
                 )
             })
             .into_any_element()
@@ -1396,7 +1395,7 @@ impl Workbench {
         let theme = self.theme;
         let tokens = self.density.ui();
         let accent = theme.accent;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let (icon, title) = self.item_icon_and_title(item, cx);
         let tab_tip = self.item_tooltip(item, cx).map(SharedString::from);
         let badge = session_of_item(item).and_then(|id| {
@@ -1434,15 +1433,20 @@ impl Workbench {
             .gap(px(tokens.spacing))
             .pl(px(tokens.spacing * 2.0))
             .pr(px(tokens.spacing))
-            .h_full()
+            .h(px(tokens.tab_height - 8.0))
+            .rounded(px(tokens.radius))
             .cursor_pointer()
             .text_color(if active { theme.fg } else { theme.muted })
             .when(active, |s| {
-                s.bg(theme.active_tab)
-                    .border_b_2()
-                    .border_color(if pane_focused { accent } else { theme.border })
+                s.bg(theme.surface)
+                    .border_1()
+                    .border_color(if pane_focused {
+                        accent.opacity(0.55)
+                    } else {
+                        theme.border
+                    })
             })
-            .hover(move |s| s.bg(hover))
+            .when(!active, |s| s.hover(move |s| s.bg(hover)))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.try_mutate(cx, |s| {
                     s.set_active_item(pane_id, index)?;
@@ -1502,7 +1506,7 @@ impl Workbench {
                     .items_center()
                     .justify_center()
                     .size(px(tokens.font_size + 4.0))
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius))
                     .text_color(theme.muted)
                     .hover(move |s| s.bg(hover).text_color(theme.fg))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1530,22 +1534,16 @@ impl Workbench {
                 Some(view) => div().size_full().child(view).into_any_element(),
                 None => self.placeholder_body(format!("Panel `{panel}` is not registered"), cx),
             },
-            ItemRef::Placeholder { title } => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(tokens.spacing))
-                .child(
-                    div()
-                        .text_size(px(tokens.font_size + 4.0))
-                        .child(title.clone()),
-                )
-                .child(div().text_color(theme.muted).child(
-                    "Open a session from the sessions panel, or press ⌘T for a new terminal.",
-                ))
-                .into_any_element(),
+            ItemRef::Placeholder { title } => ui::empty_state(
+                Mascot::Empty,
+                format!(
+                    "{title}. Open a session from the sessions panel, or press ⌘T for a new terminal."
+                ),
+                None,
+                &theme,
+                &tokens,
+            )
+            .into_any_element(),
             ItemRef::Terminal { session } => self.render_terminal_item(pane, session, window, cx),
             ItemRef::Chat { session } => self.render_chat_item(pane, session, cx),
         }
@@ -1579,7 +1577,7 @@ impl Workbench {
                 approvals: store.approvals().len(),
                 terminal_theme: hutan_settings::themes::resolve(
                     &self.terminal_settings.theme,
-                    super::view::system_appearance(self.appearance),
+                    self.theme.system_appearance(),
                 )
                 .name
                 .clone(),
@@ -1616,10 +1614,11 @@ impl Workbench {
             .h(px(tokens.status_bar))
             .w_full()
             .px(px(tokens.spacing * 2.0))
-            .bg(theme.surface)
+            .bg(theme.sidebar)
             .border_t_1()
             .border_color(theme.border)
-            .text_size(px(tokens.font_size - 1.0))
+            .text_color(theme.muted)
+            .text_size(px(tokens.secondary_font_size))
             .child(
                 div()
                     .flex()
@@ -1665,19 +1664,19 @@ impl Workbench {
                 let command = self.commands.get(*command_index)?;
                 let selected = row == palette.selected;
                 let hint = key_hint(window, &*command.hint).unwrap_or_default();
-                let hover = theme.hover;
+                let hover = theme.surface_hover;
                 Some(
                     div()
                         .id(id(format!("palette-row-{row}")))
                         .flex()
                         .items_center()
                         .justify_between()
-                        .h(px(tokens.sidebar_row))
+                        .h(px(tokens.sidebar_row + 2.0))
                         .px(px(tokens.spacing * 2.0))
-                        .rounded(px(tokens.radius - 2.0))
+                        .rounded(px(tokens.radius))
                         .cursor_pointer()
-                        .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
-                        .hover(move |s| s.bg(hover))
+                        .when(selected, |s| s.bg(theme.accent_soft))
+                        .when(!selected, |s| s.hover(move |s| s.bg(hover)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.palette_confirm(Some(row), window, cx);
                         }))
@@ -1710,13 +1709,8 @@ impl Workbench {
                         .w(px(560.0))
                         .flex()
                         .flex_col()
-                        .gap(px(tokens.spacing))
-                        .p(px(tokens.spacing * 2.0))
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
+                        .gap(px(2.0))
+                        .popover(&theme, &tokens)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                             let keystroke = &event.keystroke;
@@ -1743,11 +1737,12 @@ impl Workbench {
                             div()
                                 .flex()
                                 .items_center()
-                                .h(px(tokens.sidebar_row + 6.0))
+                                .h(px(tokens.sidebar_row + 8.0))
                                 .px(px(tokens.spacing * 2.0))
+                                .mb(px(4.0))
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .child(div().text_color(theme.muted).child("› "))
+                                .child(div().text_color(theme.faint).child("› "))
                                 .child(palette.query.clone())
                                 .child(
                                     div()
@@ -1776,7 +1771,7 @@ impl Workbench {
         let ContextMenu { position, entries } = self.context_menu.clone()?;
         let theme = self.theme;
         let tokens = self.density.ui();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let rows: Vec<AnyElement> = entries
             .into_iter()
             .enumerate()
@@ -1789,8 +1784,8 @@ impl Workbench {
                     .gap(px(tokens.spacing))
                     .h(px(tokens.sidebar_row))
                     .px(px(tokens.spacing * 2.0))
-                    .rounded(px(tokens.radius - 2.0))
-                    .when(disabled, |s| s.text_color(theme.muted))
+                    .rounded(px(tokens.radius))
+                    .when(disabled, |s| s.text_color(theme.faint))
                     .when(!disabled, |s| {
                         s.cursor_pointer().hover(move |s| s.bg(hover))
                     })
@@ -1820,12 +1815,7 @@ impl Workbench {
                             .min_w(px(190.0))
                             .flex()
                             .flex_col()
-                            .p(px(tokens.spacing))
-                            .rounded(px(tokens.radius))
-                            .bg(theme.overlay)
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
+                            .popover(&theme, &tokens)
                             .text_size(px(tokens.font_size))
                             .on_mouse_down_out(
                                 cx.listener(|this, _, window, cx| this.close_menu(window, cx)),

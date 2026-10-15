@@ -6,9 +6,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, AppContext as _, ClipboardItem, Context, Entity, Focusable as _,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    AnyElement, AppContext as _, ClipboardItem, Context, Entity, Focusable as _, IntoElement,
+    ParentElement, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::messages::{SessionInfo, TerminalSpec};
@@ -22,7 +21,8 @@ use super::modal::PromptSpec;
 use super::model::{Edge, FocusTarget, ItemRef, PaneId};
 use super::registry::StatusBarLayout;
 use super::style::{TerminalStyle, UiStyle};
-use super::view::{MenuEntry, Workbench, system_appearance};
+use super::ui::{self, Mascot};
+use super::view::{MenuEntry, Workbench};
 use crate::sessions::TerminalSession;
 use crate::settings::{AppearanceSettings, LayoutSettings, TerminalSettings};
 use crate::theme::Theme;
@@ -778,30 +778,43 @@ impl Workbench {
             } else {
                 "Connecting to hutand…"
             };
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(tokens.spacing * 2.0))
-                .text_color(theme.muted)
-                .child(text)
-                .when(stopped, |s| {
-                    s.child(
-                        self.action_button("daemon-start", "Start", cx, |this, _, cx| {
+            let mascot = if stopped {
+                Mascot::Sleep
+            } else if known || !synced {
+                Mascot::Thinking
+            } else {
+                Mascot::Empty
+            };
+            let action = if stopped {
+                Some(
+                    self.action_button(
+                        "daemon-start",
+                        "Start",
+                        ui::ButtonKind::Primary,
+                        cx,
+                        |this, _, cx| {
                             this.start_daemon(cx);
-                        }),
+                        },
                     )
-                })
-                .when(!stopped && !known && synced, |s| {
-                    s.child(
-                        self.action_button("ended-close", "Close", cx, move |this, _, cx| {
+                    .into_any_element(),
+                )
+            } else if !known && synced {
+                Some(
+                    self.action_button(
+                        "ended-close",
+                        "Close",
+                        ui::ButtonKind::Secondary,
+                        cx,
+                        move |this, _, cx| {
                             this.close_session_tabs(id, cx);
-                        }),
+                        },
                     )
-                })
-                .into_any_element();
+                    .into_any_element(),
+                )
+            } else {
+                None
+            };
+            return ui::empty_state(mascot, text, action, &theme, &tokens).into_any_element();
         };
         let ended = self.held.get(&id).is_some_and(|h| {
             matches!(
@@ -826,11 +839,15 @@ impl Workbench {
                             .text_size(px(tokens.font_size))
                             .child("Daemon stopped"),
                     )
-                    .child(
-                        self.action_button("daemon-start", "Start", cx, |this, _, cx| {
+                    .child(self.action_button(
+                        "daemon-start",
+                        "Start",
+                        ui::ButtonKind::Primary,
+                        cx,
+                        |this, _, cx| {
                             this.start_daemon(cx);
-                        }),
-                    ),
+                        },
+                    )),
             );
         } else if ended {
             let mut bar = div()
@@ -843,17 +860,22 @@ impl Workbench {
                 bar = bar.child(self.action_button(
                     "ended-restart",
                     "Restart",
+                    ui::ButtonKind::Secondary,
                     cx,
                     move |this, window, cx| {
                         this.restart_session(id, window, cx);
                     },
                 ));
             }
-            bar = bar.child(
-                self.action_button("ended-close", "Close", cx, move |this, _, cx| {
+            bar = bar.child(self.action_button(
+                "ended-close",
+                "Close",
+                ui::ButtonKind::Secondary,
+                cx,
+                move |this, _, cx| {
                     this.close_session_tabs(id, cx);
-                }),
-            );
+                },
+            ));
             root = root.child(bar);
         }
         root.into_any_element()
@@ -863,29 +885,13 @@ impl Workbench {
         &self,
         id: &'static str,
         label: &'static str,
+        kind: ui::ButtonKind,
         cx: &mut Context<Self>,
         run: impl Fn(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static,
     ) -> gpui::Stateful<gpui::Div> {
         let style = UiStyle::get(cx);
-        let (theme, tokens) = (style.theme, style.density.ui());
-        let hover = theme.hover;
-        div()
-            .id(id)
-            .px(px(tokens.spacing * 3.0))
-            .h(px(tokens.sidebar_row))
-            .flex()
-            .items_center()
-            .rounded(px(tokens.radius - 1.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.overlay)
-            .text_color(theme.fg)
-            .text_size(px(tokens.font_size))
-            .cursor_pointer()
-            .hover(move |s| s.bg(hover))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        ui::button(id, label, kind, true, &style.theme, &style.density.ui())
             .on_click(cx.listener(move |this, _, window, cx| run(this, window, cx)))
-            .child(SharedString::from(label))
     }
 
     /// Closes (detaches) every tab showing `session`.
@@ -931,7 +937,7 @@ impl Workbench {
         let settings = self.settings.get::<TerminalSettings>();
         let style = terminal_style(
             &settings,
-            system_appearance(self.appearance),
+            self.theme.system_appearance(),
             &self.theme,
             self.density,
         );
@@ -962,7 +968,7 @@ impl Workbench {
         }
         if changes.contains("appearance") {
             let appearance = self.settings.get::<AppearanceSettings>();
-            self.chrome = appearance.chrome;
+            self.chrome = appearance.appearance;
             self.density = appearance.density;
             self.theme = Theme::for_chrome(self.chrome, self.appearance);
             self.publish_style(cx);

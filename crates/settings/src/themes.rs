@@ -1,5 +1,5 @@
-//! Terminal color themes. Built-ins: `hutan-dark` (matches the daemon's OSC 10/11/12 defaults)
-//! and `hutan-light`.
+//! Terminal color themes. Built-ins: `hutan-dark` and `hutan-light` (design.md § Visual system:
+//! backgrounds match the chrome `bg` token, ANSI colors tuned for WCAG AA on them).
 
 use std::fmt;
 use std::str::FromStr;
@@ -101,24 +101,24 @@ static BUILTIN: LazyLock<[TerminalTheme; 2]> = LazyLock::new(|| {
     [
         TerminalTheme {
             name: DARK.to_owned(),
-            foreground: Rgb::from_u32(0xd4d4d4),
-            background: Rgb::from_u32(0x1e1e1e),
-            cursor: Rgb::from_u32(0xd4d4d4),
-            selection: Rgb::from_u32(0x264f78),
+            foreground: Rgb::from_u32(0xeae8e1),
+            background: Rgb::from_u32(0x262624),
+            cursor: Rgb::from_u32(0xea7a43),
+            selection: Rgb::from_u32(0x4b3b30),
             ansi: palette([
-                0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
-                0x666666, 0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+                0x4a4944, 0xe87562, 0x6bbf85, 0xe2ae45, 0x72a5ec, 0xc996d8, 0x5fc2c6, 0xd6d4cc,
+                0x7a7870, 0xf08c7a, 0x86d19c, 0xeec261, 0x8fb9f2, 0xdaaee6, 0x7dd3d6, 0xf5f4ef,
             ]),
         },
         TerminalTheme {
             name: LIGHT.to_owned(),
-            foreground: Rgb::from_u32(0x1f1f1f),
-            background: Rgb::from_u32(0xffffff),
-            cursor: Rgb::from_u32(0x1f1f1f),
-            selection: Rgb::from_u32(0xadd6ff),
+            foreground: Rgb::from_u32(0x1f1e1d),
+            background: Rgb::from_u32(0xfaf9f5),
+            cursor: Rgb::from_u32(0xe0692e),
+            selection: Rgb::from_u32(0xf3d5c3),
             ansi: palette([
-                0x000000, 0xcd3131, 0x00bc00, 0x949800, 0x0451a5, 0xbc05bc, 0x0598bc, 0x555555,
-                0x666666, 0xcd3131, 0x14ce14, 0xb5ba00, 0x0451a5, 0xbc05bc, 0x0598bc, 0xa5a5a5,
+                0x1f1e1d, 0xb93a26, 0x2f7a48, 0x8a6300, 0x2b62b8, 0x8e4ea8, 0x167780, 0x6f6d66,
+                0x57554f, 0xc8452f, 0x3f8f5a, 0x9a6f00, 0x3d77d1, 0xa35fbf, 0x23909a, 0x8c8a82,
             ]),
         },
     ]
@@ -157,12 +157,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_theme_matches_design_and_daemon_defaults() {
-        let t = lookup("hutan-dark").unwrap();
-        assert_eq!(t.background, Rgb::new(0x1e, 0x1e, 0x1e));
-        assert_eq!(t.foreground, Rgb::new(0xd4, 0xd4, 0xd4));
-        assert_eq!(t.cursor, Rgb::new(0xd4, 0xd4, 0xd4));
-        assert_eq!(t.ansi.len(), 16);
+    fn builtin_backgrounds_match_the_chrome_bg_token() {
+        let dark = lookup("hutan-dark").unwrap();
+        assert_eq!(dark.background, Rgb::new(0x26, 0x26, 0x24));
+        assert_eq!(dark.ansi.len(), 16);
+        let light = lookup("hutan-light").unwrap();
+        assert_eq!(light.background, Rgb::new(0xfa, 0xf9, 0xf5));
+    }
+
+    fn luminance(c: Rgb) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
+
+    fn contrast(a: Rgb, b: Rgb) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn ansi_colors_are_readable_on_the_theme_background() {
+        for theme in builtin() {
+            let bg = theme.background;
+            assert!(contrast(theme.foreground, bg) >= 7.0, "{} fg", theme.name);
+            // The six hues (red..cyan) and white/black as far as they are text colors must
+            // meet WCAG AA for normal text; ANSI black on the dark theme and white on the
+            // light one are the "paper" colors of the other polarity and stay visible (≥ 1.5).
+            for index in 1..=6 {
+                let ratio = contrast(theme.ansi[index], bg);
+                assert!(ratio >= 4.5, "{} ansi {index}: {ratio:.2}", theme.name);
+            }
+            let (text_neutral, paper_neutral) = if theme.name == DARK { (7, 0) } else { (0, 7) };
+            assert!(
+                contrast(theme.ansi[text_neutral], bg) >= 4.5,
+                "{}",
+                theme.name
+            );
+            assert!(
+                contrast(theme.ansi[paper_neutral], bg) >= 1.5,
+                "{}",
+                theme.name
+            );
+            for index in 8..16 {
+                let ratio = contrast(theme.ansi[index], bg);
+                assert!(
+                    ratio >= 3.0,
+                    "{} bright ansi {index}: {ratio:.2}",
+                    theme.name
+                );
+            }
+            assert!(
+                contrast(theme.foreground, theme.selection) >= 7.0,
+                "{} selection",
+                theme.name
+            );
+        }
     }
 
     #[test]
@@ -213,7 +269,7 @@ mod tests {
     #[test]
     fn theme_serializes_as_hex_strings() {
         let json = serde_json::to_value(lookup("hutan-dark").unwrap()).unwrap();
-        assert_eq!(json["background"], "#1e1e1e");
+        assert_eq!(json["background"], "#262624");
         assert_eq!(json["ansi"].as_array().unwrap().len(), 16);
         let back: TerminalTheme = serde_json::from_value(json).unwrap();
         assert_eq!(&back, lookup("hutan-dark").unwrap());

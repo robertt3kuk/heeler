@@ -12,6 +12,7 @@ use gpui::{
 use super::actions::daemon;
 use super::panels::StatusTone;
 use super::render::probe;
+use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
 use crate::macos::LoginItemStatus;
 use crate::macos::status_item::KEEP_RUNNING;
@@ -43,7 +44,7 @@ impl Workbench {
         let dot = match tone {
             StatusTone::Ok => theme.success,
             StatusTone::Warn => theme.warning,
-            StatusTone::Error => theme.error,
+            StatusTone::Error => theme.danger,
             StatusTone::Muted => theme.muted,
         };
         let (live, total) = {
@@ -65,7 +66,7 @@ impl Workbench {
         let keep_running = self.keep_running_enabled();
         let keep_available = self.keep_running_available();
         let keep_status = self.keep_running_status();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
 
         let mut fields: Vec<(&'static str, String)> = Vec::new();
         if let Some(status) = self.daemon.status.as_ref().filter(|_| connected) {
@@ -96,20 +97,9 @@ impl Workbench {
 
         let regions = self.regions.clone();
         let button = |id: &'static str, label: &'static str, action: Box<dyn Action>| {
-            div()
-                .id(id)
+            ui::button(id, label, ui::ButtonKind::Secondary, true, &theme, &tokens)
                 .relative()
-                .px(px(tokens.spacing * 3.0))
-                .h(px(tokens.sidebar_row))
-                .flex()
-                .items_center()
-                .rounded(px(tokens.radius - 1.0))
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
                 .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-                .child(label)
                 .child(probe(&regions, Region::Popover(id)))
         };
         let mut actions = div().flex().flex_wrap().gap(px(tokens.spacing * 2.0));
@@ -145,16 +135,14 @@ impl Workbench {
             .gap(px(tokens.spacing * 2.0))
             .px(px(tokens.spacing * 2.0))
             .py(px(tokens.spacing))
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
             .border_1()
             .border_color(if keep_running && keep_available {
                 theme.accent
             } else {
                 theme.border
             })
-            .when(keep_running && keep_available, |s| {
-                s.bg(theme.accent.opacity(0.25))
-            })
+            .when(keep_running && keep_available, |s| s.bg(theme.accent_soft))
             .when(keep_available, |s| {
                 s.cursor_pointer()
                     .hover(move |s| s.bg(hover))
@@ -196,12 +184,8 @@ impl Workbench {
                         .flex()
                         .flex_col()
                         .gap(px(tokens.spacing * 2.0))
+                        .popover(&theme, &tokens)
                         .p(px(tokens.spacing * 4.0))
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
                         .text_size(px(tokens.font_size))
                         .text_color(theme.fg)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -210,7 +194,7 @@ impl Workbench {
                                 .flex()
                                 .items_center()
                                 .gap(px(tokens.spacing * 2.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(div().size(px(8.0)).rounded_full().bg(dot))
                                 .child(SharedString::from(line)),
                         )
@@ -222,9 +206,9 @@ impl Workbench {
                                     .justify_between()
                                     .px(px(tokens.spacing * 2.0))
                                     .py(px(tokens.spacing))
-                                    .rounded(px(tokens.radius - 1.0))
+                                    .rounded(px(tokens.radius))
                                     .border_1()
-                                    .border_color(theme.error)
+                                    .border_color(theme.danger)
                                     .child("Daemon stopped — Start it to reconnect")
                                     .when(!busy, |s| {
                                         s.child(button(

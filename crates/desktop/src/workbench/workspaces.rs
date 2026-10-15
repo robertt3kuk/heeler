@@ -29,6 +29,7 @@ use super::modal::PromptSpec;
 use super::palette::fuzzy_score;
 use super::panels::HistoryResume;
 use super::terminals::session_of_item;
+use super::ui::StyledExt as _;
 use super::view::{MenuEntry, Workbench};
 use crate::sessions::workspaces as order;
 use crate::settings::{WorkspaceSort, WorkspacesSettings};
@@ -1009,7 +1010,7 @@ impl Workbench {
             .filter_map(|(row, _)| {
                 let entry = picker.entry_at(row)?;
                 let selected = row == picker.selected;
-                let hover = theme.hover;
+                let hover = theme.surface_hover;
                 Some(
                     div()
                         .id(ElementId::from(SharedString::from(format!(
@@ -1020,9 +1021,9 @@ impl Workbench {
                         .gap(px(tokens.spacing * 2.0))
                         .h(px(tokens.sidebar_row))
                         .px(px(tokens.spacing * 2.0))
-                        .rounded(px(tokens.radius - 2.0))
+                        .rounded(px(tokens.radius))
                         .cursor_pointer()
-                        .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
+                        .when(selected, |s| s.bg(theme.accent_soft))
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.picker_confirm(Some(row), window, cx);
@@ -1046,7 +1047,7 @@ impl Workbench {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(theme.muted)
-                                .text_size(px(tokens.section_font_size + 1.0))
+                                .text_size(px(tokens.secondary_font_size))
                                 .child(entry.detail.clone()),
                         )
                         .into_any_element(),
@@ -1126,12 +1127,8 @@ impl Workbench {
                         .flex()
                         .flex_col()
                         .gap(px(tokens.spacing))
+                        .popover(&theme, &tokens)
                         .p(px(tokens.spacing * 2.0))
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                             let keystroke = &event.keystroke;

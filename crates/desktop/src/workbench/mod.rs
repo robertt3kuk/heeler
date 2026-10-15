@@ -22,6 +22,7 @@ pub mod settings_schema;
 mod settings_sheet;
 pub mod style;
 mod terminals;
+pub mod ui;
 mod view;
 mod workspaces;
 mod worktrees;

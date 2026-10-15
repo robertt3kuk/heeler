@@ -82,7 +82,7 @@ impl TerminalBackend for ChannelBackend {
 
     fn set_default_colors(&self, colors: DefaultColors) {
         // The protocol has no message for this yet (the daemon answers OSC 10/11/12 with its
-        // own #d4d4d4/#1e1e1e defaults, which match hutan-dark).
+        // own defaults until a client reports its colors).
         eprintln!("attach: default colors {colors:?}");
     }
 

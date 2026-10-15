@@ -902,8 +902,8 @@ mod tests {
         };
         let dark = settings.view_settings(SystemAppearance::Dark);
         let light = settings.view_settings(SystemAppearance::Light);
-        assert_eq!(dark.palette.background, Rgb(0x1e, 0x1e, 0x1e));
-        assert_eq!(light.palette.background, Rgb(0xff, 0xff, 0xff));
+        assert_eq!(dark.palette.background, Rgb(0x26, 0x26, 0x24));
+        assert_eq!(light.palette.background, Rgb(0xfa, 0xf9, 0xf5));
         assert_eq!(dark.font_size, 72.0);
         let pinned = TerminalSettings {
             theme: "hutan-light".into(),

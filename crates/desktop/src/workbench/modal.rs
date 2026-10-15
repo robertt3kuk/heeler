@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use super::actions::modal as modal_actions;
+use super::ui::{self, StyledExt as _};
 use super::view::Workbench;
 
 /// What the dialog hands its action: the prompt text and the state of the checkbox.
@@ -271,21 +272,8 @@ impl Workbench {
         };
         let theme = self.theme;
         let tokens = self.density.ui();
-        let hover = theme.hover;
-        let button = |id: &'static str, label: SharedString, primary: bool| {
-            div()
-                .id(id)
-                .px(px(tokens.spacing * 3.0))
-                .h(px(tokens.sidebar_row))
-                .flex()
-                .items_center()
-                .rounded(px(tokens.radius - 1.0))
-                .border_1()
-                .border_color(if primary { theme.accent } else { theme.border })
-                .when(primary, |s| s.bg(theme.accent.opacity(0.25)))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .child(label)
+        let button = |id: &'static str, label: SharedString, kind: ui::ButtonKind| {
+            ui::button(id, label, kind, true, &theme, &tokens)
         };
         Some(
             div()
@@ -296,7 +284,7 @@ impl Workbench {
                 .justify_center()
                 .items_start()
                 .pt(px(120.0))
-                .bg(gpui::black().opacity(0.25))
+                .bg(theme.scrim())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
@@ -310,12 +298,8 @@ impl Workbench {
                         .flex()
                         .flex_col()
                         .gap(px(tokens.spacing * 2.0))
+                        .popover(&theme, &tokens)
                         .p(px(tokens.spacing * 4.0))
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
                         .text_size(px(tokens.font_size))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -352,7 +336,7 @@ impl Workbench {
                         }))
                         .child(
                             div()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(modal.title.clone()),
                         )
                         .child(div().text_color(theme.muted).child(modal.message.clone()))
@@ -363,7 +347,8 @@ impl Workbench {
                                     .items_center()
                                     .h(px(tokens.sidebar_row + 4.0))
                                     .px(px(tokens.spacing * 2.0))
-                                    .rounded(px(tokens.radius - 1.0))
+                                    .rounded(px(tokens.radius))
+                                    .bg(theme.bg)
                                     .border_1()
                                     .border_color(theme.accent)
                                     .child(SharedString::from(input))
@@ -395,24 +380,35 @@ impl Workbench {
                                 .flex()
                                 .justify_end()
                                 .gap(px(tokens.spacing * 2.0))
-                                .child(button("modal-cancel", "Cancel".into(), false).on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.close_modal(window, cx);
-                                    }),
-                                ))
+                                .child(
+                                    button("modal-cancel", "Cancel".into(), ui::ButtonKind::Ghost)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.close_modal(window, cx);
+                                        })),
+                                )
                                 .children(modal.choice.as_ref().map(|choice| {
-                                    button("modal-choice", choice.label.clone(), false).on_click(
-                                        cx.listener(|this, _, window, cx| {
-                                            this.choose_modal_alternative(window, cx);
-                                        }),
+                                    button(
+                                        "modal-choice",
+                                        choice.label.clone(),
+                                        ui::ButtonKind::Secondary,
                                     )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            this.choose_modal_alternative(window, cx);
+                                        },
+                                    ))
                                 }))
                                 .child(
-                                    button("modal-ok", modal.confirm_label.clone(), true).on_click(
-                                        cx.listener(|this, _, window, cx| {
+                                    button(
+                                        "modal-ok",
+                                        modal.confirm_label.clone(),
+                                        ui::ButtonKind::Primary,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
                                             this.confirm_modal(window, cx);
-                                        }),
-                                    ),
+                                        },
+                                    )),
                                 ),
                         ),
                 )

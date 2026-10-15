@@ -27,6 +27,7 @@ use crate::workbench::actions::{
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::{BadgeSite, DragPreview, Region};
 
 /// Row refresh for the relative ages.
@@ -165,7 +166,7 @@ impl SessionsPanel {
         if !needing.is_empty() {
             sections.push(Section {
                 key: SectionKey::NeedsYou,
-                title: format!("NEEDS YOU · {}", needing.len()),
+                title: format!("Needs you · {}", needing.len()),
                 rows: needing.into_iter().cloned().collect(),
                 workspace: None,
                 needs: 0,
@@ -199,7 +200,7 @@ impl SessionsPanel {
                         pinned_label = true;
                         sections.push(Section {
                             key: SectionKey::Pinned,
-                            title: "PINNED".to_owned(),
+                            title: "Pinned".to_owned(),
                             rows: Vec::new(),
                             workspace: None,
                             needs: 0,
@@ -207,7 +208,7 @@ impl SessionsPanel {
                     }
                     sections.push(Section {
                         key: SectionKey::Workspace(workspace.id),
-                        title: workspace.name.to_uppercase(),
+                        title: workspace.name.clone(),
                         rows,
                         workspace: Some(workspace.clone()),
                         needs: attention.get(&workspace.id).copied().unwrap_or(0),
@@ -230,7 +231,7 @@ impl SessionsPanel {
                         .collect();
                     sections.push(Section {
                         key: SectionKey::State(label.clone()),
-                        title: format!("{}  ·  {}", label.to_uppercase(), rows.len()),
+                        title: format!("{label} · {}", rows.len()),
                         rows,
                         workspace: None,
                         needs: 0,
@@ -296,7 +297,7 @@ impl Render for SessionsPanel {
             (store.focused(), store.active_workspace_id())
         };
         let searching = self.search_focus.is_focused(window);
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let manual = ws_settings.sort == WorkspaceSort::Manual;
 
         let mut list = div()
@@ -312,13 +313,8 @@ impl Render for SessionsPanel {
             } else {
                 "Nothing matches the filter."
             };
-            list = list.child(
-                div()
-                    .px(px(tokens.spacing * 3.0))
-                    .py(px(tokens.spacing * 2.0))
-                    .text_color(theme.muted)
-                    .child(empty),
-            );
+            list = list
+                .child(ui::empty_state(Mascot::Empty, empty, None, &theme, &tokens).h(px(260.0)));
         }
         for section in sections {
             let workspace_id = section.workspace.as_ref().map(|w| w.id);
@@ -346,8 +342,9 @@ impl Render for SessionsPanel {
                         .items_center()
                         .h(px(tokens.sidebar_row))
                         .px(px(tokens.spacing * 2.0))
+                        .mt(px(tokens.spacing))
                         .text_size(px(tokens.section_font_size))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .medium()
                         .text_color(header_color)
                         .child(section.title.clone()),
                 );
@@ -368,10 +365,10 @@ impl Render for SessionsPanel {
 
         let sort_button = div()
             .id("workspaces-sort")
-            .px(px(tokens.spacing))
-            .rounded(px(3.0))
+            .px(px(tokens.spacing * 1.5))
+            .rounded(px(tokens.radius))
             .cursor_pointer()
-            .text_size(px(tokens.section_font_size))
+            .text_size(px(tokens.secondary_font_size))
             .text_color(theme.muted)
             .hover(move |s| s.bg(hover))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -392,7 +389,8 @@ impl Render for SessionsPanel {
             .h(px(tokens.sidebar_row))
             .flex()
             .items_center()
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
+            .bg(theme.surface)
             .border_1()
             .border_color(if searching {
                 theme.accent
@@ -412,7 +410,7 @@ impl Render for SessionsPanel {
             )
             .child(if self.query.is_empty() {
                 div()
-                    .text_color(theme.muted)
+                    .text_color(theme.faint)
                     .child("⌕ Filter workspaces and sessions")
             } else {
                 div().child(self.query.clone())
@@ -424,13 +422,13 @@ impl Render for SessionsPanel {
             .flex_none()
             .items_center()
             .h(px(tokens.sidebar_row))
-            .mx(px(tokens.spacing))
-            .mb(px(tokens.spacing))
+            .mx(px(tokens.spacing * 2.0))
+            .mb(px(tokens.spacing * 2.0))
             .px(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius - 1.0))
+            .rounded(px(tokens.radius))
             .cursor_pointer()
             .text_color(theme.muted)
-            .hover(move |s| s.bg(hover))
+            .hover(move |s| s.bg(hover).text_color(theme.fg))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(NewTerminal), cx))
             .child("＋ New session");
 
@@ -468,7 +466,7 @@ impl SessionsPanel {
     ) -> AnyElement {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
-        let (hover, accent) = (theme.hover, theme.accent);
+        let (hover, accent) = (theme.surface_hover, theme.accent);
         let id = workspace.id;
         let id_text = id.to_string();
         let open_id = id_text.clone();
@@ -486,15 +484,15 @@ impl SessionsPanel {
             .items_center()
             .gap(px(tokens.spacing))
             .h(px(tokens.sidebar_row))
-            .mx(px(tokens.spacing))
-            .px(px(tokens.spacing))
-            .rounded(px(tokens.radius - 1.0))
-            .text_size(px(tokens.section_font_size))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .mx(px(tokens.spacing * 1.5))
+            .px(px(tokens.spacing * 1.5))
+            .rounded(px(tokens.radius))
+            .text_size(px(tokens.font_size))
+            .medium()
             .text_color(if active { theme.fg } else { theme.muted })
             .cursor_pointer()
-            .when(active, move |s| s.bg(accent.opacity(0.18)))
-            .hover(move |s| s.bg(hover))
+            .when(active, move |s| s.bg(theme.accent_soft))
+            .when(!active, move |s| s.hover(move |s| s.bg(hover)))
             .on_click(cx.listener(move |_, _, window, cx| {
                 window.dispatch_action(Box::new(OpenWorkspace(open_id.clone())), cx);
             }))
@@ -559,7 +557,7 @@ impl SessionsPanel {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(SharedString::from(workspace.name.to_uppercase())),
+                    .child(SharedString::from(workspace.name.clone())),
             )
             .when(needs > 0, |s| {
                 s.child(
@@ -569,7 +567,7 @@ impl SessionsPanel {
                         .child(format!("● {needs}")),
                 )
             })
-            .child(div().flex_none().child(count))
+            .child(ui::counter(count, &theme, &tokens))
             .child(probe(&self.env.regions, Region::WorkspaceRow(id)))
             .into_any_element()
     }
@@ -587,8 +585,7 @@ impl SessionsPanel {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let presentation = self.env.sessions.read(cx).presentation(info);
-        let hover = theme.hover;
-        let accent = theme.accent;
+        let hover = theme.surface_hover;
         let id = info.id.to_string();
         let open_id = id.clone();
         let menu_id = id.clone();
@@ -645,11 +642,7 @@ impl SessionsPanel {
                                     .flex_none()
                                     .max_w(px(80.0))
                                     .truncate()
-                                    .px(px(tokens.spacing))
-                                    .rounded(px(3.0))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .text_size(px(tokens.section_font_size))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .text_color(theme.muted)
                                     .child(SharedString::from(place)),
                             )
@@ -659,7 +652,7 @@ impl SessionsPanel {
                 "age" => line.child(
                     div()
                         .flex_none()
-                        .text_size(px(tokens.section_font_size))
+                        .text_size(px(tokens.secondary_font_size))
                         .text_color(theme.muted)
                         .child(SharedString::from(age_label(info.created_at_ms))),
                 ),
@@ -671,12 +664,12 @@ impl SessionsPanel {
             .id(SharedString::from(format!("session-row-{id}")))
             .flex()
             .flex_col()
-            .mx(px(tokens.spacing))
-            .px(px(tokens.spacing))
-            .rounded(px(tokens.radius - 1.0))
+            .mx(px(tokens.spacing * 1.5))
+            .px(px(tokens.spacing * 1.5))
+            .rounded(px(tokens.radius))
             .cursor_pointer()
-            .when(selected, move |s| s.bg(accent.opacity(0.18)))
-            .hover(move |s| s.bg(hover))
+            .when(selected, move |s| s.bg(theme.accent_soft))
+            .when(!selected, move |s| s.hover(move |s| s.bg(hover)))
             .on_click(cx.listener(move |_, _, window, cx| {
                 window.dispatch_action(Box::new(OpenSession(open_id.clone())), cx);
             }))
@@ -703,7 +696,7 @@ impl SessionsPanel {
                 div()
                     .pl(px(tokens.spacing * 4.0))
                     .pb(px(tokens.spacing))
-                    .text_size(px(tokens.section_font_size))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(tone_color(&theme, presentation.tone))
                     .child(SharedString::from(subtitle)),
             );

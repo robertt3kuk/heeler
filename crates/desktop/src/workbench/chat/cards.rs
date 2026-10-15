@@ -8,10 +8,11 @@ use super::markdown_view::{Ids, Look, blocks, code_block};
 use super::view::ChatView;
 use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
 use crate::workbench::render::probe;
+use crate::workbench::ui::StyledExt as _;
 use crate::workbench::view::Region;
 use gpui::{
     AnyElement, App, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px, relative,
 };
 use hutan_chat_view::diff::{self, DiffLine, FileDiff, LineKind, MAX_LINES};
 use hutan_chat_view::markdown::{self, Block as MdBlock};
@@ -33,8 +34,8 @@ pub(super) const PART_DIFF: u32 = 100;
 const TAIL_LINES: usize = 8;
 /// Most lines of a command's output drawn even when expanded.
 const MAX_OUTPUT_LINES: usize = 2000;
-/// The widest the conversation column grows.
-const COLUMN_WIDTH: f32 = 920.0;
+/// The widest the conversation column grows: the reading column of the visual system.
+const COLUMN_WIDTH: f32 = crate::theme::READING_WIDTH;
 
 fn status_color(look: &Look, tool: &Tool) -> gpui::Hsla {
     let theme = &look.theme;
@@ -42,10 +43,10 @@ fn status_color(look: &Look, tool: &Tool) -> gpui::Hsla {
         (_, true) => theme.muted,
         (None, _) => theme.accent,
         (Some(ToolStatus::Completed), _) => match tool.exit_code {
-            Some(code) if code != 0 => theme.error,
+            Some(code) if code != 0 => theme.danger,
             _ => theme.success,
         },
-        (Some(ToolStatus::Failed), _) => theme.error,
+        (Some(ToolStatus::Failed), _) => theme.danger,
         (Some(ToolStatus::Declined), _) => theme.warning,
     }
 }
@@ -76,14 +77,6 @@ fn approval_heading(kind: PermissionKind) -> &'static str {
         PermissionKind::FileChange => "Apply these changes?",
         PermissionKind::Permissions => "Grant extra permissions?",
         PermissionKind::Other => "Allow this?",
-    }
-}
-
-fn option_kind(kind: PermissionOptionKind) -> ButtonKind {
-    match kind {
-        PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways => ButtonKind::Allow,
-        PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways => ButtonKind::Deny,
-        PermissionOptionKind::Cancel | PermissionOptionKind::Other => ButtonKind::Plain,
     }
 }
 
@@ -185,7 +178,7 @@ impl ChatView {
             .unwrap_or_default();
         let open = self.open(entry.id, PART_BODY, false);
         let id = entry.id;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let chips = div()
             .flex()
             .flex_wrap()
@@ -207,24 +200,17 @@ impl ChatView {
                 }
                 pill(text, color, look).font_family(look.mono.clone())
             }));
-        div()
+        // No bubble for the agent; the user's message sits in an `accent_soft` bubble on the right.
+        let bubble = div()
             .flex()
             .flex_col()
-            .gap(px(tokens.spacing))
-            .px(px(tokens.spacing * 3.0))
-            .py(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius + 2.0))
-            .bg(theme.accent.opacity(0.10))
-            .border_1()
-            .border_color(theme.accent.opacity(0.25))
-            .child(
-                div()
-                    .text_size(px(tokens.section_font_size))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.muted)
-                    .child("YOU"),
-            )
-            .child(blocks(&parsed, look, ids))
+            .gap(px(tokens.spacing * 1.5))
+            .max_w(relative(0.85))
+            .px(px(tokens.spacing * 3.5))
+            .py(px(tokens.spacing * 2.5))
+            .rounded(px(tokens.card_radius))
+            .bg(theme.accent_soft)
+            .child(blocks(&parsed, &look.sans(), ids))
             .when(!meta.is_empty(), |s| s.child(chips))
             .when_some(context, |s, context| {
                 s.child(
@@ -235,7 +221,7 @@ impl ChatView {
                         .items_center()
                         .gap(px(tokens.spacing * 1.5))
                         .cursor_pointer()
-                        .rounded(px(3.0))
+                        .rounded(px(tokens.radius - 2.0))
                         .text_color(theme.muted)
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -250,7 +236,12 @@ impl ChatView {
                         }),
                 )
                 .when(open, |s| s.child(code_block(context, None, look, ids)))
-            })
+            });
+        div()
+            .flex()
+            .justify_end()
+            .w_full()
+            .child(bubble)
             .into_any_element()
     }
 
@@ -302,7 +293,7 @@ impl ChatView {
             .to_owned();
         let summary = (open && !reasoning.summary.is_empty())
             .then(|| self.blocks_of(entry, &reasoning.summary));
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         div()
             .flex()
             .flex_col()
@@ -316,7 +307,7 @@ impl ChatView {
                     .items_center()
                     .gap(px(tokens.spacing * 1.5))
                     .cursor_pointer()
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius - 2.0))
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle(index, id, PART_BODY, cx);
@@ -330,7 +321,7 @@ impl ChatView {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(tokens.section_font_size + 1.0))
+                                .text_size(px(tokens.secondary_font_size))
                                 .child(SharedString::from(preview.clone())),
                         )
                     }),
@@ -344,7 +335,7 @@ impl ChatView {
                 s.child(
                     div()
                         .pl(px(tokens.spacing * 4.0))
-                        .text_size(px(tokens.section_font_size + 1.0))
+                        .text_size(px(tokens.secondary_font_size))
                         .child(SharedString::from(reasoning.content.clone())),
                 )
             })
@@ -378,7 +369,7 @@ impl ChatView {
         };
         let color = status_color(look, tool);
         let id = entry.id;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let header_title = match tool.kind {
             ToolKind::Command => tool.command().to_owned(),
             _ if tool.title.is_empty() => tool.name.clone(),
@@ -401,11 +392,9 @@ impl ChatView {
             .flex()
             .flex_col()
             .gap(px(tokens.spacing * 1.5))
-            .p(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius + 2.0))
-            .border_1()
+            .p(px(tokens.spacing * 2.5))
+            .card(theme, tokens)
             .border_color(if pending { theme.warning } else { theme.border })
-            .bg(theme.overlay)
             .child(
                 div()
                     .id(ids.next("tool-header"))
@@ -413,12 +402,13 @@ impl ChatView {
                     .flex()
                     .items_center()
                     .gap(px(tokens.spacing * 2.0))
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius - 2.0))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle(index, id, PART_BODY, cx);
                     }))
+                    .child(div().flex_none().size(px(7.0)).rounded_full().bg(color))
                     .child(
                         div()
                             .flex_none()
@@ -462,7 +452,7 @@ impl ChatView {
         } else {
             tail_lines(output, TAIL_LINES)
         };
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         div()
             .flex()
             .flex_col()
@@ -470,7 +460,7 @@ impl ChatView {
             .children(tool.cwd().map(|cwd| {
                 div()
                     .font_family(look.mono.clone())
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .text_color(theme.muted)
                     .truncate()
                     .child(SharedString::from(format!("in {cwd}")))
@@ -483,7 +473,7 @@ impl ChatView {
                         .rounded(px(tokens.radius))
                         .border_1()
                         .border_color(theme.border)
-                        .bg(theme.surface)
+                        .bg(theme.bg)
                         .px(px(tokens.spacing * 2.0))
                         .py(px(tokens.spacing * 1.5))
                         .font_family(look.mono.clone())
@@ -544,7 +534,7 @@ impl ChatView {
     ) -> AnyElement {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let id = entry.id;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let mut rows: Vec<AnyElement> = Vec::new();
         for (file, change) in tool.changes.iter().enumerate() {
             let diff = diff::from_change(change);
@@ -572,7 +562,7 @@ impl ChatView {
                             .flex()
                             .items_center()
                             .gap(px(tokens.spacing * 2.0))
-                            .rounded(px(3.0))
+                            .rounded(px(tokens.radius - 2.0))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -595,7 +585,7 @@ impl ChatView {
                                 div()
                                     .flex_none()
                                     .text_color(theme.muted)
-                                    .text_size(px(tokens.section_font_size + 1.0))
+                                    .text_size(px(tokens.secondary_font_size))
                                     .child(label),
                             )
                             .child(counts(&diff, look))
@@ -633,7 +623,7 @@ impl ChatView {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let open = self.open(entry.id, PART_BODY, false);
         let id = entry.id;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let args: Option<String> = tool
             .input
             .as_ref()
@@ -656,7 +646,7 @@ impl ChatView {
                     .gap(px(tokens.spacing * 1.5))
                     .text_color(theme.muted)
                     .cursor_pointer()
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius - 2.0))
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle(index, id, PART_BODY, cx);
@@ -718,16 +708,13 @@ impl ChatView {
             .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
         let open = self.open(entry.id, PART_BODY, false);
         let id = entry.id;
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         div()
             .flex()
             .flex_col()
             .gap(px(tokens.spacing))
-            .p(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius + 2.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.overlay)
+            .p(px(tokens.spacing * 2.5))
+            .card(theme, tokens)
             .child(
                 div()
                     .id(ids.next("turn-diff"))
@@ -735,7 +722,7 @@ impl ChatView {
                     .items_center()
                     .gap(px(tokens.spacing * 2.0))
                     .cursor_pointer()
-                    .rounded(px(3.0))
+                    .rounded(px(tokens.radius - 2.0))
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle(index, id, PART_BODY, cx);
@@ -753,7 +740,7 @@ impl ChatView {
                     )
                     .child(
                         div()
-                            .text_color(theme.error)
+                            .text_color(theme.danger)
                             .child(SharedString::from(format!("−{removed}"))),
                     ),
             )
@@ -819,7 +806,7 @@ impl ChatView {
                         theme.success
                     }
                     Some(PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways) => {
-                        theme.error
+                        theme.danger
                     }
                     _ => theme.muted,
                 };
@@ -842,7 +829,12 @@ impl ChatView {
                     button(
                         SharedString::from(format!("approve-{}-{number}", approval.id)),
                         format!("{} {}", number + 1, option.label),
-                        option_kind(option.kind),
+                        // The first offered option is the primary one.
+                        if number == 0 {
+                            ButtonKind::Primary
+                        } else {
+                            ButtonKind::Secondary
+                        },
                         true,
                         look,
                     )
@@ -860,16 +852,10 @@ impl ChatView {
             .relative()
             .flex()
             .flex_col()
-            .gap(px(tokens.spacing * 1.5))
-            .p(px(tokens.spacing * 2.0))
-            .rounded(px(tokens.radius + 2.0))
-            .border_1()
+            .gap(px(tokens.spacing * 2.0))
+            .p(px(tokens.spacing * 3.0))
+            .card(theme, tokens)
             .border_color(if pending { theme.warning } else { theme.border })
-            .bg(if pending {
-                theme.warning.opacity(0.08)
-            } else {
-                theme.surface
-            })
             .child(
                 div()
                     .flex()
@@ -882,7 +868,7 @@ impl ChatView {
                     )
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(FontWeight::MEDIUM)
                             .child(approval_heading(approval.kind)),
                     ),
             )
@@ -896,7 +882,7 @@ impl ChatView {
             .children(approval.detail.as_ref().map(|detail| {
                 div()
                     .text_color(theme.muted)
-                    .text_size(px(tokens.section_font_size + 1.0))
+                    .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(detail.clone()))
             }))
             .when(pending, |s| {
@@ -923,7 +909,7 @@ fn counts(diff: &FileDiff, look: &Look) -> AnyElement {
         .flex()
         .flex_none()
         .gap(px(tokens.spacing))
-        .text_size(px(tokens.section_font_size + 1.0))
+        .text_size(px(tokens.secondary_font_size))
         .child(
             div()
                 .text_color(theme.success)
@@ -931,7 +917,7 @@ fn counts(diff: &FileDiff, look: &Look) -> AnyElement {
         )
         .child(
             div()
-                .text_color(theme.error)
+                .text_color(theme.danger)
                 .child(SharedString::from(format!("−{}", diff.removed))),
         )
         .into_any_element()
@@ -955,7 +941,7 @@ fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
     let row = |line: &DiffLine| {
         let (sign, tint, text_color) = match line.kind {
             LineKind::Add => ("+", Some(theme.success.opacity(0.16)), theme.fg),
-            LineKind::Remove => ("−", Some(theme.error.opacity(0.16)), theme.fg),
+            LineKind::Remove => ("−", Some(theme.danger.opacity(0.16)), theme.fg),
             LineKind::Context => (" ", None, theme.fg),
             LineKind::Hunk => ("", Some(theme.accent.opacity(0.10)), theme.muted),
             LineKind::Note => ("", None, theme.muted),
@@ -983,7 +969,7 @@ fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
         .rounded(px(tokens.radius))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.surface)
+        .bg(theme.bg)
         .font_family(look.mono.clone())
         .text_size(px(tokens.font_size - 0.5))
         .whitespace_nowrap()
@@ -1016,16 +1002,14 @@ fn plan_card(plan: &Plan, look: &Look) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(tokens.spacing))
-        .p(px(tokens.spacing * 2.0))
-        .rounded(px(tokens.radius + 2.0))
-        .border_1()
-        .border_color(theme.border)
+        .p(px(tokens.spacing * 2.5))
+        .card(theme, tokens)
         .child(
             div()
                 .text_size(px(tokens.section_font_size))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.muted)
-                .child("PLAN"),
+                .child("Plan"),
         )
         .children(plan.explanation.as_ref().map(|text| {
             div()
@@ -1090,7 +1074,7 @@ fn footer_card(footer: &Footer, look: &Look) -> AnyElement {
     let (theme, tokens) = (&look.theme, &look.tokens);
     let (mark, color, text) = match &footer.outcome {
         TurnOutcome::Completed => ("✓", theme.success, "done".to_owned()),
-        TurnOutcome::Failed { message, .. } => ("✗", theme.error, format!("failed: {message}")),
+        TurnOutcome::Failed { message, .. } => ("✗", theme.danger, format!("failed: {message}")),
         TurnOutcome::Cancelled => ("■", theme.muted, "interrupted".to_owned()),
     };
     let mut line = vec![text];
@@ -1109,13 +1093,13 @@ fn footer_card(footer: &Footer, look: &Look) -> AnyElement {
         .flex()
         .gap(px(tokens.spacing * 1.5))
         .text_color(theme.muted)
-        .text_size(px(tokens.section_font_size + 1.0))
+        .text_size(px(tokens.secondary_font_size))
         .child(div().flex_none().text_color(color).child(mark))
         .child(
             div()
                 .min_w_0()
                 .when(matches!(footer.outcome, TurnOutcome::Failed { .. }), |s| {
-                    s.text_color(theme.error)
+                    s.text_color(theme.danger)
                 })
                 .child(SharedString::from(line.join(" · "))),
         )
@@ -1127,7 +1111,7 @@ fn notice_card(level: NoticeLevel, message: &str, look: &Look) -> AnyElement {
     let (mark, color) = match level {
         NoticeLevel::Info => ("ⓘ", theme.muted),
         NoticeLevel::Warning => ("⚠", theme.warning),
-        NoticeLevel::Error => ("✗", theme.error),
+        NoticeLevel::Error => ("✗", theme.danger),
     };
     div()
         .flex()

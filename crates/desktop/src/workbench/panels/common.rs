@@ -26,7 +26,7 @@ pub fn tone_color(theme: &Theme, tone: Tone) -> Hsla {
         Tone::Success => theme.success,
         Tone::Accent => theme.accent,
         Tone::Muted => theme.muted,
-        Tone::Error => theme.error,
+        Tone::Error => theme.danger,
     }
 }
 
@@ -71,7 +71,7 @@ pub fn agent_badge(
             .flex_none()
             .items_center()
             .gap(px(tokens.spacing))
-            .text_size(px(tokens.section_font_size))
+            .text_size(px(tokens.secondary_font_size))
             .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
             .children(badge.running_text().map(|text| {
                 div()
@@ -112,11 +112,10 @@ pub fn placement_badge(
         .flex_none()
         .max_w(px(130.0))
         .truncate()
-        .px(px(tokens.spacing))
-        .rounded(px(3.0))
-        .border_1()
-        .border_color(if badge.shared { color } else { theme.border })
-        .text_size(px(tokens.section_font_size))
+        .px(px(tokens.spacing * 2.0))
+        .rounded(px(crate::theme::PILL_RADIUS))
+        .bg(color.opacity(if badge.shared { 0.14 } else { 0.0 }))
+        .text_size(px(tokens.secondary_font_size))
         .text_color(color)
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
         .child(SharedString::from(text))
@@ -186,7 +185,7 @@ pub fn format_utc(ms: u64) -> String {
     )
 }
 
-/// Panel header: uppercase title on the left, the ⚙ that opens the panel's settings on the
+/// Panel header: sentence-case section label on the left, the ⚙ that opens the panel's settings on the
 /// right.
 pub fn panel_header(title: &str, namespace: &'static str, cx: &App) -> AnyElement {
     panel_header_with(title, namespace, Vec::new(), cx)
@@ -201,20 +200,20 @@ pub fn panel_header_with(
 ) -> AnyElement {
     let style = UiStyle::get(cx);
     let tokens = style.density.ui();
-    let hover = style.theme.hover;
+    let hover = style.theme.surface_hover;
     div()
         .flex()
         .flex_none()
         .items_center()
         .justify_between()
-        .h(px(tokens.sidebar_row))
-        .px(px(tokens.spacing * 2.0))
+        .h(px(tokens.sidebar_row + 4.0))
+        .px(px(tokens.spacing * 2.5))
         .child(
             div()
                 .text_size(px(tokens.section_font_size))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(style.theme.muted)
-                .child(SharedString::from(title.to_uppercase())),
+                .child(SharedString::from(title.to_owned())),
         )
         .child(
             div()
@@ -225,11 +224,11 @@ pub fn panel_header_with(
                 .child(
                     div()
                         .id(SharedString::from(format!("gear-{namespace}")))
-                        .px(px(tokens.spacing))
-                        .rounded(px(3.0))
+                        .px(px(tokens.spacing * 1.5))
+                        .rounded(px(tokens.radius))
                         .cursor_pointer()
                         .text_color(style.theme.muted)
-                        .hover(move |s| s.bg(hover))
+                        .hover(move |s| s.bg(hover).text_color(style.theme.fg))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(move |_, window, cx| {
                             window.dispatch_action(

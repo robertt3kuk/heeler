@@ -43,56 +43,56 @@ pub struct TerminalPalette {
 }
 
 impl TerminalPalette {
-    /// Built-in `hutan-dark` (design.md § Visual system): bg `#1e1e1e`, fg `#d4d4d4`.
+    /// Built-in `hutan-dark` (design.md § Visual system): bg `#262624` (the chrome `bg` token), fg `#eae8e1`, ANSI colors WCAG AA on the background.
     pub const HUTAN_DARK: Self = Self {
         ansi: [
-            Rgb::from_hex(0x000000),
-            Rgb::from_hex(0xcd3131),
-            Rgb::from_hex(0x0dbc79),
-            Rgb::from_hex(0xe5e510),
-            Rgb::from_hex(0x2472c8),
-            Rgb::from_hex(0xbc3fbc),
-            Rgb::from_hex(0x11a8cd),
-            Rgb::from_hex(0xe5e5e5),
-            Rgb::from_hex(0x666666),
-            Rgb::from_hex(0xf14c4c),
-            Rgb::from_hex(0x23d18b),
-            Rgb::from_hex(0xf5f543),
-            Rgb::from_hex(0x3b8eea),
-            Rgb::from_hex(0xd670d6),
-            Rgb::from_hex(0x29b8db),
-            Rgb::from_hex(0xffffff),
+            Rgb::from_hex(0x4a4944),
+            Rgb::from_hex(0xe87562),
+            Rgb::from_hex(0x6bbf85),
+            Rgb::from_hex(0xe2ae45),
+            Rgb::from_hex(0x72a5ec),
+            Rgb::from_hex(0xc996d8),
+            Rgb::from_hex(0x5fc2c6),
+            Rgb::from_hex(0xd6d4cc),
+            Rgb::from_hex(0x7a7870),
+            Rgb::from_hex(0xf08c7a),
+            Rgb::from_hex(0x86d19c),
+            Rgb::from_hex(0xeec261),
+            Rgb::from_hex(0x8fb9f2),
+            Rgb::from_hex(0xdaaee6),
+            Rgb::from_hex(0x7dd3d6),
+            Rgb::from_hex(0xf5f4ef),
         ],
-        foreground: Rgb::from_hex(0xd4d4d4),
-        background: Rgb::from_hex(0x1e1e1e),
-        cursor: Rgb::from_hex(0xd4d4d4),
-        selection: Rgb::from_hex(0x264f78),
+        foreground: Rgb::from_hex(0xeae8e1),
+        background: Rgb::from_hex(0x262624),
+        cursor: Rgb::from_hex(0xea7a43),
+        selection: Rgb::from_hex(0x4b3b30),
     };
 
-    /// Built-in `hutan-light`.
+    /// Built-in `hutan-light`: bg `#faf9f5`, fg `#1f1e1d`.
     pub const HUTAN_LIGHT: Self = Self {
         ansi: [
-            Rgb::from_hex(0x000000),
-            Rgb::from_hex(0xcd3131),
-            Rgb::from_hex(0x00bc00),
-            Rgb::from_hex(0x949800),
-            Rgb::from_hex(0x0451a5),
-            Rgb::from_hex(0xbc05bc),
-            Rgb::from_hex(0x0598bc),
-            Rgb::from_hex(0x555555),
-            Rgb::from_hex(0x666666),
-            Rgb::from_hex(0xcd3131),
-            Rgb::from_hex(0x14ce14),
-            Rgb::from_hex(0xb5ba00),
-            Rgb::from_hex(0x0451a5),
-            Rgb::from_hex(0xbc05bc),
-            Rgb::from_hex(0x0598b3),
-            Rgb::from_hex(0xa5a5a5),
+            Rgb::from_hex(0x1f1e1d),
+            Rgb::from_hex(0xb93a26),
+            Rgb::from_hex(0x2f7a48),
+            Rgb::from_hex(0x8a6300),
+            Rgb::from_hex(0x2b62b8),
+            Rgb::from_hex(0x8e4ea8),
+            Rgb::from_hex(0x167780),
+            Rgb::from_hex(0x6f6d66),
+            Rgb::from_hex(0x57554f),
+            Rgb::from_hex(0xc8452f),
+            Rgb::from_hex(0x3f8f5a),
+            Rgb::from_hex(0x9a6f00),
+            Rgb::from_hex(0x3d77d1),
+            Rgb::from_hex(0xa35fbf),
+            Rgb::from_hex(0x23909a),
+            Rgb::from_hex(0x8c8a82),
         ],
-        foreground: Rgb::from_hex(0x333333),
-        background: Rgb::from_hex(0xffffff),
-        cursor: Rgb::from_hex(0x333333),
-        selection: Rgb::from_hex(0xadd6ff),
+        foreground: Rgb::from_hex(0x1f1e1d),
+        background: Rgb::from_hex(0xfaf9f5),
+        cursor: Rgb::from_hex(0xe0692e),
+        selection: Rgb::from_hex(0xf3d5c3),
     };
 }
 
@@ -253,9 +253,53 @@ mod tests {
     #[test]
     fn default_palette_is_hutan_dark() {
         let p = TerminalPalette::default();
-        assert_eq!(p.background, Rgb(0x1e, 0x1e, 0x1e));
-        assert_eq!(p.foreground, Rgb(0xd4, 0xd4, 0xd4));
-        assert_eq!(p.cursor, Rgb(0xd4, 0xd4, 0xd4));
+        assert_eq!(p.background, Rgb(0x26, 0x26, 0x24));
+        assert_eq!(p.foreground, Rgb(0xea, 0xe8, 0xe1));
+        assert_eq!(p.cursor, Rgb(0xea, 0x7a, 0x43));
+        assert_eq!(
+            TerminalPalette::HUTAN_LIGHT.background,
+            Rgb(0xfa, 0xf9, 0xf5)
+        );
+    }
+
+    fn luminance(c: Rgb) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.0) + 0.7152 * lin(c.1) + 0.0722 * lin(c.2)
+    }
+
+    fn contrast(a: Rgb, b: Rgb) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn builtin_palettes_meet_wcag_aa_on_their_background() {
+        for (name, p, text_neutral) in [
+            ("dark", TerminalPalette::HUTAN_DARK, 7),
+            ("light", TerminalPalette::HUTAN_LIGHT, 0),
+        ] {
+            assert!(contrast(p.foreground, p.background) >= 7.0, "{name} fg");
+            // The six hues and the neutral that is text on this polarity: AA for normal text.
+            for index in (1..=6).chain([text_neutral]) {
+                let ratio = contrast(p.ansi[index], p.background);
+                assert!(ratio >= 4.5, "{name} ansi {index}: {ratio:.2}");
+            }
+            for index in 8..16 {
+                let ratio = contrast(p.ansi[index], p.background);
+                assert!(ratio >= 3.0, "{name} bright ansi {index}: {ratio:.2}");
+            }
+            assert!(
+                contrast(p.foreground, p.selection) >= 7.0,
+                "{name} selection"
+            );
+        }
     }
 
     #[test]

@@ -1,24 +1,14 @@
 //! Small pieces the chat view shares: buttons, chips and number formatting.
 
-use gpui::{
-    Hsla, InteractiveElement, MouseButton, ParentElement, SharedString, Styled, div, prelude::*, px,
-};
+use gpui::{Hsla, SharedString};
 
 use super::markdown_view::Look;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonKind {
-    /// The main action: filled with the accent.
-    Primary,
-    /// Allows something: outlined in the success color.
-    Allow,
-    /// Refuses something: outlined in the error color.
-    Deny,
-    Plain,
-}
+use crate::workbench::ui;
+pub use crate::workbench::ui::ButtonKind;
 
-/// A text button. A disabled one is drawn dim and ignores the mouse (the caller adds the click
-/// handler only when enabled).
+/// A text button (see [`ui::button`]) styled by the chat's [`Look`]. A disabled one is drawn dim
+/// and ignores the mouse (the caller adds the click handler only when enabled).
 pub fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
@@ -26,52 +16,24 @@ pub fn button(
     enabled: bool,
     look: &Look,
 ) -> gpui::Stateful<gpui::Div> {
-    let (theme, tokens) = (&look.theme, &look.tokens);
-    let (border, fill, text): (Hsla, Option<Hsla>, Hsla) = match kind {
-        ButtonKind::Primary => (theme.accent, Some(theme.accent.opacity(0.28)), theme.fg),
-        ButtonKind::Allow => (theme.success, Some(theme.success.opacity(0.14)), theme.fg),
-        ButtonKind::Deny => (theme.error, Some(theme.error.opacity(0.10)), theme.fg),
-        ButtonKind::Plain => (theme.border, None, theme.fg),
-    };
-    let hover = theme.hover;
-    let mut button = div()
-        .id(id.into())
-        .flex_none()
-        .px(px(tokens.spacing * 2.5))
-        .h(px(tokens.sidebar_row))
-        .flex()
-        .items_center()
-        .gap(px(tokens.spacing))
-        .rounded(px(tokens.radius - 1.0))
-        .border_1()
-        .border_color(border)
-        .text_size(px(tokens.font_size))
-        .when_some(fill, |s, fill| s.bg(fill))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(label.into());
-    if enabled {
-        button = button
-            .text_color(text)
-            .cursor_pointer()
-            .hover(move |s| s.bg(hover));
-    } else {
-        button = button.text_color(theme.muted).opacity(0.55);
-    }
-    button
+    ui::button(id, label, kind, enabled, &look.theme, &look.tokens)
+}
+
+/// A round icon button (see [`ui::round_button`]).
+pub fn round_button(
+    id: impl Into<gpui::ElementId>,
+    glyph: impl Into<SharedString>,
+    primary: bool,
+    enabled: bool,
+    size: f32,
+    look: &Look,
+) -> gpui::Stateful<gpui::Div> {
+    ui::round_button(id, glyph, primary, enabled, size, &look.theme)
 }
 
 /// A small label in a tone's color ("exit 0", "running").
 pub fn pill(text: impl Into<SharedString>, color: Hsla, look: &Look) -> gpui::Div {
-    let tokens = &look.tokens;
-    div()
-        .flex_none()
-        .px(px(tokens.spacing * 1.5))
-        .rounded(px(tokens.radius))
-        .border_1()
-        .border_color(color.opacity(0.5))
-        .text_color(color)
-        .text_size(px(tokens.section_font_size + 1.0))
-        .child(text.into())
+    ui::pill(text, color, &look.tokens)
 }
 
 /// `12 ms`, `1.2 s`, `2 m 3 s`.

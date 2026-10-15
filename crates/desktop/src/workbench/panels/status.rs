@@ -48,11 +48,11 @@ pub enum Tone {
 }
 
 fn clickable(id: &'static str, ctx: &StatusContext<'_>) -> gpui::Stateful<gpui::Div> {
-    let hover = ctx.theme.hover;
+    let hover = ctx.theme.surface_hover;
     div()
         .id(id)
-        .px(px(4.0))
-        .rounded(px(3.0))
+        .px(px(6.0))
+        .rounded(px(ctx.density.ui().radius - 2.0))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
 }
@@ -75,7 +75,7 @@ pub fn builtin_status_items() -> StatusItemRegistry {
             let color = match tone {
                 Tone::Ok => ctx.theme.success,
                 Tone::Warn => ctx.theme.warning,
-                Tone::Error => ctx.theme.error,
+                Tone::Error => ctx.theme.danger,
                 Tone::Muted => ctx.theme.muted,
             };
             let epoch = ctx.data.epoch.clone().map_or_else(

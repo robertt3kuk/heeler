@@ -12,7 +12,7 @@ use gpui::{
     Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ModifiersChangedEvent,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
     ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Styled,
-    Subscription, Task, UTF16Selection, Window, actions, div, point, px, rgba,
+    Subscription, Task, UTF16Selection, Window, actions, div, point, px,
 };
 use hutan_protocol::blocks::{Block, BlockPart, BlockState};
 use hutan_protocol::messages::TerminalSize;
@@ -1968,7 +1968,7 @@ impl Render for TerminalView {
                         .right_0()
                         .px(px(10.))
                         .py(px(4.))
-                        .bg(rgba(0x000000b3))
+                        .bg(hsla(self.theme.background()).opacity(0.85))
                         .text_color(hsla(self.theme.foreground()))
                         .text_size(px(12.))
                         .child(text),

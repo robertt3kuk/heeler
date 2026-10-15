@@ -27,6 +27,7 @@ use super::model::{FocusTarget, ItemRef, PaneId};
 use super::panels::AssistantPanel;
 use super::render::probe;
 use super::terminals::session_of_item;
+use super::ui::StyledExt as _;
 use super::view::{Region, Workbench};
 use crate::settings::ChatSettings;
 use crate::theme::DensityExt as _;
@@ -424,7 +425,7 @@ impl Workbench {
         let picker = self.agent_picker.clone()?;
         let theme = self.theme;
         let tokens = self.density.ui();
-        let hover = theme.hover;
+        let hover = theme.surface_hover;
         let look = Look::of(cx);
         let agents = AGENTS.map(|(id, name, later)| {
             let row = div()
@@ -433,13 +434,13 @@ impl Workbench {
                 .gap(px(tokens.spacing * 2.0))
                 .h(px(tokens.sidebar_row))
                 .px(px(tokens.spacing * 2.0))
-                .rounded(px(tokens.radius - 2.0))
+                .rounded(px(tokens.radius))
                 .child(div().w(px(14.0)).text_color(theme.muted).child("◆"))
                 .child(div().child(name));
             match later {
                 None => row
                     .id("agent-codex")
-                    .when(!picker.direct, |s| s.bg(theme.accent.opacity(0.25)))
+                    .when(!picker.direct, |s| s.bg(theme.accent_soft))
                     .cursor_pointer()
                     .when(!picker.creating, |s| {
                         s.on_click(cx.listener(|this, _, window, cx| this.new_agent(window, cx)))
@@ -466,11 +467,11 @@ impl Workbench {
                 button(
                     format!("agent-provider-{id}"),
                     format!("Direct model · {}", provider.name),
-                    ButtonKind::Plain,
+                    ButtonKind::Secondary,
                     !picker.creating,
                     &look,
                 )
-                .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
+                .when(selected, |s| s.bg(theme.accent_soft))
                 .on_click(cx.listener(move |this, _, _, cx| this.choose_direct_provider(&id, cx)))
                 .into_any_element()
             })
@@ -491,9 +492,9 @@ impl Workbench {
                     .gap(px(tokens.spacing * 2.0))
                     .h(px(tokens.sidebar_row))
                     .px(px(tokens.spacing * 2.0))
-                    .rounded(px(tokens.radius - 2.0))
+                    .rounded(px(tokens.radius))
                     .cursor_pointer()
-                    .when(selected, |s| s.bg(theme.accent.opacity(0.25)))
+                    .when(selected, |s| s.bg(theme.accent_soft))
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.agent_picker_choose(index, cx);
@@ -518,7 +519,7 @@ impl Workbench {
                             .min_w_0()
                             .truncate()
                             .text_color(theme.muted)
-                            .text_size(px(tokens.section_font_size + 1.0))
+                            .text_size(px(tokens.secondary_font_size))
                             .child(SharedString::from(model.description.clone())),
                     )
                     .child(probe(&self.regions, Region::AgentModel(index)))
@@ -526,11 +527,11 @@ impl Workbench {
             })
             .collect();
         let note: Option<(SharedString, gpui::Hsla)> = match (&picker.models, &picker.error) {
-            (_, Some(error)) => Some((format!("Could not start: {error}").into(), theme.error)),
+            (_, Some(error)) => Some((format!("Could not start: {error}").into(), theme.danger)),
             (Models::Loading, _) => Some(("Loading the models…".into(), theme.muted)),
             (Models::Failed(error), _) => Some((
                 format!("Could not list the models: {error}").into(),
-                theme.error,
+                theme.danger,
             )),
             (Models::Ready(_), _) if picker.shown().is_empty() => {
                 Some(("The agent offers no models.".into(), theme.muted))
@@ -547,7 +548,7 @@ impl Workbench {
                 .px(px(tokens.spacing * 2.0))
                 .pt(px(tokens.spacing * 2.0))
                 .text_size(px(tokens.section_font_size))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme.muted)
                 .child(text)
         };
@@ -573,12 +574,8 @@ impl Workbench {
                         .flex()
                         .flex_col()
                         .gap(px(tokens.spacing))
+                        .popover(&theme, &tokens)
                         .p(px(tokens.spacing * 2.0))
-                        .rounded(px(tokens.radius + 4.0))
-                        .bg(theme.overlay)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                             let Some(picker) = &mut this.agent_picker else {
@@ -615,7 +612,7 @@ impl Workbench {
                                 .items_center()
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(if picker.switch_session.is_some() {
                                     "Switch model"
                                 } else if picker.direct {
@@ -625,7 +622,7 @@ impl Workbench {
                                 }),
                         )
                         .when(picker.switch_session.is_none(), |s| {
-                            s.child(section("AGENT")).children(agents)
+                            s.child(section("Agent")).children(agents)
                         })
                         .children(providers)
                         .when(self.providers.providers.is_empty(), |s| {
@@ -633,7 +630,7 @@ impl Workbench {
                                 button(
                                     "agent-manage-models",
                                     "Direct model · Add a provider…",
-                                    ButtonKind::Plain,
+                                    ButtonKind::Secondary,
                                     true,
                                     &look,
                                 )
@@ -645,7 +642,7 @@ impl Workbench {
                                 )),
                             )
                         })
-                        .child(section("MODEL"))
+                        .child(section("Model"))
                         .child(
                             div().child(SharedString::from(if picker.model_query.is_empty() {
                                 "Type to filter models".to_owned()
@@ -666,7 +663,7 @@ impl Workbench {
                                 .text_color(color)
                                 .child(text)
                         }))
-                        .child(section("FOLDER"))
+                        .child(section("Folder"))
                         .child(
                             div()
                                 .px(px(tokens.spacing * 2.0))
@@ -681,7 +678,7 @@ impl Workbench {
                                     button(
                                         "agent-system-prompt",
                                         "System prompt…",
-                                        ButtonKind::Plain,
+                                        ButtonKind::Secondary,
                                         true,
                                         &look,
                                     )
@@ -703,7 +700,7 @@ impl Workbench {
                                     button(
                                         "agent-cancel",
                                         "Cancel",
-                                        ButtonKind::Plain,
+                                        ButtonKind::Ghost,
                                         true,
                                         &look,
                                     )
