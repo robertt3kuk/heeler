@@ -58,3 +58,7 @@ python3 -m http.server 8765 --directory 06-animated
 cd source
 python3 make_mascot.py && python3 make_anim.py
 ```
+
+## GitHub
+
+`social-preview.png` (1280×640) is the repository social preview: GitHub → Settings → General → Social preview → Upload an image.

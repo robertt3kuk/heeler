@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="assets/brand/01-logo-classic/hutan-logo.png" alt="hutan — code from the canopy" width="640">
+</p>
+
 # Hutan
 
 **A native macOS agentic development environment in Rust.** *Code from the canopy.* A real terminal emulator and an AI-agent workspace in one GPUI app. It runs on a separate daemon (`hutand`) that keeps your shells, coding agents and chats alive when the window is closed. *Hutan* is Malay and Indonesian for "forest", as in *orang-hutan*, "person of the forest", which is our mascot.
 
-> **Status: pre-alpha, macOS only, not released.** The first vertical slice (milestones M0–M6) is nearly complete. Native notifications and launch-at-login (M6-B) are still open, and several UI surfaces have not had a visual review yet. Expect breaking protocol changes. See [`docs/status.md`](docs/status.md) and [`docs/roadmap.md`](docs/roadmap.md).
+> **Status: pre-alpha, macOS only, not released.** The first vertical slice (milestones M0–M6) is nearly complete: native notifications work; keep-running at login, the menu bar item and the Dock badge (M6-C) are in progress, and several UI surfaces have not had a visual review yet. Expect breaking protocol changes. See [`docs/status.md`](docs/status.md) and [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Why
 
@@ -23,9 +27,28 @@
 | Agent monitor | Live state (working/blocked/idle) of agents and subagents from Codex, Claude Code hooks and the OMP extension |
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
 | Assistant | ⌥Space opens a quick chat, global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
-| History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume** |
-| Notifications (API) | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready); `hutan notify watch` prints them. With `Hutan.app` the daemon also posts them as macOS notifications (Approve/Deny from the banner) |
-| App bundle | `just bundle` builds an ad-hoc signed `Hutan.app` (desktop, daemon, CLI) |
+| History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume**, Reveal File and Open Block |
+| Notifications | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready). `Hutan.app` posts them as macOS notifications: **Allow once** on the banner answers the agent's approval; `hutan notify watch` prints them anywhere |
+| Worktrees | `hutan wt new/ls/rm`, `hutan new --worktree <branch>`; every session shows `main` or `wt <branch>`, with a warning when two agents work in one checkout |
+| Session environment | New terminals start from your login environment, like Terminal.app; commands you run directly get the `PATH` your login shell builds |
+| App bundle | `just bundle` builds an ad-hoc signed `Hutan.app` (desktop, daemon, CLI) with the orangutan icon |
+
+## The mascot
+
+One orangutan, many moods: each state of the interface has its face.
+
+<p align="center">
+  <img src="assets/brand/05-mascot/png/state-thinking@2x.png" alt="thinking: an agent is working" width="96">
+  <img src="assets/brand/05-mascot/png/state-success@2x.png" alt="success: tests passed" width="96">
+  <img src="assets/brand/05-mascot/png/state-error@2x.png" alt="error: the build failed" width="96">
+  <img src="assets/brand/05-mascot/png/state-focus@2x.png" alt="focus mode" width="96">
+  <img src="assets/brand/05-mascot/png/state-wink@2x.png" alt="onboarding tip" width="96">
+  <img src="assets/brand/05-mascot/png/state-sleep@2x.png" alt="idle" width="96">
+  <img src="assets/brand/05-mascot/png/state-empty@2x.png" alt="nothing here yet" width="96">
+  <img src="assets/brand/05-mascot/png/state-404-hanging@2x.png" alt="404: hang on" width="96">
+</p>
+
+Icons, logos, angles, animated SVGs and the scripts that generate them live in [`assets/brand/`](assets/brand/README.md); `just icon` renders the app icon from `assets/brand/05-mascot/svg/icon-dark.svg`.
 
 ## Architecture
 
@@ -129,7 +152,7 @@ Running the bundle is safe to try. Registering it as a launch agent and native n
 ## Development
 
 ```sh
-just check     # fmt + clippy -D warnings + nextest (about 1360 tests) + cargo-deny; must be green before a merge
+just check     # fmt + clippy -D warnings + nextest (about 1460 tests) + cargo-deny; must be green before a merge
 just bench     # performance budgets B1–B6 (docs/perf.md)
 just fmt
 ```
