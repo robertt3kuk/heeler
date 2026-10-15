@@ -1,5 +1,5 @@
-//! Integration tests: the daemon runs in-process on a temporary `HEELER_HOME` layout and is
-//! driven over its real Unix socket by `heeler-client` (or raw frames where the client
+//! Integration tests: the daemon runs in-process on a temporary `STAFFY_HOME` layout and is
+//! driven over its real Unix socket by `staffy-client` (or raw frames where the client
 //! deliberately cannot misbehave).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -8,15 +8,15 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use heeler_client::{Client, ClientError, ConnectOptions};
-use heeler_core::{Epoch, Seq, SessionId, WorkspaceId};
-use heeler_daemon::{DaemonConfig, DaemonError, Paths, RunningDaemon};
-use heeler_protocol::messages::{
+use staffy_client::{Client, ClientError, ConnectOptions};
+use staffy_core::{Epoch, Seq, SessionId, WorkspaceId};
+use staffy_daemon::{DaemonConfig, DaemonError, Paths, RunningDaemon};
+use staffy_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Event, Hello, Request,
     ResumeOutcome, ResumePoint, SessionRef, SessionSnapshot, Subscribed, WorkspaceCreate,
     WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceRef, WorkspaceRename,
 };
-use heeler_protocol::{
+use staffy_protocol::{
     ControlMessage, ErrorBody, ErrorCode, FrameCodec, PROTOCOL_VERSION, ProtocolVersion,
 };
 use tempfile::TempDir;
@@ -49,7 +49,7 @@ impl TestDaemon {
         let paths = Paths::in_home(dir.path());
         let mut config = DaemonConfig::new(paths.clone());
         tweak(&mut config);
-        let daemon = heeler_daemon::start(config).await.unwrap();
+        let daemon = staffy_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,
@@ -106,7 +106,7 @@ async fn assert_no_event(rx: &mut broadcast::Receiver<(Seq, Event)>) {
     assert!(got.is_err(), "unexpected event: {got:?}");
 }
 
-/// A bare protocol peer for exercising paths `heeler-client` never takes.
+/// A bare protocol peer for exercising paths `staffy-client` never takes.
 struct Raw {
     reader: FramedRead<OwnedReadHalf, FrameCodec>,
     writer: FramedWrite<OwnedWriteHalf, FrameCodec>,
@@ -268,8 +268,8 @@ async fn unknown_methods_and_failed_requests_do_not_close_the_connection() {
 
     // Binary frames from clients are accepted and ignored.
     raw.writer
-        .send(heeler_protocol::Frame::terminal_input(
-            heeler_core::TerminalId(7),
+        .send(staffy_protocol::Frame::terminal_input(
+            staffy_core::TerminalId(7),
             b"ls\n",
         ))
         .await
@@ -595,7 +595,7 @@ async fn client_that_never_reads_is_disconnected_while_others_keep_receiving() {
 async fn second_daemon_on_the_same_home_fails_to_start() {
     let t = TestDaemon::start().await;
 
-    let second = heeler_daemon::start(DaemonConfig::new(t.paths.clone())).await;
+    let second = staffy_daemon::start(DaemonConfig::new(t.paths.clone())).await;
     match second {
         Err(DaemonError::AlreadyRunning { lock }) => assert_eq!(lock, t.paths.lock),
         other => panic!("expected AlreadyRunning, got {other:?}"),
@@ -630,7 +630,7 @@ async fn shutdown_replies_removes_socket_and_releases_lock() {
     assert!(!t.paths.socket.exists(), "socket must be removed");
 
     // The lock is free again: a new daemon starts on the same home.
-    let again = heeler_daemon::start(DaemonConfig::new(t.paths.clone()))
+    let again = staffy_daemon::start(DaemonConfig::new(t.paths.clone()))
         .await
         .unwrap();
     again.shutdown();
@@ -646,7 +646,7 @@ async fn stale_socket_from_a_dead_daemon_is_replaced() {
     drop(StdUnixListener::bind(&paths.socket).unwrap());
     assert!(paths.socket.exists());
 
-    let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     let client = Client::connect(ConnectOptions {
@@ -697,19 +697,19 @@ async fn socket_is_private_and_pending_calls_fail_when_the_daemon_stops() {
 // client autostart -------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn client_autostarts_heelerd_when_the_socket_is_absent() {
+async fn client_autostarts_staffyd_when_the_socket_is_absent() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::in_home(dir.path().join("home"));
     // `ConnectOptions` cannot carry environment, so a wrapper pins the daemon to the temp home.
-    let wrapper = dir.path().join("heelerd-wrapper.sh");
+    let wrapper = dir.path().join("staffyd-wrapper.sh");
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nexport HEELER_HOME='{}'\nexec '{}'\n",
+            "#!/bin/sh\nexport STAFFY_HOME='{}'\nexec '{}'\n",
             paths.base.display(),
-            env!("CARGO_BIN_EXE_heelerd"),
+            env!("CARGO_BIN_EXE_staffyd"),
         ),
     )
     .unwrap();

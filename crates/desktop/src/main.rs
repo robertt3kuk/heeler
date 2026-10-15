@@ -1,3 +1,3 @@
 fn main() {
-    heeler_desktop::app::run();
+    staffy_desktop::app::run();
 }

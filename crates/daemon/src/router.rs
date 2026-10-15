@@ -6,14 +6,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
-use heeler_core::TerminalId;
-use heeler_protocol::chat::ChatSent;
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
-use heeler_protocol::notify::NotifyList;
-use heeler_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use serde::Serialize;
 use serde_json::Value;
+use staffy_core::TerminalId;
+use staffy_protocol::chat::ChatSent;
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
+use staffy_protocol::notify::NotifyList;
+use staffy_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -264,7 +264,7 @@ impl Router {
     }
 
     /// The session must be a chat session with a running agent.
-    async fn live_chat(&self, id: heeler_core::SessionId) -> Result<(), ErrorBody> {
+    async fn live_chat(&self, id: staffy_core::SessionId) -> Result<(), ErrorBody> {
         if self.registry.chat_target(id).await? {
             Ok(())
         } else {

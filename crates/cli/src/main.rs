@@ -1,4 +1,4 @@
-//! `heeler`: command-line client for heelerd.
+//! `staffy`: command-line client for staffyd.
 
 mod args;
 mod attach_spec;
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("heeler: starting the async runtime: {e}");
+            eprintln!("staffy: starting the async runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
         Err(error) => {
             if !error.is_broken_pipe() && !matches!(error, error::CliError::Reported) {
                 // Not `eprintln!`: that panics when stderr is gone (attach after a hangup).
-                let _ = writeln!(std::io::stderr(), "heeler: {error}");
+                let _ = writeln!(std::io::stderr(), "staffy: {error}");
             }
             ExitCode::from(error.exit_code())
         }

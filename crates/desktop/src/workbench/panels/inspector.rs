@@ -6,10 +6,10 @@ use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use heeler_core::SessionKind;
-use heeler_protocol::blocks::BlockState;
-use heeler_protocol::messages::SessionInfo;
-use heeler_terminal_view::blocks::{self as block_ui, Tone};
+use staffy_core::SessionKind;
+use staffy_protocol::blocks::BlockState;
+use staffy_protocol::messages::SessionInfo;
+use staffy_terminal_view::blocks::{self as block_ui, Tone};
 
 use super::common::{age_label, format_utc, panel_header, state_dot, tone_color};
 use crate::settings::InspectorPanelSettings;
@@ -105,7 +105,7 @@ impl InspectorPanel {
         let store = self.env.sessions.read(cx);
         let presentation = store.presentation(info);
         let state = match &info.state {
-            heeler_core::SessionState::Exited { code, signal } => {
+            staffy_core::SessionState::Exited { code, signal } => {
                 let mut text = "exited".to_owned();
                 if let Some(code) = code {
                     text.push_str(&format!(" with code {code}"));
@@ -115,7 +115,7 @@ impl InspectorPanel {
                 }
                 text
             }
-            heeler_core::SessionState::Failed { reason } => format!("failed: {reason}"),
+            staffy_core::SessionState::Failed { reason } => format!("failed: {reason}"),
             _ => presentation.label.clone(),
         };
         let size = store
@@ -176,7 +176,7 @@ impl InspectorPanel {
     /// One pending request: what is asked, in which session, and a button per offered option.
     fn approval_row(
         &self,
-        approval: &heeler_protocol::chat::ApprovalInfo,
+        approval: &staffy_protocol::chat::ApprovalInfo,
         theme: &crate::theme::Theme,
         tokens: &crate::theme::Tokens,
         cx: &mut Context<Self>,

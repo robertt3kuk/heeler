@@ -1,6 +1,6 @@
 [package]
-name = "heeler-core"
-description = "Heeler domain types and state machines (no I/O)"
+name = "staffy-core"
+description = "Staffy domain types and state machines (no I/O)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

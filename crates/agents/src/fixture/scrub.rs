@@ -15,7 +15,7 @@ const DROPPED_METHODS: &[&str] = &["account/rateLimits/updated"];
 /// Keys removed wherever they appear: account-specific catalog entries.
 const DROPPED_KEYS: &[&str] = &["availableAccessPrograms"];
 
-const FIXTURE_CWD: &str = "/tmp/heeler-fixture";
+const FIXTURE_CWD: &str = "/tmp/staffy-fixture";
 const FIXTURE_CODEX_HOME: &str = "/tmp/codex-home";
 const FIXTURE_HOST: &str = "host.local";
 const FIXTURE_ROLLOUT: &str = "/tmp/codex-home/sessions/rollout-fixture.jsonl";
@@ -53,7 +53,7 @@ static PROVIDER_ID: LazyLock<Regex> =
 static FIXTURE_PROVIDER_ID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-z]+_fixture_(\d+)$"));
 static TEMP_DIR: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?:/private)?/var/folders/[^/\s]+/[^/\s]+/T/[A-Za-z0-9._-]+|/tmp/heeler-rec-[A-Za-z0-9_-]+",
+        r"(?:/private)?/var/folders/[^/\s]+/[^/\s]+/T/[A-Za-z0-9._-]+|/tmp/staffy-rec-[A-Za-z0-9_-]+",
     )
 });
 static ROLLOUT: LazyLock<Regex> = LazyLock::new(|| re(r"^/.*/sessions/.*rollout-.*\.jsonl$"));
@@ -259,11 +259,11 @@ mod tests {
     use super::*;
 
     const RAW: &str = r#"
-{"dir":"in","t":1.5,"msg":{"id":1,"result":{"userAgent":"heeler/0.162.1 (Mac OS 26.6.2; arm64) Orca/1.4 (heeler; 0.1.0)","codexHome":"/private/tmp/m4a/codex-home","platformOs":"macos"}}}
+{"dir":"in","t":1.5,"msg":{"id":1,"result":{"userAgent":"staffy/0.162.1 (Mac OS 26.6.2; arm64) Orca/1.4 (staffy; 0.1.0)","codexHome":"/private/tmp/m4a/codex-home","platformOs":"macos"}}}
 {"dir":"in","t":1.6,"msg":{"method":"remoteControl/status/changed","params":{"serverName":"workies-MacBook-Air.local","installationId":"5bdf5e69-6440-473e-9530-369290aacf28"}}}
 {"dir":"in","t":1.7,"msg":{"method":"account/rateLimits/updated","params":{"rateLimits":{}}}}
 {"dir":"in","t":1.8,"msg":{"method":"account/updated","params":{"authMode":"chatgpt","planType":"plus"}}}
-{"dir":"in","t":1.9,"msg":{"method":"item/started","params":{"threadId":"01a13bfd-6208-7f30-ab9c-2a84706d72d8","item":{"id":"msg_0f75b2f5d2998cd5016acfde949f9c8191","cwd":"/var/folders/f8/abc/T/heeler-rec-s2gy8xlb","text":"mail me@example.org"},"path":"/Users/x/.codex/sessions/2026/10/15/rollout-2026-10-15T00-57-03-01a13bfd-6208-7f30-ab9c-2a84706d72d8.jsonl"}}}
+{"dir":"in","t":1.9,"msg":{"method":"item/started","params":{"threadId":"01a13bfd-6208-7f30-ab9c-2a84706d72d8","item":{"id":"msg_0f75b2f5d2998cd5016acfde949f9c8191","cwd":"/var/folders/f8/abc/T/staffy-rec-s2gy8xlb","text":"mail me@example.org"},"path":"/Users/x/.codex/sessions/2026/10/15/rollout-2026-10-15T00-57-03-01a13bfd-6208-7f30-ab9c-2a84706d72d8.jsonl"}}}
 "#;
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
         assert!(!out.contains("/var/folders"), "{out}");
         assert!(!out.contains("me@example.org"), "{out}");
         assert!(!out.contains("\"t\""), "timestamps are dropped: {out}");
-        assert!(out.contains("heeler/0.162.1 (Mac OS; arm64)"), "{out}");
+        assert!(out.contains("staffy/0.162.1 (Mac OS; arm64)"), "{out}");
         assert!(out.contains(FIXTURE_CWD), "{out}");
         assert!(out.contains("msg_fixture_1"), "{out}");
         assert!(

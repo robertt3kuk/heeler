@@ -14,21 +14,21 @@ use std::path::{Path, PathBuf};
 /// File name inside the log directory.
 pub const LOG_FILE: &str = "desktop.log";
 
-/// The directory the desktop and the daemon log into: `$HEELER_HOME/logs`, else
-/// `~/Library/Logs/Heeler` (architecture.md § Paths). `None` when neither is known. The one
-/// place this is decided: `desktop.log` here, `heelerd.log` in `workbench::daemon`.
-pub fn log_dir_from(heeler_home: Option<OsString>, user_home: Option<OsString>) -> Option<PathBuf> {
-    match heeler_home.filter(|h| !h.is_empty()) {
+/// The directory the desktop and the daemon log into: `$STAFFY_HOME/logs`, else
+/// `~/Library/Logs/Staffy` (architecture.md § Paths). `None` when neither is known. The one
+/// place this is decided: `desktop.log` here, `staffyd.log` in `workbench::daemon`.
+pub fn log_dir_from(staffy_home: Option<OsString>, user_home: Option<OsString>) -> Option<PathBuf> {
+    match staffy_home.filter(|h| !h.is_empty()) {
         Some(home) => Some(PathBuf::from(home).join("logs")),
         None => user_home
             .filter(|h| !h.is_empty())
-            .map(|home| PathBuf::from(home).join("Library/Logs/Heeler")),
+            .map(|home| PathBuf::from(home).join("Library/Logs/Staffy")),
     }
 }
 
 /// [`log_dir_from`] over the process environment.
 pub fn log_dir() -> Option<PathBuf> {
-    log_dir_from(std::env::var_os("HEELER_HOME"), std::env::var_os("HOME"))
+    log_dir_from(std::env::var_os("STAFFY_HOME"), std::env::var_os("HOME"))
 }
 
 /// `desktop.log` inside [`log_dir`].
@@ -45,7 +45,7 @@ pub fn report_text(
     backtrace: &str,
 ) -> String {
     format!(
-        "[{unix_secs}] heeler-desktop panicked on thread '{thread}' at {location}: {message}\n{backtrace}\n"
+        "[{unix_secs}] staffy-desktop panicked on thread '{thread}' at {location}: {message}\n{backtrace}\n"
     )
 }
 
@@ -91,7 +91,7 @@ pub fn install(path: PathBuf) {
             &Backtrace::force_capture().to_string(),
         );
         if let Err(err) = append_report(&path, &text) {
-            eprintln!("heeler-desktop: cannot write {}: {err}", path.display());
+            eprintln!("staffy-desktop: cannot write {}: {err}", path.display());
         }
         previous(info);
     }));
@@ -102,14 +102,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heeler_home_logs_dir_wins_then_library_logs() {
+    fn staffy_home_logs_dir_wins_then_library_logs() {
         assert_eq!(
             log_dir_from(Some("/tmp/hh".into()), Some("/Users/x".into())),
             Some(PathBuf::from("/tmp/hh/logs"))
         );
         assert_eq!(
             log_dir_from(None, Some("/Users/x".into())),
-            Some(PathBuf::from("/Users/x/Library/Logs/Heeler"))
+            Some(PathBuf::from("/Users/x/Library/Logs/Staffy"))
         );
         assert_eq!(
             log_dir_from(Some("".into()), Some("/Users/x".into())),

@@ -60,7 +60,7 @@ fn id(text: impl Into<SharedString>) -> ElementId {
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_appearance(window, cx);
-        let title = format!("{} — Heeler", self.active_title(cx));
+        let title = format!("{} — Staffy", self.active_title(cx));
         if title != self.last_title {
             window.set_window_title(&title);
             self.last_title = title;
@@ -195,7 +195,7 @@ impl Workbench {
             }),
         )
         .on_action(cx.listener(|this, _: &actions::About, _, cx| {
-            this.set_notice(concat!("Heeler desktop ", env!("CARGO_PKG_VERSION")), cx);
+            this.set_notice(concat!("Staffy desktop ", env!("CARGO_PKG_VERSION")), cx);
         }))
         .on_action(
             cx.listener(|_, _: &actions::MinimizeWindow, window, _| window.minimize_window()),
@@ -391,7 +391,7 @@ impl Workbench {
             }),
         )
         .on_action(
-            cx.listener(|this, _: &heeler_terminal_view::SendBlockToAgent, _, cx| {
+            cx.listener(|this, _: &staffy_terminal_view::SendBlockToAgent, _, cx| {
                 this.set_notice(
                     "Focus a terminal with a finished command to send it to an agent",
                     cx,
@@ -629,7 +629,7 @@ impl Workbench {
         .on_action(
             cx.listener(|this, _: &actions::AddFolderToWorkspace, window, cx| {
                 match this.active_workspace_info(cx) {
-                    Some(info) if info.kind == heeler_protocol::messages::WorkspaceKind::Home => {
+                    Some(info) if info.kind == staffy_protocol::messages::WorkspaceKind::Home => {
                         this.set_notice("Home has one folder; change it in daemon.toml", cx);
                     }
                     Some(info) => this.add_workspace_folder(info.id, window, cx),
@@ -1553,7 +1553,7 @@ impl Workbench {
                 workspace: store.active_workspace().map(|w| w.name.clone()),
                 needs_you: store.needs_you().len(),
                 approvals: store.approvals().len(),
-                terminal_theme: heeler_settings::themes::resolve(
+                terminal_theme: staffy_settings::themes::resolve(
                     &self.terminal_settings.theme,
                     super::view::system_appearance(self.appearance),
                 )

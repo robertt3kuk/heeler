@@ -1,7 +1,7 @@
 //! Automatic shell integration over real PTYs: zsh, bash and fish started the way the daemon
 //! starts them (login shell or explicit program) with a throwaway `HOME`. Shells that are not
 //! installed are skipped with a message. Extra bash builds can be tested with
-//! `HEELER_TEST_BASH=/path/to/bash`.
+//! `STAFFY_TEST_BASH=/path/to/bash`.
 #![allow(clippy::expect_used, clippy::panic)] // tests assert by panicking
 
 use std::collections::BTreeMap;
@@ -10,17 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::TerminalSnapshot;
-use heeler_terminal::shell_integration;
-use heeler_terminal::{PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
 use parking_lot::Mutex;
+use staffy_protocol::messages::TerminalSize;
+use staffy_protocol::render::TerminalSnapshot;
+use staffy_terminal::shell_integration;
+use staffy_terminal::{PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::timeout;
 
 const LIMIT: Duration = Duration::from_secs(20);
 /// The user's prompt is `PROMPT` plus a space; the screen text drops trailing blanks.
-const PROMPT: &str = "HEELER-TEST-PROMPT>";
+const PROMPT: &str = "STAFFY-TEST-PROMPT>";
 
 fn text(snapshot: &TerminalSnapshot) -> String {
     snapshot
@@ -178,14 +178,14 @@ fn write(path: &Path, content: &str) {
 }
 
 fn write_user_files(s: &Scenario, home: &Path, zdotdir: &Path) {
-    let log = r#"echo NAME >> "$HEELER_TEST_LOG""#;
+    let log = r#"echo NAME >> "$STAFFY_TEST_LOG""#;
     let log = |name: &str| log.replace("NAME", name);
     match s.kind {
         Kind::Zsh => {
             let prompt = if s.prompt_framework {
-                "fw_precmd() { false; PS1='HEELER-TEST-PROMPT> ' }\nprecmd_functions+=(fw_precmd)\n"
+                "fw_precmd() { false; PS1='STAFFY-TEST-PROMPT> ' }\nprecmd_functions+=(fw_precmd)\n"
             } else {
-                "PS1='HEELER-TEST-PROMPT> '\n"
+                "PS1='STAFFY-TEST-PROMPT> '\n"
             };
             for name in ["zshenv", "zprofile", "zlogin"] {
                 write(&zdotdir.join(format!(".{name}")), &(log(name) + "\n"));
@@ -193,7 +193,7 @@ fn write_user_files(s: &Scenario, home: &Path, zdotdir: &Path) {
             write(
                 &zdotdir.join(".zshrc"),
                 &format!(
-                    "{}\nexport HEELER_TEST_COUNT=$((${{HEELER_TEST_COUNT:-0}}+1))\n{prompt}",
+                    "{}\nexport STAFFY_TEST_COUNT=$((${{STAFFY_TEST_COUNT:-0}}+1))\n{prompt}",
                     log("zshrc")
                 ),
             );
@@ -210,14 +210,14 @@ fn write_user_files(s: &Scenario, home: &Path, zdotdir: &Path) {
                 &format!("{}\n. \"$HOME/.bashrc\"\n", log("profile")),
             );
             let prompt = if s.prompt_framework {
-                "fw_prompt() { false; PS1='HEELER-TEST-PROMPT> '; }\nPROMPT_COMMAND=fw_prompt\n"
+                "fw_prompt() { false; PS1='STAFFY-TEST-PROMPT> '; }\nPROMPT_COMMAND=fw_prompt\n"
             } else {
-                "PS1='HEELER-TEST-PROMPT> '\n"
+                "PS1='STAFFY-TEST-PROMPT> '\n"
             };
             write(
                 &home.join(".bashrc"),
                 &format!(
-                    "{}\nexport HEELER_TEST_COUNT=$((${{HEELER_TEST_COUNT:-0}}+1))\n{prompt}",
+                    "{}\nexport STAFFY_TEST_COUNT=$((${{STAFFY_TEST_COUNT:-0}}+1))\n{prompt}",
                     log("bashrc")
                 ),
             );
@@ -225,7 +225,7 @@ fn write_user_files(s: &Scenario, home: &Path, zdotdir: &Path) {
         Kind::Fish => write(
             &home.join(".config/fish/config.fish"),
             &format!(
-                "{}\nset -gx HEELER_TEST_COUNT (math \"0$HEELER_TEST_COUNT + 1\")\n\
+                "{}\nset -gx STAFFY_TEST_COUNT (math \"0$STAFFY_TEST_COUNT + 1\")\n\
                  function fish_prompt\n    echo -n '{PROMPT} '\nend\n",
                 log("config")
             ),
@@ -254,14 +254,14 @@ async fn run(s: Scenario) {
     std::os::unix::fs::symlink(&home, &start).expect("symlink");
     let log = root.join("rc.log");
     write_user_files(&s, &home, &zdotdir);
-    let heeler_home = root.join("heeler-home");
-    let integration_dir = shell_integration::install(&heeler_home).expect("install");
+    let staffy_home = root.join("staffy-home");
+    let integration_dir = shell_integration::install(&staffy_home).expect("install");
 
     let xdg_original = root.join("xdg-original");
     let mut env: BTreeMap<String, String> = BTreeMap::from([
         ("HOME".into(), home.to_string_lossy().into_owned()),
         ("SHELL".into(), s.shell.to_string_lossy().into_owned()),
-        ("HEELER_TEST_LOG".into(), log.to_string_lossy().into_owned()),
+        ("STAFFY_TEST_LOG".into(), log.to_string_lossy().into_owned()),
         (
             "XDG_CONFIG_HOME".into(),
             home.join(".config").to_string_lossy().into_owned(),
@@ -318,7 +318,7 @@ async fn run(s: Scenario) {
     let collected = Collected::start(&term);
 
     wait_for(&term, "custom prompt", |screen| screen.contains(PROMPT)).await;
-    let marking = s.integration && !s.extra_env.contains(&("HEELER_SHELL_INTEGRATION", "0"));
+    let marking = s.integration && !s.extra_env.contains(&("STAFFY_SHELL_INTEGRATION", "0"));
     // zsh loads the integration on its first prompt, after a prompt framework's hook already
     // rebuilt PS1, so in that setup the first prompt carries no marks (documented limitation).
     let first_prompt_marked = !(s.prompt_framework && s.kind == Kind::Zsh);
@@ -383,9 +383,9 @@ async fn run(s: Scenario) {
     } else {
         ""
     };
-    let probe = "sh -c 'echo \"ZD=[$ZDOTDIR] XDG=[$XDG_DATA_DIRS] VER=[$HEELER_SHELL_INTEGRATION_VERSION] \
-                 COUNT=[$HEELER_TEST_COUNT] LEAK=[$HEELER_ORIG_ZDOTDIR$HEELER_ORIG_XDG_DATA_DIRS\
-                 $HEELER_XDG_DATA_DIRS_UNSET$HEELER_BASH_INJECT$HEELER_BASH_RCFILE]\"'\n";
+    let probe = "sh -c 'echo \"ZD=[$ZDOTDIR] XDG=[$XDG_DATA_DIRS] VER=[$STAFFY_SHELL_INTEGRATION_VERSION] \
+                 COUNT=[$STAFFY_TEST_COUNT] LEAK=[$STAFFY_ORIG_ZDOTDIR$STAFFY_ORIG_XDG_DATA_DIRS\
+                 $STAFFY_XDG_DATA_DIRS_UNSET$STAFFY_BASH_INJECT$STAFFY_BASH_RCFILE]\"'\n";
     term.write_input(probe.as_bytes()).expect("write");
     let expected = format!(
         "ZD=[{expected_zdotdir}] XDG=[{expected_xdg}] VER=[{version}] COUNT=[{count}] LEAK=[]"
@@ -418,7 +418,7 @@ fn skip(what: &str) {
 
 fn bash_candidates() -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
-    let extra = std::env::var("HEELER_TEST_BASH").ok();
+    let extra = std::env::var("STAFFY_TEST_BASH").ok();
     for path in ["/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
         .into_iter()
         .map(str::to_owned)
@@ -542,12 +542,12 @@ async fn opt_out_by_environment_leaves_shells_untouched() {
             &["zshenv", "zprofile", "zshrc", "zlogin"],
         );
         s.custom_zdotdir = true;
-        s.extra_env = vec![("HEELER_SHELL_INTEGRATION", "0")];
+        s.extra_env = vec![("STAFFY_SHELL_INTEGRATION", "0")];
         run(s).await;
     }
     for bash in bash_candidates() {
         let mut s = Scenario::new(Kind::Bash, &bash, &[], &["profile", "bashrc"]);
-        s.extra_env = vec![("HEELER_SHELL_INTEGRATION", "0")];
+        s.extra_env = vec![("STAFFY_SHELL_INTEGRATION", "0")];
         run(s).await;
     }
 }
@@ -578,9 +578,9 @@ async fn other_programs_get_no_injection_env() {
     let term = Terminal::spawn(TerminalConfig {
         argv: vec!["/usr/bin/env".to_owned()],
         env: BTreeMap::from([
-            // Stale leftovers of an outer Heeler terminal must not reach the program either.
-            ("HEELER_SHELL_INTEGRATION_VERSION".into(), "stale".into()),
-            ("HEELER_ORIG_ZDOTDIR".into(), "/stale".into()),
+            // Stale leftovers of an outer Staffy terminal must not reach the program either.
+            ("STAFFY_SHELL_INTEGRATION_VERSION".into(), "stale".into()),
+            ("STAFFY_ORIG_ZDOTDIR".into(), "/stale".into()),
         ]),
         size: TerminalSize {
             cols: 400,
@@ -598,14 +598,14 @@ async fn other_programs_get_no_injection_env() {
     assert!(status.success());
     let screen = text(&term.snapshot(&mut RenderTracker::new()));
     assert!(
-        screen.contains("TERM_PROGRAM=heeler"),
+        screen.contains("TERM_PROGRAM=staffy"),
         "env output:\n{screen}"
     );
     for forbidden in [
-        "HEELER_SHELL_INTEGRATION",
-        "HEELER_ORIG",
-        "HEELER_BASH",
-        "HEELER_XDG",
+        "STAFFY_SHELL_INTEGRATION",
+        "STAFFY_ORIG",
+        "STAFFY_BASH",
+        "STAFFY_XDG",
         "shell-integration",
     ] {
         assert!(!screen.contains(forbidden), "{forbidden} leaked:\n{screen}");

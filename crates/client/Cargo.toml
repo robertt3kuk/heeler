@@ -1,6 +1,6 @@
 [package]
-name = "heeler-client"
-description = "Heeler async protocol client: connect (optionally autostarting heelerd), calls, events, terminal streams, and a reconnecting Connection with a state store"
+name = "staffy-client"
+description = "Staffy async protocol client: connect (optionally autostarting staffyd), calls, events, terminal streams, and a reconnecting Connection with a state store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 futures.workspace = true
-heeler-core.workspace = true
-heeler-protocol.workspace = true
+staffy-core.workspace = true
+staffy-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,7 +19,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-heeler-daemon.workspace = true
+staffy-daemon.workspace = true
 libc.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -7,9 +7,9 @@ use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
     px,
 };
-use heeler_core::{ModelInfo, SessionId};
-use heeler_protocol::messages::{Empty, Request, SessionResult};
-use heeler_protocol::provider::{
+use staffy_core::{ModelInfo, SessionId};
+use staffy_protocol::messages::{Empty, Request, SessionResult};
+use staffy_protocol::provider::{
     ChatSetModel, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList, ProviderModels,
     ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
@@ -112,7 +112,7 @@ impl Workbench {
         self.open_prompt(
             PromptSpec {
                 title: "Set API key",
-                message: "Stored only in macOS Keychain by heelerd. Paste the key here.",
+                message: "Stored only in macOS Keychain by staffyd. Paste the key here.",
                 initial: "",
                 confirm_label: "Store key",
             },
@@ -330,7 +330,7 @@ impl Workbench {
         let look = Look::of(cx);
         let mut body = div().flex().flex_col().gap(px(12.0)).py(px(12.0))
             .child(div().child("Models and providers"))
-            .child(div().text_color(look.theme.muted).child("Provider configuration belongs to heelerd. Keys are write-only and stored in Keychain."));
+            .child(div().text_color(look.theme.muted).child("Provider configuration belongs to staffyd. Keys are write-only and stored in Keychain."));
         let mut add = div().flex().flex_wrap().gap(px(6.0));
         for (kind, label) in [
             ("openai", "Add OpenAI"),

@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use heeler_core::agent::TokenCounts;
-use heeler_gateway::testing::{MockServer, Reply, Step};
-use heeler_gateway::{
+use staffy_core::agent::TokenCounts;
+use staffy_gateway::testing::{MockServer, Reply, Step};
+use staffy_gateway::{
     ChatMessage, ChatRequest, GatewayError, GatewayEvent, Http, HttpConfig, Provider,
     ProviderConfig, ProviderKind, Role, Secret, connect,
 };

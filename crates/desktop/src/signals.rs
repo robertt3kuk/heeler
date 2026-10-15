@@ -31,7 +31,7 @@ pub fn watch() -> std::io::Result<mpsc::Receiver<Signal>> {
     };
     let (tx, rx) = mpsc::channel(4);
     std::thread::Builder::new()
-        .name("heeler-signals".to_owned())
+        .name("staffy-signals".to_owned())
         .spawn(move || {
             runtime.block_on(async move {
                 loop {

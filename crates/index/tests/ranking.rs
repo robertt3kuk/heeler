@@ -1,11 +1,11 @@
 //! FTS5 availability and ranking: identifier queries, role weights, grouping, filters.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use heeler_index::search::search;
-use heeler_index::store;
-use heeler_index::text::idents;
-use heeler_index::{Role, SearchQuery, Source};
 use rusqlite::Connection;
+use staffy_index::search::search;
+use staffy_index::store;
+use staffy_index::text::idents;
+use staffy_index::{Role, SearchQuery, Source};
 
 struct Db {
     _dir: tempfile::TempDir,
@@ -19,9 +19,9 @@ impl Db {
         Self { _dir: dir, conn }
     }
 
-    /// A Heeler-style session (no file) holding the given rows.
+    /// A Staffy-style session (no file) holding the given rows.
     fn session(&self, key: &str, cwd: &str, rows: &[(Role, u64, &str)]) {
-        let id = store::ensure_session(&self.conn, Source::Heeler, key, None, Some(key), Some(cwd))
+        let id = store::ensure_session(&self.conn, Source::Staffy, key, None, Some(key), Some(cwd))
             .unwrap();
         for (role, ts, text) in rows {
             let ids = if *role == Role::Command {
@@ -44,7 +44,7 @@ impl Db {
         .collect()
     }
 
-    fn find(&self, query: &SearchQuery) -> Vec<heeler_index::Hit> {
+    fn find(&self, query: &SearchQuery) -> Vec<staffy_index::Hit> {
         search(&self.conn, query).unwrap()
     }
 
@@ -98,7 +98,7 @@ fn an_identifier_query_finds_the_command_row_first() {
     db.noise(60);
     db.session(
         "talk-about-it",
-        "/work/heeler",
+        "/work/staffy",
         &[
             (Role::User, 2000, "could you run cargo test -p daemon for me and tell me what fails"),
             (Role::Assistant, 2001, "I will run the daemon tests with cargo and report back; the daemon test suite is large and cargo test takes a while"),
@@ -106,16 +106,16 @@ fn an_identifier_query_finds_the_command_row_first() {
     );
     db.session(
         "tool-output",
-        "/work/heeler",
+        "/work/staffy",
         &[(
             Role::Output,
             2002,
-            "warning: unused import in crates/daemon/src/lib.rs\n    Running unittests (target/debug/deps/heeler_daemon)\nnote: to rerun use `cargo test -p daemon` after fixing\ntest result: ok. 120 passed; 0 failed",
+            "warning: unused import in crates/daemon/src/lib.rs\n    Running unittests (target/debug/deps/staffy_daemon)\nnote: to rerun use `cargo test -p daemon` after fixing\ntest result: ok. 120 passed; 0 failed",
         )],
     );
     db.session(
         "agent-tool-call",
-        "/work/heeler",
+        "/work/staffy",
         &[(
             Role::Tool,
             2003,
@@ -124,7 +124,7 @@ fn an_identifier_query_finds_the_command_row_first() {
     );
     db.session(
         "the-command",
-        "/work/heeler",
+        "/work/staffy",
         &[(Role::Command, 2004, "cargo test -p daemon")],
     );
 
@@ -260,7 +260,7 @@ fn filters_narrow_the_hits() {
         Vec::<String>::new()
     );
     assert_eq!(
-        search(&|q| q.sources = vec![Source::Heeler]),
+        search(&|q| q.sources = vec![Source::Staffy]),
         ["a", "b", "c"]
     );
     // A project is a directory: itself and what is inside, not a sibling with the same prefix.

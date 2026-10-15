@@ -1,11 +1,11 @@
-//! `heeler provider add|key|ls|models|rm|discover`: model providers for direct chat.
+//! `staffy provider add|key|ls|models|rm|discover`: model providers for direct chat.
 
 use std::io::{IsTerminal as _, Read as _, Write as _};
 
-use heeler_protocol::provider::{
+use serde_json::json;
+use staffy_protocol::provider::{
     DiscoveredProvider, ProviderAdd, ProviderInfo, ProviderList, ProviderModels, ProviderResult,
 };
-use serde_json::json;
 
 use super::Ctx;
 use crate::args::{
@@ -44,7 +44,7 @@ impl Ctx {
             let provider = &result.provider;
             let hint = if needs_key(provider) {
                 format!(
-                    "\nstore its API key with: heeler provider key {}",
+                    "\nstore its API key with: staffy provider key {}",
                     provider.id
                 )
             } else {
@@ -138,8 +138,8 @@ fn needs_key(provider: &ProviderInfo) -> bool {
 
 fn provider_table(providers: &[ProviderInfo]) -> String {
     if providers.is_empty() {
-        return "no providers (add one with `heeler provider add`, or look for local ones with \
-                `heeler provider discover`)"
+        return "no providers (add one with `staffy provider add`, or look for local ones with \
+                `staffy provider discover`)"
             .to_owned();
     }
     let mut rows = vec![[
@@ -200,7 +200,7 @@ fn discover_text(found: &[DiscoveredProvider], added: &[ProviderInfo]) -> String
             (Some(id), _) => format!("configured as {id}"),
             (None, Some(provider)) => format!("added as {}", provider.id),
             (None, None) => format!(
-                "add it with: heeler provider add {} --name '{}' --base-url {}",
+                "add it with: staffy provider add {} --name '{}' --base-url {}",
                 server.kind, server.name, server.base_url
             ),
         };

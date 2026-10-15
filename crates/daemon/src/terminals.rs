@@ -16,19 +16,19 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bytes::Bytes;
-use heeler_core::TerminalId;
-use heeler_protocol::blocks::{
+use staffy_core::TerminalId;
+use staffy_protocol::blocks::{
     BLOCKS_MAX_LIMIT, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
 };
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::messages::{
     TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalResize,
     TerminalSetColors,
 };
-use heeler_protocol::render::TerminalRender;
-use heeler_protocol::{Frame, MAX_PAYLOAD};
-use heeler_terminal::{BlockTextError, DefaultColors, RenderTracker, Terminal, TerminalError};
+use staffy_protocol::render::TerminalRender;
+use staffy_protocol::{Frame, MAX_PAYLOAD};
+use staffy_terminal::{BlockTextError, DefaultColors, RenderTracker, Terminal, TerminalError};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -416,7 +416,7 @@ impl TerminalHub {
         let entry = self.get(id)?;
         let snapshot = entry.terminal.snapshot(&mut RenderTracker::new());
         let alternate_screen = snapshot.modes.alt_screen;
-        let row_text = |row: &heeler_protocol::render::Row| {
+        let row_text = |row: &staffy_protocol::render::Row| {
             let text: String = row.runs.iter().map(|run| run.text.as_str()).collect();
             (text.trim_end_matches(' ').to_owned(), row.wrapped)
         };

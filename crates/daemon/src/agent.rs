@@ -1,5 +1,5 @@
 //! Rules for the agent reporting channel (`agent.report` / `agent.release`, protocol 0.4):
-//! what a reported resume command may look like, what is stored, and where `HEELER_BIN` points.
+//! what a reported resume command may look like, what is stored, and where `STAFFY_BIN` points.
 
 use std::path::{Path, PathBuf};
 
@@ -67,28 +67,28 @@ pub fn resume_ref_json(
     })
 }
 
-/// The `heeler` CLI sessions get as `HEELER_BIN`: the one next to this executable, else the
+/// The `staffy` CLI sessions get as `STAFFY_BIN`: the one next to this executable, else the
 /// first on `PATH`, else the bare name for the shell to resolve.
-pub fn resolve_heeler_bin() -> PathBuf {
-    locate_heeler(
+pub fn resolve_staffy_bin() -> PathBuf {
+    locate_staffy(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("PATH"),
     )
-    .unwrap_or_else(|| PathBuf::from("heeler"))
+    .unwrap_or_else(|| PathBuf::from("staffy"))
 }
 
-/// The executable `heeler` beside `exe` (as invoked and with symlinks resolved), else the first
-/// one on `path`. Inside an app bundle that is the bundled CLI next to `heelerd`.
-fn locate_heeler(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+/// The executable `staffy` beside `exe` (as invoked and with symlinks resolved), else the first
+/// one on `path`. Inside an app bundle that is the bundled CLI next to `staffyd`.
+fn locate_staffy(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let beside = exe
         .into_iter()
         .flat_map(|exe| [Some(exe.to_owned()), exe.canonicalize().ok()])
         .flatten()
-        .filter_map(|exe| exe.parent().map(|dir| dir.join("heeler")));
+        .filter_map(|exe| exe.parent().map(|dir| dir.join("staffy")));
     let on_path = path
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|dir| dir.join("heeler"));
+        .map(|dir| dir.join("staffy"));
     beside
         .chain(on_path)
         .find(|candidate| is_executable(candidate))
@@ -118,24 +118,24 @@ mod tests {
     #[test]
     fn the_daemon_of_an_app_bundle_gives_sessions_the_bundled_cli() {
         let dir = tempfile::tempdir().unwrap();
-        let macos = dir.path().join("Heeler.app/Contents/MacOS");
-        for name in ["heeler-desktop", "heelerd", "heeler"] {
+        let macos = dir.path().join("Staffy.app/Contents/MacOS");
+        for name in ["staffy-desktop", "staffyd", "staffy"] {
             executable(&macos.join(name));
         }
         assert_eq!(
-            locate_heeler(Some(&macos.join("heelerd")), None),
-            Some(macos.join("heeler"))
+            locate_staffy(Some(&macos.join("staffyd")), None),
+            Some(macos.join("staffy"))
         );
         // Not found beside it: the PATH is next, then nothing.
-        let lonely = dir.path().join("lonely/heelerd");
+        let lonely = dir.path().join("lonely/staffyd");
         executable(&lonely);
-        assert_eq!(locate_heeler(Some(&lonely), None), None);
+        assert_eq!(locate_staffy(Some(&lonely), None), None);
         let installed = dir.path().join("installed");
-        executable(&installed.join("heeler"));
+        executable(&installed.join("staffy"));
         let path = std::env::join_paths([installed.clone()]).unwrap();
         assert_eq!(
-            locate_heeler(Some(&lonely), Some(path)),
-            Some(installed.join("heeler"))
+            locate_staffy(Some(&lonely), Some(path)),
+            Some(installed.join("staffy"))
         );
     }
 

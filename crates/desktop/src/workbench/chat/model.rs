@@ -2,18 +2,18 @@
 //!
 //! It loads the journal (`chat.history`), then follows the connection's chat events. A
 //! reconnect or a lagging receiver reads the journal again and applies only what is new; a
-//! daemon restart (another epoch) starts the transcript over. See `heeler_chat_view::model` for
+//! daemon restart (another epoch) starts the transcript over. See `staffy_chat_view::model` for
 //! why applying an event twice is harmless.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, SharedString, Task};
-use heeler_chat_view::Transcript;
-use heeler_client::{ChatUpdate, ClientError, Connection};
-use heeler_core::{AgentEvent, ApprovalId, Epoch, ItemId, SessionId};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::assistant::{AttachmentKind, AttachmentMeta, attachments_meta};
-use heeler_protocol::chat::HISTORY_MAX_LIMIT;
+use staffy_chat_view::Transcript;
+use staffy_client::{ChatUpdate, ClientError, Connection};
+use staffy_core::{AgentEvent, ApprovalId, Epoch, ItemId, SessionId};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::assistant::{AttachmentKind, AttachmentMeta, attachments_meta};
+use staffy_protocol::chat::HISTORY_MAX_LIMIT;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::chip::{Chip, compose};
@@ -155,7 +155,7 @@ impl ChatModel {
     fn installed(
         &mut self,
         history: Result<History, ClientError>,
-        pending: Option<Vec<heeler_protocol::chat::ApprovalInfo>>,
+        pending: Option<Vec<staffy_protocol::chat::ApprovalInfo>>,
         cx: &mut Context<Self>,
     ) {
         match history {
@@ -258,13 +258,13 @@ impl ChatModel {
     }
 
     /// Attaches structured context to the next message; the daemon reads, redacts and bounds it
-    /// when the message is sent. At most [`heeler_protocol::assistant::ATTACHMENTS_MAX`].
+    /// when the message is sent. At most [`staffy_protocol::assistant::ATTACHMENTS_MAX`].
     pub fn attach_context(&mut self, chip: ContextChip, cx: &mut Context<Self>) -> bool {
-        if self.context.len() >= heeler_protocol::assistant::ATTACHMENTS_MAX {
+        if self.context.len() >= staffy_protocol::assistant::ATTACHMENTS_MAX {
             self.error = Some(
                 format!(
                     "At most {} attachments go with one message",
-                    heeler_protocol::assistant::ATTACHMENTS_MAX
+                    staffy_protocol::assistant::ATTACHMENTS_MAX
                 )
                 .into(),
             );

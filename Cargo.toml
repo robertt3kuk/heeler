@@ -9,18 +9,18 @@ rust-version = "1.98"
 publish = false
 
 [workspace.dependencies]
-heeler-agents = { path = "crates/agents" }
-heeler-chat-view = { path = "crates/chat_view" }
-heeler-client = { path = "crates/client" }
-heeler-core = { path = "crates/core" }
-heeler-daemon = { path = "crates/daemon" }
-heeler-gateway = { path = "crates/gateway" }
-heeler-index = { path = "crates/index" }
-heeler-protocol = { path = "crates/protocol" }
-heeler-settings = { path = "crates/settings" }
-heeler-storage = { path = "crates/storage" }
-heeler-terminal = { path = "crates/terminal" }
-heeler-terminal-view = { path = "crates/terminal_view" }
+staffy-agents = { path = "crates/agents" }
+staffy-chat-view = { path = "crates/chat_view" }
+staffy-client = { path = "crates/client" }
+staffy-core = { path = "crates/core" }
+staffy-daemon = { path = "crates/daemon" }
+staffy-gateway = { path = "crates/gateway" }
+staffy-index = { path = "crates/index" }
+staffy-protocol = { path = "crates/protocol" }
+staffy-settings = { path = "crates/settings" }
+staffy-storage = { path = "crates/storage" }
+staffy-terminal = { path = "crates/terminal" }
+staffy-terminal-view = { path = "crates/terminal_view" }
 
 anyhow = "1.0.104"
 bitflags = { version = "2.13.2", features = ["serde"] }
@@ -35,7 +35,7 @@ parking_lot = "0.12.5"
 plist = "1.10.1"
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 regex = "1.13.1"
-# HTTP for the model gateway (ADR 0008): rustls with the `ring` provider (installed by heeler-gateway,
+# HTTP for the model gateway (ADR 0008): rustls with the `ring` provider (installed by staffy-gateway,
 # `rustls-no-provider`) and the platform verifier for roots; aws-lc is avoided for its OpenSSL license.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -88,5 +88,5 @@ opt-level = 3
 [profile.dev.package.vte]
 opt-level = 3
 
-[profile.dev.package.heeler-terminal]
+[profile.dev.package.staffy-terminal]
 opt-level = 3

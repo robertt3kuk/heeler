@@ -1,9 +1,9 @@
-//! End-to-end flood bench (roadmap M1.7): an in-process daemon on a temporary `HEELER_HOME`
+//! End-to-end flood bench (roadmap M1.7): an in-process daemon on a temporary `STAFFY_HOME`
 //! runs one session that prints ~200 MB of base64 text, with two clients attached to its
 //! terminal. One client acks every render, the other never acks. While the flood runs a third
 //! connection samples `daemon.status` latency every 50 ms.
 //!
-//! `cargo run --release -p heeler-daemon --example flood`
+//! `cargo run --release -p staffy-daemon --example flood`
 //!
 //! Prints one summary line and exits non-zero unless: the acking client ends with the screen
 //! the daemon holds, the non-acking client received nothing after its snapshot, the status p99
@@ -15,14 +15,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
-use heeler_client::{Client, ConnectOptions};
-use heeler_core::TerminalId;
-use heeler_daemon::{DaemonConfig, Paths};
-use heeler_protocol::messages::{
+use staffy_client::{Client, ConnectOptions};
+use staffy_core::TerminalId;
+use staffy_daemon::{DaemonConfig, Paths};
+use staffy_protocol::messages::{
     ClientInfo, ClientKind, DaemonStatusInfo, Empty, Request, SessionCreate, SessionRef,
     SessionResult, SessionSpec, TerminalAck, TerminalAttach, TerminalSize, TerminalSpec,
 };
-use heeler_protocol::render::{Row, TerminalRender};
+use staffy_protocol::render::{Row, TerminalRender};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
@@ -44,8 +44,8 @@ const MAX_RSS_BYTES: u64 = 120 * 1024 * 1024;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
-    let home = std::env::temp_dir().join(format!("heeler-flood-{}", std::process::id()));
-    std::fs::create_dir_all(&home).context("creating the temporary HEELER_HOME")?;
+    let home = std::env::temp_dir().join(format!("staffy-flood-{}", std::process::id()));
+    std::fs::create_dir_all(&home).context("creating the temporary STAFFY_HOME")?;
     let result = run(&home).await;
     let _ = std::fs::remove_dir_all(&home);
     result
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
 
 async fn run(home: &std::path::Path) -> Result<()> {
     let paths = Paths::in_home(home);
-    let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone())).await?;
+    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone())).await?;
     let connect = || async {
         Client::connect(ConnectOptions {
             socket: Some(paths.socket.clone()),
@@ -230,7 +230,7 @@ fn percentiles(mut samples: Vec<Duration>) -> (Duration, Duration) {
 async fn attach(client: &Client, terminal: TerminalId) -> Result<mpsc::Receiver<TerminalRender>> {
     let frames = client.terminal_frames(terminal);
     client
-        .call::<heeler_protocol::messages::TerminalAttached>(Request::TerminalAttach(
+        .call::<staffy_protocol::messages::TerminalAttached>(Request::TerminalAttach(
             TerminalAttach {
                 terminal_id: terminal,
                 size: Some(TerminalSize {

@@ -6,7 +6,7 @@ Agent: implementer   Depends on: master   Branch: slice/M2-B
 Read `AGENTS.md`, ADR 0010 (binding model), `docs/design.md` (layout model, default layout mockup, presets, moving things, keyboard defaults, density tokens, visual system), ADR 0003 + `docs/spikes/2026-10-13-gpui.md` (pinned GPUI rev, `runtime_shaders`, bootstrap `gpui_platform::application().run(...)`).
 
 ## Scope
-New crate `crates/desktop` (package `heeler-desktop`, binary `heeler-desktop`). Depends on `gpui`, `gpui_platform`, serde. **No** dependency on `client`, `settings`, or `terminal_view` in this slice (they are built concurrently; wave 2 wires them). You may extend `deny.toml` with permissive licenses or `MPL-2.0` needed by GPUI; GPL/LGPL/AGPL → stop and report.
+New crate `crates/desktop` (package `staffy-desktop`, binary `staffy-desktop`). Depends on `gpui`, `gpui_platform`, serde. **No** dependency on `client`, `settings`, or `terminal_view` in this slice (they are built concurrently; wave 2 wires them). You may extend `deny.toml` with permissive licenses or `MPL-2.0` needed by GPUI; GPL/LGPL/AGPL → stop and report.
 
 ## Contract
 
@@ -29,12 +29,12 @@ Operations (pure, return new state or mutate with invariants): split pane (axis,
 - Actions: named GPUI actions for everything in design.md § Moving things and § Keyboard defaults (`workbench::SplitRight`, `ToggleLeftDock`, `ApplyPreset(name)`, `ToggleOverview`, `ClosePaneItem`, `FocusNeighbor(dir)`, …); a default keymap table in code (wave 2 replaces it with `keymap.toml`). ⌘K palette: fuzzy filter over all actions + their key hints; enter runs.
 - Presets built-in: `default`, `focus`, `overview` (design.md table); ⌘⇧O toggles overview and back to the previous preset.
 - Density tokens from design.md applied via a `Density` value (compact default) that can be switched at runtime (View menu) — wave 2 binds it to settings.
-- Layout state persisted to `$HEELER_HOME/desktop-state.json` (else `~/Library/Application Support/Heeler/desktop-state.json`) on change (debounced) and restored on launch; missing/corrupt → default preset with a log line.
+- Layout state persisted to `$STAFFY_HOME/desktop-state.json` (else `~/Library/Application Support/Staffy/desktop-state.json`) on change (debounced) and restored on launch; missing/corrupt → default preset with a log line.
 
 ## Acceptance
 - Unit tests for every model operation incl. invariants (no empty panes, ratios sum to 1, item conservation across preset switches, serialization roundtrip, unknown version fallback).
-- GPUI tests (`TestAppContext`) for: dispatching actions changes state (split, toggle dock, apply preset, close last item), palette filtering, state save/restore through a temp `HEELER_HOME`.
-- Manual run `HEELER_HOME=/tmp/hh-m2b cargo run -p heeler-desktop`: window opens without panics, actions via keyboard work. **Do not take screenshots or trigger macOS permission prompts**; describe observations; the orchestrator verifies visually.
+- GPUI tests (`TestAppContext`) for: dispatching actions changes state (split, toggle dock, apply preset, close last item), palette filtering, state save/restore through a temp `STAFFY_HOME`.
+- Manual run `STAFFY_HOME=/tmp/hh-m2b cargo run -p staffy-desktop`: window opens without panics, actions via keyboard work. **Do not take screenshots or trigger macOS permission prompts**; describe observations; the orchestrator verifies visually.
 - `just check` green.
 
 ## Out of scope

@@ -10,9 +10,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{ClientInfo, ClientKind, Hello, Request, Welcome};
-use heeler_protocol::{
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::messages::{ClientInfo, ClientKind, Hello, Request, Welcome};
+use staffy_protocol::{
     ControlMessage, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION, ProtocolError,
 };
 use tokio::io::AsyncRead;

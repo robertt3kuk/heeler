@@ -1,5 +1,5 @@
 //! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets;
-//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Heeler.app` (`docs/packaging.md`).
+//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Staffy.app` (`docs/packaging.md`).
 
 mod bench;
 mod bundle;
@@ -10,7 +10,7 @@ mod stats;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "Heeler developer tasks")]
+#[command(name = "xtask", about = "Staffy developer tasks")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -37,13 +37,13 @@ enum Command {
         #[arg(long)]
         key_interval_ms: Option<u64>,
     },
-    /// Assemble Heeler.app (desktop, heelerd, heeler, LaunchAgent plist, shell integration
+    /// Assemble Staffy.app (desktop, staffyd, staffy, LaunchAgent plist, shell integration
     /// scripts) and sign it ad hoc. Nothing is launched or registered.
     Bundle {
         /// Build (and bundle) the release binaries instead of the debug ones.
         #[arg(long)]
         release: bool,
-        /// Folder that gets Heeler.app (default: target/bundle).
+        /// Folder that gets Staffy.app (default: target/bundle).
         #[arg(long, value_name = "DIR")]
         out: Option<std::path::PathBuf>,
         /// Bundle the binaries already built in DIR instead of running cargo build.

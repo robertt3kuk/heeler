@@ -72,10 +72,10 @@ pub trait Adapter: Debug + Send + Sync {
     }
 }
 
-/// The adapter for `source`; `None` for [`Source::Heeler`], which has no files.
+/// The adapter for `source`; `None` for [`Source::Staffy`], which has no files.
 pub fn adapter_for(source: Source) -> Option<Box<dyn Adapter>> {
     match source {
-        Source::Heeler => None,
+        Source::Staffy => None,
         Source::Claude => Some(Box::new(ClaudeAdapter)),
         Source::Codex => Some(Box::new(CodexAdapter)),
         Source::Omp => Some(Box::new(OmpAdapter)),

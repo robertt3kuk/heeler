@@ -1,5 +1,5 @@
-//! Terminal color themes. Built-ins: `heeler-dark` (matches the daemon's OSC 10/11/12 defaults)
-//! and `heeler-light`.
+//! Terminal color themes. Built-ins: `staffy-dark` (matches the daemon's OSC 10/11/12 defaults)
+//! and `staffy-light`.
 
 use std::fmt;
 use std::str::FromStr;
@@ -9,8 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Theme selector that follows the system appearance.
 pub const AUTO: &str = "auto";
-pub const DARK: &str = "heeler-dark";
-pub const LIGHT: &str = "heeler-light";
+pub const DARK: &str = "staffy-dark";
+pub const LIGHT: &str = "staffy-light";
 
 /// 8-bit sRGB color. Serialized as `#rrggbb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,7 +124,7 @@ static BUILTIN: LazyLock<[TerminalTheme; 2]> = LazyLock::new(|| {
     ]
 });
 
-/// All built-in themes: `heeler-dark`, `heeler-light`.
+/// All built-in themes: `staffy-dark`, `staffy-light`.
 pub fn builtin() -> &'static [TerminalTheme] {
     BUILTIN.as_slice()
 }
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn dark_theme_matches_design_and_daemon_defaults() {
-        let t = lookup("heeler-dark").unwrap();
+        let t = lookup("staffy-dark").unwrap();
         assert_eq!(t.background, Rgb::new(0x1e, 0x1e, 0x1e));
         assert_eq!(t.foreground, Rgb::new(0xd4, 0xd4, 0xd4));
         assert_eq!(t.cursor, Rgb::new(0xd4, 0xd4, 0xd4));
@@ -167,8 +167,8 @@ mod tests {
 
     #[test]
     fn lookup_by_name() {
-        assert_eq!(lookup("heeler-light").unwrap().name, "heeler-light");
-        assert!(lookup("heeler-dark").is_some());
+        assert_eq!(lookup("staffy-light").unwrap().name, "staffy-light");
+        assert!(lookup("staffy-dark").is_some());
         assert!(lookup("auto").is_none());
         assert!(lookup("nope").is_none());
         assert_eq!(builtin().len(), 2);
@@ -176,33 +176,33 @@ mod tests {
 
     #[test]
     fn auto_follows_system_appearance() {
-        assert_eq!(resolve("auto", SystemAppearance::Dark).name, "heeler-dark");
+        assert_eq!(resolve("auto", SystemAppearance::Dark).name, "staffy-dark");
         assert_eq!(
             resolve("auto", SystemAppearance::Light).name,
-            "heeler-light"
+            "staffy-light"
         );
     }
 
     #[test]
     fn pinned_name_ignores_system_and_unknown_falls_back() {
         assert_eq!(
-            resolve("heeler-dark", SystemAppearance::Light).name,
-            "heeler-dark"
+            resolve("staffy-dark", SystemAppearance::Light).name,
+            "staffy-dark"
         );
         assert_eq!(
-            resolve("heeler-light", SystemAppearance::Dark).name,
-            "heeler-light"
+            resolve("staffy-light", SystemAppearance::Dark).name,
+            "staffy-light"
         );
         assert_eq!(
             resolve("nope", SystemAppearance::Light).name,
-            "heeler-light"
+            "staffy-light"
         );
-        assert_eq!(resolve("nope", SystemAppearance::Dark).name, "heeler-dark");
+        assert_eq!(resolve("nope", SystemAppearance::Dark).name, "staffy-dark");
     }
 
     #[test]
     fn light_theme_is_light() {
-        let t = lookup("heeler-light").unwrap();
+        let t = lookup("staffy-light").unwrap();
         assert!(u32::from(t.background.r) > u32::from(t.foreground.r));
     }
 
@@ -218,10 +218,10 @@ mod tests {
 
     #[test]
     fn theme_serializes_as_hex_strings() {
-        let json = serde_json::to_value(lookup("heeler-dark").unwrap()).unwrap();
+        let json = serde_json::to_value(lookup("staffy-dark").unwrap()).unwrap();
         assert_eq!(json["background"], "#1e1e1e");
         assert_eq!(json["ansi"].as_array().unwrap().len(), 16);
         let back: TerminalTheme = serde_json::from_value(json).unwrap();
-        assert_eq!(&back, lookup("heeler-dark").unwrap());
+        assert_eq!(&back, lookup("staffy-dark").unwrap());
     }
 }

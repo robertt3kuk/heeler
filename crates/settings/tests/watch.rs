@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::*;
-use heeler_settings::{KEYMAP_NAMESPACE, SettingsPaths, SettingsStore, keymap};
+use staffy_settings::{KEYMAP_NAMESPACE, SettingsPaths, SettingsStore, keymap};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -138,7 +138,7 @@ async fn edits_made_between_new_and_start_watching_are_picked_up() {
 #[tokio::test]
 async fn missing_settings_directory_is_created_and_watched() {
     let dir = TempDir::new().unwrap();
-    let base = dir.path().join("Heeler");
+    let base = dir.path().join("Staffy");
     let store = SettingsStore::new(SettingsPaths::in_dir(&base));
     let _guard = store.start_watching().unwrap();
     assert!(base.is_dir());
@@ -213,7 +213,7 @@ async fn workspace_file_created_after_watching_started() {
     assert_eq!(store.get::<Layout>().preset, "default");
 
     write_file(
-        &root.join(".heeler/settings.toml"),
+        &root.join(".staffy/settings.toml"),
         "[layout]\npreset = \"focus\"\n[terminal]\nfont_size = 99\n",
     );
     until(&store, "workspace layer", || {
@@ -230,9 +230,9 @@ async fn workspace_file_created_after_watching_started() {
     })
     .await;
 
-    // Edits to the now-existing .heeler dir keep hot reloading.
+    // Edits to the now-existing .staffy dir keep hot reloading.
     write_file(
-        &root.join(".heeler/settings.toml"),
+        &root.join(".staffy/settings.toml"),
         "[layout]\npreset = \"overview\"\n",
     );
     until(&store, "workspace edit", || {

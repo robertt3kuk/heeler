@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use heeler_storage::StorageError;
+use staffy_storage::StorageError;
 
 use crate::paths::PathsError;
 
@@ -10,7 +10,7 @@ pub const MAX_SOCKET_PATH_BYTES: usize = 103;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
-    #[error("another heelerd is already running (lock {} is held)", lock.display())]
+    #[error("another staffyd is already running (lock {} is held)", lock.display())]
     AlreadyRunning { lock: PathBuf },
     #[error(
         "socket path {} is {len} bytes; the limit is {MAX_SOCKET_PATH_BYTES}",

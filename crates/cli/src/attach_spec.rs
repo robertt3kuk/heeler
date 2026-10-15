@@ -1,16 +1,16 @@
-//! `heeler ask --attach <spec>`: the command-line spelling of an assistant attachment.
+//! `staffy ask --attach <spec>`: the command-line spelling of an assistant attachment.
 //!
 //! ```text
-//! block:<terminal>:<block>        the output of one terminal block (`heeler api terminal.blocks`)
+//! block:<terminal>:<block>        the output of one terminal block (`staffy api terminal.blocks`)
 //! recent:<terminal>:<lines>       the last lines of a terminal (at most 500)
-//! agent:<session>[:<turns>]       the last turns (default 5, at most 20) of a Heeler chat, or of
-//!                                 a Claude Code, Codex or OMP session found by `heeler search`
+//! agent:<session>[:<turns>]       the last turns (default 5, at most 20) of a Staffy chat, or of
+//!                                 a Claude Code, Codex or OMP session found by `staffy search`
 //! file:<path>[:<first>-<last>]    a file under the workspace's folders, or some of its lines
 //! search:<query>                  the best history hits (5) for the words; quotes are optional
 //! ```
 
-use heeler_core::TerminalId;
-use heeler_protocol::assistant::{Attachment, LineRange};
+use staffy_core::TerminalId;
+use staffy_protocol::assistant::{Attachment, LineRange};
 
 /// Turns of an `agent:` attachment that names none.
 const DEFAULT_TURNS: u32 = 5;

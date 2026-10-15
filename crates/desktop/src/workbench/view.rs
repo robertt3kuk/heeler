@@ -27,10 +27,10 @@ use gpui::{
     AnyView, App, Bounds, Context, Entity, FocusHandle, Focusable, IntoElement, Pixels, Point,
     Render, SharedString, Subscription, Task, WindowAppearance, div, prelude::*, px,
 };
-use heeler_client::Connection;
-use heeler_core::{ApprovalId, SessionId};
-use heeler_settings::{ChromeMode, SettingsStore, SystemAppearance, WatchGuard};
-use heeler_terminal_view::DefaultColors;
+use staffy_client::Connection;
+use staffy_core::{ApprovalId, SessionId};
+use staffy_settings::{ChromeMode, SettingsStore, SystemAppearance, WatchGuard};
+use staffy_terminal_view::DefaultColors;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -104,7 +104,7 @@ pub enum Region {
     /// Panel tab `index` of a dock.
     DockTab(DockPosition, usize),
     /// A workspace row of the sessions panel.
-    WorkspaceRow(heeler_core::WorkspaceId),
+    WorkspaceRow(staffy_core::WorkspaceId),
     /// A control of the history panel, by name (`search`, `enable`, `clear`, `rebuild`,
     /// `confirm`).
     History(&'static str),
@@ -236,7 +236,7 @@ pub struct Workbench {
     pub(crate) settings: SettingsStore,
     pub(crate) layout_seen: Arc<LayoutSettings>,
     pub(crate) terminal_settings: Arc<TerminalSettings>,
-    pub(crate) terminal_style: heeler_terminal_view::TerminalViewSettings,
+    pub(crate) terminal_style: staffy_terminal_view::TerminalViewSettings,
     pub(crate) sessions: Entity<SessionsStore>,
     pub(crate) env: PanelEnv,
     pub(crate) terminals: HashMap<(PaneId, SessionId), TerminalItem>,
@@ -263,11 +263,11 @@ pub struct Workbench {
     pub(crate) collapse_watch: HashMap<SessionId, Subscription>,
     pub(crate) window_active: bool,
     pub(crate) rendered_terminals: std::collections::HashSet<(PaneId, SessionId)>,
-    pub(crate) pruned: Vec<Entity<heeler_terminal_view::TerminalView>>,
+    pub(crate) pruned: Vec<Entity<staffy_terminal_view::TerminalView>>,
     pub(crate) workspace_root: Option<PathBuf>,
     /// A workspace this window just opened whose events have not reached the store yet; it is
     /// shown anyway instead of falling back to Home.
-    pub(crate) pending_workspace: Option<heeler_core::WorkspaceId>,
+    pub(crate) pending_workspace: Option<staffy_core::WorkspaceId>,
     /// The ⌘O project picker or ⌘J jump palette.
     pub(crate) picker: Option<PickerState>,
     /// The ⌘J `?` history search in flight (dropping it cancels it).
@@ -566,7 +566,7 @@ impl Workbench {
     }
 
     /// The terminal view settings currently in effect.
-    pub fn terminal_view_settings(&self) -> &heeler_terminal_view::TerminalViewSettings {
+    pub fn terminal_view_settings(&self) -> &staffy_terminal_view::TerminalViewSettings {
         &self.terminal_style
     }
 
@@ -584,7 +584,7 @@ impl Workbench {
     pub fn active_title(&self, cx: &App) -> String {
         match self.state.active_item() {
             Some(item) => self.item_title(&item, cx).to_string(),
-            None => "Heeler".to_owned(),
+            None => "Staffy".to_owned(),
         }
     }
 

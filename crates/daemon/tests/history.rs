@@ -1,4 +1,4 @@
-//! The session history index end to end: a real daemon on a temporary `HEELER_HOME` whose
+//! The session history index end to end: a real daemon on a temporary `STAFFY_HOME` whose
 //! `daemon.toml` points the sources at temporary directories (never the user's real agent
 //! directories), real file events (FSEvents), real `history.*` requests over the socket.
 
@@ -12,15 +12,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::*;
-use heeler_client::Client;
-use heeler_daemon::{DaemonConfig, DaemonSettings, Paths};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::history::{
+use rusqlite::Connection;
+use staffy_client::Client;
+use staffy_daemon::{DaemonConfig, DaemonSettings, Paths};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::history::{
     HistoryHit, HistoryHits, HistoryRole, HistorySearch, HistorySetEnabled, HistorySource,
     HistoryStatusInfo,
 };
-use heeler_protocol::messages::{AgentApplied, AgentReportRequest, AgentState, Empty, Request};
-use rusqlite::Connection;
+use staffy_protocol::messages::{AgentApplied, AgentReportRequest, AgentState, Empty, Request};
 use tokio::time::sleep;
 
 struct Env {
@@ -71,7 +71,7 @@ async fn start(enabled: bool) -> Env {
     )
     .unwrap();
     let paths = Paths::in_home(&home);
-    let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     Env {
@@ -272,7 +272,7 @@ async fn enabled_daemon_indexes_new_transcripts_from_file_events_and_searches_th
     let info = status(&client).await;
     assert!(info.enabled);
     let names: Vec<_> = info.sources.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["heeler", "claude", "codex", "omp"]);
+    assert_eq!(names, ["staffy", "claude", "codex", "omp"]);
 
     // Fixtures written after the daemon started: found through file events.
     let (claude, claude_lines) = claude_fixture(&env);
@@ -390,7 +390,7 @@ async fn enabled_daemon_indexes_new_transcripts_from_file_events_and_searches_th
 }
 
 #[tokio::test]
-async fn heeler_blocks_and_agent_reports_are_indexed() {
+async fn staffy_blocks_and_agent_reports_are_indexed() {
     let env = start(true).await;
     let client = env.daemon.connect().await;
     let session = create(
@@ -400,7 +400,7 @@ async fn heeler_blocks_and_agent_reports_are_indexed() {
     .await;
 
     let hits = wait_hits(&client, "cargo test -p daemon").await;
-    assert_eq!(hits[0].source, HistorySource::Heeler);
+    assert_eq!(hits[0].source, HistorySource::Staffy);
     assert_eq!(hits[0].role, HistoryRole::Command);
     assert_eq!(hits[0].session_key, session.id.to_string());
     assert_eq!(hits[0].resume_argv, None);

@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(out.bindings, defaults());
         assert!(out.diagnostics.is_empty());
 
-        let out = load(Path::new("/nonexistent/heeler/keymap.toml"), &defaults()).unwrap();
+        let out = load(Path::new("/nonexistent/staffy/keymap.toml"), &defaults()).unwrap();
         assert_eq!(out.bindings, defaults());
     }
 

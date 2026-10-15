@@ -5,11 +5,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use heeler_agents::codex::{NodeFeed, TREE_SOURCE};
-use heeler_core::{
+use serde_json::{Value, json};
+use staffy_agents::codex::{NodeFeed, TREE_SOURCE};
+use staffy_core::{
     NodeKind, NodeOutcome, NodeState, NodeUpdate, ObservationTree, Patch, SessionId,
 };
-use serde_json::{Value, json};
 
 const MAIN: &str = "01a00000-0000-7000-8000-000000000001";
 const CHILD: &str = "01a00000-0000-7000-8000-000000000002";

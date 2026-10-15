@@ -1,6 +1,6 @@
-# Heeler — Vision and Target Scope
+# Staffy — Vision and Target Scope
 
-Heeler is a lightweight, macOS-first, fully Rust **agentic development environment**: a real terminal emulator and an AI agent workspace in one native GPUI app, backed by an independent daemon that keeps everything running when the window is closed.
+Staffy is a lightweight, macOS-first, fully Rust **agentic development environment**: a real terminal emulator and an AI agent workspace in one native GPUI app, backed by an independent daemon that keeps everything running when the window is closed.
 
 Inspirations and what we take from each:
 
@@ -34,7 +34,7 @@ Inspirations and what we take from each:
 - Direct model chat via our own model gateway: OpenAI-compatible, Anthropic, Gemini, local (Ollama/LM Studio/llama.cpp server); credentials in Keychain.
 
 ### Orchestration
-- Per-task placement chosen by the user: **main checkout** (the repo as it is, e.g. one agent or quick fixes) or **git worktree** (isolated parallel work); multiple repositories per workspace, task list with dependencies, parallel agents and subagents, review/diff of agent changes, merge/cleanup. Heeler never forces a worktree, and it warns when two live agents write to the same checkout.
+- Per-task placement chosen by the user: **main checkout** (the repo as it is, e.g. one agent or quick fixes) or **git worktree** (isolated parallel work); multiple repositories per workspace, task list with dependencies, parallel agents and subagents, review/diff of agent changes, merge/cleanup. Staffy never forces a worktree, and it warns when two live agents write to the same checkout.
 - Attention model: unread, blocked, completed rollups up to tab/workspace/dock badge.
 
 ### macOS integration
@@ -54,7 +54,7 @@ Inspirations and what we take from each:
 - A quick assistant for questions without starting a session (global and per workspace), with persistent searchable history; in a workspace it can read neighbouring sessions (agent transcripts, terminal output/blocks, files, past-session search) only through explicitly attached or permitted context.
 
 ### Session history and search
-- Opt-in local index of all sessions — Heeler terminals/blocks, agent sessions, assistant chats, and external agent histories (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini) — with full-text search and one-click resume.
+- Opt-in local index of all sessions — Staffy terminals/blocks, agent sessions, assistant chats, and external agent histories (Claude Code, Codex, OMP, OpenCode, Cursor, Gemini) — with full-text search and one-click resume.
 
 ### Agent and subagent monitor
 - Track every coding agent — structured (Codex app-server, ACP) and TUI agents in terminals (OMP, Claude Code, Codex, OpenCode) — with live state (working / blocked / done / idle) and their **subagents** as a tree (OMP task agents, Codex/ACP subagents): current activity, model, duration, tokens when available, jump to transcript/terminal.
@@ -85,7 +85,7 @@ Inspirations and what we take from each:
 | Idle daemon RSS, 10 sessions, 10k-line scrollback each | ≤ 120 MB |
 | Idle daemon RSS, 10 sessions at 200 columns, 10k-line scrollback each | ≤ 150 MB (ADR 0013) |
 | Idle CPU (daemon + desktop) | ≈ 0 %, no polling loops |
-| Keystroke → glyph on screen (local), p95 | Heeler path ≤ 2 ms; on screen ≤ one display frame + 2 ms (ADR 0011) |
+| Keystroke → glyph on screen (local), p95 | Staffy path ≤ 2 ms; on screen ≤ one display frame + 2 ms (ADR 0011) |
 | Sustained output `cat` 200 MB | UI stays interactive; daemon memory bounded |
 | Cold start to first terminal prompt | ≤ 500 ms with daemon running |
 

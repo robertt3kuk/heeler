@@ -1,18 +1,18 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
 //! GPUI tests: actions mutate the workbench, the palette filters and runs commands, and layout
-//! state survives a restart through `desktop-state.json` (driven with a temp `HEELER_HOME`).
+//! state survives a restart through `desktop-state.json` (driven with a temp `STAFFY_HOME`).
 
 mod common;
 
 use common::{offline_connection, open_with};
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use heeler_desktop::theme::Density;
-use heeler_desktop::workbench::actions::{self, palette};
-use heeler_desktop::workbench::model::{
+use staffy_desktop::theme::Density;
+use staffy_desktop::workbench::actions::{self, palette};
+use staffy_desktop::workbench::model::{
     DockPosition, FocusTarget, ItemRef, PanelId, WorkbenchState,
 };
-use heeler_desktop::workbench::persistence::{STATE_FILE, state_path_from};
-use heeler_desktop::workbench::{Region, SAVE_DEBOUNCE, Workbench};
+use staffy_desktop::workbench::persistence::{STATE_FILE, state_path_from};
+use staffy_desktop::workbench::{Region, SAVE_DEBOUNCE, Workbench};
 use std::path::{Path, PathBuf};
 
 /// A workbench without a daemon: layout behavior only. `state_path` `None` disables persistence.
@@ -38,9 +38,9 @@ fn state(view: &Entity<Workbench>, cx: &VisualTestContext) -> WorkbenchState {
     view.read_with(cx, |wb, _| wb.state().clone())
 }
 
-/// The path `HEELER_HOME=<home>` resolves to.
-fn heeler_home_state_path(home: &Path) -> PathBuf {
-    state_path_from(Some(home.into()), None).expect("HEELER_HOME resolves")
+/// The path `STAFFY_HOME=<home>` resolves to.
+fn staffy_home_state_path(home: &Path) -> PathBuf {
+    state_path_from(Some(home.into()), None).expect("STAFFY_HOME resolves")
 }
 
 #[gpui::test]
@@ -54,7 +54,7 @@ fn opens_with_default_layout_and_title(cx: &mut TestAppContext) {
         vec![PanelId::new("sessions"), PanelId::new("history")]
     );
     assert_eq!(state.panes().len(), 1);
-    assert_eq!(cx.window_title().as_deref(), Some("Welcome — Heeler"));
+    assert_eq!(cx.window_title().as_deref(), Some("Welcome — Staffy"));
 }
 
 #[gpui::test]
@@ -79,7 +79,7 @@ fn split_actions_and_keys_change_the_pane_tree(cx: &mut TestAppContext) {
         s.pane(focused).unwrap().items,
         vec![ItemRef::placeholder("New pane")]
     );
-    assert_eq!(cx.window_title().as_deref(), Some("New pane — Heeler"));
+    assert_eq!(cx.window_title().as_deref(), Some("New pane — Staffy"));
 }
 
 #[gpui::test]
@@ -167,7 +167,7 @@ fn closing_the_last_item_leaves_an_empty_pane(cx: &mut TestAppContext) {
     // Closing again with nothing left is a harmless no-op.
     cx.dispatch_action(actions::ClosePaneItem);
     assert!(state(&view, cx).active_pane().unwrap().items.is_empty());
-    assert_eq!(cx.window_title().as_deref(), Some("Heeler — Heeler"));
+    assert_eq!(cx.window_title().as_deref(), Some("Staffy — Staffy"));
 }
 
 #[gpui::test]
@@ -204,7 +204,7 @@ fn panel_actions_move_panels_between_docks(cx: &mut TestAppContext) {
     assert_eq!(s.focus, FocusTarget::Dock(DockPosition::Bottom));
 
     cx.dispatch_action(actions::MoveActivePanel(
-        heeler_desktop::workbench::model::PanelDest::Dock(DockPosition::Left),
+        staffy_desktop::workbench::model::PanelDest::Dock(DockPosition::Left),
     ));
     let s = state(&view, cx);
     assert!(s.docks.bottom.panels.is_empty());
@@ -305,7 +305,7 @@ fn palette_hints_come_from_the_keymap(cx: &mut TestAppContext) {
 #[gpui::test]
 fn state_is_saved_debounced_and_restored(cx: &mut TestAppContext) {
     let home = tempfile::tempdir().unwrap();
-    let path = heeler_home_state_path(home.path());
+    let path = staffy_home_state_path(home.path());
     assert_eq!(path, home.path().join(STATE_FILE));
 
     let saved = {
@@ -514,7 +514,7 @@ fn dock_visibility_and_size_drive_the_layout(cx: &mut TestAppContext) {
 // ---- mouse interaction -----------------------------------------------------------------
 
 use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, point, px};
-use heeler_desktop::workbench::model::{Axis, DropTarget, Edge, ItemSource, PaneTree};
+use staffy_desktop::workbench::model::{Axis, DropTarget, Edge, ItemSource, PaneTree};
 
 fn center_of(b: gpui::Bounds<Pixels>) -> Point<Pixels> {
     point(
@@ -618,7 +618,7 @@ fn dragging_a_dock_edge_resizes_the_dock(cx: &mut TestAppContext) {
     drag(cx, edge, point(px(0.0), px(400.0)));
     assert_eq!(
         state(&view, cx).docks.left.size,
-        heeler_desktop::workbench::model::MIN_DOCK_SIZE
+        staffy_desktop::workbench::model::MIN_DOCK_SIZE
     );
 }
 

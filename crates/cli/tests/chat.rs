@@ -1,4 +1,4 @@
-//! `heeler chat …`, `heeler approvals`, `heeler approve` against a real daemon whose codex is
+//! `staffy chat …`, `staffy approvals`, `staffy approve` against a real daemon whose codex is
 //! the fake app server replaying transcripts recorded from codex 0.162.1.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use common::{HEELER, Out, TestDaemon, WAIT, codex_fixture_bin, command, finish};
-use heeler_agents::CodexConfig;
+use common::{Out, STAFFY, TestDaemon, WAIT, codex_fixture_bin, command, finish};
 use serde_json::Value;
+use staffy_agents::CodexConfig;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{sleep, timeout};
 
@@ -52,17 +52,17 @@ impl Chat {
         self.work.path().display().to_string()
     }
 
-    /// `heeler chat new --json` with extra flags; returns the session id.
+    /// `staffy chat new --json` with extra flags; returns the session id.
     async fn new_chat(&self, extra: &[&str]) -> String {
         let cwd = self.cwd();
         let mut args = vec!["chat", "new", "--json", "--cwd", &cwd];
         args.extend_from_slice(extra);
-        let out = self.t.heeler(&args).await.ok();
+        let out = self.t.staffy(&args).await.ok();
         out.json()["session"]["id"].as_str().unwrap().to_owned()
     }
 
     async fn pending_approvals(&self) -> Vec<Value> {
-        let out = self.t.heeler(&["approvals", "--json"]).await.ok();
+        let out = self.t.staffy(&["approvals", "--json"]).await.ok();
         out.json()["approvals"].as_array().unwrap().clone()
     }
 
@@ -79,9 +79,9 @@ impl Chat {
         .expect("an approval never showed up")
     }
 
-    /// Spawns `heeler <args>` with piped output.
+    /// Spawns `staffy <args>` with piped output.
     fn spawn(&self, args: &[&str]) -> tokio::process::Child {
-        let mut cmd = command(Path::new(HEELER), Some(&self.t.paths.socket), args);
+        let mut cmd = command(Path::new(STAFFY), Some(&self.t.paths.socket), args);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.spawn().unwrap()
     }
@@ -102,7 +102,7 @@ async fn finished(child: tokio::process::Child) -> Out {
 #[tokio::test(flavor = "multi_thread")]
 async fn new_send_wait_and_log_show_the_conversation() {
     let c = Chat::with_fixture("plain-turn").await;
-    let created = c.t.heeler(&["chat", "new", "--cwd", &c.cwd()]).await.ok();
+    let created = c.t.staffy(&["chat", "new", "--cwd", &c.cwd()]).await.ok();
     let words: Vec<_> = created.stdout.split_whitespace().collect();
     assert_eq!(&words[0], &"session", "{created:?}");
     assert_eq!(&words[2..4], &["codex", "gpt-6.1-sol"], "{created:?}");
@@ -115,7 +115,7 @@ async fn new_send_wait_and_log_show_the_conversation() {
     let id = words[1].to_owned();
 
     let sent =
-        c.t.heeler(&[
+        c.t.staffy(&[
             "chat",
             "send",
             &id,
@@ -127,13 +127,13 @@ async fn new_send_wait_and_log_show_the_conversation() {
     assert_eq!(sent.stdout, "pong\n", "streamed reply only: {sent:?}");
 
     // The journal replays it, the user's message included.
-    let log = c.t.heeler(&["chat", "log", &id]).await.ok();
+    let log = c.t.staffy(&["chat", "log", &id]).await.ok();
     assert_eq!(
         log.stdout, "> Reply with the single word pong and nothing else.\npong\n",
         "{log:?}"
     );
     let json =
-        c.t.heeler(&["--json", "chat", "log", &id])
+        c.t.staffy(&["--json", "chat", "log", &id])
             .await
             .ok()
             .json();
@@ -160,7 +160,7 @@ async fn new_send_wait_and_log_show_the_conversation() {
     assert_eq!(session["kind"], "harness");
     assert_eq!(session["state"]["state"], "idle");
     assert_eq!(session["chat"]["model"], "gpt-6.1-sol");
-    let table = c.t.heeler(&["ls"]).await.ok().stdout;
+    let table = c.t.staffy(&["ls"]).await.ok().stdout;
     assert!(table.contains(&id) && table.contains("idle"), "{table}");
     c.t.stop().await;
 }
@@ -170,7 +170,7 @@ async fn send_without_wait_returns_the_turn_and_wait_streams_json_lines() {
     let c = Chat::with_fixture("plain-turn").await;
     let id = c.new_chat(&[]).await;
     let sent =
-        c.t.heeler(&["--json", "chat", "send", &id, "ping", "--wait"])
+        c.t.staffy(&["--json", "chat", "send", &id, "ping", "--wait"])
             .await
             .ok();
     let events: Vec<Value> = sent
@@ -212,7 +212,7 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
     assert_eq!(approval["kind"], "command");
     assert!(approval["title"].as_str().unwrap().contains("touch hi.txt"));
 
-    let table = c.t.heeler(&["approvals"]).await.ok().stdout;
+    let table = c.t.staffy(&["approvals"]).await.ok().stdout;
     let mut lines = table.lines();
     let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
     assert_eq!(header, ["ID", "SESSION", "REQUEST", "OPTIONS"]);
@@ -225,14 +225,14 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
     );
 
     // An option the request did not offer is refused; the request stays.
-    let refused = c.t.heeler(&["approve", &approval_id[..8], "decline"]).await;
+    let refused = c.t.staffy(&["approve", &approval_id[..8], "decline"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
     assert!(
         refused.stderr.contains("option_not_offered") && refused.stderr.contains("accept"),
         "{refused:?}"
     );
     assert_eq!(c.pending_approvals().await.len(), 1);
-    let unknown = c.t.heeler(&["approve", "0000", "accept"]).await;
+    let unknown = c.t.staffy(&["approve", "0000", "accept"]).await;
     assert_eq!(unknown.code, 1);
     assert!(
         unknown.stderr.contains("no pending approval"),
@@ -241,7 +241,7 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
 
     // By unique prefix.
     let approved =
-        c.t.heeler(&["approve", &approval_id[..8], "accept"])
+        c.t.staffy(&["approve", &approval_id[..8], "accept"])
             .await
             .ok();
     assert_eq!(approved.stdout, format!("approved {approval_id}: accept\n"));
@@ -255,7 +255,7 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
     );
     assert!(
         out.stdout.contains(&format!(
-            "heeler approve {approval_id} <accept|acceptWithExecpolicyAmendment|cancel>"
+            "staffy approve {approval_id} <accept|acceptWithExecpolicyAmendment|cancel>"
         )),
         "{}",
         out.stdout
@@ -274,11 +274,11 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
     );
     assert!(out.stdout.trim_end().ends_with("done"), "{}", out.stdout);
     assert!(c.pending_approvals().await.is_empty());
-    let none = c.t.heeler(&["approvals"]).await.ok();
+    let none = c.t.staffy(&["approvals"]).await.ok();
     assert_eq!(none.stdout, "no pending approvals\n");
 
     // The log shows the same conversation, approval included.
-    let log = c.t.heeler(&["chat", "log", &id]).await.ok().stdout;
+    let log = c.t.staffy(&["chat", "log", &id]).await.ok().stdout;
     assert!(
         log.contains("• shell:") && log.contains(&format!("approval {approval_id}: accept")),
         "{log}"
@@ -292,7 +292,7 @@ async fn a_waiting_send_fails_when_the_turn_is_cancelled() {
     let id = c.new_chat(&[]).await;
     let waiting = c.spawn(&["chat", "send", &id, "Run `touch hi.txt`", "--wait"]);
     c.wait_for_approval().await;
-    let interrupted = c.t.heeler(&["chat", "interrupt", &id]).await.ok();
+    let interrupted = c.t.staffy(&["chat", "interrupt", &id]).await.ok();
     assert!(
         interrupted.stdout.contains("interrupted"),
         "{interrupted:?}"
@@ -312,11 +312,11 @@ async fn a_waiting_send_fails_when_the_turn_is_cancelled() {
 async fn a_failed_turn_exits_one_with_the_reason() {
     let c = Chat::with_fixture("turn-failed").await;
     let id = c.new_chat(&[]).await;
-    let out = c.t.heeler(&["chat", "send", &id, "hi", "--wait"]).await;
+    let out = c.t.staffy(&["chat", "send", &id, "hi", "--wait"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(
         out.stdout.contains(
-            "✗ turn failed: The 'heeler-no-such-model' model is not supported when using Codex"
+            "✗ turn failed: The 'staffy-no-such-model' model is not supported when using Codex"
         ),
         "{out:?}"
     );
@@ -331,7 +331,7 @@ async fn attach_follows_the_session_live_and_ends_with_it() {
     let mut lines = BufReader::new(attach.stdout.take().unwrap()).lines();
     // Give the attach a moment to subscribe before the turn starts.
     sleep(Duration::from_millis(300)).await;
-    c.t.heeler(&["chat", "send", &id, "ping", "--wait"])
+    c.t.staffy(&["chat", "send", &id, "ping", "--wait"])
         .await
         .ok();
     let mut seen = Vec::new();
@@ -351,7 +351,7 @@ async fn attach_follows_the_session_live_and_ends_with_it() {
     );
 
     // Stopping the session ends the attach.
-    c.t.heeler(&["stop", &id]).await.ok();
+    c.t.staffy(&["stop", &id]).await.ok();
     let status = timeout(WAIT, attach.wait()).await.unwrap().unwrap();
     assert_eq!(status.code(), Some(0));
     let rest: Vec<String> = {
@@ -373,11 +373,11 @@ async fn attach_follows_the_session_live_and_ends_with_it() {
 async fn attach_to_an_ended_session_prints_the_history_and_returns() {
     let c = Chat::with_fixture("plain-turn").await;
     let id = c.new_chat(&[]).await;
-    c.t.heeler(&["chat", "send", &id, "ping", "--wait"])
+    c.t.staffy(&["chat", "send", &id, "ping", "--wait"])
         .await
         .ok();
-    c.t.heeler(&["stop", &id]).await.ok();
-    let out = c.t.heeler(&["chat", "attach", &id]).await.ok();
+    c.t.staffy(&["stop", &id]).await.ok();
+    let out = c.t.staffy(&["chat", "attach", &id]).await.ok();
     assert!(
         out.stdout
             .starts_with("> Reply with the single word pong and nothing else.\npong\n"),
@@ -390,13 +390,13 @@ async fn attach_to_an_ended_session_prints_the_history_and_returns() {
 #[tokio::test(flavor = "multi_thread")]
 async fn models_are_listed_from_the_agents_catalog() {
     let c = Chat::with_fixture("plain-turn").await;
-    let table = c.t.heeler(&["chat", "models"]).await.ok().stdout;
+    let table = c.t.staffy(&["chat", "models"]).await.ok().stdout;
     assert!(
         table.contains("gpt-6.1-sol (default)\tGPT-6.1-Sol"),
         "{table}"
     );
     assert!(table.contains("gpt-5.6-luna\t"), "{table}");
-    let json = c.t.heeler(&["--json", "chat", "models"]).await.ok().json();
+    let json = c.t.staffy(&["--json", "chat", "models"]).await.ok().json();
     assert_eq!(json["agent"], "codex");
     c.t.stop().await;
 }
@@ -408,21 +408,21 @@ async fn mistakes_are_explained() {
     let chat = c.new_chat(&[]).await;
 
     // Chat commands on a terminal session, and the reverse.
-    let out = c.t.heeler(&["chat", "send", &terminal, "hi"]).await;
+    let out = c.t.staffy(&["chat", "send", &terminal, "hi"]).await;
     assert_eq!(out.code, 1);
     assert!(out.stderr.contains("terminal session"), "{out:?}");
-    let out = c.t.heeler(&["send", &chat, "hi"]).await;
+    let out = c.t.staffy(&["send", &chat, "hi"]).await;
     assert_eq!(out.code, 1);
     assert!(
-        out.stderr.contains("chat session") && out.stderr.contains("heeler chat"),
+        out.stderr.contains("chat session") && out.stderr.contains("staffy chat"),
         "{out:?}"
     );
-    let out = c.t.heeler(&["history", &chat]).await;
-    assert!(out.stderr.contains("heeler chat log"), "{out:?}");
+    let out = c.t.staffy(&["history", &chat]).await;
+    assert!(out.stderr.contains("staffy chat log"), "{out:?}");
 
     // A directory that does not exist; an unknown model; a policy that is not one.
     let out =
-        c.t.heeler(&["chat", "new", "--cwd", "/nonexistent/heeler-dir"])
+        c.t.staffy(&["chat", "new", "--cwd", "/nonexistent/staffy-dir"])
             .await;
     assert_eq!(out.code, 1);
     assert!(
@@ -430,7 +430,7 @@ async fn mistakes_are_explained() {
         "{out:?}"
     );
     let out =
-        c.t.heeler(&["chat", "new", "--cwd", &c.cwd(), "--model", "gpt-nope"])
+        c.t.staffy(&["chat", "new", "--cwd", &c.cwd(), "--model", "gpt-nope"])
             .await;
     assert_eq!(out.code, 1);
     assert!(
@@ -438,13 +438,13 @@ async fn mistakes_are_explained() {
         "{out:?}"
     );
     let out =
-        c.t.heeler(&["chat", "new", "--approval-policy", "always"])
+        c.t.staffy(&["chat", "new", "--approval-policy", "always"])
             .await;
     assert_eq!(out.code, 2, "{out:?}");
     assert!(out.stderr.contains("unknown approval policy"), "{out:?}");
 
     // A second message while the first turn runs.
-    let out = c.t.heeler(&["chat", "interrupt", &chat]).await;
+    let out = c.t.staffy(&["chat", "interrupt", &chat]).await;
     assert_eq!(out.code, 1);
     assert!(
         out.stderr.contains("invalid_state") && out.stderr.contains("no turn"),
@@ -457,6 +457,6 @@ async fn mistakes_are_explained() {
 async fn chat_commands_without_a_daemon_exit_three() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("nothing.sock");
-    let out = finish(command(Path::new(HEELER), Some(&socket), &["approvals"])).await;
+    let out = finish(command(Path::new(STAFFY), Some(&socket), &["approvals"])).await;
     assert_eq!(out.code, 3, "{out:?}");
 }

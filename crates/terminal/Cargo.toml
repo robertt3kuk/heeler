@@ -1,6 +1,6 @@
 [package]
-name = "heeler-terminal"
-description = "Heeler terminal: PTY ownership, VT engine, render tracking (ADR 0004)"
+name = "staffy-terminal"
+description = "Staffy terminal: PTY ownership, VT engine, render tracking (ADR 0004)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
-heeler-protocol.workspace = true
+staffy-protocol.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 portable-pty.workspace = true

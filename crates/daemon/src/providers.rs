@@ -8,17 +8,17 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use heeler_gateway::{
+use parking_lot::Mutex;
+use staffy_gateway::{
     CredentialError, CredentialStore, GatewayError, Http, ProbeTarget, Provider, ProviderConfig,
     ProviderKind, Secret, connect, keychain_ref, validate_base_url,
 };
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::provider::{
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::provider::{
     DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList, ProviderModels,
     ProviderResult, ProviderUpdate,
 };
-use heeler_storage::{ProviderRow, Storage};
-use parking_lot::Mutex;
+use staffy_storage::{ProviderRow, Storage};
 use tracing::{info, warn};
 
 use crate::registry::{self, log_write};
@@ -47,7 +47,7 @@ pub struct GatewayConfig {
     /// Where API keys live; `None` is the macOS Keychain.
     pub credentials: Option<Arc<dyn CredentialStore>>,
     /// Timeouts and retry policy of the HTTP client.
-    pub http: heeler_gateway::HttpConfig,
+    pub http: staffy_gateway::HttpConfig,
     /// Where `provider.discover` looks; `None` is Ollama's and LM Studio's default ports.
     pub discovery: Option<Vec<ProbeTarget>>,
 }
@@ -135,7 +135,7 @@ impl ProviderService {
             .ok_or_else(|| {
                 ErrorBody::new(
                     ErrorCode::NotFound,
-                    format!("provider `{id}` not found (see `heeler provider ls`)"),
+                    format!("provider `{id}` not found (see `staffy provider ls`)"),
                 )
             })
     }
@@ -401,7 +401,7 @@ impl ProviderService {
             return Err(ErrorBody::new(
                 ErrorCode::ProviderError,
                 format!(
-                    "provider `{id}` has no API key; store one with `heeler provider key {id}`",
+                    "provider `{id}` has no API key; store one with `staffy provider key {id}`",
                     id = record.id
                 ),
             ));
@@ -435,7 +435,7 @@ impl ProviderService {
 
     /// Asks the well-known local ports what runs there. Once per request, never on a timer.
     pub async fn discover(self: &Arc<Self>) -> Result<ProviderDiscovery, ErrorBody> {
-        let found = heeler_gateway::discovery::discover(&self.discovery).await;
+        let found = staffy_gateway::discovery::discover(&self.discovery).await;
         let known = self.providers.lock().clone();
         let found = found
             .into_iter()

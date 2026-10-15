@@ -23,13 +23,13 @@ deny:
 
 # Rewrite protocol golden fixtures after an intentional wire change (bump protocol version first).
 update-golden:
-    UPDATE_GOLDEN=1 cargo nextest run -p heeler-protocol --locked
+    UPDATE_GOLDEN=1 cargo nextest run -p staffy-protocol --locked
 
 # Measure the performance budgets B1-B6 (docs/perf.md); not part of the gate. Extra args: `just bench --only B1,B4`.
 bench *args:
     cargo run -p xtask --release --locked -- bench {{args}}
 
-# Assemble and ad-hoc sign target/bundle/Heeler.app (docs/packaging.md). Never launches or registers
+# Assemble and ad-hoc sign target/bundle/Staffy.app (docs/packaging.md). Never launches or registers
 # it; not part of the gate (the xtask bundle test covers it). Extra args: `just bundle --release`.
 bundle *args:
     cargo run -p xtask --locked -- bundle {{args}}

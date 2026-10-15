@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use common::*;
-use heeler_settings::{
+use staffy_settings::{
     AppearanceSettings, Density, SettingsPaths, SettingsStore, Severity, keymap,
 };
 use tempfile::TempDir;
@@ -35,7 +35,7 @@ impl Fixture {
 
     fn workspace(&self, text: &str) -> std::path::PathBuf {
         let root = self.dir.path().join("repo");
-        write_file(&root.join(".heeler/settings.toml"), text);
+        write_file(&root.join(".staffy/settings.toml"), text);
         self.store.set_workspace_root(Some(root.clone()));
         root
     }
@@ -140,7 +140,7 @@ fn workspace_override_refused_for_other_namespaces() {
     assert_eq!(errors[0].key_path, "terminal");
     assert_eq!(
         errors[0].file.as_deref(),
-        Some(root.join(".heeler/settings.toml").as_path())
+        Some(root.join(".staffy/settings.toml").as_path())
     );
     assert!(
         errors[0].message.contains("workspace"),
@@ -271,7 +271,7 @@ fn invalid_toml_keeps_previous_layer_and_reports_line() {
 #[test]
 fn write_user_creates_file_and_private_directory() {
     let dir = TempDir::new().unwrap();
-    let base = dir.path().join("nested/Heeler");
+    let base = dir.path().join("nested/Staffy");
     let store = SettingsStore::new(SettingsPaths::in_dir(&base));
     store
         .write_user(
@@ -294,7 +294,7 @@ fn write_user_creates_file_and_private_directory() {
 #[test]
 fn write_user_preserves_comments_and_formatting() {
     const ORIGINAL: &str = "\
-# Heeler settings
+# Staffy settings
 # Hand-edited; keep my notes.
 
 [terminal]
@@ -315,7 +315,7 @@ font_size = 13 # readable
 
     let text = std::fs::read_to_string(f.user_path()).unwrap();
     let expected = "\
-# Heeler settings
+# Staffy settings
 # Hand-edited; keep my notes.
 
 [terminal]
@@ -483,14 +483,14 @@ fn keymap_file_errors_surface_and_keymap_merges_with_defaults() {
 }
 
 #[test]
-fn paths_resolve_from_heeler_home_or_app_support() {
+fn paths_resolve_from_staffy_home_or_app_support() {
     let p = SettingsPaths::resolve(Some("/h".into()), Some("/Users/u".into())).unwrap();
     assert_eq!(p.user, Path::new("/h/settings.toml"));
     assert_eq!(p.keymap, Path::new("/h/keymap.toml"));
     let p = SettingsPaths::resolve(Some("".into()), Some("/Users/u".into())).unwrap();
     assert_eq!(
         p.user,
-        Path::new("/Users/u/Library/Application Support/Heeler/settings.toml")
+        Path::new("/Users/u/Library/Application Support/Staffy/settings.toml")
     );
     assert!(SettingsPaths::resolve(None, None).is_err());
 }

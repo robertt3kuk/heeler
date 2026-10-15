@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use futures::future::BoxFuture;
-use heeler_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, SandboxMode, TurnId};
+use staffy_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, SandboxMode, TurnId};
 
 use crate::error::AgentError;
 

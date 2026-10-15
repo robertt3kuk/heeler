@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 
-use heeler_protocol::render::{
+use staffy_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Link, Modes, MouseMode, Row, Run, TerminalFrame,
     TerminalSnapshot,
 };
@@ -488,7 +488,7 @@ fn is_safe_uri(uri: &str) -> bool {
 fn write_link(out: &mut Vec<u8>, link: Option<u32>, links: &HashMap<u32, String>) {
     match link.and_then(|id| links.get(&id).map(|uri| (id, uri))) {
         Some((id, uri)) => {
-            let _ = write!(out, "\x1b]8;id=heeler-{id};{uri}\x1b\\");
+            let _ = write!(out, "\x1b]8;id=staffy-{id};{uri}\x1b\\");
         }
         None => out.extend_from_slice(b"\x1b]8;;\x1b\\"),
     }

@@ -7,7 +7,7 @@
 //! stands for them, so every other row moves up and older lines fill the bottom-anchored view.
 //! The daemon's screen, the scrollback and other clients never see it.
 
-use heeler_protocol::blocks::{Block, BlockState};
+use staffy_protocol::blocks::{Block, BlockState};
 
 use crate::model::TerminalModel;
 
@@ -274,8 +274,8 @@ pub fn output_lines(model: &TerminalModel, block: &Block, cursor_line: i64) -> O
 mod tests {
     use std::path::PathBuf;
 
-    use heeler_client::BlockList;
-    use heeler_protocol::blocks::TerminalBlocksResult;
+    use staffy_client::BlockList;
+    use staffy_protocol::blocks::TerminalBlocksResult;
 
     use super::*;
 

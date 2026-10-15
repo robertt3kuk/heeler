@@ -6,7 +6,7 @@ Agent: implementer   Depends on: master   Branch: slice/M2-C
 Read `AGENTS.md`, ADR 0003 (GPUI sourcing: pinned zed rev, `runtime_shaders` — the Metal compiler is not installed), ADR 0004 (daemon is the only VT parser; clients draw `TerminalSnapshot`/`TerminalFrame`), ADR 0010, `docs/design.md` (§ Visual system, § Settings `[terminal]`, § Keyboard defaults), `docs/protocol.md` (§ Terminal render types and all semantics notes: trimmed rows, wide chars, link table, credit-1 acks, history paging), `crates/protocol/src/render.rs`, `crates/cli/src/render.rs` (host-terminal renderer: shows how DTOs map to cells), `docs/spikes/2026-10-13-gpui.md`.
 
 ## Scope
-New crate `crates/terminal_view` (package `heeler-terminal-view`, library + one example). Depends on `heeler-protocol`, `gpui`, `gpui_platform`; `heeler-client` only as a **dev-dependency** for the example. Do not edit other crates. You may extend `deny.toml` license allow-list with permissive licenses or `MPL-2.0` needed by GPUI; anything GPL/LGPL/AGPL → stop and report.
+New crate `crates/terminal_view` (package `staffy-terminal-view`, library + one example). Depends on `staffy-protocol`, `gpui`, `gpui_platform`; `staffy-client` only as a **dev-dependency** for the example. Do not edit other crates. You may extend `deny.toml` license allow-list with permissive licenses or `MPL-2.0` needed by GPUI; anything GPL/LGPL/AGPL → stop and report.
 
 ## Contract
 The view is passive: an owner feeds it updates and implements a backend.
@@ -32,11 +32,11 @@ impl TerminalView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalViewSettings {   // plain config; wave 2 maps the `terminal` settings namespace (settings crate) onto it
     pub font_family: String, pub font_size: f32, pub line_height: f32,
-    pub palette: TerminalPalette,      // resolved colors: 16 ANSI + fg/bg/cursor/selection; Default = heeler-dark (bg #1e1e1e fg #d4d4d4 cursor #d4d4d4)
+    pub palette: TerminalPalette,      // resolved colors: 16 ANSI + fg/bg/cursor/selection; Default = staffy-dark (bg #1e1e1e fg #d4d4d4 cursor #d4d4d4)
     pub cursor: CursorSettings, pub option_as_meta: OptionAsMeta, pub copy_on_select: bool,
     pub scroll_to_bottom_on_input: bool,
 }
-impl Default for TerminalViewSettings { /* Menlo 13, line height 1.2, heeler-dark, block blinking cursor, option_as_meta = Left */ }
+impl Default for TerminalViewSettings { /* Menlo 13, line height 1.2, staffy-dark, block blinking cursor, option_as_meta = Left */ }
 ```
 Requirements:
 - **Model** (GPUI-free module): applies snapshots and frames (incl. `scrolled`, `modes`, `title: Option<Option<_>>`, links) to a local grid; holds scrollback cache filled from `apply_history`.
@@ -47,12 +47,12 @@ Requirements:
 - **Mouse**: SGR (1006) and legacy encodings for click/drag/motion modes; wheel → arrow keys in alt screen with `alternate_scroll`, else scrollback viewing (pages of 200 via `request_history`), shift bypasses app mouse capture for selection.
 - **Selection & clipboard**: drag / double-click word / triple-click line, across scrollback; ⌘C copies (never sent to PTY); ⌘V pastes with bracketed-paste wrapping when the mode is on (strip embedded `ESC[201~`); `copy_on_select`.
 - **Theme**: map `Color::Default/Indexed/Rgb` with palette overrides from the snapshot; call `set_default_colors` on creation and theme change.
-- **Example** `cargo run -p heeler-terminal-view --example attach -- [--socket PATH] <terminal_id>`: opens one window, connects with `heeler_client::Client` on a Tokio thread, attaches, renders, sends input/resize/acks. Used for manual verification.
+- **Example** `cargo run -p staffy-terminal-view --example attach -- [--socket PATH] <terminal_id>`: opens one window, connects with `staffy_client::Client` on a Tokio thread, attaches, renders, sends input/resize/acks. Used for manual verification.
 
 ## Acceptance
 - Unit tests: model (snapshot, frames, scroll, title clear, links, history merge), key encoding (xterm vectors for arrows/F-keys/ctrl/alt/app-cursor; kitty flag 1/8 vectors), mouse encoding (SGR press/release/drag/wheel, legacy), bracketed paste sanitizing, selection extraction incl. wide chars.
 - GPUI test (`TestAppContext`/`VisualTestContext`): view lays out, computes cols/rows for a given bounds/font, applies a snapshot, and acks after a frame.
-- Manual: with `heelerd` running and a session, the example shows `vim` and `htop`-like TUIs correctly and accepts typing. **Do not take screenshots or trigger macOS permission prompts**; describe what you observed and the commands; the orchestrator verifies visually.
+- Manual: with `staffyd` running and a session, the example shows `vim` and `htop`-like TUIs correctly and accepts typing. **Do not take screenshots or trigger macOS permission prompts**; describe what you observed and the commands; the orchestrator verifies visually.
 - `just check` green.
 
 ## Out of scope

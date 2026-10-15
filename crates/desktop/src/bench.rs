@@ -1,6 +1,6 @@
 //! Scripted key injection for the latency benchmarks (`cargo run -p xtask -- bench`).
 //!
-//! `HEELER_BENCH_INPUT=<script.json>` makes the window type a fixed script into the focused
+//! `STAFFY_BENCH_INPUT=<script.json>` makes the window type a fixed script into the focused
 //! pane's terminal:
 //!
 //! ```json
@@ -11,15 +11,15 @@
 //! [`gpui::Window::dispatch_keystroke`], the path real key events take: dispatch tree,
 //! the terminal view's key handler, key encoding, `TerminalHandle::input`. Keys are scheduled
 //! at `start + n * interval` (no drift); the schedule starts `start_delay_ms` after the first
-//! terminal painted text. With `HEELER_TRACE_LATENCY=1` the run is framed by `bench_start` /
+//! terminal painted text. With `STAFFY_TRACE_LATENCY=1` the run is framed by `bench_start` /
 //! `bench_done` trace events, both carrying the refresh interval of the window's display
 //! (`refresh_interval_us`). Without the variable this module does nothing.
 
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Keystroke, Window};
-use heeler_terminal_view::trace;
 use serde::Deserialize;
+use staffy_terminal_view::trace;
 
 use crate::workbench::Workbench;
 
@@ -80,9 +80,9 @@ impl Script {
     }
 }
 
-/// Starts the script named by `HEELER_BENCH_INPUT`, if any.
+/// Starts the script named by `STAFFY_BENCH_INPUT`, if any.
 pub fn start(window: &mut Window, cx: &mut Context<Workbench>) {
-    let Some(path) = std::env::var_os("HEELER_BENCH_INPUT").filter(|p| !p.is_empty()) else {
+    let Some(path) = std::env::var_os("STAFFY_BENCH_INPUT").filter(|p| !p.is_empty()) else {
         return;
     };
     let script = match std::fs::read_to_string(&path)
@@ -91,7 +91,7 @@ pub fn start(window: &mut Window, cx: &mut Context<Workbench>) {
     {
         Ok(script) => script,
         Err(err) => {
-            tracing::error!("HEELER_BENCH_INPUT {}: {err}", path.to_string_lossy());
+            tracing::error!("STAFFY_BENCH_INPUT {}: {err}", path.to_string_lossy());
             return;
         }
     };

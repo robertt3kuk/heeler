@@ -11,8 +11,8 @@ use gpui::{
     MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, Task, Window, div, prelude::*, px,
 };
-use heeler_core::{SessionId, WorkspaceId};
-use heeler_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
+use staffy_core::{SessionId, WorkspaceId};
+use staffy_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
 
 use super::common::{
     age_label, agent_badge, kind_icon, panel_header_with, placement, state_dot, tone_color,

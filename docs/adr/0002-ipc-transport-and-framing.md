@@ -15,7 +15,7 @@ Clients need: request/response commands and queries, a live event stream, high-v
 | **Length-prefixed frames: JSON control + binary data** | Debuggable control, zero-copy terminal bytes, one connection | Custom framing (small) |
 
 ## Decision
-**Transport**: Unix domain socket `~/Library/Application Support/Heeler/heelerd.sock` (dir `0700`, socket `0600`), override `HEELER_SOCKET`. Daemon verifies peer UID with `getpeereid`. A single-instance lock file next to it prevents two daemons.
+**Transport**: Unix domain socket `~/Library/Application Support/Staffy/staffyd.sock` (dir `0700`, socket `0600`), override `STAFFY_SOCKET`. Daemon verifies peer UID with `getpeereid`. A single-instance lock file next to it prevents two daemons.
 
 **Frame**: `u32 length (BE) | u8 kind | payload`. Max frame 4 MiB.
 - `kind=0` control: UTF-8 JSON envelope.
@@ -39,7 +39,7 @@ Clients need: request/response commands and queries, a live event stream, high-v
 **Schema**: Rust types in `protocol` crate are the source; JSON Schema generated (`schemars`) and committed per version for external clients; golden fixtures guard compatibility.
 
 ## Consequences
-- CLI and tests can speak the protocol with a few hundred lines; `heeler api` can expose raw calls for debugging.
+- CLI and tests can speak the protocol with a few hundred lines; `staffy api` can expose raw calls for debugging.
 - A remote transport later wraps the same frames in TLS/WebSocket.
 - Terminal snapshot/frame format and flow control are defined by ADR 0004.
 

@@ -6,12 +6,12 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use heeler_index::adapters::{ClaudeAdapter, MAX_TOOL_ROWS, OmpAdapter};
-use heeler_index::scan::{self, FileOutcome, Metrics, ScanContext};
-use heeler_index::search::search;
-use heeler_index::store;
-use heeler_index::{Adapter, ParseState, Parsed, Role, SearchQuery, Source};
 use rusqlite::Connection;
+use staffy_index::adapters::{ClaudeAdapter, MAX_TOOL_ROWS, OmpAdapter};
+use staffy_index::scan::{self, FileOutcome, Metrics, ScanContext};
+use staffy_index::search::search;
+use staffy_index::store;
+use staffy_index::{Adapter, ParseState, Parsed, Role, SearchQuery, Source};
 use tempfile::TempDir;
 
 struct Fixture {
@@ -51,7 +51,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn search(&self, text: &str) -> Vec<heeler_index::Hit> {
+    fn search(&self, text: &str) -> Vec<staffy_index::Hit> {
         search(
             &self.conn,
             &SearchQuery {
@@ -380,7 +380,7 @@ impl Adapter for Versioned {
         path.file_stem().unwrap().to_string_lossy().into_owned()
     }
     fn parse_line(&self, line: &str, _: &mut ParseState) -> Parsed {
-        Parsed::Entries(vec![heeler_index::Entry::new(Role::User, None, line)])
+        Parsed::Entries(vec![staffy_index::Entry::new(Role::User, None, line)])
     }
 }
 

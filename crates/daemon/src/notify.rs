@@ -25,19 +25,19 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use heeler_core::agent::{Delivery, MessageRole};
-use heeler_core::{
+use parking_lot::Mutex;
+use staffy_core::agent::{Delivery, MessageRole};
+use staffy_core::{
     AgentEventKind, AgentNode, ApprovalId, Liveness, NodeKind, NodeOutcome, NodeState, SessionId,
     WorkspaceId,
 };
-use heeler_protocol::chat::ApprovalInfo;
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{ClientKind, Event, SessionListFilter};
-use heeler_protocol::notify::{
+use staffy_protocol::chat::ApprovalInfo;
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::messages::{ClientKind, Event, SessionListFilter};
+use staffy_protocol::notify::{
     ACTION_OPEN, ActRoute, BODY_MAX_CHARS, IntentAction, IntentKind, NotificationIntent, NotifyAct,
     NotifyActed, TITLE_MAX_CHARS,
 };
-use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -242,12 +242,12 @@ impl Core {
                 });
             }
             // A normal stop is a finish: a plain idle (the Stop hooks, OMP `agent_end`) or an
-            // explicit `completed`. Failures, interruptions and lost contact are not. Heeler's own
+            // explicit `completed`. Failures, interruptions and lost contact are not. Staffy's own
             // Codex chats announce their turns as `chat_turn_finished` instead.
             if is_root
                 && node.state == NodeState::Idle
                 && matches!(node.outcome, None | Some(NodeOutcome::Completed))
-                && node.source != heeler_agents::codex::TREE_SOURCE
+                && node.source != staffy_agents::codex::TREE_SOURCE
                 && let Some(since) = before.and_then(|b| b.working_since)
                 && now_ms.saturating_sub(since) >= min_turn_ms
             {
@@ -426,7 +426,7 @@ fn clean(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
-    let redacted = heeler_index::redact::redact(text);
+    let redacted = staffy_index::redact::redact(text);
     let mut words = redacted.split_whitespace();
     let Some(first) = words.next() else {
         return String::new();
@@ -640,8 +640,8 @@ fn not_found(id: &str) -> ErrorBody {
 
 #[cfg(test)]
 mod tests {
-    use heeler_core::agent::{PermissionKind, PermissionOption, PermissionOptionKind};
-    use heeler_core::{AgentEvent, AgentEventDraft, TurnId};
+    use staffy_core::agent::{PermissionKind, PermissionOption, PermissionOptionKind};
+    use staffy_core::{AgentEvent, AgentEventDraft, TurnId};
 
     use super::*;
 
@@ -796,7 +796,7 @@ mod tests {
             &Event::ApprovalResolved {
                 approval_id: info.id,
                 session_id: session,
-                outcome: heeler_core::agent::PermissionOutcome::Expired,
+                outcome: staffy_core::agent::PermissionOutcome::Expired,
             },
             1_002,
         );
@@ -873,11 +873,11 @@ mod tests {
         assert_eq!(raised.len(), 1);
         assert_eq!(raised[0].kind, IntentKind::AgentFinished);
 
-        // A Heeler Codex chat raises `chat_turn_finished` for the same turn, not this.
+        // A Staffy Codex chat raises `chat_turn_finished` for the same turn, not this.
         let mut core = self::core();
         let chat = SessionId::new();
         let mut working = working;
-        working.source = heeler_agents::codex::TREE_SOURCE.to_owned();
+        working.source = staffy_agents::codex::TREE_SOURCE.to_owned();
         let mut idle = idle;
         idle.source = working.source.clone();
         raise(&mut core, &tree(chat, vec![working]), 1_000);

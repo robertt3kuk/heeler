@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers
 //! The agent chat view (M4-B) against an in-process daemon whose `codex app-server` is
-//! `heeler-codex-fixture replay` over the transcripts recorded for M4-A: a new chat, sending,
+//! `staffy-codex-fixture replay` over the transcripts recorded for M4-A: a new chat, sending,
 //! streamed text, command and file-change cards, approvals (answered here and from another
 //! client), reconnecting mid-turn, interrupting, and "Send to agent".
 
@@ -11,15 +11,15 @@ use std::time::Duration;
 use common::chat::{ChatEnv, method, says};
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use heeler_chat_view::{ApprovalState, Body, TurnOutcome};
-use heeler_core::agent::ToolStatus;
-use heeler_core::{ApprovalId, SessionId, SessionState};
-use heeler_desktop::workbench::chat::{ChatModel, ChatView, LoadStatus};
-use heeler_desktop::workbench::{Region, Workbench};
-use heeler_protocol::chat::{ApprovalInfo, ApprovalRespond};
-use heeler_protocol::messages::{Empty, Request, SessionRef};
-use heeler_settings::{SettingsPaths, SettingsStore};
 use serde_json::{Value, json};
+use staffy_chat_view::{ApprovalState, Body, TurnOutcome};
+use staffy_core::agent::ToolStatus;
+use staffy_core::{ApprovalId, SessionId, SessionState};
+use staffy_desktop::workbench::chat::{ChatModel, ChatView, LoadStatus};
+use staffy_desktop::workbench::{Region, Workbench};
+use staffy_protocol::chat::{ApprovalInfo, ApprovalRespond};
+use staffy_protocol::messages::{Empty, Request, SessionRef};
+use staffy_settings::{SettingsPaths, SettingsStore};
 
 fn open<'a>(
     cx: &'a mut TestAppContext,
@@ -31,7 +31,7 @@ fn open<'a>(
 fn open_connected<'a>(
     cx: &'a mut TestAppContext,
     daemon: &TestDaemon,
-    connection: heeler_client::Connection,
+    connection: staffy_client::Connection,
 ) -> (Entity<Workbench>, &'a mut VisualTestContext) {
     let (view, cx) = open_with(
         cx,
@@ -95,7 +95,7 @@ fn say(cx: &mut VisualTestContext, text: &str) {
 fn transcript<T>(
     model: &Entity<ChatModel>,
     cx: &VisualTestContext,
-    f: impl FnOnce(&heeler_chat_view::Transcript) -> T,
+    f: impl FnOnce(&staffy_chat_view::Transcript) -> T,
 ) -> T {
     model.read_with(cx, |m, _| f(m.transcript()))
 }
@@ -152,7 +152,7 @@ fn pump(
 }
 
 fn session_state(daemon: &TestDaemon, id: SessionId) -> SessionState {
-    let list: heeler_protocol::messages::SessionList =
+    let list: staffy_protocol::messages::SessionList =
         daemon.call(Request::SessionList(Default::default()));
     list.sessions
         .into_iter()
@@ -162,8 +162,8 @@ fn session_state(daemon: &TestDaemon, id: SessionId) -> SessionState {
 }
 
 fn pending_on_daemon(daemon: &TestDaemon) -> Vec<ApprovalInfo> {
-    let list: heeler_protocol::chat::ApprovalList = daemon.call(Request::ApprovalList(
-        heeler_protocol::chat::ApprovalListRequest::default(),
+    let list: staffy_protocol::chat::ApprovalList = daemon.call(Request::ApprovalList(
+        staffy_protocol::chat::ApprovalListRequest::default(),
     ));
     list.approvals
 }
@@ -331,7 +331,7 @@ fn the_interrupt_key_stops_the_turn_too(cx: &mut TestAppContext) {
 // ---- cards ----------------------------------------------------------------------------------
 
 /// `approval-touch` without the approval: the command runs, streams output and exits 0.
-fn command_with_output(env: &ChatEnv) -> heeler_agents::CodexConfig {
+fn command_with_output(env: &ChatEnv) -> staffy_agents::CodexConfig {
     env.edited("approval-touch", |entries| {
         let ids = entries
             .iter()
@@ -401,7 +401,7 @@ fn a_command_card_shows_the_command_its_directory_and_output(cx: &mut TestAppCon
             })
             .unwrap();
         assert_eq!(tool.command(), "/bin/zsh -lc 'touch hi.txt'");
-        assert_eq!(tool.cwd(), Some("/tmp/heeler-fixture"));
+        assert_eq!(tool.cwd(), Some("/tmp/staffy-fixture"));
         assert_eq!(tool.status, Some(ToolStatus::Completed));
         assert_eq!(tool.exit_code, Some(0));
         assert_eq!(tool.output, "hello\nworld\n");
@@ -474,7 +474,7 @@ fn a_command_card_expands_and_collapses_its_output(cx: &mut TestAppContext) {
 }
 
 /// `plain-turn` with the assistant's answer replaced by `text`.
-fn answering(env: &ChatEnv, text: &'static str) -> heeler_agents::CodexConfig {
+fn answering(env: &ChatEnv, text: &'static str) -> staffy_agents::CodexConfig {
     env.edited("plain-turn", |entries| {
         for entry in entries.iter_mut() {
             if method(entry) == Some("item/completed")
@@ -794,7 +794,7 @@ fn an_approval_answered_from_another_client_resolves_the_card_live(cx: &mut Test
     });
     let (approval, _) = pending(&model, cx).remove(0);
 
-    // `heeler approve <id> cancel`, as the CLI sends it.
+    // `staffy approve <id> cancel`, as the CLI sends it.
     let _: Empty = daemon.call(Request::ApprovalRespond(ApprovalRespond {
         approval_id: approval,
         option_id: "cancel".into(),
@@ -872,7 +872,7 @@ fn review_approvals_lists_every_pending_request_across_sessions(cx: &mut TestApp
             wb.state().active_item().is_some_and(|i| {
                 matches!(
                     i,
-                    heeler_desktop::workbench::model::ItemRef::Terminal { .. }
+                    staffy_desktop::workbench::model::ItemRef::Terminal { .. }
                 )
             })
         })
@@ -890,7 +890,7 @@ fn review_approvals_lists_every_pending_request_across_sessions(cx: &mut TestApp
     pump(cx, "the chat to be shown", |cx| {
         view.read_with(cx, |wb, _| {
             wb.state().active_item().is_some_and(|i| {
-                matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+                matches!(i, staffy_desktop::workbench::model::ItemRef::Chat { .. })
             })
         })
     });
@@ -953,7 +953,7 @@ fn a_file_change_card_lists_the_files_and_expands_a_diff(cx: &mut TestAppContext
     });
     assert_eq!(files.len(), 1);
     assert!(files[0].path.ends_with("hello.txt"));
-    let diff = heeler_chat_view::diff::from_change(&files[0]);
+    let diff = staffy_chat_view::diff::from_change(&files[0]);
     assert_eq!((diff.added, diff.removed), (1, 0));
     assert_eq!(diff.lines[0].text, "hi");
 
@@ -1019,7 +1019,7 @@ fn a_reconnect_mid_turn_continues_without_duplicates(cx: &mut TestAppContext) {
     daemon.proxy().sever();
     pump(cx, "the connection to notice", |cx| {
         view.read_with(cx, |wb, cx| {
-            wb.sessions().read(cx).connection_state() != heeler_client::ConnectionState::Connected
+            wb.sessions().read(cx).connection_state() != staffy_client::ConnectionState::Connected
         })
     });
     let approval = pending_on_daemon(&daemon).remove(0);
@@ -1064,7 +1064,7 @@ fn a_reconnect_mid_turn_continues_without_duplicates(cx: &mut TestAppContext) {
     // And the conversation goes on over the new connection.
     pump(cx, "the connection", |cx| {
         view.read_with(cx, |wb, cx| {
-            wb.sessions().read(cx).connection_state() == heeler_client::ConnectionState::Connected
+            wb.sessions().read(cx).connection_state() == staffy_client::ConnectionState::Connected
         })
     });
     assert!(!model.read_with(cx, |m, _| m.sending()));
@@ -1089,12 +1089,12 @@ fn a_short_reconnect_during_an_approval_keeps_the_card_and_answers_afterwards(
     daemon.proxy().sever();
     pump(cx, "the connection to drop", |cx| {
         view.read_with(cx, |wb, cx| {
-            wb.sessions().read(cx).connection_state() != heeler_client::ConnectionState::Connected
+            wb.sessions().read(cx).connection_state() != staffy_client::ConnectionState::Connected
         })
     });
     pump(cx, "the connection to return", |cx| {
         view.read_with(cx, |wb, cx| {
-            wb.sessions().read(cx).connection_state() == heeler_client::ConnectionState::Connected
+            wb.sessions().read(cx).connection_state() == staffy_client::ConnectionState::Connected
         })
     });
     // Let the reload settle: a second Resync is harmless, the list is unchanged.
@@ -1123,7 +1123,7 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
     pump(cx, "the models", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, heeler_desktop::workbench::Models::Ready(_)))
+                .is_some_and(|p| matches!(p.models, staffy_desktop::workbench::Models::Ready(_)))
         })
     });
     let (default, shown, cwd) = view.read_with(cx, |wb, _| {
@@ -1161,7 +1161,7 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
     pump(cx, "the models again", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, heeler_desktop::workbench::Models::Ready(_)))
+                .is_some_and(|p| matches!(p.models, staffy_desktop::workbench::Models::Ready(_)))
         })
     });
     cx.simulate_keystrokes("enter");
@@ -1169,7 +1169,7 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
         view.read_with(cx, |wb, _| {
             wb.agent_picker().is_none()
                 && wb.state().active_item().is_some_and(|i| {
-                    matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+                    matches!(i, staffy_desktop::workbench::model::ItemRef::Chat { .. })
                 })
         })
     });
@@ -1273,7 +1273,7 @@ fn an_ended_session_disables_the_composer(cx: &mut TestAppContext) {
     cx.simulate_input("hello");
     assert!(chat.read_with(cx, |c, cx| c.can_send(cx)));
 
-    let _: heeler_protocol::messages::SessionResult =
+    let _: staffy_protocol::messages::SessionResult =
         daemon.call(Request::SessionStop(SessionRef {
             session_id: info.id,
         }));
@@ -1292,7 +1292,7 @@ fn an_ended_session_disables_the_composer(cx: &mut TestAppContext) {
 
 // ---- send to agent --------------------------------------------------------------------------
 
-fn scripted_terminal(daemon: &TestDaemon) -> heeler_protocol::messages::SessionInfo {
+fn scripted_terminal(daemon: &TestDaemon) -> staffy_protocol::messages::SessionInfo {
     daemon.sh(
         "i=1; while [ $i -le 3 ]; do \
          printf '\\033]133;A\\007$ \\033]133;B\\007cmd%d\\r\\n\\033]133;C\\007out%d\\r\\n\\033]133;D;%d\\007' $i $i $((i%2)); \
@@ -1304,7 +1304,7 @@ fn terminal_blocks(
     view: &Entity<Workbench>,
     cx: &VisualTestContext,
     session: SessionId,
-) -> Vec<heeler_protocol::blocks::Block> {
+) -> Vec<staffy_protocol::blocks::Block> {
     view.read_with(cx, |wb, cx| {
         wb.terminal_view_of(session)
             .map(|v| v.read(cx).model().blocks().iter().cloned().collect())
@@ -1326,7 +1326,7 @@ fn send_to_agent_attaches_a_block_to_the_composer_of_the_last_chat(cx: &mut Test
     pump(cx, "three finished commands", |cx| {
         terminal_blocks(&view, cx, terminal.id)
             .iter()
-            .filter(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+            .filter(|b| b.state == staffy_protocol::blocks::BlockState::Finished)
             .count()
             == 3
     });
@@ -1359,7 +1359,7 @@ fn send_to_agent_attaches_a_block_to_the_composer_of_the_last_chat(cx: &mut Test
     // The chat came to the front, where the context went.
     assert!(
         view.read_with(cx, |wb, _| wb.state().active_item().is_some_and(
-            |i| matches!(i, heeler_desktop::workbench::model::ItemRef::Chat { .. })
+            |i| matches!(i, staffy_desktop::workbench::model::ItemRef::Chat { .. })
         ))
     );
 
@@ -1401,11 +1401,11 @@ fn send_to_agent_cuts_long_output_at_the_setting(cx: &mut TestAppContext) {
     pump(cx, "the finished command", |cx| {
         terminal_blocks(&view, cx, terminal.id)
             .iter()
-            .any(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+            .any(|b| b.state == staffy_protocol::blocks::BlockState::Finished)
     });
     let block = terminal_blocks(&view, cx, terminal.id)
         .into_iter()
-        .find(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+        .find(|b| b.state == staffy_protocol::blocks::BlockState::Finished)
         .unwrap();
     let terminal_view = view
         .read_with(cx, |wb, _| wb.terminal_view_of(terminal.id))
@@ -1434,11 +1434,11 @@ fn send_to_agent_without_a_chat_says_so(cx: &mut TestAppContext) {
     pump(cx, "a finished command", |cx| {
         terminal_blocks(&view, cx, terminal.id)
             .iter()
-            .any(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+            .any(|b| b.state == staffy_protocol::blocks::BlockState::Finished)
     });
     let block = terminal_blocks(&view, cx, terminal.id)
         .into_iter()
-        .find(|b| b.state == heeler_protocol::blocks::BlockState::Finished)
+        .find(|b| b.state == staffy_protocol::blocks::BlockState::Finished)
         .unwrap();
     let terminal_view = view
         .read_with(cx, |wb, _| wb.terminal_view_of(terminal.id))
@@ -1461,7 +1461,7 @@ fn a_chat_tab_follows_the_tab_rules_and_its_model_goes_with_the_last_tab(cx: &mu
     let info = daemon.create_chat(&env.cwd());
     let (view, cx) = open(cx, &daemon);
     let (_chat, _model) = open_chat(&view, cx, info.id);
-    let item = heeler_desktop::workbench::model::ItemRef::Chat {
+    let item = staffy_desktop::workbench::model::ItemRef::Chat {
         session: info.id.to_string(),
     };
     assert!(view.read_with(cx, |wb, _| wb.state().find_item(&item).is_some()));
@@ -1484,7 +1484,7 @@ fn a_chat_tab_follows_the_tab_rules_and_its_model_goes_with_the_last_tab(cx: &mu
     view.update_in(cx, |wb, window, cx| {
         wb.open_session_in_split(
             info.id,
-            heeler_desktop::workbench::model::Edge::Right,
+            staffy_desktop::workbench::model::Edge::Right,
             window,
             cx,
         );
@@ -1518,7 +1518,7 @@ fn history_shows_after_the_tab_is_closed_and_opened_again(cx: &mut TestAppContex
     pump(cx, "the turn", |cx| count(&model, cx, is_footer) == 1);
     let shown = transcript(&model, cx, |t| t.len());
 
-    let item = heeler_desktop::workbench::model::ItemRef::Chat {
+    let item = staffy_desktop::workbench::model::ItemRef::Chat {
         session: info.id.to_string(),
     };
     view.update_in(cx, |wb, _, cx| {

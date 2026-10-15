@@ -89,7 +89,7 @@ pub(crate) fn start(shared: &Arc<Shared>) -> Result<WatchGuard, SettingsError> {
 
     let weak = Arc::downgrade(shared);
     let thread = std::thread::Builder::new()
-        .name("heeler-settings-watch".to_owned())
+        .name("staffy-settings-watch".to_owned())
         .spawn(move || run(&rx, &weak))
         .map_err(|e| watch_error(format!("cannot spawn watcher thread: {e}")))?;
 
@@ -132,7 +132,7 @@ fn run(rx: &mpsc::Receiver<Msg>, store: &Weak<Shared>) {
 }
 
 /// Brings the watched directory set in line with the current paths (workspace root changes,
-/// `.heeler` appearing). No-op when not watching. Returns whether a directory was newly watched.
+/// `.staffy` appearing). No-op when not watching. Returns whether a directory was newly watched.
 pub(crate) fn rewatch(shared: &Shared) -> bool {
     let wanted = shared.watch_dirs();
     let mut guard = shared.watch.lock();

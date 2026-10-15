@@ -13,14 +13,14 @@ the default colours); the replies are not stored.
 Re-record (from the repository root):
 
 ```sh
-R="cargo run -p heeler-terminal --example record --"
+R="cargo run -p staffy-terminal --example record --"
 $R zsh_printf_ls -- zsh -f -c 'printf "\033[1;31mred\033[0m \033[38;2;10;20;30mrgb\033[0m \033[4mul\033[0m\n"; printf "wide: \xe7\x95\x8c\xf0\x9f\x98\x80 e\xcc\x81\n"; ls -G -d /bin /usr/bin/ca* /bin/cp'
 $R zsh_seq_scroll -- zsh -f -c 'seq 1 60'
-$R vim_edit_inserted --send 800:'ihello heeler\e' --timeout-ms 2000 -- vim -u NONE -n   # frozen mid-edit, alternate screen active
-$R vim_edit_quit --send 800:'ihello heeler\e' --send 400:':q!\r' -- vim -u NONE -n     # full round trip, primary screen restored
+$R vim_edit_inserted --send 800:'ihello staffy\e' --timeout-ms 2000 -- vim -u NONE -n   # frozen mid-edit, alternate screen active
+$R vim_edit_quit --send 800:'ihello staffy\e' --send 400:':q!\r' -- vim -u NONE -n     # full round trip, primary screen restored
 # Agent TUI startup screens: nothing submitted, capture frozen after the timeout, then hung up.
 # Run from a neutral directory (the cwd shows in the title/prompt), after building the example.
-mkdir -p /tmp/heeler-rec && cd /tmp/heeler-rec
+mkdir -p /tmp/staffy-rec && cd /tmp/staffy-rec
 R=/path/to/target/debug/examples/record
 $R omp_startup --size 100x30 --timeout-ms 3500 -- omp
 $R codex_startup --size 100x30 --timeout-ms 4000 -- codex

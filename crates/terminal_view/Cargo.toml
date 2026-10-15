@@ -1,26 +1,26 @@
 [package]
-name = "heeler-terminal-view"
-description = "Heeler GPUI terminal view: draws the daemon's render stream, encodes keyboard and mouse input"
+name = "staffy-terminal-view"
+description = "Staffy GPUI terminal view: draws the daemon's render stream, encodes keyboard and mouse input"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "heeler_terminal_view"
+name = "staffy_terminal_view"
 
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-heeler-protocol.workspace = true
-heeler-client.workspace = true
+staffy-protocol.workspace = true
+staffy-client.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
-heeler-core.workspace = true
-heeler-daemon.workspace = true
+staffy-core.workspace = true
+staffy-daemon.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

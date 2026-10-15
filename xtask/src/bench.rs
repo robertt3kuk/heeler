@@ -1,9 +1,9 @@
 //! `xtask bench`: measures the performance budgets of `docs/vision.md` (B1–B6) end to end.
 //!
-//! Every scenario runs against its own daemon in a temporary `HEELER_HOME`, with the real
-//! release `heeler-desktop` (a window opens; nothing is captured). The desktop is driven by a
-//! seeded `desktop-state.json` and, for the latency scenarios, by `HEELER_BENCH_INPUT`; its
-//! `HEELER_TRACE_FILE` is the measurement channel (see `heeler_terminal_view::trace`).
+//! Every scenario runs against its own daemon in a temporary `STAFFY_HOME`, with the real
+//! release `staffy-desktop` (a window opens; nothing is captured). The desktop is driven by a
+//! seeded `desktop-state.json` and, for the latency scenarios, by `STAFFY_BENCH_INPUT`; its
+//! `STAFFY_TRACE_FILE` is the measurement channel (see `staffy_terminal_view::trace`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,13 +11,13 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
-use heeler_client::{Client, ConnectOptions};
-use heeler_core::TerminalId;
-use heeler_protocol::messages::{
+use serde_json::{Value, json};
+use staffy_client::{Client, ConnectOptions};
+use staffy_core::TerminalId;
+use staffy_protocol::messages::{
     ClientInfo, ClientKind, DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo,
     SessionResult, SessionSpec, TerminalSize, TerminalSpec,
 };
-use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -82,7 +82,7 @@ pub const BUDGETS: &[Budget] = &[
     },
     Budget {
         id: "B4a",
-        name: "Heeler path: key handled to echo frame submitted, p95",
+        name: "Staffy path: key handled to echo frame submitted, p95",
         metric: "b4a_key_p95_ms",
         unit: "ms",
         limit: 2.0,
@@ -313,11 +313,11 @@ fn build(root: &Path) -> Result<Bins> {
             "--release",
             "--locked",
             "-p",
-            "heeler-desktop",
+            "staffy-desktop",
             "-p",
-            "heeler-daemon",
+            "staffy-daemon",
             "-p",
-            "heeler-cli",
+            "staffy-cli",
         ])
         .current_dir(root)
         .status()
@@ -329,9 +329,9 @@ fn build(root: &Path) -> Result<Bins> {
         .map_or_else(|| root.join("target"), PathBuf::from)
         .join("release");
     let bins = Bins {
-        desktop: target.join("heeler-desktop"),
-        daemon: target.join("heelerd"),
-        cli: target.join("heeler"),
+        desktop: target.join("staffy-desktop"),
+        daemon: target.join("staffyd"),
+        cli: target.join("staffy"),
         sample_dir: None,
     };
     for bin in [&bins.desktop, &bins.daemon, &bins.cli] {
@@ -448,21 +448,21 @@ struct Stack<'a> {
 impl<'a> Stack<'a> {
     async fn start(bins: &'a Bins) -> Result<Self> {
         let home = tempfile::Builder::new()
-            .prefix("heeler-bench-")
+            .prefix("staffy-bench-")
             .tempdir()
-            .context("creating the temporary HEELER_HOME")?;
+            .context("creating the temporary STAFFY_HOME")?;
         let log = std::fs::File::create(home.path().join("daemon.out"))?;
         let mut daemon = Guard::spawn(
-            "heelerd",
+            "staffyd",
             Command::new(&bins.daemon)
-                .env_remove("HEELER_SOCKET")
-                .env("HEELER_HOME", home.path())
-                .env("HEELER_LOG", "warn")
+                .env_remove("STAFFY_SOCKET")
+                .env("STAFFY_HOME", home.path())
+                .env("STAFFY_LOG", "warn")
                 .stdin(Stdio::null())
                 .stdout(log.try_clone()?)
                 .stderr(log),
         )?;
-        let socket = home.path().join("heelerd.sock");
+        let socket = home.path().join("staffyd.sock");
         let started = Instant::now();
         let client = loop {
             daemon.ensure_running()?;
@@ -553,8 +553,8 @@ impl<'a> Stack<'a> {
         proc::usage(self.daemon.pid())
     }
 
-    /// Seeds the layout and starts the desktop. `trace` enables `HEELER_TRACE_LATENCY`;
-    /// `script` is a key script for `HEELER_BENCH_INPUT`.
+    /// Seeds the layout and starts the desktop. `trace` enables `STAFFY_TRACE_LATENCY`;
+    /// `script` is a key script for `STAFFY_BENCH_INPUT`.
     fn launch_desktop(
         &mut self,
         sessions: &[&SessionInfo],
@@ -569,8 +569,8 @@ impl<'a> Stack<'a> {
         let log = std::fs::File::create(self.path("desktop.out"))?;
         let mut command = Command::new(&self.bins.desktop);
         command
-            .env_remove("HEELER_SOCKET")
-            .env("HEELER_HOME", self.home.path())
+            .env_remove("STAFFY_SOCKET")
+            .env("STAFFY_HOME", self.home.path())
             .env("RUST_LOG", "info")
             .env("RUST_BACKTRACE", "1")
             .stdin(Stdio::null())
@@ -578,15 +578,15 @@ impl<'a> Stack<'a> {
             .stderr(log);
         if trace {
             command
-                .env("HEELER_TRACE_LATENCY", "1")
-                .env("HEELER_TRACE_FILE", self.path("trace.jsonl"));
+                .env("STAFFY_TRACE_LATENCY", "1")
+                .env("STAFFY_TRACE_FILE", self.path("trace.jsonl"));
         }
         if let Some(script) = script {
             let path = self.path("keys.json");
             std::fs::write(&path, serde_json::to_string(script)?)?;
-            command.env("HEELER_BENCH_INPUT", path);
+            command.env("STAFFY_BENCH_INPUT", path);
         }
-        self.desktop = Some(Guard::spawn("heeler-desktop", &mut command)?);
+        self.desktop = Some(Guard::spawn("staffy-desktop", &mut command)?);
         Ok(())
     }
 
@@ -648,7 +648,7 @@ impl<'a> Stack<'a> {
     }
 
     /// Quits the desktop with SIGTERM (it saves its layout and leaves the daemon running), then
-    /// stops the daemon and its sessions through `heeler daemon stop --stop-sessions`, the way a
+    /// stops the daemon and its sessions through `staffy daemon stop --stop-sessions`, the way a
     /// user would. Fails when either had to be SIGKILLed, crashed, or left a process behind.
     fn teardown(mut self) -> Result<()> {
         let desktop = self
@@ -658,14 +658,14 @@ impl<'a> Stack<'a> {
         self.daemon.note_descendants();
         let cli = Command::new(&self.bins.cli)
             .args(["daemon", "stop", "--stop-sessions"])
-            .env_remove("HEELER_SOCKET")
-            .env("HEELER_HOME", self.home.path())
+            .env_remove("STAFFY_SOCKET")
+            .env("STAFFY_HOME", self.home.path())
             .stdin(Stdio::null())
             .output()
-            .context("running `heeler daemon stop`")?;
+            .context("running `staffy daemon stop`")?;
         if !cli.status.success() {
             eprintln!(
-                "heeler daemon stop failed ({}): {}",
+                "staffy daemon stop failed ({}): {}",
                 cli.status,
                 String::from_utf8_lossy(&cli.stderr)
             );
@@ -707,9 +707,9 @@ fn key_totals_ms(events: &[Value], window: Option<(u64, u64)>) -> Vec<f64> {
     key_stage_ms(events, "total_us", window)
 }
 
-/// Per keystroke, what Heeler itself spends: key handled to the end of the paint that shows the
+/// Per keystroke, what Staffy itself spends: key handled to the end of the paint that shows the
 /// echo, minus the wait for the display tick in between (B4a, ADR 0011).
-fn key_heeler_ms(events: &[Value]) -> Vec<f64> {
+fn key_staffy_ms(events: &[Value]) -> Vec<f64> {
     events
         .iter()
         .filter(|e| is_event(e, "key"))
@@ -948,7 +948,7 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
     // B4b: key handled to the end of the paint that shows the echo (as before, B4).
     record_latency(&mut metrics, "b4b", &totals);
     // B4a: the same without the wait for the display tick (`echo_to_prepaint`).
-    record_latency(&mut metrics, "b4a", &key_heeler_ms(&events));
+    record_latency(&mut metrics, "b4a", &key_staffy_ms(&events));
     record_stages(&mut metrics, "b4", &events, None);
     metrics.insert("b4_window_active".into(), window_active(&events));
     let interval_ms = display_refresh_interval_ms(&events)?;
@@ -956,7 +956,7 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
     metrics.insert("b4_refresh_hz".into(), 1000.0 / interval_ms);
     // A window that is not being presented (inactive, occluded, on a sleeping display) paints only
     // when something else wakes it, e.g. the next key, so the echo waits ~a key interval for its
-    // paint instead of one tick. Such a run measures the machine, not Heeler: the harness repeats
+    // paint instead of one tick. Such a run measures the machine, not Staffy: the harness repeats
     // it, and fails rather than reporting it.
     let waits = key_stage_ms(&events, "echo_to_prepaint_us", None);
     let stalled = metrics.get("b4_window_active") != Some(&1.0)

@@ -1,5 +1,5 @@
-//! `heeler agent report | release | hook` against a real daemon: what the hooks of Codex,
-//! Claude Code, and the OMP extension run inside a Heeler session.
+//! `staffy agent report | release | hook` against a real daemon: what the hooks of Codex,
+//! Claude Code, and the OMP extension run inside a Staffy session.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code
 
@@ -9,17 +9,17 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use common::{HEELER, TestDaemon, WAIT, command, finish};
+use common::{STAFFY, TestDaemon, WAIT, command, finish};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 use tokio::time::{sleep, timeout};
 
-/// A `heeler` invocation as an agent hook would make it: `HEELER_SESSION_ID` set (or not).
+/// A `staffy` invocation as an agent hook would make it: `STAFFY_SESSION_ID` set (or not).
 fn agent_command(socket: &Path, session: Option<&str>, args: &[&str]) -> tokio::process::Command {
-    let mut command = command(Path::new(HEELER), Some(socket), args);
+    let mut command = command(Path::new(STAFFY), Some(socket), args);
     match session {
-        Some(id) => command.env("HEELER_SESSION_ID", id),
-        None => command.env_remove("HEELER_SESSION_ID"),
+        Some(id) => command.env("STAFFY_SESSION_ID", id),
+        None => command.env_remove("STAFFY_SESSION_ID"),
     };
     command
 }
@@ -32,7 +32,7 @@ async fn agent_of(t: &TestDaemon, id: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Polls `heeler ls` until the session's `agent.state` is `state`.
+/// Polls `staffy ls` until the session's `agent.state` is `state`.
 async fn wait_agent_state(t: &TestDaemon, id: &str, state: &str) -> Value {
     timeout(WAIT, async {
         loop {
@@ -157,10 +157,10 @@ async fn report_and_release_show_up_in_ls_json() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_reports_itself_through_the_environment_the_daemon_gave_it() {
     let t = TestDaemon::start().await;
-    // No flags for the socket or the session: HEELER_BIN, HEELER_SESSION_ID, and HEELER_SOCKET
+    // No flags for the socket or the session: STAFFY_BIN, STAFFY_SESSION_ID, and STAFFY_SOCKET
     // are all the process has.
-    let script = r#"[ "$HEELER_ENV" = 1 ] || exit 3
-"$HEELER_BIN" agent report --source self --agent fake --state working --message "from inside"
+    let script = r#"[ "$STAFFY_ENV" = 1 ] || exit 3
+"$STAFFY_BIN" agent report --source self --agent fake --state working --message "from inside"
 exec sleep 600"#;
     let id = t.new_session(&[], &["sh", "-c", script]).await;
     let agent = wait_agent_state(&t, &id, "working").await;
@@ -170,14 +170,14 @@ exec sleep 600"#;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn outside_heeler_or_without_a_daemon_the_agent_commands_do_nothing_quietly() {
+async fn outside_staffy_or_without_a_daemon_the_agent_commands_do_nothing_quietly() {
     let t = TestDaemon::start().await;
     let id = t.new_session(&[], &["sh", "-c", "exec sleep 600"]).await;
     let report = [
         "agent", "report", "--source", "x", "--agent", "omp", "--state", "idle",
     ];
 
-    // Not inside a Heeler session.
+    // Not inside a Staffy session.
     let out = finish(agent_command(&t.paths.socket, None, &report)).await;
     assert_eq!(
         (out.code, out.stdout.as_str(), out.stderr.as_str()),
@@ -230,7 +230,7 @@ async fn outside_heeler_or_without_a_daemon_the_agent_commands_do_nothing_quietl
     );
 }
 
-/// Runs `heeler agent hook <agent>` with `input` on stdin.
+/// Runs `staffy agent hook <agent>` with `input` on stdin.
 async fn hook(
     socket: &Path,
     session: &str,

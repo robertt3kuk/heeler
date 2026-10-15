@@ -1,11 +1,11 @@
-//! `cargo run -p xtask -- bundle [--release] [--out DIR]`: assembles `Heeler.app` and signs it
+//! `cargo run -p xtask -- bundle [--release] [--out DIR]`: assembles `Staffy.app` and signs it
 //! ad hoc (`docs/packaging.md`).
 //!
 //! ```text
-//! Heeler.app/Contents/
+//! Staffy.app/Contents/
 //!   Info.plist                                   assets/macos/Info.plist, version filled in
-//!   MacOS/heeler-desktop  heelerd  heeler        the three real executables of the workspace
-//!   Library/LaunchAgents/dev.heeler.daemon.plist assets/macos/dev.heeler.daemon.plist
+//!   MacOS/staffy-desktop  staffyd  staffy        the three real executables of the workspace
+//!   Library/LaunchAgents/dev.staffy.daemon.plist assets/macos/dev.staffy.daemon.plist
 //!   Resources/shell-integration/…                the OSC 133 / OSC 7 scripts
 //! ```
 //!
@@ -21,23 +21,23 @@ use anyhow::{Context, Result, bail, ensure};
 
 /// The folder name of the bundle; its `Contents/MacOS` executable names must stay distinct
 /// ignoring case (the default macOS volume is case-insensitive).
-pub const APP_NAME: &str = "Heeler.app";
+pub const APP_NAME: &str = "Staffy.app";
 /// The workspace version, written to `CFBundleShortVersionString` and `CFBundleVersion`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `(file name inside Contents/MacOS, binary name Cargo produces, code-signing identifier)`.
 /// The desktop is the bundle's main executable, so signing the bundle gives it the bundle id.
 const EXECUTABLES: [(&str, &str, &str); 3] = [
-    ("heeler-desktop", "heeler-desktop", "dev.heeler.Heeler"),
-    ("heelerd", "heelerd", "dev.heeler.daemon"),
-    ("heeler", "heeler", "dev.heeler.cli"),
+    ("staffy-desktop", "staffy-desktop", "dev.staffy.Staffy"),
+    ("staffyd", "staffyd", "dev.staffy.daemon"),
+    ("staffy", "staffy", "dev.staffy.cli"),
 ];
-const PACKAGES: [&str; 3] = ["heeler-desktop", "heeler-daemon", "heeler-cli"];
+const PACKAGES: [&str; 3] = ["staffy-desktop", "staffy-daemon", "staffy-cli"];
 
 #[derive(Debug)]
 pub struct Options {
     pub release: bool,
-    /// Where `Heeler.app` is created; default `target/bundle`.
+    /// Where `Staffy.app` is created; default `target/bundle`.
     pub out: Option<PathBuf>,
     /// Use the binaries already built in this folder instead of running `cargo build`.
     pub bin_dir: Option<PathBuf>,
@@ -89,7 +89,7 @@ fn build(root: &Path, release: bool) -> Result<PathBuf> {
     Ok(target_dir(root).join(profile))
 }
 
-/// Creates `out/Heeler.app` from the binaries in `bin_dir` and the assets; replaces a bundle
+/// Creates `out/Staffy.app` from the binaries in `bin_dir` and the assets; replaces a bundle
 /// that is already there. Returns the bundle's path. Does not sign.
 pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
     let app = out.join(APP_NAME);
@@ -99,7 +99,7 @@ pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
     for source in &sources {
         ensure!(
             source.is_file(),
-            "{} is missing; build it (`cargo build -p heeler-desktop -p heeler-daemon -p heeler-cli`) or pass --bin-dir",
+            "{} is missing; build it (`cargo build -p staffy-desktop -p staffy-daemon -p staffy-cli`) or pass --bin-dir",
             source.display()
         );
     }
@@ -131,8 +131,8 @@ pub fn assemble(root: &Path, bin_dir: &Path, out: &Path) -> Result<PathBuf> {
         info.replace("@VERSION@", VERSION),
     )?;
     fs::copy(
-        assets.join("dev.heeler.daemon.plist"),
-        launch_agents.join("dev.heeler.daemon.plist"),
+        assets.join("dev.staffy.daemon.plist"),
+        launch_agents.join("dev.staffy.daemon.plist"),
     )
     .context("copying the LaunchAgent plist")?;
     copy_tree(
@@ -262,7 +262,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["heeler", "heeler-desktop", "heelerd"]
+            ["staffy", "staffy-desktop", "staffyd"]
                 .map(str::to_owned)
                 .into_iter()
                 .collect()
@@ -290,7 +290,7 @@ mod tests {
 
         // Info.plist.
         let info = dictionary(&app.join("Contents/Info.plist"));
-        assert_eq!(string(&info, "CFBundleIdentifier"), "dev.heeler.Heeler");
+        assert_eq!(string(&info, "CFBundleIdentifier"), "dev.staffy.Staffy");
         assert_eq!(string(&info, "CFBundleShortVersionString"), VERSION);
         assert_eq!(string(&info, "CFBundleVersion"), VERSION);
         assert_eq!(string(&info, "LSMinimumSystemVersion"), "13.0");
@@ -314,10 +314,10 @@ mod tests {
         );
 
         // The LaunchAgent: present, pointing into the bundle, and inert until registered.
-        let agent = dictionary(&app.join("Contents/Library/LaunchAgents/dev.heeler.daemon.plist"));
-        assert_eq!(string(&agent, "Label"), "dev.heeler.daemon");
+        let agent = dictionary(&app.join("Contents/Library/LaunchAgents/dev.staffy.daemon.plist"));
+        assert_eq!(string(&agent, "Label"), "dev.staffy.daemon");
         let program = string(&agent, "BundleProgram");
-        assert_eq!(program, "Contents/MacOS/heelerd");
+        assert_eq!(program, "Contents/MacOS/staffyd");
         assert!(app.join(program).is_file());
         for key in ["KeepAlive", "RunAtLoad"] {
             assert_eq!(
@@ -331,9 +331,9 @@ mod tests {
         let scripts = app.join("Contents/Resources/shell-integration");
         for script in [
             "zsh/.zshenv",
-            "zsh/heeler-integration.zsh",
-            "bash/heeler.bash",
-            "fish/vendor_conf.d/heeler-shell-integration.fish",
+            "zsh/staffy-integration.zsh",
+            "bash/staffy.bash",
+            "fish/vendor_conf.d/staffy-shell-integration.fish",
         ] {
             assert!(scripts.join(script).is_file(), "{script}");
         }
@@ -360,10 +360,10 @@ mod tests {
         };
         let bundle = described(&app);
         assert!(bundle.contains("Signature=adhoc"), "{bundle}");
-        assert!(bundle.contains("Identifier=dev.heeler.Heeler"), "{bundle}");
-        let daemon = described(&macos.join("heelerd"));
+        assert!(bundle.contains("Identifier=dev.staffy.Staffy"), "{bundle}");
+        let daemon = described(&macos.join("staffyd"));
         assert!(daemon.contains("Signature=adhoc"), "{daemon}");
-        assert!(daemon.contains("Identifier=dev.heeler.daemon"), "{daemon}");
+        assert!(daemon.contains("Identifier=dev.staffy.daemon"), "{daemon}");
         let status = Command::new("codesign")
             .args(["--verify", "--deep", "--strict"])
             .arg(&app)
@@ -372,9 +372,9 @@ mod tests {
         assert!(status.success());
 
         // The check is real: a changed executable no longer verifies.
-        let mut tampered = fs::read(macos.join("heelerd")).unwrap();
+        let mut tampered = fs::read(macos.join("staffyd")).unwrap();
         tampered.push(0);
-        fs::write(macos.join("heelerd"), tampered).unwrap();
+        fs::write(macos.join("staffyd"), tampered).unwrap();
         assert!(verify(&app).is_err(), "a modified bundle must not verify");
 
         // Nothing was launched: no process runs anything from the bundle.
@@ -391,7 +391,7 @@ mod tests {
         let root = workspace_root();
         let bins = tempfile::tempdir().unwrap();
         let err = assemble(&root, bins.path(), dir.path()).unwrap_err();
-        assert!(err.to_string().contains("heeler-desktop"), "{err}");
+        assert!(err.to_string().contains("staffy-desktop"), "{err}");
 
         for (_, binary, _) in EXECUTABLES {
             fs::write(bins.path().join(binary), b"not a program").unwrap();

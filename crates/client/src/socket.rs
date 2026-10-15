@@ -2,14 +2,14 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Where the daemon listens, mirroring the daemon's own resolution (architecture.md § Paths):
-/// `HEELER_SOCKET`, else `$HEELER_HOME/heelerd.sock`, else
-/// `~/Library/Application Support/Heeler/heelerd.sock`.
+/// `STAFFY_SOCKET`, else `$STAFFY_HOME/staffyd.sock`, else
+/// `~/Library/Application Support/Staffy/staffyd.sock`.
 ///
 /// The client may not depend on the daemon crate, so the rule is repeated here.
 pub fn default_socket_path() -> Option<PathBuf> {
     resolve(
-        std::env::var_os("HEELER_SOCKET"),
-        std::env::var_os("HEELER_HOME"),
+        std::env::var_os("STAFFY_SOCKET"),
+        std::env::var_os("STAFFY_HOME"),
         std::env::home_dir(),
     )
 }
@@ -23,9 +23,9 @@ fn resolve(
         return Some(PathBuf::from(socket));
     }
     if let Some(home) = home.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(home).join("heelerd.sock"));
+        return Some(PathBuf::from(home).join("staffyd.sock"));
     }
-    Some(user_home?.join("Library/Application Support/Heeler/heelerd.sock"))
+    Some(user_home?.join("Library/Application Support/Staffy/staffyd.sock"))
 }
 
 #[cfg(test)]
@@ -50,7 +50,7 @@ mod tests {
     fn home_override_next() {
         assert_eq!(
             resolve(None, os("/tmp/hh"), Some("/Users/u".into())).as_deref(),
-            Some(Path::new("/tmp/hh/heelerd.sock"))
+            Some(Path::new("/tmp/hh/staffyd.sock"))
         );
     }
 
@@ -59,7 +59,7 @@ mod tests {
         assert_eq!(
             resolve(os(""), os(""), Some("/Users/u".into())).as_deref(),
             Some(Path::new(
-                "/Users/u/Library/Application Support/Heeler/heelerd.sock"
+                "/Users/u/Library/Application Support/Staffy/staffyd.sock"
             ))
         );
     }

@@ -13,17 +13,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures::StreamExt;
-use heeler_agents::{AdapterMessage, ExitInfo};
-use heeler_core::agent::{MessageRole, NoticeLevel, TokenCounts};
-use heeler_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId, TurnId};
-use heeler_gateway::{
-    ChatMessage, ChatRequest, GatewayError, GatewayEvent, Provider, Role, is_length_cut,
-};
-use heeler_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_storage::Storage;
 use parking_lot::Mutex;
 use serde_json::json;
+use staffy_agents::{AdapterMessage, ExitInfo};
+use staffy_core::agent::{MessageRole, NoticeLevel, TokenCounts};
+use staffy_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId, TurnId};
+use staffy_gateway::{
+    ChatMessage, ChatRequest, GatewayError, GatewayEvent, Provider, Role, is_length_cut,
+};
+use staffy_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_storage::Storage;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

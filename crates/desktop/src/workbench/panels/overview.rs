@@ -12,9 +12,9 @@ use gpui::{
     MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Window, div, prelude::*, px,
 };
-use heeler_core::SessionId;
-use heeler_protocol::messages::SessionInfo;
-use heeler_terminal_view::{TerminalView, TerminalViewSettings, ViewMode};
+use staffy_core::SessionId;
+use staffy_protocol::messages::SessionInfo;
+use staffy_terminal_view::{TerminalView, TerminalViewSettings, ViewMode};
 
 use super::common::{
     age_label, agent_badge, kind_icon, panel_header, placement, state_dot, tone_color,
@@ -54,11 +54,11 @@ fn preview_settings(base: TerminalViewSettings) -> TerminalViewSettings {
     TerminalViewSettings {
         font_size: (base.font_size * PREVIEW_SCALE).max(4.0),
         padding: base.padding * PREVIEW_SCALE,
-        cursor: heeler_terminal_view::CursorSettings {
+        cursor: staffy_terminal_view::CursorSettings {
             blink: false,
             ..base.cursor
         },
-        blocks: heeler_terminal_view::BlockSettings {
+        blocks: staffy_terminal_view::BlockSettings {
             gutter_width: base.blocks.gutter_width * PREVIEW_SCALE,
             ..base.blocks
         },

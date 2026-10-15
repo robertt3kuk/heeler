@@ -70,7 +70,7 @@ impl Workbench {
             fields.push((
                 "Daemon",
                 format!(
-                    "heelerd {} · protocol {}.{}",
+                    "staffyd {} · protocol {}.{}",
                     info.daemon_version, info.protocol.major, info.protocol.minor
                 ),
             ));

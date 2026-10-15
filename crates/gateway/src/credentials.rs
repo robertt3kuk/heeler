@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use crate::secret::Secret;
 
 /// The Keychain service of every provider credential.
-pub const KEYCHAIN_SERVICE: &str = "dev.heeler.provider";
+pub const KEYCHAIN_SERVICE: &str = "dev.staffy.provider";
 
 /// What the database stores to say where a provider's credential is.
 pub fn keychain_ref(provider_id: &str) -> String {

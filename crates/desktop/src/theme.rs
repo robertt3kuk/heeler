@@ -1,9 +1,9 @@
 //! Density tokens (design.md § Visual system) and the chrome palette.
 
 use gpui::{Hsla, Rgba, WindowAppearance, hsla, rgb};
-use heeler_settings::ChromeMode;
+use staffy_settings::ChromeMode;
 
-pub use heeler_settings::Density;
+pub use staffy_settings::Density;
 
 /// Sizes in logical pixels: the settings crate's density token table plus the UI font sizes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,7 +26,7 @@ pub struct Tokens {
     pub block_gutter: f32,
 }
 
-/// Desktop-side additions to [`Density`] (which lives in `heeler-settings`).
+/// Desktop-side additions to [`Density`] (which lives in `staffy-settings`).
 pub trait DensityExt: Sized {
     /// Layout tokens and font sizes for this density.
     fn ui(self) -> Tokens;
@@ -183,16 +183,16 @@ impl Theme {
         density: Density,
         enabled: bool,
         animate: bool,
-    ) -> heeler_terminal_view::BlockSettings {
+    ) -> staffy_terminal_view::BlockSettings {
         let rgb = |color: Hsla| {
             let c: Rgba = color.into();
-            heeler_terminal_view::Rgb(
+            staffy_terminal_view::Rgb(
                 (c.r * 255.0).round().clamp(0.0, 255.0) as u8,
                 (c.g * 255.0).round().clamp(0.0, 255.0) as u8,
                 (c.b * 255.0).round().clamp(0.0, 255.0) as u8,
             )
         };
-        heeler_terminal_view::BlockSettings {
+        staffy_terminal_view::BlockSettings {
             enabled,
             gutter_width: density.ui().block_gutter,
             success: rgb(self.success),
@@ -206,12 +206,12 @@ impl Theme {
 
 /// Whether the user asked macOS to reduce motion (System Settings ▸ Accessibility ▸ Display).
 /// Read once per process through `defaults`; anything unreadable counts as "motion is fine".
-/// The `HEELER_REDUCE_MOTION` variable (`0` / `1`) overrides it.
+/// The `STAFFY_REDUCE_MOTION` variable (`0` / `1`) overrides it.
 pub fn reduce_motion() -> bool {
     use std::sync::OnceLock;
     static REDUCE: OnceLock<bool> = OnceLock::new();
     *REDUCE.get_or_init(|| {
-        if let Some(value) = std::env::var_os("HEELER_REDUCE_MOTION") {
+        if let Some(value) = std::env::var_os("STAFFY_REDUCE_MOTION") {
             return value == "1";
         }
         std::process::Command::new("/usr/bin/defaults")
@@ -309,13 +309,13 @@ mod tests {
     #[test]
     fn block_colors_and_gutter_follow_the_chrome_theme_and_density() {
         let dark = Theme::dark().block_settings(Density::Compact, true, true);
-        assert_eq!(dark.success, heeler_terminal_view::Rgb(0x30, 0xd1, 0x58));
-        assert_eq!(dark.error, heeler_terminal_view::Rgb(0xff, 0x45, 0x3a));
-        assert_eq!(dark.accent, heeler_terminal_view::Rgb(0x0a, 0x84, 0xff));
+        assert_eq!(dark.success, staffy_terminal_view::Rgb(0x30, 0xd1, 0x58));
+        assert_eq!(dark.error, staffy_terminal_view::Rgb(0xff, 0x45, 0x3a));
+        assert_eq!(dark.accent, staffy_terminal_view::Rgb(0x0a, 0x84, 0xff));
         assert_eq!(dark.gutter_width, 3.0);
         assert!(dark.enabled && dark.animate);
         let light = Theme::light().block_settings(Density::Comfortable, false, false);
-        assert_eq!(light.success, heeler_terminal_view::Rgb(0x24, 0x8a, 0x3d));
+        assert_eq!(light.success, staffy_terminal_view::Rgb(0x24, 0x8a, 0x3d));
         assert_eq!(light.gutter_width, 4.0);
         assert!(!light.enabled && !light.animate);
     }

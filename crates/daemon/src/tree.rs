@@ -7,11 +7,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use heeler_core::{
+use staffy_core::{
     AgentNode, Changes, NodeOutcome, NodeState, NodeUpdate, ObservationTree, SessionId,
 };
-use heeler_protocol::messages::{AgentReport, AgentState, Event};
-use heeler_storage::{Storage, StorageError};
+use staffy_protocol::messages::{AgentReport, AgentState, Event};
+use staffy_storage::{Storage, StorageError};
 use tokio::time::Instant;
 use tracing::warn;
 
@@ -288,7 +288,7 @@ pub fn node_state(state: AgentState) -> NodeState {
 
 #[cfg(test)]
 mod tests {
-    use heeler_core::{NodeKind, Patch};
+    use staffy_core::{NodeKind, Patch};
 
     use super::*;
 

@@ -1,4 +1,4 @@
-//! Heeler IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
+//! Staffy IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
 //!
 //! - [`assistant`]: assistant chat DTOs and context attachments (protocol 0.12).
 //! - [`notify`]: notification intents, `client.focus` (protocol 0.13).

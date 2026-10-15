@@ -1,5 +1,5 @@
 //! Assistant chat end to end (protocol 0.12, `docs/assistant.md`): a real daemon on a temporary
-//! `HEELER_HOME`, real client connections, the in-memory credential store, a mock
+//! `STAFFY_HOME`, real client connections, the in-memory credential store, a mock
 //! OpenAI-compatible server standing in for the provider, real terminals, files and the history
 //! index (its sources pointed at temporary directories). No real provider, key or transcript is
 //! ever touched.
@@ -15,27 +15,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{TestDaemon, WAIT, create_in, remote_code, sh, terminal_of, wait_event};
-use heeler_client::{Client, ClientError};
-use heeler_core::agent::MessageRole;
-use heeler_core::{AgentEvent, AgentEventKind, Seq, SessionId, SessionState, WorkspaceId};
-use heeler_daemon::{DaemonConfig, GatewayConfig, Paths};
-use heeler_gateway::testing::{MockServer, Reply};
-use heeler_gateway::{CredentialStore, HttpConfig, MemoryStore};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::assistant::{
+use staffy_client::{Client, ClientError};
+use staffy_core::agent::MessageRole;
+use staffy_core::{AgentEvent, AgentEventKind, Seq, SessionId, SessionState, WorkspaceId};
+use staffy_daemon::{DaemonConfig, GatewayConfig, Paths};
+use staffy_gateway::testing::{MockServer, Reply};
+use staffy_gateway::{CredentialStore, HttpConfig, MemoryStore};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::assistant::{
     ATTACHMENTS_MAX, AssistantList, AssistantListRequest, AssistantOpen, AssistantScope,
     Attachment, AttachmentKind, LineRange, attachments_meta,
 };
-use heeler_protocol::blocks::BlockState;
-use heeler_protocol::chat::{ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
-use heeler_protocol::history::{
+use staffy_protocol::blocks::BlockState;
+use staffy_protocol::chat::{ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
+use staffy_protocol::history::{
     HistoryHit, HistoryHits, HistoryRole, HistorySearch, HistorySource,
 };
-use heeler_protocol::messages::{
+use staffy_protocol::messages::{
     Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef, SessionResult,
     WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
 };
-use heeler_protocol::provider::{ProviderAdd, ProviderResult, ProviderSetCredential};
+use staffy_protocol::provider::{ProviderAdd, ProviderResult, ProviderSetCredential};
 use tokio::sync::broadcast;
 use tokio::time::sleep;
 
@@ -110,7 +110,7 @@ impl Env {
         let store = Arc::new(MemoryStore::new());
         let mut daemon_config = DaemonConfig::new(paths.clone());
         daemon_config.gateway = gateway(&store);
-        let running = heeler_daemon::start(daemon_config).await.unwrap();
+        let running = staffy_daemon::start(daemon_config).await.unwrap();
         let daemon = TestDaemon {
             _dir: tempfile::tempdir().unwrap(),
             paths,
@@ -182,7 +182,7 @@ impl Env {
     }
 
     async fn workspaces(&self) -> Vec<WorkspaceInfo> {
-        self.call::<WorkspaceList>(Request::WorkspaceList(heeler_protocol::messages::Empty {}))
+        self.call::<WorkspaceList>(Request::WorkspaceList(staffy_protocol::messages::Empty {}))
             .await
             .workspaces
     }
@@ -635,9 +635,9 @@ async fn attachments_are_resolved_journaled_and_sent_and_nothing_else_is() {
     for header in [
         "[shell: cargo test -p daemon · exit 0 · 2 lines]\nflibbertigibbet test output\nsecond line key=",
         &format!("[shell: terminal {terminal_id} · last "),
-        "[agent: Assistant · proj 2 · heeler chat · 1 turns]\nuser: earlier question about pangolins\n\nassistant: earlier answer about pangolins",
+        "[agent: Assistant · proj 2 · staffy chat · 1 turns]\nuser: earlier question about pangolins\n\nassistant: earlier answer about pangolins",
         "[file: src/lib.rs · lines 1-2 · 2 lines]\npub fn alpha() {}\nconst KEY: &str =",
-        "[search: \"flibbertigibbet\" · 1 hits]\n1. [heeler ",
+        "[search: \"flibbertigibbet\" · 1 hits]\n1. [staffy ",
     ] {
         assert!(text.contains(header), "missing {header:?} in\n{text}");
     }
@@ -666,7 +666,7 @@ async fn attachments_are_resolved_journaled_and_sent_and_nothing_else_is() {
     // The provider received exactly that, behind the assistant's system prompt.
     let sent = env.sent(1);
     assert_eq!(sent[0].0, "system");
-    assert!(sent[0].1.contains("Heeler's assistant"), "{}", sent[0].1);
+    assert!(sent[0].1.contains("Staffy's assistant"), "{}", sent[0].1);
     assert_eq!(sent.last().unwrap(), &("user".to_owned(), text.clone()));
     let wire = env.mock.requests_to(PATH)[1].text();
     assert!(
@@ -698,7 +698,7 @@ async fn attachments_are_resolved_journaled_and_sent_and_nothing_else_is() {
         .iter()
         .find(|h| h.session_id == Some(assistant.id))
         .unwrap_or_else(|| panic!("no hit of the assistant in {hits:?}"));
-    assert_eq!(hit.source, HistorySource::Heeler);
+    assert_eq!(hit.source, HistorySource::Staffy);
     assert_eq!(hit.role, HistoryRole::Assistant);
     assert_eq!(hit.session_key, assistant.id.to_string());
     assert_eq!(hit.title.as_deref(), Some("Assistant · proj"));
@@ -759,7 +759,7 @@ async fn a_transcript_of_another_tool_comes_from_the_index() {
         .await;
     let (code, message) = error_of(missing).await;
     assert_eq!(code, ErrorCode::NotFound);
-    assert!(message.contains("heeler search"), "{message}");
+    assert!(message.contains("staffy search"), "{message}");
     env.stop().await;
 }
 
@@ -938,7 +938,7 @@ async fn refused_attachments_name_their_setting_and_nothing_is_read_or_sent() {
                 global.id,
                 "q",
                 vec![Attachment::ShellRecent {
-                    terminal_id: heeler_core::TerminalId(9999),
+                    terminal_id: staffy_core::TerminalId(9999),
                     lines: 5
                 }]
             )

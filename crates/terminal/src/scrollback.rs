@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use heeler_protocol::render::{Color, Row};
+use staffy_protocol::render::{Color, Row};
 
 use crate::render::{RowScratch, Style, run_of};
 
@@ -67,7 +67,7 @@ impl PackedStyle {
         Style {
             fg: unpack_color(self.fg),
             bg: unpack_color(self.bg),
-            flags: heeler_protocol::render::CellFlags::from_bits_retain(self.flags),
+            flags: staffy_protocol::render::CellFlags::from_bits_retain(self.flags),
             underline_color: (self.underline != NO_COLOR).then(|| unpack_color(self.underline)),
             link: (self.link != NO_LINK).then_some(self.link),
         }
@@ -356,7 +356,7 @@ impl ColdRow<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heeler_protocol::render::{CellFlags, Run};
+    use staffy_protocol::render::{CellFlags, Run};
 
     fn scratch(text: &str, runs: &[(Style, usize)], wrapped: bool, blank_tail: u16) -> RowScratch {
         RowScratch {

@@ -1,4 +1,4 @@
-//! The Codex adapter against the fake app server (`heeler-codex-fixture replay`) replaying
+//! The Codex adapter against the fake app server (`staffy-codex-fixture replay`) replaying
 //! transcripts recorded from the real codex 0.162.1.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -6,20 +6,20 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use heeler_agents::{
+use serde_json::Value;
+use staffy_agents::{
     AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter, CodexConfig, CodexSession,
     StartSpec,
 };
-use heeler_core::agent::{
+use staffy_core::agent::{
     FileChangeKind, MessageRole, PermissionKind, PermissionOptionKind, PermissionOutcome, ToolKind,
     ToolStatus,
 };
-use heeler_core::{AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode};
-use serde_json::Value;
+use staffy_core::{AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode};
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-const FIXTURE_BIN: &str = env!("CARGO_BIN_EXE_heeler-codex-fixture");
+const FIXTURE_BIN: &str = env!("CARGO_BIN_EXE_staffy-codex-fixture");
 const WAIT: Duration = Duration::from_secs(20);
 
 fn fixture(name: &str) -> PathBuf {
@@ -186,7 +186,7 @@ async fn a_command_turn_with_an_approval_maps_to_the_unified_events() {
         detail
             .as_deref()
             .unwrap_or("")
-            .contains("/tmp/heeler-fixture")
+            .contains("/tmp/staffy-fixture")
     );
     // Exactly what the server offered, in its order.
     let offered: Vec<_> = options.iter().map(|o| (o.id.as_str(), o.kind)).collect();
@@ -368,7 +368,7 @@ async fn a_declined_command_ends_as_a_declined_tool() {
     adapter.send_message("go".into()).await.unwrap();
     let first = collect_until(&mut events, is_permission_request).await;
     let (approval, _) = requested(&first);
-    // The recording answered `decline`; the server offered only accept/cancel, so Heeler
+    // The recording answered `decline`; the server offered only accept/cancel, so Staffy
     // answers `cancel` and the replay (which matches responses loosely) carries on.
     adapter.respond(approval, "cancel".into()).await.unwrap();
     let rest = collect_until(&mut events, ends_turn).await;
@@ -601,8 +601,8 @@ fn handshake_lines(user_agent: &str) -> Vec<Value> {
 #[tokio::test]
 async fn unsupported_versions_are_refused_with_a_clear_error() {
     for (agent, found) in [
-        ("heeler/0.144.2 (Mac OS; arm64)", "0.144.2"),
-        ("heeler/0.170.0 (Mac OS; arm64)", "0.170.0"),
+        ("staffy/0.144.2 (Mac OS; arm64)", "0.144.2"),
+        ("staffy/0.170.0 (Mac OS; arm64)", "0.170.0"),
     ] {
         let h = Harness::new();
         let transcript = write_transcript(&h, "old.jsonl", &handshake_lines(agent));
@@ -631,14 +631,14 @@ async fn unsupported_versions_are_refused_with_a_clear_error() {
 async fn a_missing_program_is_a_spawn_error() {
     let h = Harness::new();
     let config = CodexConfig {
-        program: PathBuf::from("/nonexistent/heeler-codex"),
+        program: PathBuf::from("/nonexistent/staffy-codex"),
         ..CodexConfig::default()
     };
     let error = CodexAppServerAdapter::start(&config, &h.spec(None))
         .await
         .unwrap_err();
     assert!(matches!(error, AgentError::Spawn { .. }), "{error}");
-    assert!(error.to_string().contains("/nonexistent/heeler-codex"));
+    assert!(error.to_string().contains("/nonexistent/staffy-codex"));
 }
 
 #[tokio::test]
@@ -700,7 +700,7 @@ async fn unknown_messages_become_opaque_events_and_never_crash_the_adapter() {
     assert_eq!(opaque[0].1.payload.as_ref().unwrap()["x"], 1);
     assert_eq!(opaque[2].1.payload.as_ref().unwrap()["novel"], true);
     assert_eq!(opaque[2].1.provider.item_id.as_deref(), Some("i1"));
-    // A request Heeler cannot serve is declined (the agent must not wait for it) and noted.
+    // A request Staffy cannot serve is declined (the agent must not wait for it) and noted.
     assert!(names(&all).contains(&"notice"));
     let refusal = h
         .received()
@@ -755,7 +755,7 @@ async fn a_process_that_dies_expires_what_was_pending() {
 
 #[test]
 fn committed_fixtures_are_already_scrubbed() {
-    use heeler_agents::fixture::scrub::scrub;
+    use staffy_agents::fixture::scrub::scrub;
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex-0.162");
     let mut count = 0;
     for entry in std::fs::read_dir(dir).unwrap() {

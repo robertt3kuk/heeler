@@ -22,9 +22,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
-use heeler_core::{Epoch, SessionId, WorkspaceId};
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use staffy_core::{Epoch, SessionId, WorkspaceId};
 use tracing::{debug, error};
 
 pub use error::{Result, StorageError};
@@ -114,7 +114,7 @@ impl Storage {
 
         let (tx, rx) = sync_channel(QUEUE_CAPACITY);
         let thread = std::thread::Builder::new()
-            .name("heeler-storage".to_owned())
+            .name("staffy-storage".to_owned())
             .spawn(move || run_writer(conn, rx))
             .map_err(StorageError::io("starting the storage writer"))?;
         Ok(Self {

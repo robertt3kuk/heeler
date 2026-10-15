@@ -1,4 +1,4 @@
-//! Heeler desktop: workbench shell (docks, pane tree, panels, palette, presets) wired to the
+//! Staffy desktop: workbench shell (docks, pane tree, panels, palette, presets) wired to the
 //! daemon connection, the settings store and the terminal view.
 
 pub mod app;

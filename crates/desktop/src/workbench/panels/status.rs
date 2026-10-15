@@ -8,7 +8,7 @@ use gpui::{
     AnyElement, AnyView, AppContext as _, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, div, px,
 };
-use heeler_client::ConnectionState;
+use staffy_client::ConnectionState;
 
 use crate::theme::DensityExt as _;
 use crate::workbench::actions::{
@@ -20,13 +20,13 @@ use crate::workbench::style::TextTooltip;
 /// Text and tone of the connection item.
 pub fn connection_label(state: ConnectionState) -> (String, Tone) {
     match state {
-        ConnectionState::Connecting => ("connecting to heelerd…".to_owned(), Tone::Muted),
-        ConnectionState::Connected => ("heelerd connected".to_owned(), Tone::Ok),
+        ConnectionState::Connecting => ("connecting to staffyd…".to_owned(), Tone::Muted),
+        ConnectionState::Connected => ("staffyd connected".to_owned(), Tone::Ok),
         ConnectionState::Reconnecting { attempt, retry_in } => (
             format!("reconnecting ({attempt}) · {}", retry_text(retry_in)),
             Tone::Warn,
         ),
-        ConnectionState::Stopped => ("heelerd stopped".to_owned(), Tone::Error),
+        ConnectionState::Stopped => ("staffyd stopped".to_owned(), Tone::Error),
     }
 }
 

@@ -16,14 +16,14 @@ use std::time::Duration;
 use common::history::{CLAUDE_ID, CODEX_ID, GONE_CWD, GONE_ID, HistoryEnv, OMP_ID, UNRESUMABLE_ID};
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use heeler_core::SessionId;
-use heeler_desktop::workbench::actions;
-use heeler_desktop::workbench::model::PanelId;
-use heeler_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
-use heeler_desktop::workbench::{HistoryState, Region, Workbench};
-use heeler_protocol::history::{HistoryRole, HistorySource};
-use heeler_protocol::messages::SessionInfo;
-use heeler_settings::{SettingsPaths, SettingsStore};
+use staffy_core::SessionId;
+use staffy_desktop::workbench::actions;
+use staffy_desktop::workbench::model::PanelId;
+use staffy_desktop::workbench::panels::{HistoryConfirm, HistoryPanel};
+use staffy_desktop::workbench::{HistoryState, Region, Workbench};
+use staffy_protocol::history::{HistoryRole, HistorySource};
+use staffy_protocol::messages::SessionInfo;
+use staffy_settings::{SettingsPaths, SettingsStore};
 
 /// Like [`wait_until`], but the GPUI clock moves too: debounce and poll timers are fake time.
 fn pump_until(
@@ -201,7 +201,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         "no index exists while indexing is off"
     );
     // A search is not sent while indexing is off.
-    history.update(cx, |p, cx| p.set_query("heelertest", cx));
+    history.update(cx, |p, cx| p.set_query("staffytest", cx));
     pump_until(cx, "nothing", |_| true);
     assert!(history.read_with(cx, |p, _| p.hits().is_empty() && !p.searching()));
     history.update(cx, |p, cx| p.set_query("", cx));
@@ -251,7 +251,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
 
     // Three sessions share the word: one row each, from three sources.
-    search(&history, cx, "heelertest", |p| p.hits().len() == 3);
+    search(&history, cx, "staffytest", |p| p.hits().len() == 3);
     assert_eq!(
         sources(&history, cx),
         [
@@ -286,7 +286,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     history.update(cx, |p, cx| {
         p.edit_filters(|f| f.toggle_role(HistoryRole::User), cx);
         p.edit_filters(
-            |f| f.range = heeler_desktop::settings::HistoryRange::Week,
+            |f| f.range = staffy_desktop::settings::HistoryRange::Week,
             cx,
         );
     });
@@ -301,11 +301,11 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     // Project: only sessions that ran inside the active workspace's folder (Home here: none).
     history.update(cx, |p, cx| {
         p.edit_filters(
-            |f| f.range = heeler_desktop::settings::HistoryRange::All,
+            |f| f.range = staffy_desktop::settings::HistoryRange::All,
             cx,
         );
         p.edit_filters(
-            |f| f.scope = heeler_desktop::settings::HistoryScope::Workspace,
+            |f| f.scope = staffy_desktop::settings::HistoryScope::Workspace,
             cx,
         );
     });
@@ -329,7 +329,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
     history.update(cx, |p, cx| {
         p.edit_filters(
-            |f| f.scope = heeler_desktop::settings::HistoryScope::All,
+            |f| f.scope = staffy_desktop::settings::HistoryScope::All,
             cx,
         );
     });
@@ -379,7 +379,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
 
     // ---- ⌘J: `?` searches the history inline ---------------------------------------------------
     cx.simulate_keystrokes("cmd-j");
-    cx.simulate_input("?heelertest");
+    cx.simulate_input("?staffytest");
     pump_until(cx, "the inline hits", |cx| {
         view.read_with(cx, |wb, _| {
             wb.picker()
@@ -446,7 +446,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         view.read_with(cx, |wb, _| wb.state().docks.left.active.clone()),
         Some(PanelId::new("history"))
     );
-    // Enter on a row that cannot be resumed (and is no Heeler record) does nothing.
+    // Enter on a row that cannot be resumed (and is no Staffy record) does nothing.
     cx.simulate_keystrokes("enter");
     pump_until(cx, "nothing", |_| true);
     assert!(new_sessions(&view, cx, &before).is_empty());
@@ -472,10 +472,10 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         })
     });
 
-    // ---- a Heeler block: Open block scrolls its terminal to it ----------------------------------
+    // ---- a Staffy block: Open block scrolls its terminal to it ----------------------------------
     let block_session = daemon.sh_titled(
         "block source",
-        "printf '\\033]133;A\\007$ \\033]133;B\\007echo heelerblockword\\r\\n\\033]133;C\\007heeleroutput\\r\\n\\033]133;D;0\\007'; \
+        "printf '\\033]133;A\\007$ \\033]133;B\\007echo staffyblockword\\r\\n\\033]133;C\\007staffyoutput\\r\\n\\033]133;D;0\\007'; \
          printf '\\033]133;A\\007$ \\033]133;B\\007'; sleep 600",
     );
     pump_until(cx, "the session", |cx| {
@@ -483,9 +483,9 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
             wb.sessions().read(cx).session(block_session.id).is_some()
         })
     });
-    search(&history, cx, "heelerblockword", |p| !p.hits().is_empty());
+    search(&history, cx, "staffyblockword", |p| !p.hits().is_empty());
     let block_hit = history.read_with(cx, |p, _| p.hits()[0].clone());
-    assert_eq!(block_hit.source, HistorySource::Heeler);
+    assert_eq!(block_hit.source, HistorySource::Staffy);
     assert_eq!(block_hit.session_key, block_session.id.to_string());
     assert!(block_hit.resume_argv.is_none());
     let terminal = block_session.terminal_id.expect("a terminal");
@@ -495,7 +495,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
         .find(|b| {
             b.command
                 .as_deref()
-                .is_some_and(|c| c.contains("heelerblockword"))
+                .is_some_and(|c| c.contains("staffyblockword"))
         })
         .expect("the daemon has the block");
     cx.simulate_keystrokes("down enter");
@@ -543,8 +543,8 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     pump_until(cx, "the transcripts to be read again", |cx| {
         rows(&history, cx) >= 10
     });
-    search(&history, cx, "heelertest", |p| p.hits().len() == 3);
-    // The Heeler record was deleted with the index and cannot come back.
-    search(&history, cx, "heelerblockword", |_| true);
+    search(&history, cx, "staffytest", |p| p.hits().len() == 3);
+    // The Staffy record was deleted with the index and cannot come back.
+    search(&history, cx, "staffyblockword", |_| true);
     assert!(history.read_with(cx, |p, _| p.hits().is_empty()));
 }

@@ -8,12 +8,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use heeler_core::agent::{
+use serde_json::Value;
+use staffy_core::agent::{
     FileChange, NoticeLevel, PermissionKind, PermissionOption, PermissionOutcome, PlanStep,
     TokenCounts, ToolKind, ToolStatus,
 };
-use heeler_core::{AgentEvent, AgentEventKind, ApprovalId, ItemId, TurnId};
-use serde_json::Value;
+use staffy_core::{AgentEvent, AgentEventKind, ApprovalId, ItemId, TurnId};
 
 /// Bytes of live command output kept per tool; the final output replaces it at the end.
 pub const MAX_LIVE_OUTPUT: usize = 256 * 1024;
@@ -333,7 +333,7 @@ impl Transcript {
             }
             AgentEventKind::MessageDelta { text } => {
                 let at = self.message_entry(
-                    heeler_core::agent::MessageRole::Assistant,
+                    staffy_core::agent::MessageRole::Assistant,
                     item,
                     turn,
                     event.ts_ms,
@@ -364,10 +364,10 @@ impl Transcript {
                     && !reasoning.done
                 {
                     match part {
-                        heeler_core::agent::ReasoningPart::Summary => {
+                        staffy_core::agent::ReasoningPart::Summary => {
                             reasoning.summary.push_str(text);
                         }
-                        heeler_core::agent::ReasoningPart::Content => {
+                        staffy_core::agent::ReasoningPart::Content => {
                             reasoning.content.push_str(text);
                         }
                     }
@@ -583,7 +583,7 @@ impl Transcript {
 
     fn message_entry(
         &mut self,
-        role: heeler_core::agent::MessageRole,
+        role: staffy_core::agent::MessageRole,
         item: Option<ItemId>,
         turn: Option<TurnId>,
         ts_ms: u64,
@@ -598,8 +598,8 @@ impl Transcript {
             done: false,
         };
         let body = match role {
-            heeler_core::agent::MessageRole::User => Body::User(message),
-            heeler_core::agent::MessageRole::Assistant => Body::Assistant(message),
+            staffy_core::agent::MessageRole::User => Body::User(message),
+            staffy_core::agent::MessageRole::Assistant => Body::Assistant(message),
         };
         let at = self.push(turn, ts_ms, body);
         if let Some(item) = item {
@@ -818,8 +818,8 @@ fn cut_front(text: &mut String, max: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heeler_core::SessionId;
-    use heeler_core::agent::{
+    use staffy_core::SessionId;
+    use staffy_core::agent::{
         Delivery, FileChangeKind, MessageRole, PermissionOptionKind, ProviderIds, ReasoningPart,
     };
 
@@ -1270,12 +1270,12 @@ mod tests {
             }],
             text: None,
         };
-        t.apply(&s.event(None, plan(heeler_core::agent::PlanStepStatus::Pending)));
-        t.apply(&s.event(None, plan(heeler_core::agent::PlanStepStatus::Completed)));
+        t.apply(&s.event(None, plan(staffy_core::agent::PlanStepStatus::Pending)));
+        t.apply(&s.event(None, plan(staffy_core::agent::PlanStepStatus::Completed)));
         assert_eq!(t.len(), 1);
         assert!(matches!(
             &t.entries()[0].body,
-            Body::Plan(p) if p.steps[0].status == heeler_core::agent::PlanStepStatus::Completed
+            Body::Plan(p) if p.steps[0].status == staffy_core::agent::PlanStepStatus::Completed
         ));
     }
 

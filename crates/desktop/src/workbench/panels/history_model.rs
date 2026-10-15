@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
 
-use heeler_protocol::history::{HistoryHit, HistoryRole, HistorySearch, HistorySource};
+use staffy_protocol::history::{HistoryHit, HistoryRole, HistorySearch, HistorySource};
 
 use crate::settings::{HistoryRange, HistoryScope, HistorySettings};
 
@@ -18,7 +18,7 @@ pub const PICKER_LIMIT: u32 = 8;
 
 /// Every source, in the order the chips show them.
 pub const SOURCES: [HistorySource; 4] = [
-    HistorySource::Heeler,
+    HistorySource::Staffy,
     HistorySource::Claude,
     HistorySource::Codex,
     HistorySource::Omp,
@@ -167,7 +167,7 @@ fn mark_of(text: &str, start: usize) -> Option<Range<usize>> {
 /// What the chip and the row call a source.
 pub fn source_label(source: HistorySource) -> &'static str {
     match source {
-        HistorySource::Heeler => "Heeler",
+        HistorySource::Staffy => "Staffy",
         HistorySource::Claude => "Claude",
         HistorySource::Codex => "Codex",
         HistorySource::Omp => "OMP",
@@ -177,7 +177,7 @@ pub fn source_label(source: HistorySource) -> &'static str {
 /// A single glyph per source (no icon assets are bundled).
 pub fn source_icon(source: HistorySource) -> &'static str {
     match source {
-        HistorySource::Heeler => "❯",
+        HistorySource::Staffy => "❯",
         HistorySource::Claude => "✳",
         HistorySource::Codex => "◈",
         HistorySource::Omp => "π",
@@ -234,7 +234,7 @@ pub fn resume_blocker(hit: &HistoryHit) -> Option<&'static str> {
         return None;
     }
     Some(match hit.source {
-        HistorySource::Heeler => "Heeler terminal records have no resume command",
+        HistorySource::Staffy => "Staffy terminal records have no resume command",
         _ => "the index holds no resume command for this session",
     })
 }
@@ -275,22 +275,22 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
-/// What opening a Heeler hit shows.
+/// What opening a Staffy hit shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeelerTarget {
-    /// The Heeler session id.
+pub struct StaffyTarget {
+    /// The Staffy session id.
     pub session: String,
     /// The block the hit is about: a block's command or output (matched by its start time).
     pub block_started_at_ms: Option<u64>,
 }
 
-/// The Heeler session (and block) a hit of the `heeler` source points at.
-pub fn heeler_target(hit: &HistoryHit) -> Option<HeelerTarget> {
-    if hit.source != HistorySource::Heeler {
+/// The Staffy session (and block) a hit of the `staffy` source points at.
+pub fn staffy_target(hit: &HistoryHit) -> Option<StaffyTarget> {
+    if hit.source != HistorySource::Staffy {
         return None;
     }
     let block = matches!(hit.role, HistoryRole::Command | HistoryRole::Output);
-    Some(HeelerTarget {
+    Some(StaffyTarget {
         session: hit.session_key.clone(),
         block_started_at_ms: block.then_some(hit.ts_ms).flatten(),
     })
@@ -431,17 +431,17 @@ mod tests {
         assert!(resume_blocker(&claude).is_some());
         claude.resume_argv = Some(vec!["claude".into(), "--resume".into(), "x".into()]);
         assert!(resume_blocker(&claude).is_none());
-        let heeler = hit(HistorySource::Heeler, HistoryRole::Command);
-        assert!(resume_blocker(&heeler).unwrap().contains("Heeler"));
+        let staffy = hit(HistorySource::Staffy, HistoryRole::Command);
+        assert!(resume_blocker(&staffy).unwrap().contains("Staffy"));
     }
 
     #[test]
-    fn heeler_blocks_are_found_by_their_start_time() {
-        let block = heeler_target(&hit(HistorySource::Heeler, HistoryRole::Output)).unwrap();
+    fn staffy_blocks_are_found_by_their_start_time() {
+        let block = staffy_target(&hit(HistorySource::Staffy, HistoryRole::Output)).unwrap();
         assert_eq!(block.block_started_at_ms, Some(42));
-        let report = heeler_target(&hit(HistorySource::Heeler, HistoryRole::Tool)).unwrap();
+        let report = staffy_target(&hit(HistorySource::Staffy, HistoryRole::Tool)).unwrap();
         assert_eq!(report.block_started_at_ms, None);
-        assert!(heeler_target(&hit(HistorySource::Claude, HistoryRole::User)).is_none());
+        assert!(staffy_target(&hit(HistorySource::Claude, HistoryRole::User)).is_none());
     }
 
     #[test]

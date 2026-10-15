@@ -22,7 +22,7 @@ pub enum Delivery {
     Replay,
 }
 
-/// The provider's identifiers of what an event is about; opaque to Heeler.
+/// The provider's identifiers of what an event is about; opaque to Staffy.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ProviderIds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,7 +201,7 @@ pub enum PermissionOptionKind {
     RejectAlways,
     /// Refuse and stop the turn.
     Cancel,
-    /// A decision Heeler has no name for; the label is all there is.
+    /// A decision Staffy has no name for; the label is all there is.
     Other,
 }
 
@@ -384,7 +384,7 @@ pub enum AgentEventKind {
         level: NoticeLevel,
         message: String,
     },
-    /// A provider message Heeler has no model for; only `provider` and `payload` are meaningful.
+    /// A provider message Staffy has no model for; only `provider` and `payload` are meaningful.
     Opaque {
         method: String,
     },

@@ -14,12 +14,12 @@ use gpui::{
     IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled,
     Window, div, prelude::*, px,
 };
-use heeler_core::agent::ModelInfo;
-use heeler_core::{ApprovalId, SessionId, WorkspaceId};
-use heeler_protocol::assistant::AGENT_ASSISTANT;
-use heeler_protocol::blocks::BlockPart;
-use heeler_protocol::chat::ChatCreate;
-use heeler_protocol::messages::SessionInfo;
+use staffy_core::agent::ModelInfo;
+use staffy_core::{ApprovalId, SessionId, WorkspaceId};
+use staffy_protocol::assistant::AGENT_ASSISTANT;
+use staffy_protocol::blocks::BlockPart;
+use staffy_protocol::chat::ChatCreate;
+use staffy_protocol::messages::SessionInfo;
 
 use super::actions::palette;
 use super::chat::{ButtonKind, ChatModel, ChatView, Chip, ContextChip, Look, button, cut_to};
@@ -255,7 +255,7 @@ impl Workbench {
             let store = self.sessions.read(cx);
             let workspace = self.target_workspace(store);
             (
-                store.connection_state() == heeler_client::ConnectionState::Connected,
+                store.connection_state() == staffy_client::ConnectionState::Connected,
                 store.connection().supports_chat(),
                 workspace.map(|w| w.id),
                 workspace
@@ -264,12 +264,12 @@ impl Workbench {
             )
         };
         if !connected {
-            self.set_notice("Not connected to heelerd", cx);
+            self.set_notice("Not connected to staffyd", cx);
             return;
         }
         if !supported {
             self.set_notice(
-                "This heelerd does not run agent chats; restart it (Daemon → Restart)",
+                "This staffyd does not run agent chats; restart it (Daemon → Restart)",
                 cx,
             );
             return;

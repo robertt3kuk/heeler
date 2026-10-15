@@ -1,4 +1,4 @@
-//! Terminal blocks end to end (protocol 0.5): a real daemon on a temporary `HEELER_HOME`, real
+//! Terminal blocks end to end (protocol 0.5): a real daemon on a temporary `STAFFY_HOME`, real
 //! zsh, bash 3.2 (`/bin/bash` on macOS) and fish sessions with automatic shell integration,
 //! driven over the daemon's socket. Shells that are not installed are skipped with a message.
 
@@ -12,14 +12,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::*;
-use heeler_client::{BlockList, Client};
-use heeler_core::TerminalId;
-use heeler_protocol::ErrorCode;
-use heeler_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
-use heeler_protocol::messages::{Event, TerminalSpec};
+use staffy_client::{BlockList, Client};
+use staffy_core::TerminalId;
+use staffy_protocol::ErrorCode;
+use staffy_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
+use staffy_protocol::messages::{Event, TerminalSpec};
 use tokio::time::sleep;
 
-const PROMPT: &str = "HEELER-TEST-PROMPT>";
+const PROMPT: &str = "STAFFY-TEST-PROMPT>";
 
 fn have(path: &str) -> bool {
     Path::new(path).exists()

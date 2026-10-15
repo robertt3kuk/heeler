@@ -1,4 +1,4 @@
-//! `heeler attach`: this terminal becomes a client of one daemon terminal.
+//! `staffy attach`: this terminal becomes a client of one daemon terminal.
 //!
 //! The daemon renders; this side only draws its snapshots and frames onto the host screen
 //! (acking each one after it was written, which is what lets the daemon send the next) and
@@ -7,14 +7,14 @@
 use std::io::{self, Read as _, Write as _};
 use std::time::Duration;
 
-use heeler_client::{Client, ClientError};
-use heeler_core::{Seq, SessionId, SessionState, TerminalId};
-use heeler_protocol::messages::{
+use serde_json::Value;
+use staffy_client::{Client, ClientError};
+use staffy_core::{Seq, SessionId, SessionState, TerminalId};
+use staffy_protocol::messages::{
     Empty, Event, Request, SessionInfo, Subscribed, TerminalAck, TerminalAttach, TerminalAttached,
     TerminalRef, TerminalResize, TerminalSize,
 };
-use heeler_protocol::render::TerminalRender;
-use serde_json::Value;
+use staffy_protocol::render::TerminalRender;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
@@ -23,8 +23,8 @@ use tokio::time::{Instant, sleep_until};
 use super::sessions::{live_terminal, require_tty, terminal_size};
 use super::{Ctx, print_line};
 use crate::error::CliError;
-use heeler_cli::host::{self, RawMode};
-use heeler_cli::{DetachDetector, HostRenderer};
+use staffy_cli::host::{self, RawMode};
+use staffy_cli::{DetachDetector, HostRenderer};
 
 /// After the session ended, how long to wait for a restart (a new live terminal id) before
 /// leaving. `session.updated` for the end and for a restart are separate events.
@@ -80,7 +80,7 @@ impl Ctx {
         drawn?;
         print_line(&end_message(&session.state))?;
         print_line(&format!(
-            "`heeler restart {id}` starts it again, `heeler history {id}` shows its output",
+            "`staffy restart {id}` starts it again, `staffy history {id}` shows its output",
             id = session.id
         ))
     }
@@ -406,7 +406,7 @@ impl Drop for HostScreen {
 fn spawn_stdin() -> io::Result<mpsc::Receiver<Vec<u8>>> {
     let (tx, rx) = mpsc::channel(INPUT_QUEUE);
     std::thread::Builder::new()
-        .name("heeler-stdin".to_owned())
+        .name("staffy-stdin".to_owned())
         .spawn(move || {
             let mut stdin = io::stdin().lock();
             let mut buf = [0u8; 4096];

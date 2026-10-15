@@ -19,14 +19,14 @@ Four executables, one source of truth:
 
 | Executable | Role | Depends on |
 |---|---|---|
-| `heelerd` | Tokio daemon: PTYs, terminal state, sessions, agents, model gateway, orchestration, SQLite, Keychain, permission policy, event log | `core`, `protocol`, internal crates |
-| `Heeler.app` (desktop) | GPUI client: rendering, input, layout, ephemeral UI state | `protocol`, `client` |
-| `heeler` (CLI) | Scriptable client; `heeler attach` raw-terminal attach | `protocol`, `client` |
-| `Heeler Notifier` (helper inside the app bundle) | Delivers macOS notifications, routes actions back to the daemon | `protocol`, `client` |
+| `staffyd` | Tokio daemon: PTYs, terminal state, sessions, agents, model gateway, orchestration, SQLite, Keychain, permission policy, event log | `core`, `protocol`, internal crates |
+| `Staffy.app` (desktop) | GPUI client: rendering, input, layout, ephemeral UI state | `protocol`, `client` |
+| `staffy` (CLI) | Scriptable client; `staffy attach` raw-terminal attach | `protocol`, `client` |
+| `Staffy Notifier` (helper inside the app bundle) | Delivers macOS notifications, routes actions back to the daemon | `protocol`, `client` |
 
 Rules checked in review:
 - Clients never spawn agent/terminal processes, never call provider APIs, never store credentials, never mutate authoritative state except through protocol commands.
-- `heelerd` never links GPUI/AppKit UI code. macOS service calls (Keychain, SMAppService registration status) are allowed through `security`/`platform` crates.
+- `staffyd` never links GPUI/AppKit UI code. macOS service calls (Keychain, SMAppService registration status) are allowed through `security`/`platform` crates.
 - Crate dependencies point inward: `desktop`/`cli` → `client` → `protocol` → `core`. Nothing depends on `daemon`.
 
 ## Consequences

@@ -8,8 +8,8 @@
 //! the message is sent.
 
 use gpui::{Context, Entity, Window};
-use heeler_core::SessionId;
-use heeler_protocol::assistant::AGENT_ASSISTANT;
+use staffy_core::SessionId;
+use staffy_protocol::assistant::AGENT_ASSISTANT;
 
 use super::chat::ContextChip;
 use super::model::PanelId;

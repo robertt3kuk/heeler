@@ -1,27 +1,27 @@
 [package]
-name = "heeler-desktop"
-description = "heeler-desktop: GPUI workbench (docks, pane tree, panels, palette, presets)"
+name = "staffy-desktop"
+description = "staffy-desktop: GPUI workbench (docks, pane tree, panels, palette, presets)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "heeler_desktop"
+name = "staffy_desktop"
 
 [[bin]]
-name = "heeler-desktop"
+name = "staffy-desktop"
 path = "src/main.rs"
 
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-heeler-chat-view.workspace = true
-heeler-client.workspace = true
-heeler-core.workspace = true
-heeler-protocol.workspace = true
-heeler-settings.workspace = true
-heeler-terminal-view.workspace = true
+staffy-chat-view.workspace = true
+staffy-client.workspace = true
+staffy-core.workspace = true
+staffy-protocol.workspace = true
+staffy-settings.workspace = true
+staffy-terminal-view.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,10 +33,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-heeler-agents.workspace = true
-heeler-daemon.workspace = true
-heeler-gateway = { workspace = true, features = ["test-support"] }
-heeler-storage.workspace = true
+staffy-agents.workspace = true
+staffy-daemon.workspace = true
+staffy-gateway = { workspace = true, features = ["test-support"] }
+staffy-storage.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

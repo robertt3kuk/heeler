@@ -1,6 +1,6 @@
 [package]
-name = "heeler-settings"
-description = "Heeler layered TOML settings: schemas, hot reload, keymap, appearance density, terminal themes (no GPUI)"
+name = "staffy-settings"
+description = "Staffy layered TOML settings: schemas, hot reload, keymap, appearance density, terminal themes (no GPUI)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

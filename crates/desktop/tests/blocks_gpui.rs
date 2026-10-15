@@ -10,14 +10,14 @@ use std::path::PathBuf;
 
 use common::{Shell, TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use heeler_core::SessionId;
-use heeler_desktop::workbench::Workbench;
-use heeler_desktop::workbench::actions::{BlockRef, JumpToBlock};
-use heeler_desktop::workbench::panels::InspectorPanel;
-use heeler_protocol::blocks::{Block, BlockPart, BlockState};
-use heeler_settings::{SettingsPaths, SettingsStore};
-use heeler_terminal_view::TerminalView;
-use heeler_terminal_view::blocks::{OverlayReport, Tone, chip_text};
+use staffy_core::SessionId;
+use staffy_desktop::workbench::Workbench;
+use staffy_desktop::workbench::actions::{BlockRef, JumpToBlock};
+use staffy_desktop::workbench::panels::InspectorPanel;
+use staffy_protocol::blocks::{Block, BlockPart, BlockState};
+use staffy_settings::{SettingsPaths, SettingsStore};
+use staffy_terminal_view::TerminalView;
+use staffy_terminal_view::blocks::{OverlayReport, Tone, chip_text};
 
 fn open<'a>(
     cx: &'a mut TestAppContext,
@@ -108,7 +108,7 @@ fn clipboard(cx: &VisualTestContext) -> Option<String> {
     cx.read_from_clipboard().and_then(|c| c.text())
 }
 
-fn terminal_of(info: &heeler_protocol::messages::SessionInfo) -> heeler_core::TerminalId {
+fn terminal_of(info: &staffy_protocol::messages::SessionInfo) -> staffy_core::TerminalId {
     info.terminal_id.expect("a terminal")
 }
 
@@ -200,7 +200,7 @@ fn shell_flow(cx: &mut TestAppContext, shell: Shell) {
         v.model()
             .viewport()
             .iter()
-            .map(heeler_terminal_view::model::TerminalModel::row_text)
+            .map(staffy_terminal_view::model::TerminalModel::row_text)
             .collect::<Vec<_>>()
     });
     assert!(before.iter().any(|row| row == "c"), "{shell:?}: {before:?}");
@@ -224,7 +224,7 @@ fn shell_flow(cx: &mut TestAppContext, shell: Shell) {
             .model()
             .viewport()
             .iter()
-            .map(heeler_terminal_view::model::TerminalModel::row_text)
+            .map(staffy_terminal_view::model::TerminalModel::row_text)
             .collect::<Vec<_>>()),
         screen,
         "{shell:?}: the model's screen is the daemon's"
@@ -335,7 +335,7 @@ fn fish_blocks_in_the_desktop(cx: &mut TestAppContext) {
 
 /// A session whose output is `count` finished commands `cmd1..`, each printing one line, written
 /// as OSC 133 marks by `sh`: exact blocks without a shell.
-fn scripted(daemon: &TestDaemon, count: u32) -> heeler_protocol::messages::SessionInfo {
+fn scripted(daemon: &TestDaemon, count: u32) -> staffy_protocol::messages::SessionInfo {
     daemon.sh(&format!(
         "i=1; while [ $i -le {count} ]; do \
          printf '\\033]133;A\\007$ \\033]133;B\\007cmd%d\\r\\n\\033]133;C\\007out%d\\r\\n\\033]133;D;%d\\007' $i $i $((i%2)); \
@@ -398,7 +398,7 @@ fn the_inspector_lists_the_last_twenty_blocks_and_jumps_to_one(cx: &mut TestAppC
     // The inspector keeps listing the terminal while the dock has focus.
     view.update(cx, |wb, cx| {
         wb.edit_layout(cx, |s| {
-            s.focus_dock(heeler_desktop::workbench::model::DockPosition::Right)
+            s.focus_dock(staffy_desktop::workbench::model::DockPosition::Right)
         });
     });
     draw(cx);
@@ -427,7 +427,7 @@ fn the_block_commands_are_in_the_palette(cx: &mut TestAppContext) {
         assert!(titles.iter().any(|t| t == wanted), "{wanted}: {titles:?}");
     }
     // With no terminal focused there is no block to send: the command says so.
-    cx.dispatch_action(heeler_terminal_view::SendBlockToAgent);
+    cx.dispatch_action(staffy_terminal_view::SendBlockToAgent);
     cx.run_until_parked();
     let notice = view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string));
     assert!(notice.is_some_and(|n| n.contains("finished command")));
@@ -551,7 +551,7 @@ fn blocks_are_fetched_again_after_the_connection_comes_back(cx: &mut TestAppCont
     daemon.proxy().sever();
     wait_until(cx, "the connection to drop", |cx| {
         view.read_with(cx, |wb, cx| {
-            wb.sessions().read(cx).connection_state() != heeler_client::ConnectionState::Connected
+            wb.sessions().read(cx).connection_state() != staffy_client::ConnectionState::Connected
         })
     });
     daemon.send_input(terminal, b"true\n");

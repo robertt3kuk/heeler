@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use heeler_core::{
+use staffy_core::{
     AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, TerminalId, WorkspaceId,
 };
-use heeler_protocol::blocks::Block;
-use heeler_protocol::chat::ApprovalInfo;
-use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
-use heeler_protocol::notify::NotificationIntent;
+use staffy_protocol::blocks::Block;
+use staffy_protocol::chat::ApprovalInfo;
+use staffy_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
+use staffy_protocol::notify::NotificationIntent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -308,8 +308,8 @@ impl StoreState {
 mod tests {
     use std::path::PathBuf;
 
-    use heeler_core::{SessionKind, SessionState, WorkspaceId};
-    use heeler_protocol::messages::{CreatedBy, WorkspaceKind};
+    use staffy_core::{SessionKind, SessionState, WorkspaceId};
+    use staffy_protocol::messages::{CreatedBy, WorkspaceKind};
 
     use super::*;
 
@@ -404,7 +404,7 @@ mod tests {
         let snapshot = SessionSnapshot {
             workspaces: vec![b.clone(), a.clone(), home.clone()],
             sessions: Vec::new(),
-            seq: heeler_core::Seq(1),
+            seq: staffy_core::Seq(1),
         };
         state.install_snapshot(snapshot);
         assert_eq!(state.workspaces, vec![home, a, b]);
@@ -486,7 +486,7 @@ mod tests {
         let effects = state.install_snapshot(SessionSnapshot {
             workspaces: Vec::new(),
             sessions: vec![later.clone(), restarted.clone()],
-            seq: heeler_core::Seq(4),
+            seq: staffy_core::Seq(4),
         });
         assert_eq!(
             effects.session_terminals,
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn block_events_become_notices() {
-        use heeler_protocol::blocks::BlockState;
+        use staffy_protocol::blocks::BlockState;
         let mut state = StoreState::initial();
         let block = Block {
             id: 3,
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn notification_intents_and_ui_open_become_notices() {
-        use heeler_protocol::notify::{IntentAction, IntentKind};
+        use staffy_protocol::notify::{IntentAction, IntentKind};
         let mut state = StoreState::initial();
         let session = SessionId::new();
         let workspace = WorkspaceId::new();

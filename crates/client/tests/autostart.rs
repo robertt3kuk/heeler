@@ -1,6 +1,6 @@
-//! `Connection` starts `heelerd` when the socket is absent, and not more than once per 10 s.
+//! `Connection` starts `staffyd` when the socket is absent, and not more than once per 10 s.
 //!
-//! Own test binary: it sets `HEELER_HOME` for the daemon process it spawns.
+//! Own test binary: it sets `STAFFY_HOME` for the daemon process it spawns.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // `set_var` is unsafe in edition 2024.
@@ -12,33 +12,33 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use common::*;
-use heeler_client::{ConnectOptions, Connection, ConnectionState};
-use heeler_protocol::messages::{
+use staffy_client::{ConnectOptions, Connection, ConnectionState};
+use staffy_protocol::messages::{
     ClientInfo, ClientKind, DaemonShutdown, DaemonStatusInfo, Empty, Request,
 };
 use tokio::time::{sleep, timeout};
 
-/// `heelerd` next to the test binaries (same profile). Tests never build it: `just test`
+/// `staffyd` next to the test binaries (same profile). Tests never build it: `just test`
 /// builds the workspace binaries first.
-fn heelerd() -> PathBuf {
+fn staffyd() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
-    let binary = profile_dir.join("heelerd");
+    let binary = profile_dir.join("staffyd");
     assert!(
         binary.is_file(),
-        "heelerd not built: run `cargo build -p heeler-daemon --bin heelerd` (or `just test`)"
+        "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
     );
     binary
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn autostarts_a_missing_daemon_at_most_once_per_interval() {
-    let binary = heelerd();
+    let binary = staffyd();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: this binary has a single test, so nothing else reads or writes the environment
     // while it is changed; the daemon inherits it.
-    unsafe { std::env::set_var("HEELER_HOME", home.path()) };
-    let socket = home.path().join("heelerd.sock");
+    unsafe { std::env::set_var("STAFFY_HOME", home.path()) };
+    let socket = home.path().join("staffyd.sock");
 
     let connection = Connection::start(ConnectOptions {
         socket: Some(socket.clone()),

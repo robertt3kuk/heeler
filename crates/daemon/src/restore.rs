@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use heeler_core::{ObservationTree, SessionId};
-use heeler_protocol::messages::TerminalSpec;
-use heeler_storage::{ProviderRow, RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 use serde::{Deserialize, Serialize};
+use staffy_core::{ObservationTree, SessionId};
+use staffy_protocol::messages::TerminalSpec;
+use staffy_storage::{ProviderRow, RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 
 /// Everything the registry needs to rebuild its state.
 #[derive(Debug, Default)]
@@ -112,7 +112,7 @@ mod tests {
             "PS1",
             "SSH_AUTH_SOCK",
             "KEYBOARD_LAYOUT",
-            "HEELER_SOCKET",
+            "STAFFY_SOCKET",
         ] {
             assert!(!looks_secret(name), "{name}");
         }

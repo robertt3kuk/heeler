@@ -1,5 +1,5 @@
-//! Chat sessions end to end: a real daemon on a temporary `HEELER_HOME`, real client
-//! connections, and `heeler-codex-fixture replay` standing in for `codex app-server` with
+//! Chat sessions end to end: a real daemon on a temporary `STAFFY_HOME`, real client
+//! connections, and `staffy-codex-fixture replay` standing in for `codex app-server` with
 //! transcripts recorded from codex 0.162.1.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -10,24 +10,24 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{TestDaemon, WAIT, create, remote_code, spec, stop, wait_event};
-use heeler_agents::CodexConfig;
-use heeler_client::Client;
-use heeler_core::agent::PermissionOutcome;
-use heeler_core::{AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode, SessionId};
-use heeler_core::{Seq, SessionState};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::chat::{
+use serde_json::Value;
+use staffy_agents::CodexConfig;
+use staffy_client::Client;
+use staffy_core::agent::PermissionOutcome;
+use staffy_core::{AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode, SessionId};
+use staffy_core::{Seq, SessionState};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent,
 };
-use heeler_protocol::messages::{
+use staffy_protocol::messages::{
     Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef, SessionResult,
 };
-use serde_json::Value;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
 
-const FIXTURE_BIN_NAME: &str = "heeler-codex-fixture";
+const FIXTURE_BIN_NAME: &str = "staffy-codex-fixture";
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../agents/tests/fixtures/codex-0.162")
@@ -44,7 +44,7 @@ fn fixture_bin() -> PathBuf {
         .join(FIXTURE_BIN_NAME);
     assert!(
         bin.is_file(),
-        "{FIXTURE_BIN_NAME} not built: run `cargo build -p heeler-agents --bins` (or `just test`)"
+        "{FIXTURE_BIN_NAME} not built: run `cargo build -p staffy-agents --bins` (or `just test`)"
     );
     bin
 }
@@ -232,7 +232,7 @@ fn is_turn_end(event: &AgentEvent) -> bool {
 async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
     let mut t = Chat::with_fixture("plain-turn").await;
     let created = t.create().await;
-    assert_eq!(created.kind, heeler_core::SessionKind::Harness);
+    assert_eq!(created.kind, staffy_core::SessionKind::Harness);
     assert_eq!(created.state, SessionState::Idle);
     assert_eq!(created.terminal_id, None);
     let chat = created.chat.clone().expect("chat info");
@@ -268,7 +268,7 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
             "seq increases per session"
         );
         seqs.push(event.seq);
-        assert_eq!(event.delivery, heeler_core::Delivery::Live);
+        assert_eq!(event.delivery, staffy_core::Delivery::Live);
         if let AgentEventKind::MessageDelta { text: delta } = &event.kind {
             text.push_str(delta);
         }
@@ -299,7 +299,7 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
         history
             .events
             .iter()
-            .all(|e| e.delivery == heeler_core::Delivery::Replay)
+            .all(|e| e.delivery == staffy_core::Delivery::Replay)
     );
     let journal_seqs: Vec<u64> = history.events.iter().map(|e| e.seq).collect();
     assert!(
@@ -317,7 +317,7 @@ async fn a_chat_turn_streams_journals_and_returns_the_session_to_idle() {
         .iter()
         .filter_map(|e| match &e.kind {
             AgentEventKind::MessageEnd {
-                role: heeler_core::agent::MessageRole::Assistant,
+                role: staffy_core::agent::MessageRole::Assistant,
                 text,
                 ..
             } => Some(text.as_str()),
@@ -399,7 +399,7 @@ async fn an_unknown_model_is_refused_with_the_catalog() {
         }))
         .await
         .unwrap_err();
-    let heeler_client::ClientError::Remote(error) = error else {
+    let staffy_client::ClientError::Remote(error) = error else {
         panic!("{error:?}")
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
@@ -501,7 +501,7 @@ async fn approvals_are_pending_in_the_daemon_and_answered_only_with_offered_opti
     let mut other_events = {
         let events = other.events();
         other
-            .call::<heeler_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
+            .call::<staffy_protocol::messages::Subscribed>(Request::EventsSubscribe(Empty {}))
             .await
             .unwrap();
         events
@@ -720,7 +720,7 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
     assert_eq!(spawns[0].1["params"]["excludeTurns"], true);
     assert_eq!(spawns[0].1["params"]["approvalPolicy"], "on-request");
 
-    // History is Heeler's own: unchanged by the resume, with the resumed run appended.
+    // History is Staffy's own: unchanged by the resume, with the resumed run appended.
     let after = chat.history(created.id, None, 500).await;
     assert_eq!(&after.events[..before.events.len()], &before.events[..]);
     let last_before = before.events.last().unwrap().seq;
@@ -743,7 +743,7 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
         .iter()
         .filter_map(|e| match &e.kind {
             AgentEventKind::MessageEnd {
-                role: heeler_core::agent::MessageRole::Assistant,
+                role: staffy_core::agent::MessageRole::Assistant,
                 text,
                 ..
             } => Some(text.as_str()),
@@ -992,7 +992,7 @@ async fn an_unsupported_codex_version_fails_the_session_with_a_clear_reason() {
         concat!(
             r#"{"dir":"out","msg":{"method":"initialize","id":1,"params":{}}}"#,
             "\n",
-            r#"{"dir":"in","msg":{"id":1,"result":{"userAgent":"heeler/0.144.2 (Mac OS; arm64)"}}}"#,
+            r#"{"dir":"in","msg":{"id":1,"result":{"userAgent":"staffy/0.144.2 (Mac OS; arm64)"}}}"#,
             "\n"
         ),
     )
@@ -1020,7 +1020,7 @@ async fn an_unsupported_codex_version_fails_the_session_with_a_clear_reason() {
             system_prompt: None,
         }))
         .await;
-    let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
+    let staffy_client::ClientError::Remote(error) = result.unwrap_err() else {
         panic!()
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
@@ -1046,7 +1046,7 @@ async fn an_unsupported_codex_version_fails_the_session_with_a_clear_reason() {
 async fn a_missing_codex_says_where_to_configure_it() {
     let daemon = TestDaemon::start_with("", |c| {
         c.codex = Some(CodexConfig {
-            program: "/nonexistent/heeler-test-codex".into(),
+            program: "/nonexistent/staffy-test-codex".into(),
             ..CodexConfig::default()
         });
     })
@@ -1066,12 +1066,12 @@ async fn a_missing_codex_says_where_to_configure_it() {
             system_prompt: None,
         }))
         .await;
-    let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
+    let staffy_client::ClientError::Remote(error) = result.unwrap_err() else {
         panic!()
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
     assert!(
-        error.message.contains("/nonexistent/heeler-test-codex")
+        error.message.contains("/nonexistent/staffy-test-codex")
             && error.message.contains("daemon.toml"),
         "{}",
         error.message

@@ -2,13 +2,13 @@
 //! and in which order, the glyph and tone of a node, durations, usage labels, the badge a session
 //! carries in rows, tabs and cards, and the event M6 turns into a notification.
 //!
-//! GPUI-free and unit tested. The tree itself is the daemon's ([`heeler_core::AgentObservation`]);
+//! GPUI-free and unit tested. The tree itself is the daemon's ([`staffy_core::AgentObservation`]);
 //! nothing here invents evidence: a node without a start time has no duration, a usage counter
 //! the source did not send is not shown.
 
 use std::collections::{BTreeMap, HashSet};
 
-use heeler_core::{
+use staffy_core::{
     AgentNode, AgentObservation, NodeKind, NodeOutcome, NodeState, SessionId, Usage,
 };
 
@@ -447,7 +447,7 @@ pub fn blocked_presentation(blocked: &[BlockedNode]) -> Presentation {
 mod tests {
     use std::collections::BTreeMap;
 
-    use heeler_core::Liveness;
+    use staffy_core::Liveness;
 
     use super::*;
 

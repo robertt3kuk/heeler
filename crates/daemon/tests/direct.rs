@@ -1,6 +1,6 @@
-//! Direct model chat end to end: a real daemon on a temporary `HEELER_HOME`, real client
+//! Direct model chat end to end: a real daemon on a temporary `STAFFY_HOME`, real client
 //! connections, the in-memory credential store, and local mock HTTP servers standing in for the
-//! providers (`heeler_gateway::testing`). No real provider is ever contacted.
+//! providers (`staffy_gateway::testing`). No real provider is ever contacted.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -11,23 +11,23 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use common::{TestDaemon, WAIT, remote_code, wait_event};
-use heeler_client::Client;
-use heeler_core::agent::MessageRole;
-use heeler_core::{AgentEvent, AgentEventKind, Seq, SessionId, SessionState};
-use heeler_daemon::GatewayConfig;
-use heeler_gateway::testing::{MockServer, Reply};
-use heeler_gateway::{CredentialStore, HttpConfig, MemoryStore, ProbeTarget, ProviderKind};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::chat::{ChatCreate, ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
-use heeler_protocol::messages::{
+use parking_lot::Mutex;
+use serde::Serialize;
+use staffy_client::Client;
+use staffy_core::agent::MessageRole;
+use staffy_core::{AgentEvent, AgentEventKind, Seq, SessionId, SessionState};
+use staffy_daemon::GatewayConfig;
+use staffy_gateway::testing::{MockServer, Reply};
+use staffy_gateway::{CredentialStore, HttpConfig, MemoryStore, ProbeTarget, ProviderKind};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::chat::{ChatCreate, ChatHistory, ChatHistoryRequest, ChatSend, ChatSent};
+use staffy_protocol::messages::{
     Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef, SessionResult,
 };
-use heeler_protocol::provider::{
+use staffy_protocol::provider::{
     AGENT_DIRECT, ChatSetModel, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
-use parking_lot::Mutex;
-use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
 
@@ -171,7 +171,7 @@ impl Direct {
     async fn try_call<T: serde::de::DeserializeOwned + Serialize>(
         &self,
         request: Request,
-    ) -> Result<T, heeler_client::ClientError> {
+    ) -> Result<T, staffy_client::ClientError> {
         let result = self.client.call::<T>(request).await;
         if let Ok(value) = &result {
             self.note(value);
@@ -595,12 +595,12 @@ async fn models_come_from_the_provider_and_mark_the_default() {
             provider_id: openai.id.clone(),
         }))
         .await;
-    let heeler_client::ClientError::Remote(error) = error.unwrap_err() else {
+    let staffy_client::ClientError::Remote(error) = error.unwrap_err() else {
         panic!("a remote error");
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
     assert!(
-        error.message.contains("heeler provider key openai"),
+        error.message.contains("staffy provider key openai"),
         "{}",
         error.message
     );
@@ -701,7 +701,7 @@ async fn a_direct_chat_streams_journals_continues_with_its_history_and_survives_
         .await;
 
     let created = t.create(&provider.id, None, Some("Be brief")).await;
-    assert_eq!(created.kind, heeler_core::SessionKind::Harness);
+    assert_eq!(created.kind, staffy_core::SessionKind::Harness);
     assert_eq!(created.state, SessionState::Idle);
     assert_eq!(created.terminal_id, None);
     let chat = created.chat.clone().unwrap();
@@ -801,7 +801,7 @@ async fn a_direct_chat_streams_journals_continues_with_its_history_and_survives_
         before
             .events
             .iter()
-            .all(|e| e.delivery == heeler_core::Delivery::Replay)
+            .all(|e| e.delivery == staffy_core::Delivery::Replay)
     );
     assert_eq!(
         message_texts(&before.events, MessageRole::User),
@@ -1194,12 +1194,12 @@ async fn provider_failures_end_the_turn_with_a_clear_message_and_leave_the_chat_
             attachments: vec![],
         }))
         .await;
-    let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
+    let staffy_client::ClientError::Remote(error) = result.unwrap_err() else {
         panic!("a remote error");
     };
     assert_eq!(error.code, ErrorCode::ProviderError);
     assert!(
-        error.message.contains("heeler provider key openai"),
+        error.message.contains("staffy provider key openai"),
         "{}",
         error.message
     );
@@ -1365,8 +1365,8 @@ async fn creating_a_direct_chat_validates_the_request() {
     );
     // `chat.models` is for agents; a direct chat's models are the provider's.
     let result = t
-        .try_call::<heeler_protocol::chat::ChatModels>(Request::ChatModels(
-            heeler_protocol::chat::ChatModelsRequest {
+        .try_call::<staffy_protocol::chat::ChatModels>(Request::ChatModels(
+            staffy_protocol::chat::ChatModelsRequest {
                 agent: AGENT_DIRECT.into(),
             },
         ))
@@ -1402,7 +1402,7 @@ async fn a_chat_whose_provider_was_removed_stays_listed_and_fails_clearly() {
             attachments: vec![],
         }))
         .await;
-    let heeler_client::ClientError::Remote(error) = result.unwrap_err() else {
+    let staffy_client::ClientError::Remote(error) = result.unwrap_err() else {
         panic!("a remote error");
     };
     assert_eq!(error.code, ErrorCode::NotFound);
@@ -1539,7 +1539,7 @@ async fn a_credential_is_used_but_appears_nowhere_it_must_not() {
         })
         .unwrap();
     assert_eq!(kind, "openai");
-    assert_eq!(keychain_ref, "dev.heeler.provider/openai");
+    assert_eq!(keychain_ref, "dev.staffy.provider/openai");
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(providers)")
         .unwrap()

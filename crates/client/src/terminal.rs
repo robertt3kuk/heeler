@@ -1,8 +1,8 @@
 //! Durable terminal attachments: [`TerminalHandle`] outlives individual connections.
 
-use heeler_core::TerminalId;
-use heeler_protocol::messages::{TerminalColors, TerminalSize};
-use heeler_protocol::render::TerminalRender;
+use staffy_core::TerminalId;
+use staffy_protocol::messages::{TerminalColors, TerminalSize};
+use staffy_protocol::render::TerminalRender;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

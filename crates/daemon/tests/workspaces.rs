@@ -1,6 +1,6 @@
 //! Projects and workspaces (roadmap M12-A, protocol 0.6): Home, `workspace.open` with path
 //! dedupe and git-root detection, roots, recent projects, order and pins, activity, and what
-//! survives a daemon restart. The daemon runs in-process on a temporary `HEELER_HOME`; every
+//! survives a daemon restart. The daemon runs in-process on a temporary `STAFFY_HOME`; every
 //! folder lives in a temporary directory.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::*;
-use heeler_client::Client;
-use heeler_core::WorkspaceId;
-use heeler_protocol::ErrorCode;
-use heeler_protocol::messages::{
+use staffy_client::Client;
+use staffy_core::WorkspaceId;
+use staffy_protocol::ErrorCode;
+use staffy_protocol::messages::{
     CreatedBy, Empty, Event, RecentProjects, Request, SessionSnapshot, WorkspaceCreate,
     WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspaceOpen, WorkspaceOpened,
     WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename, WorkspaceRoot,
@@ -83,7 +83,7 @@ async fn open(client: &Client, path: &Path) -> WorkspaceOpened {
     open_as(client, path, None).await
 }
 
-async fn close(client: &Client, id: WorkspaceId) -> Result<Empty, heeler_client::ClientError> {
+async fn close(client: &Client, id: WorkspaceId) -> Result<Empty, staffy_client::ClientError> {
     client
         .call(Request::WorkspaceClose(WorkspaceRef { workspace_id: id }))
         .await
@@ -93,7 +93,7 @@ async fn add_root(
     client: &Client,
     id: WorkspaceId,
     path: &Path,
-) -> Result<WorkspaceInfo, heeler_client::ClientError> {
+) -> Result<WorkspaceInfo, staffy_client::ClientError> {
     client
         .call(Request::WorkspaceAddRoot(WorkspaceRoot {
             workspace_id: id,
@@ -106,7 +106,7 @@ async fn remove_root(
     client: &Client,
     id: WorkspaceId,
     path: &Path,
-) -> Result<WorkspaceInfo, heeler_client::ClientError> {
+) -> Result<WorkspaceInfo, staffy_client::ClientError> {
     client
         .call(Request::WorkspaceRemoveRoot(WorkspaceRoot {
             workspace_id: id,
@@ -126,7 +126,7 @@ async fn move_before(
     client: &Client,
     id: WorkspaceId,
     before: Option<WorkspaceId>,
-) -> Result<WorkspaceList, heeler_client::ClientError> {
+) -> Result<WorkspaceList, staffy_client::ClientError> {
     client
         .call(Request::WorkspaceMove(WorkspaceMove {
             workspace_id: id,
@@ -238,7 +238,7 @@ async fn home_is_bound_to_the_configured_folder_and_follows_the_home_rules() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_config_home_is_created_inside_heeler_home() {
+async fn without_a_config_home_is_created_inside_staffy_home() {
     let t = TestDaemon::start().await;
     let folder = &t.paths.default_home_folder;
     assert!(folder.starts_with(t.paths.base.clone()));
@@ -254,13 +254,13 @@ async fn a_home_folder_that_is_not_a_directory_stops_the_daemon_from_starting() 
     let file = base.join("file");
     fs::write(&file, b"x").unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let paths = heeler_daemon::Paths::in_home(dir.path());
+    let paths = staffy_daemon::Paths::in_home(dir.path());
     fs::write(
         &paths.config_file,
         format!("[workspaces]\nhome_folder = \"{}\"\n", file.display()),
     )
     .unwrap();
-    let error = heeler_daemon::start(heeler_daemon::DaemonConfig::new(paths.clone()))
+    let error = staffy_daemon::start(staffy_daemon::DaemonConfig::new(paths.clone()))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("Home folder"), "{error}");
@@ -271,7 +271,7 @@ async fn a_home_folder_that_is_not_a_directory_stops_the_daemon_from_starting() 
         "[workspaces]\nhome_folder = \"relative\"\n",
     )
     .unwrap();
-    let error = heeler_daemon::start(heeler_daemon::DaemonConfig::new(paths))
+    let error = staffy_daemon::start(staffy_daemon::DaemonConfig::new(paths))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("absolute"), "{error}");
@@ -352,7 +352,7 @@ async fn a_folder_inside_a_git_repository_opens_the_repository() {
     let (_keep, base) = tmp();
     let t = TestDaemon::start().await;
     let client = t.connect().await;
-    let repo_dir = repo(&base.join("heeler-clone"));
+    let repo_dir = repo(&base.join("staffy-clone"));
     let inner = mkdir(&repo_dir.join("crates/daemon"));
 
     let opened = open(&client, &inner).await;
@@ -362,7 +362,7 @@ async fn a_folder_inside_a_git_repository_opens_the_repository() {
         std::slice::from_ref(&repo_dir),
         "the git root"
     );
-    assert_eq!(opened.workspace.name, "heeler-clone");
+    assert_eq!(opened.workspace.name, "staffy-clone");
 
     let again = open(&client, &repo_dir).await;
     assert!(!again.created);
@@ -824,7 +824,7 @@ async fn last_active_survives_a_restart() {
     t.stop().await;
 }
 
-async fn wait_ended(client: &Client, id: heeler_core::SessionId) {
+async fn wait_ended(client: &Client, id: staffy_core::SessionId) {
     let ended = timeout(WAIT, async {
         loop {
             let snapshot: SessionSnapshot = client
@@ -850,12 +850,12 @@ async fn wait_ended(client: &Client, id: heeler_core::SessionId) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_v1_database_comes_up_with_its_default_workspace_as_home() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = heeler_daemon::Paths::in_home(dir.path());
+    let paths = staffy_daemon::Paths::in_home(dir.path());
     let default = WorkspaceId::new();
-    let session = heeler_core::SessionId::new();
+    let session = staffy_core::SessionId::new();
     {
         let conn = rusqlite::Connection::open(&paths.database).unwrap();
-        conn.execute_batch(heeler_storage::MIGRATIONS[0].sql)
+        conn.execute_batch(staffy_storage::MIGRATIONS[0].sql)
             .unwrap();
         conn.execute(
             "INSERT INTO app_meta (key, value) VALUES ('schema_version', '1'), \
@@ -877,7 +877,7 @@ async fn a_v1_database_comes_up_with_its_default_workspace_as_home() {
         )
         .unwrap();
     }
-    let daemon = heeler_daemon::start(heeler_daemon::DaemonConfig::new(paths.clone()))
+    let daemon = staffy_daemon::start(staffy_daemon::DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     let t = TestDaemon {

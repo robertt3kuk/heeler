@@ -6,11 +6,11 @@
 //! reachable from the palette, menus and panels.
 
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
-use super::panels::{HeelerTarget, HistoryResume};
+use super::panels::{HistoryResume, StaffyTarget};
 use super::registry::PanelRegistry;
 use crate::settings::{OnQuit, WorkspaceSort};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
-use heeler_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
+use staffy_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
 actions!(
     workbench,
@@ -103,7 +103,7 @@ pub mod modal {
     actions!(modal, [Confirm, Cancel]);
 }
 
-/// Actions of the agent chat view (`HeelerChat` key context).
+/// Actions of the agent chat view (`StaffyChat` key context).
 pub mod chat {
     use gpui::actions;
     actions!(chat, [SendMessage, InterruptTurn]);
@@ -203,8 +203,8 @@ data_actions! {
     ResumeHistoryHit(HistoryResume);
     /// Copy a resume command line to the clipboard.
     CopyHistoryCommand(String);
-    /// Show the Heeler session (and block) a history hit points at.
-    OpenHistoryHit(HeelerTarget);
+    /// Show the Staffy session (and block) a history hit points at.
+    OpenHistoryHit(StaffyTarget);
 }
 
 /// Where to open the context menu of a workspace.
@@ -334,10 +334,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("View: Toggle Density", ToggleDensity),
         command("App: Command Palette", TogglePalette),
         command("App: Settings…", OpenSettings),
-        command("App: About Heeler", About),
+        command("App: About Staffy", About),
         command("Window: Minimize", MinimizeWindow),
         command("Window: Zoom", ZoomWindow),
-        command("App: Quit Heeler", Quit),
+        command("App: Quit Staffy", Quit),
         command("Daemon: Status", daemon::Status),
         command("Daemon: Restart Daemon", daemon::Restart),
         command("Daemon: Stop Daemon", daemon::Stop),
@@ -407,26 +407,26 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
     out.extend([
         command(
             "Block: Previous Prompt",
-            heeler_terminal_view::JumpToPreviousPrompt,
+            staffy_terminal_view::JumpToPreviousPrompt,
         ),
-        command("Block: Next Prompt", heeler_terminal_view::JumpToNextPrompt),
+        command("Block: Next Prompt", staffy_terminal_view::JumpToNextPrompt),
         command(
             "Block: Select Output",
-            heeler_terminal_view::SelectBlockOutput,
+            staffy_terminal_view::SelectBlockOutput,
         ),
-        command("Block: Copy Output", heeler_terminal_view::CopyBlockOutput),
+        command("Block: Copy Output", staffy_terminal_view::CopyBlockOutput),
         command(
             "Block: Copy Command",
-            heeler_terminal_view::CopyBlockCommand,
+            staffy_terminal_view::CopyBlockCommand,
         ),
         command(
             "Block: Collapse / Expand",
-            heeler_terminal_view::ToggleBlockCollapse,
+            staffy_terminal_view::ToggleBlockCollapse,
         ),
-        command("Block: Rerun", heeler_terminal_view::RerunBlock),
+        command("Block: Rerun", staffy_terminal_view::RerunBlock),
         command(
             "Block: Send to Agent",
-            heeler_terminal_view::SendBlockToAgent,
+            staffy_terminal_view::SendBlockToAgent,
         ),
     ]);
     for dir in [
@@ -502,7 +502,7 @@ fn bind<A: Action>(keys: &str, context: Option<&str>) -> BindingSpec {
     }
 }
 
-/// The key bindings Heeler ships with; `keymap.toml` is merged on top.
+/// The key bindings Staffy ships with; `keymap.toml` is merged on top.
 pub fn default_bindings() -> Vec<BindingSpec> {
     let mut out = vec![
         bind::<TogglePalette>("cmd-k", None),
@@ -533,23 +533,23 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<ResizeRight>("ctrl-cmd-right", None),
         bind::<ResizeUp>("ctrl-cmd-up", None),
         bind::<ResizeDown>("ctrl-cmd-down", None),
-        bind::<heeler_terminal_view::Copy>("cmd-c", Some(heeler_terminal_view::KEY_CONTEXT)),
-        bind::<heeler_terminal_view::Paste>("cmd-v", Some(heeler_terminal_view::KEY_CONTEXT)),
-        bind::<heeler_terminal_view::JumpToPreviousPrompt>(
+        bind::<staffy_terminal_view::Copy>("cmd-c", Some(staffy_terminal_view::KEY_CONTEXT)),
+        bind::<staffy_terminal_view::Paste>("cmd-v", Some(staffy_terminal_view::KEY_CONTEXT)),
+        bind::<staffy_terminal_view::JumpToPreviousPrompt>(
             "cmd-up",
-            Some(heeler_terminal_view::KEY_CONTEXT),
+            Some(staffy_terminal_view::KEY_CONTEXT),
         ),
-        bind::<heeler_terminal_view::JumpToNextPrompt>(
+        bind::<staffy_terminal_view::JumpToNextPrompt>(
             "cmd-down",
-            Some(heeler_terminal_view::KEY_CONTEXT),
+            Some(staffy_terminal_view::KEY_CONTEXT),
         ),
-        bind::<heeler_terminal_view::SelectBlockOutput>(
+        bind::<staffy_terminal_view::SelectBlockOutput>(
             "cmd-shift-a",
-            Some(heeler_terminal_view::KEY_CONTEXT),
+            Some(staffy_terminal_view::KEY_CONTEXT),
         ),
-        bind::<heeler_terminal_view::CopyBlockOutput>(
+        bind::<staffy_terminal_view::CopyBlockOutput>(
             "cmd-shift-c",
-            Some(heeler_terminal_view::KEY_CONTEXT),
+            Some(staffy_terminal_view::KEY_CONTEXT),
         ),
         bind::<palette::SelectNext>("down", Some("Palette")),
         bind::<palette::SelectNext>("ctrl-n", Some("Palette")),
@@ -668,7 +668,7 @@ mod tests {
     fn default_bindings_parse_and_do_not_collide() {
         let defaults = default_bindings();
         assert!(defaults.iter().all(|b| !b.keys.is_empty()));
-        let load = heeler_settings::keymap::load_str(&defaults, "", None).unwrap();
+        let load = staffy_settings::keymap::load_str(&defaults, "", None).unwrap();
         assert!(load.diagnostics.is_empty(), "{:?}", load.diagnostics);
         assert_eq!(load.bindings.len(), defaults.len());
     }

@@ -25,12 +25,12 @@ impl UiStyle {
 /// The terminal view configuration currently in effect (`terminal` settings with the theme
 /// resolved); the workbench writes it, overview previews read it.
 #[derive(Clone, Debug)]
-pub struct TerminalStyle(pub heeler_terminal_view::TerminalViewSettings);
+pub struct TerminalStyle(pub staffy_terminal_view::TerminalViewSettings);
 
 impl Global for TerminalStyle {}
 
 impl TerminalStyle {
-    pub fn get(cx: &App) -> heeler_terminal_view::TerminalViewSettings {
+    pub fn get(cx: &App) -> staffy_terminal_view::TerminalViewSettings {
         cx.try_global::<TerminalStyle>()
             .map(|s| s.0.clone())
             .unwrap_or_default()

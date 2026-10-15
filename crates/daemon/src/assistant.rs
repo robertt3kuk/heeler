@@ -10,26 +10,26 @@
 //! every text is redacted before it is cut to its share of `assistant.context_budget_chars`
 //! and journaled with the message. Files are only read below the roots of the session's
 //! workspace ([`crate::context_file`]); terminal text comes from the terminal hub (the
-//! `terminal.block_text` path), Heeler chats from their journal, transcripts of other tools and
+//! `terminal.block_text` path), Staffy chats from their journal, transcripts of other tools and
 //! searches from the history index.
 
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use heeler_core::agent::MessageRole;
-use heeler_core::{AgentEvent, AgentEventKind, SessionId, TerminalId, WorkspaceId};
-use heeler_index::{Role, SessionTextQuery, Source};
-use heeler_protocol::assistant::{
+use staffy_core::agent::MessageRole;
+use staffy_core::{AgentEvent, AgentEventKind, SessionId, TerminalId, WorkspaceId};
+use staffy_index::{Role, SessionTextQuery, Source};
+use staffy_protocol::assistant::{
     AGENT_ASSISTANT, ATTACHMENTS_MAX, AssistantEntry, AssistantList, AssistantListRequest,
     AssistantOpen, AssistantScope, Attachment, AttachmentKind, LineRange,
 };
-use heeler_protocol::blocks::{BlockPart, BlockState, TerminalBlockText, TerminalBlocks};
-use heeler_protocol::chat::ChatCreate;
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::history::HistorySearch;
-use heeler_protocol::messages::{SessionInfo, SessionListFilter, WorkspaceInfo, WorkspaceKind};
-use heeler_storage::Storage;
+use staffy_protocol::blocks::{BlockPart, BlockState, TerminalBlockText, TerminalBlocks};
+use staffy_protocol::chat::ChatCreate;
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::history::HistorySearch;
+use staffy_protocol::messages::{SessionInfo, SessionListFilter, WorkspaceInfo, WorkspaceKind};
+use staffy_storage::Storage;
 use tokio::sync::Mutex;
 
 use crate::chat::is_gateway_agent;
@@ -51,7 +51,7 @@ const INDEX_ROWS: usize = 4000;
 const SNIPPET_CHARS: usize = 300;
 
 /// The system prompt of an assistant created by `assistant.open`.
-pub const SYSTEM_PROMPT: &str = "You are Heeler's assistant, built into a developer's terminal \
+pub const SYSTEM_PROMPT: &str = "You are Staffy's assistant, built into a developer's terminal \
 workspace. Answer concisely and concretely. A message may end with attached context between \
 `--- attached context` markers: read-only excerpts the user chose to share (terminal output, \
 files, conversations with coding agents, search results), each introduced by a bracketed \
@@ -193,7 +193,7 @@ impl AssistantService {
             error(
                 ErrorCode::InvalidState,
                 "no assistant provider is configured: set `provider` (and `model`) under \
-                 `[assistant]` in daemon.toml to one of `heeler provider ls`, then restart the daemon",
+                 `[assistant]` in daemon.toml to one of `staffy provider ls`, then restart the daemon",
             )
         })?;
         let cwd = workspace
@@ -500,7 +500,7 @@ impl AssistantService {
             let messages = self.journal_messages(id).await?;
             return Ok(transcript_part(
                 &session.title,
-                "heeler chat",
+                "staffy chat",
                 &messages,
                 turns,
                 share,
@@ -519,8 +519,8 @@ impl AssistantService {
             return Err(error(
                 ErrorCode::NotFound,
                 format!(
-                    "no conversation of session `{session_id}` is indexed (a Heeler chat id, or \
-                     the id of a Claude Code, Codex or OMP session that `heeler search` finds)"
+                    "no conversation of session `{session_id}` is indexed (a Staffy chat id, or \
+                     the id of a Claude Code, Codex or OMP session that `staffy search` finds)"
                 ),
             ));
         };

@@ -2,7 +2,7 @@
 //! layout, the ⌘O project picker, the ⌘J jump palette, the workspace menus and commands.
 //!
 //! One workspace is *active*: its layout is the live one in the model (the others are parked,
-//! see `model/workspace.rs`), its first root layers its `.heeler/settings.toml` over the user
+//! see `model/workspace.rs`), its first root layers its `.staffy/settings.toml` over the user
 //! settings, and new sessions start in it. Opening a session of another workspace from
 //! anywhere (sidebar, ⌘J, attention, a restored tab) switches to that workspace first.
 //!
@@ -19,10 +19,10 @@ use gpui::{
     ParentElement, PathPromptOptions, SharedString, StatefulInteractiveElement, Styled, Window,
     div, prelude::*, px,
 };
-use heeler_client::ConnectionState;
-use heeler_core::{SessionId, WorkspaceId};
-use heeler_protocol::history::HistorySource;
-use heeler_protocol::messages::{RecentProject, WorkspaceInfo, WorkspaceKind};
+use staffy_client::ConnectionState;
+use staffy_core::{SessionId, WorkspaceId};
+use staffy_protocol::history::HistorySource;
+use staffy_protocol::messages::{RecentProject, WorkspaceInfo, WorkspaceKind};
 
 use super::actions::palette;
 use super::modal::PromptSpec;
@@ -260,7 +260,7 @@ impl Workbench {
     }
 
     /// Tells the sessions store and the settings which workspace is active: the first root of
-    /// the active workspace layers its `.heeler/settings.toml` over the user settings (the
+    /// the active workspace layers its `.staffy/settings.toml` over the user settings (the
     /// settings store re-reads and hot-reloads that file while it stays the active one).
     pub(crate) fn sync_workspace(&mut self, cx: &mut Context<Self>) {
         let active = self.active_workspace();
@@ -1057,7 +1057,7 @@ impl Workbench {
                         .into()
                 }
                 HistoryState::Unsupported => {
-                    "This heelerd does not offer history search; restart it".into()
+                    "This staffyd does not offer history search; restart it".into()
                 }
                 HistoryState::Failed(error) => format!("History search failed: {error}").into(),
             }),

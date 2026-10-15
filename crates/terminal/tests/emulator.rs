@@ -1,9 +1,9 @@
 //! Render tracking, history and bounds of the headless engine.
 #![allow(clippy::expect_used)] // tests assert by panicking
 
-use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::{Color, CursorShape};
-use heeler_terminal::{DefaultColors, Emulator, RenderTracker};
+use staffy_protocol::messages::TerminalSize;
+use staffy_protocol::render::{Color, CursorShape};
+use staffy_terminal::{DefaultColors, Emulator, RenderTracker};
 
 fn size(cols: u16, rows: u16) -> TerminalSize {
     TerminalSize {
@@ -177,7 +177,7 @@ fn link_ids_are_stable_across_scrolling_and_history_queries() {
     let mut tracker = RenderTracker::new();
     // The link line is in scrollback only: the viewport snapshot does not know it yet.
     assert!(em.snapshot(&mut tracker).links.is_empty());
-    let linked = |rows: &[heeler_protocol::render::Row]| -> Vec<u32> {
+    let linked = |rows: &[staffy_protocol::render::Row]| -> Vec<u32> {
         rows.iter()
             .flat_map(|row| &row.runs)
             .filter_map(|run| run.link)

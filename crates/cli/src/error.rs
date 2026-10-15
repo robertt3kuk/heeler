@@ -1,8 +1,8 @@
 use std::io;
 use std::path::Path;
 
-use heeler_client::ClientError;
-use heeler_protocol::ErrorBody;
+use staffy_client::ClientError;
+use staffy_protocol::ErrorBody;
 
 pub const EXIT_REMOTE: u8 = 1;
 pub const EXIT_USAGE: u8 = 2;
@@ -12,7 +12,7 @@ pub const EXIT_UNREACHABLE: u8 = 3;
 pub enum CliError {
     #[error("{0}")]
     Usage(String),
-    /// heelerd is not running or went away.
+    /// staffyd is not running or went away.
     #[error("{0}")]
     Unreachable(String),
     #[error("{}: {}", code_name(.0), .0.message)]
@@ -39,7 +39,7 @@ impl CliError {
         }
     }
 
-    /// A closed stdout (`heeler events | head`) is not worth a message.
+    /// A closed stdout (`staffy events | head`) is not worth a message.
     pub fn is_broken_pipe(&self) -> bool {
         matches!(self, Self::Io(e) if e.kind() == io::ErrorKind::BrokenPipe)
     }
@@ -48,12 +48,12 @@ impl CliError {
         match error {
             ClientError::Remote(body) => Self::Remote(body),
             ClientError::Io(e) if is_unreachable(&e) => Self::Unreachable(format!(
-                "cannot connect to heelerd at {} ({e}); start it with `heeler daemon start`",
+                "cannot connect to staffyd at {} ({e}); start it with `staffy daemon start`",
                 socket.display()
             )),
             e @ ClientError::AutostartTimeout { .. } => Self::Unreachable(e.to_string()),
             ClientError::Disconnected => {
-                Self::Unreachable("lost the connection to heelerd".to_owned())
+                Self::Unreachable("lost the connection to staffyd".to_owned())
             }
             ClientError::NoSocketPath => Self::Usage(ClientError::NoSocketPath.to_string()),
             other => Self::Failed(other.to_string()),

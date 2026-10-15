@@ -1,6 +1,6 @@
 //! [`Connection`]: the reconnecting, executor-independent client that UIs build on.
 //!
-//! GPUI drives its own executor, so a `Connection` owns one OS thread (`heeler-client`) running
+//! GPUI drives its own executor, so a `Connection` owns one OS thread (`staffy-client`) running
 //! a current-thread Tokio runtime with the connection task. Everything public is a channel, a
 //! `watch` or a `broadcast` handle; none of them needs a Tokio context, so they can be used from
 //! any executor or plain thread.
@@ -10,17 +10,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use heeler_core::{ApprovalId, SessionId, TerminalId};
-use heeler_protocol::assistant::{AssistantEntry, AssistantListRequest, AssistantOpen, Attachment};
-use heeler_protocol::blocks::{
+use serde::de::DeserializeOwned;
+use staffy_core::{ApprovalId, SessionId, TerminalId};
+use staffy_protocol::assistant::{AssistantEntry, AssistantListRequest, AssistantOpen, Attachment};
+use staffy_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
-use heeler_protocol::chat::{ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent};
-use heeler_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
-use heeler_protocol::messages::{
+use staffy_protocol::chat::{ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent};
+use staffy_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
+use staffy_protocol::messages::{
     AgentReleaseRequest, AgentReportRequest, Empty, Request, SessionInfo, TerminalSize,
 };
-use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -35,7 +35,7 @@ use crate::supervisor::Supervisor;
 use crate::terminal::{Command, TerminalHandle, UPDATE_BUFFER, send_command};
 
 /// Name of the connection's thread; tests look for it by this prefix.
-const THREAD_NAME: &str = "heeler-client";
+const THREAD_NAME: &str = "staffy-client";
 /// Notices buffered per receiver before it starts lagging.
 const NOTICE_BUFFER: usize = 256;
 /// Chat updates buffered per receiver before it starts lagging (streaming deltas are many).
@@ -107,7 +107,7 @@ impl Owner {
             && thread.thread().id() != std::thread::current().id()
             && thread.join().is_err()
         {
-            error!("the heeler-client thread panicked");
+            error!("the staffy-client thread panicked");
         }
     }
 }
@@ -118,7 +118,7 @@ impl Drop for Owner {
     }
 }
 
-/// A connection to `heelerd` that reconnects by itself and keeps a [`StoreState`] current.
+/// A connection to `staffyd` that reconnects by itself and keeps a [`StoreState`] current.
 ///
 /// Clones share the connection; it ends when the last clone is dropped or
 /// [`shutdown`](Self::shutdown) is called on any clone.
@@ -130,7 +130,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Returns immediately. Connects (starting `heelerd` per `opts.autostart`, at most once per
+    /// Returns immediately. Connects (starting `staffyd` per `opts.autostart`, at most once per
     /// 10 s) and reconnects with exponential backoff (100 ms doubling to 5 s, ±20 % jitter)
     /// until dropped or shut down.
     pub fn start(opts: ConnectOptions) -> Connection {
@@ -158,7 +158,7 @@ impl Connection {
         let thread = match thread {
             Ok(thread) => Some(thread),
             Err(e) => {
-                error!(error = %e, "cannot start the heeler-client thread");
+                error!(error = %e, "cannot start the staffy-client thread");
                 shared.state.send_modify(|state| {
                     Arc::make_mut(state).connection = ConnectionState::Stopped;
                 });
@@ -198,7 +198,7 @@ impl Connection {
         self.socket.as_deref()
     }
 
-    /// Allows or forbids starting `heelerd` when nothing listens (it has no effect without
+    /// Allows or forbids starting `staffyd` when nothing listens (it has no effect without
     /// [`ConnectOptions::autostart`]). Forbidding keeps the connection retrying quietly, so a
     /// daemon the user stopped is not brought back; allowing it again reconnects at once and
     /// starts the daemon without waiting for the autostart interval.
@@ -482,7 +482,7 @@ impl Connection {
     }
 }
 
-/// Body of the `heeler-client` thread.
+/// Body of the `staffy-client` thread.
 fn run_thread(supervisor: Supervisor) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -490,7 +490,7 @@ fn run_thread(supervisor: Supervisor) {
     match runtime {
         Ok(runtime) => runtime.block_on(supervisor.run()),
         Err(e) => {
-            error!(error = %e, "cannot build the heeler-client runtime");
+            error!(error = %e, "cannot build the staffy-client runtime");
             supervisor.finish();
         }
     }

@@ -6,7 +6,7 @@ use gpui::{
     InteractiveText, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, StyledText, TextRun, UnderlineStyle, div, font, px,
 };
-use heeler_chat_view::markdown::{Block, Inline, Span, flatten};
+use staffy_chat_view::markdown::{Block, Inline, Span, flatten};
 
 use super::view::Regions;
 use crate::theme::{DensityExt as _, Theme, Tokens};

@@ -1,5 +1,5 @@
-//! What can go wrong between Heeler and a model provider. Messages never carry credentials: they
-//! name the provider's own words (`error.message` of its reply) and what Heeler tried.
+//! What can go wrong between Staffy and a model provider. Messages never carry credentials: they
+//! name the provider's own words (`error.message` of its reply) and what Staffy tried.
 
 use std::time::Duration;
 

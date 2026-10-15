@@ -12,12 +12,12 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Task, TextRun,
     div, font, prelude::*, px,
 };
-use heeler_client::ClientError;
-use heeler_core::TerminalId;
-use heeler_protocol::ErrorCode;
-use heeler_protocol::assistant::AGENT_ASSISTANT;
-use heeler_protocol::blocks::{Block, BlockState};
-use heeler_protocol::history::{HistoryHit, HistorySearch, HistorySource};
+use staffy_client::ClientError;
+use staffy_core::TerminalId;
+use staffy_protocol::ErrorCode;
+use staffy_protocol::assistant::AGENT_ASSISTANT;
+use staffy_protocol::blocks::{Block, BlockState};
+use staffy_protocol::history::{HistoryHit, HistorySearch, HistorySource};
 
 use super::context::{
     ContextChip, DEFAULT_HITS, DEFAULT_TURNS, Mention, MentionKind, clamp_hits, clamp_turns,
@@ -195,7 +195,7 @@ impl ChatView {
         rows.into_iter().map(|(_, row)| row).collect()
     }
 
-    /// The conversations the agent form offers: sessions that reported an agent session id, Heeler
+    /// The conversations the agent form offers: sessions that reported an agent session id, Staffy
     /// chats, and the indexed transcripts the query found.
     fn transcripts(&self, source: Option<&str>, query: &str, cx: &App) -> Vec<TranscriptRow> {
         let store = self.sessions.read(cx);
@@ -220,9 +220,9 @@ impl ChatView {
             {
                 rows.push(TranscriptRow {
                     session_id: info.id.to_string(),
-                    source: format!("{} · heeler chat", info.title),
+                    source: format!("{} · staffy chat", info.title),
                     title: info.title.clone(),
-                    detail: format!("Heeler chat · {}", chat.agent),
+                    detail: format!("Staffy chat · {}", chat.agent),
                 });
             }
         }
@@ -418,7 +418,7 @@ impl ChatView {
         self.attach_chip(chip, cx)
     }
 
-    /// Attaches the last turns (the form's stepper) of the conversation `session_id`: a Heeler
+    /// Attaches the last turns (the form's stepper) of the conversation `session_id`: a Staffy
     /// chat, or an agent session of the history index.
     pub fn attach_transcript(
         &mut self,

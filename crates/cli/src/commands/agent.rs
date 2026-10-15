@@ -1,16 +1,16 @@
-//! `heeler agent report | release | hook`: the reporting side of the agent channel. These are
+//! `staffy agent report | release | hook`: the reporting side of the agent channel. These are
 //! called by agent hooks and extensions, so they never fail, never print, and never wait: no
-//! `HEELER_SESSION_ID`, no daemon, a daemon error, or 200 ms of silence all end in exit 0.
+//! `STAFFY_SESSION_ID`, no daemon, a daemon error, or 200 ms of silence all end in exit 0.
 
 use std::io::{IsTerminal as _, Read as _};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use heeler_core::{NodeKind, NodeOutcome, SessionId, Usage};
-use heeler_protocol::messages::{
+use serde_json::Value;
+use staffy_core::{NodeKind, NodeOutcome, SessionId, Usage};
+use staffy_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Request,
 };
-use heeler_protocol::tree::NodeReport;
-use serde_json::Value;
+use staffy_protocol::tree::NodeReport;
 use tokio::time::timeout;
 
 use super::Ctx;
@@ -58,7 +58,7 @@ pub(super) async fn run(ctx: Option<Ctx>, command: &AgentCommand) {
     .await;
 }
 
-/// `heeler agent report`; `None` when `--usage-json` is not a usage object (the report is
+/// `staffy agent report`; `None` when `--usage-json` is not a usage object (the report is
 /// dropped rather than sent without the numbers it was meant to carry).
 fn report_request(args: &AgentReportArgs, session: SessionId, default_seq: u64) -> Option<Request> {
     let usage = match &args.usage_json {
@@ -165,9 +165,9 @@ fn outcome(arg: OutcomeArg) -> NodeOutcome {
     }
 }
 
-/// The Heeler session this process runs in, from the environment the daemon gave it.
+/// The Staffy session this process runs in, from the environment the daemon gave it.
 fn session_from_env() -> Option<SessionId> {
-    std::env::var("HEELER_SESSION_ID").ok()?.parse().ok()
+    std::env::var("STAFFY_SESSION_ID").ok()?.parse().ok()
 }
 
 /// The JSON document the agent wrote to the hook's stdin; `None` when there is none.

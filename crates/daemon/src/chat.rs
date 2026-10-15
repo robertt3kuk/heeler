@@ -3,7 +3,7 @@
 //!
 //! The registry owns the sessions' records and lifecycle; [`ChatManager`] owns what runs: the
 //! adapters, a pump task per session that numbers, journals and publishes every event, and the
-//! pending approvals. Heeler's journal (`chat_items`) is the source of a conversation's
+//! pending approvals. Staffy's journal (`chat_items`) is the source of a conversation's
 //! history; the provider's own copy is only used to continue the agent (ADR 0005).
 //!
 //! Approvals live here, in daemon state: they survive client disconnects, are answered only
@@ -16,25 +16,25 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use heeler_agents::{
+use serde::{Deserialize, Serialize};
+use staffy_agents::{
     AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter, CodexConfig, CodexSession,
     ExitInfo, StartSpec, Started,
 };
-use heeler_core::agent::PermissionOutcome;
-use heeler_core::{
+use staffy_core::agent::PermissionOutcome;
+use staffy_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ModelInfo,
     SandboxMode, SessionId, TurnId,
 };
-use heeler_protocol::chat::{
+use staffy_protocol::chat::{
     ApprovalInfo, ApprovalList, ChatHistory, ChatHistoryRequest, ChatModels, HISTORY_MAX_LIMIT,
     SEND_MAX_BYTES,
 };
-use heeler_protocol::control::{ErrorBody, ErrorCode};
-use heeler_protocol::messages::{ClientKind, Event};
-use heeler_storage::{
+use staffy_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::messages::{ClientKind, Event};
+use staffy_storage::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, Storage,
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -47,8 +47,8 @@ use crate::registry::{self, ChatNotifier};
 /// The Codex app-server agent.
 pub const AGENT_CODEX: &str = "codex";
 /// The model gateway: no agent, a provider's chat API.
-pub use heeler_protocol::assistant::AGENT_ASSISTANT;
-pub use heeler_protocol::provider::AGENT_DIRECT;
+pub use staffy_protocol::assistant::AGENT_ASSISTANT;
+pub use staffy_protocol::provider::AGENT_DIRECT;
 
 /// Whether sessions of this agent are model gateway chats: a provider's API, no process.
 pub fn is_gateway_agent(agent: &str) -> bool {
@@ -504,7 +504,7 @@ impl ChatManager {
                     .chat()
                     .items(req.session_id, req.before_seq, limit.saturating_add(1))?;
             let last = storage.chat().last_seq(req.session_id)?;
-            Ok::<_, heeler_storage::StorageError>((rows, last))
+            Ok::<_, staffy_storage::StorageError>((rows, last))
         })
         .await
         .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("reading the journal: {e}")))?
@@ -551,7 +551,7 @@ impl ChatManager {
                 models: models.clone(),
             });
         }
-        let models = heeler_agents::codex::list_models(&self.codex)
+        let models = staffy_agents::codex::list_models(&self.codex)
             .await
             .map_err(|e| provider_error(&e, &self.codex.program))?;
         *lock(&self.models) = Some((Instant::now(), models.clone()));
@@ -805,7 +805,7 @@ impl ChatManager {
 }
 
 /// Marks approvals a crashed daemon left open as expired (their agents are gone).
-pub fn expire_dangling_approvals(storage: &Storage) -> Result<(), heeler_storage::StorageError> {
+pub fn expire_dangling_approvals(storage: &Storage) -> Result<(), staffy_storage::StorageError> {
     let now = registry::now_ms();
     for mut row in storage.approvals().unresolved()? {
         row.resolved_at_ms = Some(now);

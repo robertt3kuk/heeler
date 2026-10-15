@@ -1,8 +1,8 @@
 //! Session history search (protocol 0.8, capability `history.search`): the local FTS index over
-//! Heeler terminal blocks and external agent transcripts (`docs/history-index.md`).
+//! Staffy terminal blocks and external agent transcripts (`docs/history-index.md`).
 
-use heeler_core::SessionId;
 use serde::{Deserialize, Serialize};
+use staffy_core::SessionId;
 
 /// Most hits one `history.search` returns, whatever `limit` asks for.
 pub const SEARCH_MAX_LIMIT: u32 = 100;
@@ -13,8 +13,8 @@ pub const SEARCH_DEFAULT_LIMIT: u32 = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistorySource {
-    /// Heeler's own terminal blocks and agent reports.
-    Heeler,
+    /// Staffy's own terminal blocks and agent reports.
+    Staffy,
     Claude,
     Codex,
     Omp,
@@ -23,7 +23,7 @@ pub enum HistorySource {
 impl HistorySource {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Heeler => "heeler",
+            Self::Staffy => "staffy",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Omp => "omp",
@@ -39,9 +39,9 @@ pub enum HistoryRole {
     Assistant,
     /// A tool call, a tool result, or an agent state report.
     Tool,
-    /// A command typed in a Heeler terminal.
+    /// A command typed in a Staffy terminal.
     Command,
-    /// The output of a Heeler terminal command.
+    /// The output of a Staffy terminal command.
     Output,
 }
 
@@ -91,7 +91,7 @@ pub struct HistorySearch {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryHit {
     pub source: HistorySource,
-    /// The session's id in its source: the agent's session id, or the Heeler session id.
+    /// The session's id in its source: the agent's session id, or the Staffy session id.
     pub session_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -110,7 +110,7 @@ pub struct HistoryHit {
     /// absent for sources that cannot be resumed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_argv: Option<Vec<String>>,
-    /// Protocol 0.12: the Heeler session (a terminal or a chat) a `heeler` hit belongs to, so
+    /// Protocol 0.12: the Staffy session (a terminal or a chat) a `staffy` hit belongs to, so
     /// that a client can open it; absent for transcripts of other tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -131,9 +131,9 @@ pub struct HistorySetEnabled {
 /// Counters of one source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistorySourceStatus {
-    /// `heeler`, `claude`, `codex`, `omp`.
+    /// `staffy`, `claude`, `codex`, `omp`.
     pub name: String,
-    /// Transcript files known (0 for `heeler`).
+    /// Transcript files known (0 for `staffy`).
     pub files: u64,
     /// Rows in the index.
     pub rows: u64,

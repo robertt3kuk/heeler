@@ -1,7 +1,7 @@
 //! Mouse reporting (GPUI-free): SGR (1006) and legacy X10-style encodings, plus the
 //! alternate-scroll arrow keys.
 
-use heeler_protocol::render::MouseMode;
+use staffy_protocol::render::MouseMode;
 
 use crate::keys::Mods;
 

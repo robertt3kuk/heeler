@@ -8,21 +8,21 @@
 
 use std::time::Duration;
 
-use heeler_client::{Client, ConnectOptions};
-use heeler_core::TerminalId;
-use heeler_daemon::{DaemonConfig, Paths};
-use heeler_protocol::messages::{
+use serde_json::Value;
+use staffy_client::{Client, ConnectOptions};
+use staffy_core::TerminalId;
+use staffy_daemon::{DaemonConfig, Paths};
+use staffy_protocol::messages::{
     ClientInfo, ClientKind, Request, SessionCreate, SessionResult, SessionSpec, TerminalAck,
     TerminalAttach, TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalSize,
     TerminalSpec,
 };
-use heeler_protocol::render::{MouseMode, TerminalRender};
-use heeler_terminal_view::keys::{Key, KeyInput, KeyOptions, Mods, encode_key};
-use heeler_terminal_view::model::{TerminalModel, row_cells, row_width};
-use heeler_terminal_view::mouse::{Button, MouseAction, MouseEvent, encode_mouse};
-use heeler_terminal_view::paste::paste_bytes;
-use heeler_terminal_view::selection::{Point, Selection, SelectionKind, selected_text};
-use serde_json::Value;
+use staffy_protocol::render::{MouseMode, TerminalRender};
+use staffy_terminal_view::keys::{Key, KeyInput, KeyOptions, Mods, encode_key};
+use staffy_terminal_view::model::{TerminalModel, row_cells, row_width};
+use staffy_terminal_view::mouse::{Button, MouseAction, MouseEvent, encode_mouse};
+use staffy_terminal_view::paste::paste_bytes;
+use staffy_terminal_view::selection::{Point, Selection, SelectionKind, selected_text};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::timeout;
 
@@ -131,16 +131,16 @@ fn has_line(model: &TerminalModel, line: &str) -> bool {
         .any(|r| TerminalModel::row_text(r) == line)
 }
 
-async fn daemon() -> (tempfile::TempDir, heeler_daemon::RunningDaemon, Paths) {
+async fn daemon() -> (tempfile::TempDir, staffy_daemon::RunningDaemon, Paths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::in_home(dir.path());
-    let running = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let running = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     (dir, running, paths)
 }
 
-async fn stop(running: heeler_daemon::RunningDaemon) {
+async fn stop(running: staffy_daemon::RunningDaemon) {
     running.shutdown();
     timeout(WAIT, running.wait()).await.unwrap().unwrap();
 }
@@ -281,7 +281,7 @@ async fn wide_characters_links_and_styles_follow_the_documented_row_shape() {
     );
 
     // SGR attributes survive the trip.
-    use heeler_protocol::render::{CellFlags, Color};
+    use staffy_protocol::render::{CellFlags, Color};
     let fancy = t
         .model
         .viewport()

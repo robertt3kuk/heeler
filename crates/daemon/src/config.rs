@@ -5,12 +5,12 @@
 //! restore_sessions = "respawn"   # or "stopped"
 //!
 //! [workspaces]
-//! home_folder = "~/Notes"        # the Home workspace's folder; default ~/Heeler
+//! home_folder = "~/Notes"        # the Home workspace's folder; default ~/Staffy
 //!
 //! [history]                      # session history index, off unless enabled (docs/history-index.md)
 //! enabled = false
 //! range_days = 0                 # 0 = everything, or 30, or 90
-//! heeler = true                  # per-source switches
+//! staffy = true                  # per-source switches
 //! claude = true
 //! codex = true
 //! omp = true
@@ -39,7 +39,7 @@
 //! [assistant.global_context]     # the global (Home) assistant; files are off by default
 //! files = false
 //!
-//! [assistant.workspaces.heeler]  # per workspace (name or id): only what differs
+//! [assistant.workspaces.staffy]  # per workspace (name or id): only what differs
 //! files = false
 //!
 //! [notify]                       # notification intents (protocol 0.13, docs/protocol.md)
@@ -53,10 +53,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use heeler_protocol::assistant::AttachmentKind;
-use heeler_protocol::notify::IntentKind;
 use serde::Deserialize;
 use serde::de::Error as _;
+use staffy_protocol::assistant::AttachmentKind;
+use staffy_protocol::notify::IntentKind;
 
 use crate::error::DaemonError;
 
@@ -116,8 +116,8 @@ pub struct CodexSettings {
 }
 
 impl CodexSettings {
-    pub fn to_config(&self) -> heeler_agents::CodexConfig {
-        let mut config = heeler_agents::CodexConfig::default();
+    pub fn to_config(&self) -> staffy_agents::CodexConfig {
+        let mut config = staffy_agents::CodexConfig::default();
         if let Some(bin) = &self.bin {
             config.program.clone_from(bin);
         }
@@ -144,7 +144,7 @@ pub struct HistorySettings {
     pub enabled: bool,
     /// Index only the last N days: 0 (everything), 30, or 90.
     pub range_days: u32,
-    pub heeler: bool,
+    pub staffy: bool,
     pub claude: bool,
     pub codex: bool,
     pub omp: bool,
@@ -156,7 +156,7 @@ impl Default for HistorySettings {
         Self {
             enabled: false,
             range_days: 0,
-            heeler: true,
+            staffy: true,
             claude: true,
             codex: true,
             omp: true,
@@ -175,7 +175,7 @@ pub const DEFAULT_CONTEXT_BUDGET_CHARS: usize = 60_000;
 pub struct ContextPermissions {
     /// `shell_block`, `shell_recent`: terminal text.
     pub shell: bool,
-    /// `agent_transcript`: the journal of a Heeler chat or an indexed transcript.
+    /// `agent_transcript`: the journal of a Staffy chat or an indexed transcript.
     pub agents: bool,
     /// `file`: files under the workspace roots.
     pub files: bool,
@@ -239,7 +239,7 @@ pub struct ContextOverride {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct AssistantSettings {
-    /// The provider (`heeler provider ls`) of assistants created from now on.
+    /// The provider (`staffy provider ls`) of assistants created from now on.
     pub provider: Option<String>,
     /// Their model; absent takes the provider's default model.
     pub model: Option<String>,
@@ -557,7 +557,7 @@ mod tests {
         )
         .unwrap()
         .history;
-        assert!(settings.enabled && settings.heeler && settings.claude && settings.omp);
+        assert!(settings.enabled && settings.staffy && settings.claude && settings.omp);
         assert!(!settings.codex);
         assert_eq!(settings.range_days, 30);
         assert_eq!(settings.roots.claude.as_deref(), Some(Path::new("/tmp/c")));

@@ -1,11 +1,11 @@
-//! `heeler agents`: the agents and subagents the daemon observes (`agent.tree`), as a tree per
+//! `staffy agents`: the agents and subagents the daemon observes (`agent.tree`), as a tree per
 //! session; with `--watch`, again whenever a tree changes.
 
-use heeler_client::Client;
-use heeler_core::{
+use staffy_client::Client;
+use staffy_core::{
     AgentNode, AgentObservation, Liveness, NodeOutcome, NodeState, SessionId, Usage,
 };
-use heeler_protocol::messages::{Empty, Event, Request, SessionInfo, Subscribed};
+use staffy_protocol::messages::{Empty, Event, Request, SessionInfo, Subscribed};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::Ctx;
@@ -18,7 +18,7 @@ impl Ctx {
         let client = self.connect().await?;
         if !client.supports_agent_tree() {
             return Err(CliError::Failed(
-                "this daemon does not observe agent trees (protocol 0.10); restart it with a newer heelerd"
+                "this daemon does not observe agent trees (protocol 0.10); restart it with a newer staffyd"
                     .to_owned(),
             ));
         }
@@ -175,7 +175,7 @@ fn compact(n: u64) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use heeler_core::{NodeKind, NodeOutcome};
+    use staffy_core::{NodeKind, NodeOutcome};
 
     use super::*;
 

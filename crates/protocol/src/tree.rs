@@ -1,9 +1,9 @@
 //! The agent observation tree (protocol 0.10, capability `agent.tree`): DTOs of `agent.tree`,
 //! of the node part of `agent.report`, and of the `agent.tree_updated` event. The nodes
-//! themselves are the core [`AgentNode`](heeler_core::AgentNode).
+//! themselves are the core [`AgentNode`](staffy_core::AgentNode).
 
-use heeler_core::{AgentObservation, NodeKind, NodeOutcome, SessionId, Usage};
 use serde::{Deserialize, Serialize};
+use staffy_core::{AgentObservation, NodeKind, NodeOutcome, SessionId, Usage};
 
 /// The node an `agent.report` is about (protocol 0.10). A report without one is about the
 /// main agent, as before.

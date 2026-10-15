@@ -1,21 +1,21 @@
-//! `heelerd` as a library so tests (and later tooling) can run the daemon in-process.
+//! `staffyd` as a library so tests (and later tooling) can run the daemon in-process.
 //!
-//! - [`paths`]: `HEELER_HOME` / `HEELER_SOCKET` layout.
+//! - [`paths`]: `STAFFY_HOME` / `STAFFY_SOCKET` layout.
 //! - [`config`]: `daemon.toml` (`restore_sessions`, `home_folder`).
 //! - [`daemon`]: lock, socket, accept loop, shutdown ([`start`]).
 //! - [`conn`]: per-client handshake, request loop, bounded outbound queue.
 //! - [`bus`]: epoch + seq event ring and fan-out.
 //! - [`router`]: typed request dispatch.
 //! - [`registry`]: the `SessionRegistry` actor (workspaces and terminal sessions, written
-//!   through to `heeler-storage` and restored from it at start).
+//!   through to `staffy-storage` and restored from it at start).
 //! - [`restore`]: loading durable state and the rules for what is stored.
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
-//! - [`history`]: the opt-in session history index (`heeler-index`) and the `history.*` requests.
+//! - [`history`]: the opt-in session history index (`staffy-index`) and the `history.*` requests.
 //! - [`chat`]: chat sessions: agent adapters, direct model chats, the approval engine, the journal.
 //! - [`direct`]: direct model chat: a session whose "agent" is the model gateway.
 //! - [`providers`]: model providers: SQLite config, Keychain credentials, adapters.
-//! - [`agent`]: validation of agent reports and the `HEELER_BIN` lookup.
+//! - [`agent`]: validation of agent reports and the `STAFFY_BIN` lookup.
 //! - [`tree`]: the per-session agent observation tree: event coalescing, rollup, storage.
 //! - [`assistant`]: assistant sessions (direct chats with a scope) and their context providers.
 //! - [`context`]: redaction, budget, headers and assembly of attached context.

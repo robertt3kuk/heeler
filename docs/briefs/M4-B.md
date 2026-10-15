@@ -18,8 +18,8 @@ Read `AGENTS.md`, ADR 0005, `docs/agents.md` (from M4-A), `docs/roadmap.md` § M
 
 ## Acceptance
 - GPUI tests with an in-process daemon and M4-A's fake Codex app-server fixtures: new chat → send → streamed assistant text renders; command tool card with output; file change card with a diff; approval card → click option → daemon receives it, card resolves; approval answered from the CLI resolves the card live; reconnect mid-turn continues without duplicates; interrupt; "Send to agent" attaches a block.
-- Manual: desktop on a temp `HEELER_HOME` against the fake server; one optional run against the real Codex with a tiny prompt (temp cwd, `-c` overrides only); no screenshots (orchestrator verifies visually).
+- Manual: desktop on a temp `STAFFY_HOME` against the fake server; one optional run against the real Codex with a tiny prompt (temp cwd, `-c` overrides only); no screenshots (orchestrator verifies visually).
 - `just check` green; committed on `slice/M4-B`.
 
 ## Rules
-Inline `HEELER_HOME=<temp dir>`; never touch `/tmp/hh-*`, the real Heeler home, or `~/.codex/config.toml`. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase.
+Inline `STAFFY_HOME=<temp dir>`; never touch `/tmp/hh-*`, the real Staffy home, or `~/.codex/config.toml`. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase.

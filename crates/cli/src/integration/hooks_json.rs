@@ -1,14 +1,14 @@
 //! Editing the `hooks` table of Codex's `hooks.json` and Claude Code's `settings.json`.
 //!
 //! Both files share one shape: `{"hooks": {"<Event>": [{"hooks": [{"type": "command", ...}]}]}}`.
-//! Heeler adds one group per event and recognises its own hooks by [`MARKER`] in the command;
+//! Staffy adds one group per event and recognises its own hooks by [`MARKER`] in the command;
 //! every other group, hook, and key is left exactly as it was (the documents keep their key
 //! order and are written back with the indentation they came with).
 
 use serde_json::{Map, Value, json};
 
-/// Appears in every command Heeler installs: `: heeler-integration=<target>; sh '<script>' ...`.
-pub const MARKER: &str = "heeler-integration=";
+/// Appears in every command Staffy installs: `: staffy-integration=<target>; sh '<script>' ...`.
+pub const MARKER: &str = "staffy-integration=";
 
 /// Seconds the agent lets a hook run.
 const HOOK_TIMEOUT_SECS: u64 = 10;
@@ -25,7 +25,7 @@ pub enum EditError {
     UnexpectedShape(String),
 }
 
-/// Makes sure every event in `events` has a Heeler hook running `command`, and that no other
+/// Makes sure every event in `events` has a Staffy hook running `command`, and that no other
 /// event has one. Returns whether the document changed.
 pub fn install(doc: &mut Value, events: &[&str], command: &str) -> Result<bool, EditError> {
     let root = doc.as_object_mut().ok_or(EditError::NotAnObject)?;
@@ -39,7 +39,7 @@ pub fn install(doc: &mut Value, events: &[&str], command: &str) -> Result<bool, 
         .and_then(Value::as_object_mut)
         .ok_or_else(|| EditError::UnexpectedShape("hooks".to_owned()))?;
 
-    // Events an older Heeler hooked and this one does not.
+    // Events an older Staffy hooked and this one does not.
     let stale: Vec<String> = hooks
         .keys()
         .filter(|event| !events.contains(&event.as_str()))
@@ -91,7 +91,7 @@ pub fn install(doc: &mut Value, events: &[&str], command: &str) -> Result<bool, 
     Ok(changed)
 }
 
-/// Removes Heeler's hooks, and the groups, events, and `hooks` table they leave empty.
+/// Removes Staffy's hooks, and the groups, events, and `hooks` table they leave empty.
 /// Returns whether the document changed.
 pub fn uninstall(doc: &mut Value) -> Result<bool, EditError> {
     let root = doc.as_object_mut().ok_or(EditError::NotAnObject)?;
@@ -117,7 +117,7 @@ pub fn uninstall(doc: &mut Value) -> Result<bool, EditError> {
     Ok(changed)
 }
 
-/// The events of `events` that have a Heeler hook.
+/// The events of `events` that have a Staffy hook.
 pub fn installed_events<'a>(doc: &Value, events: &[&'a str]) -> Vec<&'a str> {
     let Some(hooks) = doc.get("hooks").and_then(Value::as_object) else {
         return Vec::new();
@@ -192,7 +192,7 @@ fn drop_if_emptied(hooks: &mut Map<String, Value>, event: &str) -> bool {
 mod tests {
     use super::*;
 
-    const CMD: &str = ": heeler-integration=codex; sh '/h/.codex/heeler-agent-state.sh' codex";
+    const CMD: &str = ": staffy-integration=codex; sh '/h/.codex/staffy-agent-state.sh' codex";
 
     fn doc(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
@@ -225,7 +225,7 @@ mod tests {
         install(
             &mut value,
             &["Stop", "Old"],
-            ": heeler-integration=codex; old",
+            ": staffy-integration=codex; old",
         )
         .unwrap();
         assert!(install(&mut value, &["Stop"], CMD).unwrap());

@@ -50,7 +50,7 @@ pub fn layout(sessions: &[String]) -> Result<Value> {
     }))
 }
 
-/// A `HEELER_BENCH_INPUT` script typing lowercase letters with an Enter after every 40 keys.
+/// A `STAFFY_BENCH_INPUT` script typing lowercase letters with an Enter after every 40 keys.
 pub fn typing_script(keys: usize, interval_ms: u64, start_delay_ms: u64, jitter_ms: u64) -> Value {
     let keys: Vec<String> = (1..=keys)
         .map(|n| {

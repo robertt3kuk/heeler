@@ -3,14 +3,14 @@
 //! screen) through the engine path — sniffer + `alacritty_terminal`, no PTY — at 80×24 and
 //! prints MB/s and peak RSS.
 //!
-//! `cargo run --release -p heeler-terminal --example flood [-- <megabytes>]`
+//! `cargo run --release -p staffy-terminal --example flood [-- <megabytes>]`
 #![allow(unsafe_code)]
 
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use heeler_protocol::messages::TerminalSize;
-use heeler_terminal::Emulator;
+use staffy_protocol::messages::TerminalSize;
+use staffy_terminal::Emulator;
 
 /// Same chunk size as the engine spike (ADR 0004 evidence), so numbers are comparable.
 const CHUNK: usize = 182_272;

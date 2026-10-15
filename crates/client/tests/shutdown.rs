@@ -1,6 +1,6 @@
 //! `shutdown` (and dropping the last clone) joins the connection's thread.
 //!
-//! Lives in its own test binary so no other test's connections add `heeler-client*` threads to
+//! Lives in its own test binary so no other test's connections add `staffy-client*` threads to
 //! this process while it counts them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -12,10 +12,10 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
-use heeler_client::{ConnectOptions, Connection, ConnectionState};
-use heeler_protocol::messages::{ClientInfo, ClientKind};
+use staffy_client::{ConnectOptions, Connection, ConnectionState};
+use staffy_protocol::messages::{ClientInfo, ClientKind};
 
-const PREFIX: &str = "heeler-client";
+const PREFIX: &str = "staffy-client";
 
 #[cfg(target_os = "macos")]
 fn thread_names() -> Vec<String> {
@@ -93,7 +93,7 @@ fn assert_client_threads(expected: usize, what: &str) {
         }
         assert!(
             Instant::now() < deadline,
-            "{what}: expected {expected} heeler-client threads, found {count}: {:?}",
+            "{what}: expected {expected} staffy-client threads, found {count}: {:?}",
             thread_names()
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -102,7 +102,7 @@ fn assert_client_threads(expected: usize, what: &str) {
 
 fn dead_end_options() -> ConnectOptions {
     ConnectOptions {
-        socket: Some("/nonexistent/heeler-test.sock".into()),
+        socket: Some("/nonexistent/staffy-test.sock".into()),
         autostart: None,
         client: ClientInfo {
             kind: ClientKind::Desktop,
@@ -130,7 +130,7 @@ async fn shutdown_joins_every_client_thread() {
     assert_client_threads(3, "three connections");
 
     // A terminal handle that outlives its connection must not keep anything running.
-    let handle = connected.attach(heeler_core::TerminalId(1), None);
+    let handle = connected.attach(staffy_core::TerminalId(1), None);
 
     // The last clone going away stops the thread without an explicit shutdown.
     drop(dropped);

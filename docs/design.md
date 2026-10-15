@@ -1,4 +1,4 @@
-# Heeler Design
+# Staffy Design
 
 Decisions taken with the user (2026-10-14):
 
@@ -6,7 +6,7 @@ Decisions taken with the user (2026-10-14):
 |---|---|
 | Layout | **A + B-overview + ⌘K**: sidebar + panes + inspector by default; Overview board as a preset (⌘⇧O); command palette ⌘K |
 | Configurability | **Everything is a movable component.** Any panel can live in any dock or as a center tab; every component has its own settings section; layouts are saved as presets |
-| Style | **Native macOS chrome + own terminal themes**: transparent titlebar, vibrancy sidebar, SF Pro UI, system accent, light/dark follows the system; terminal and chat use Heeler themes |
+| Style | **Native macOS chrome + own terminal themes**: transparent titlebar, vibrancy sidebar, SF Pro UI, system accent, light/dark follows the system; terminal and chat use Staffy themes |
 | Density | Setting: `compact` (default) / `comfortable` |
 | Agents with TUI and protocol | **One session, view switch Chat / Terminal** in the pane header (M4) |
 
@@ -68,7 +68,7 @@ flowchart TB
   <rect x="0.5" y="0.5" width="959" height="539" rx="10" fill="var(--surface)" stroke="var(--border)"/>
   <rect x="0.5" y="0.5" width="219" height="515" rx="10" fill="var(--border)" opacity="0.28"/>
   <circle cx="18" cy="18" r="6" fill="var(--error)" opacity="0.8"/><circle cx="36" cy="18" r="6" fill="var(--warning)" opacity="0.8"/><circle cx="54" cy="18" r="6" fill="var(--success)" opacity="0.8"/>
-  <text x="420" y="22" font-size="12" fill="var(--muted)">M2 · claude — heeler</text>
+  <text x="420" y="22" font-size="12" fill="var(--muted)">M2 · claude — staffy</text>
   <rect x="742" y="9" width="96" height="20" rx="5" fill="none" stroke="var(--border)"/><text x="752" y="23" font-size="11" fill="var(--fg)">Layout: Default ▾</text>
   <rect x="846" y="9" width="104" height="20" rx="5" fill="none" stroke="var(--border)"/><text x="856" y="23" font-size="11" fill="var(--fg)">⊞ Overview ⌘⇧O</text>
   <line x1="220" y1="36" x2="960" y2="36" stroke="var(--border)"/>
@@ -78,7 +78,7 @@ flowchart TB
   <text x="28" y="121" font-size="10" fill="var(--muted)">approval · cargo test</text>
   <circle cx="18" cy="138" r="4" fill="var(--success)"/><text x="28" y="142" font-size="12" fill="var(--fg)">web · omp</text><text x="182" y="142" font-size="10" fill="var(--muted)">4m</text>
   <text x="28" y="155" font-size="10" fill="var(--muted)">done · 3 files changed</text>
-  <text x="12" y="180" font-size="10" fill="var(--muted)" font-weight="700">HEELER  ·  master</text>
+  <text x="12" y="180" font-size="10" fill="var(--muted)" font-weight="700">STAFFY  ·  master</text>
   <rect x="8" y="188" width="204" height="24" rx="5" fill="var(--accent)" opacity="0.18"/>
   <text x="16" y="204" font-size="11" fill="var(--c3)">◆</text><text x="30" y="204" font-size="12" fill="var(--fg)">M2 · claude</text>
   <rect x="122" y="193" width="58" height="14" rx="3" fill="none" stroke="var(--border)"/><text x="127" y="203" font-size="9" fill="var(--muted)">wt m2-shell</text><circle cx="198" cy="200" r="4" fill="var(--accent)"/>
@@ -101,7 +101,7 @@ flowchart TB
     <text x="232" y="160" fill="var(--fg)">● Editing connection.rs</text>
     <text x="232" y="174" fill="var(--success)">  + reconnect with backoff</text>
     <text x="232" y="188" fill="var(--error)">  - TODO resume</text>
-    <text x="232" y="468" fill="var(--muted)">π › Opus 5.5 › heeler ▶ 12%</text>
+    <text x="232" y="468" fill="var(--muted)">π › Opus 5.5 › staffy ▶ 12%</text>
     <text x="232" y="488" fill="var(--fg)">╰─ continue with M2.2</text>
   </g>
   <rect x="356" y="478" width="7" height="13" fill="var(--accent)"/>
@@ -150,10 +150,10 @@ flowchart TB
   <text x="714" y="220" font-size="11" fill="var(--fg)">src/api.ts</text><text x="900" y="220" font-size="10" fill="var(--success)">+8</text><text x="928" y="220" font-size="10" fill="var(--error)">−2</text>
   <text x="714" y="238" font-size="11" fill="var(--fg)">README.md</text><text x="900" y="238" font-size="10" fill="var(--success)">+3</text>
   <line x1="0" y1="516" x2="960" y2="516" stroke="var(--border)"/>
-  <circle cx="14" cy="528" r="3.5" fill="var(--success)"/><text x="24" y="532" font-size="10" fill="var(--muted)">heelerd connected</text>
+  <circle cx="14" cy="528" r="3.5" fill="var(--success)"/><text x="24" y="532" font-size="10" fill="var(--muted)">staffyd connected</text>
   <text x="140" y="532" font-size="10" fill="var(--muted)">7 sessions</text>
   <text x="214" y="532" font-size="10" fill="var(--warning)">● 2 need you</text>
-  <text x="742" y="532" font-size="10" fill="var(--muted)">Compact · Heeler Dark · ⌘K</text>
+  <text x="742" y="532" font-size="10" fill="var(--muted)">Compact · Staffy Dark · ⌘K</text>
 </svg>
 ```
 
@@ -206,15 +206,15 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 | terminal padding (all sides) | 6 px | 8 px |
 | block gutter bar | 3 px | 4 px |
 
-- **Themes**: one theme definition drives chrome, terminal palette, and (M11) syntax scopes; built-in `heeler-dark` (terminal bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `heeler-light`; follows system appearance unless pinned. Later: import Ghostty/Zed theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
+- **Themes**: one theme definition drives chrome, terminal palette, and (M11) syntax scopes; built-in `staffy-dark` (terminal bg `#1e1e1e`, fg `#d4d4d4`, matches daemon defaults) and `staffy-light`; follows system appearance unless pinned. Later: import Ghostty/Zed theme files. The desktop reports the active terminal colors to the daemon so OSC 10/11 replies match what the user sees.
 - **Motion**: ≤ 150 ms, ease-out; no motion on terminal content; respects Reduce Motion.
 
 ## Settings
 
 - Files (TOML, comments allowed):
-  - user: `~/Library/Application Support/Heeler/settings.toml`
-  - keymap: `~/Library/Application Support/Heeler/keymap.toml`
-  - workspace overrides: `<repo>/.heeler/settings.toml` (only keys marked workspace-overridable)
+  - user: `~/Library/Application Support/Staffy/settings.toml`
+  - keymap: `~/Library/Application Support/Staffy/keymap.toml`
+  - workspace overrides: `<repo>/.staffy/settings.toml` (only keys marked workspace-overridable)
 - Precedence: built-in defaults < user < workspace < runtime toggles (e.g. density switch writes back to user file).
 - Every component owns one namespace with a typed, documented schema; unknown keys warn, invalid values fall back to defaults with a visible error in the settings UI. Files hot-reload.
 - Settings UI (⌘,): generated from the schemas, searchable; each panel's gear (⚙) opens its own section.
@@ -231,7 +231,7 @@ chrome = "system"              # system | light | dark
 [terminal]
 font_family = "Menlo"
 font_size = 13
-theme = "auto"                 # auto | heeler-dark | heeler-light | <name>
+theme = "auto"                 # auto | staffy-dark | staffy-light | <name>
 cursor = { style = "block", blink = true }
 option_as_meta = "left"        # none | left | right | both
 copy_on_select = false
@@ -268,7 +268,7 @@ hide_cli_created = false       # hide workspaces the CLI or an agent created
 always_show_active = true      # the workspace you are in stays listed whatever the filters say
 
 [history]
-sources = []                   # default source chips: heeler | claude | codex | omp (empty = all)
+sources = []                   # default source chips: staffy | claude | codex | omp (empty = all)
 roles = []                     # default role chips: user | assistant | tool | command | output
 range = "all"                  # 24h | 7d | 30d | all
 project = "all"                # workspace | all
@@ -291,17 +291,17 @@ The daemon owns workspaces (protocol 0.6: kind, pin, order, activity, session co
 - **Menu**: Pin/Unpin, Rename…, Add Folder… (system folder panel → `workspace.add_root`), Remove Folder “x” (when there are several roots), Close (greyed with the reason while sessions are live and for Home; asks first, the project stays in ⌘O), Reveal in Finder. Home has one folder, set in `daemon.toml`.
 - **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the workspace. **⌘J** lists every workspace and every session; Enter shows it.
 - **One layout per workspace** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the workspace you are in; switching parks them and brings the other one back exactly. A workspace seen for the first time starts with a single pane under your dock arrangement. Opening a session of another workspace (sidebar, ⌘J, attention, a restored tab) switches first. Terminals of parked workspaces are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the workspace of its first session (else Home); a workspace that vanishes hands the window to Home and its layout is dropped.
-- **Settings**: the first root of the active workspace layers `<root>/.heeler/settings.toml` over the user settings (hot-reloaded, also while it stays active), whether or not a session has focus. New sessions (⌘T, splits of a pane without a session) start in the active workspace, else in Home.
+- **Settings**: the first root of the active workspace layers `<root>/.staffy/settings.toml` over the user settings (hot-reloaded, also while it stays active), whether or not a session has focus. New sessions (⌘T, splits of a pane without a session) start in the active workspace, else in Home.
 - **Status bar**: the `workspace` item shows the active workspace; click opens ⌘J.
 
 ## History panel (M17-B)
 
-The `history` panel searches the opt-in session history index (`docs/history-index.md`, protocol 0.8 `history.*`): Heeler terminal blocks and the transcripts of Claude Code, Codex and OMP. It lives in the left dock as a tab next to Sessions in every built-in preset and moves like any panel; ⌘K → "Panel: Open History" reveals it.
+The `history` panel searches the opt-in session history index (`docs/history-index.md`, protocol 0.8 `history.*`): Staffy terminal blocks and the transcripts of Claude Code, Codex and OMP. It lives in the left dock as a tab next to Sessions in every built-in preset and moves like any panel; ⌘K → "Panel: Open History" reveals it.
 
 - **Disabled** (`history.status.enabled = false`, the default): the panel says what turning indexing on reads (the four sources and their default folders), that nothing leaves the machine and that Clear deletes the index, and offers **Enable indexing** (`history.set_enabled`) and a link to the `history` settings. No search is sent while indexing is off.
-- **Search**: a field (debounced 150 ms, `history.search`, 50 sessions) under which filter chips narrow the same search — source (Heeler / Claude / Codex / OMP), role (user · assistant · tool · command · output), date (24h / 7d / 30d / all), project (this workspace = the first folder of the active workspace · all). Chips are toggles; none chosen means all. One row per session: source glyph, title, age, `source · role · folder · N hits`, and the best snippet with the matching words **emphasised** (the index's `«…»` markers are parsed, never drawn). ↑ ↓ select a row, ↩ runs its main action.
-- **Row actions**: **Resume** opens a new terminal session running the hit's `resume_argv` (greyed with the reason when the index has none: Heeler records, ids the resume rules refuse). It starts in the active workspace when one of its folders holds the hit's directory, otherwise `workspace.open` finds or creates the workspace that contains it and the window switches there (Home is a catch-all and only counts for its own folder). A directory that no longer exists falls back to the active workspace's first folder, and a notice says so. **Copy command** puts the shell-quoted resume line on the clipboard. **Open block** / **Open session** (Heeler hits): shows the terminal session and scrolls it to the block (found by its start time) while it is still there. Transcript files are not revealed in Finder: a hit does not carry its path (and no block id) yet.
-- **Footer**: rows, database size, unreadable lines, per-source last indexed time, **Clear…** and **Rebuild…** (both ask first; Clear deletes `index.sqlite`, Heeler's own records cannot come back). While the index fills (after Enable, Rebuild, Clear, or when the panel opens on an empty index) the panel reads the status twice a second and searches again when the row count changes, until it stays put for 2 s (10 s while empty, 60 s at most).
+- **Search**: a field (debounced 150 ms, `history.search`, 50 sessions) under which filter chips narrow the same search — source (Staffy / Claude / Codex / OMP), role (user · assistant · tool · command · output), date (24h / 7d / 30d / all), project (this workspace = the first folder of the active workspace · all). Chips are toggles; none chosen means all. One row per session: source glyph, title, age, `source · role · folder · N hits`, and the best snippet with the matching words **emphasised** (the index's `«…»` markers are parsed, never drawn). ↑ ↓ select a row, ↩ runs its main action.
+- **Row actions**: **Resume** opens a new terminal session running the hit's `resume_argv` (greyed with the reason when the index has none: Staffy records, ids the resume rules refuse). It starts in the active workspace when one of its folders holds the hit's directory, otherwise `workspace.open` finds or creates the workspace that contains it and the window switches there (Home is a catch-all and only counts for its own folder). A directory that no longer exists falls back to the active workspace's first folder, and a notice says so. **Copy command** puts the shell-quoted resume line on the clipboard. **Open block** / **Open session** (Staffy hits): shows the terminal session and scrolls it to the block (found by its start time) while it is still there. Transcript files are not revealed in Finder: a hit does not carry its path (and no block id) yet.
+- **Footer**: rows, database size, unreadable lines, per-source last indexed time, **Clear…** and **Rebuild…** (both ask first; Clear deletes `index.sqlite`, Staffy's own records cannot come back). While the index fills (after Enable, Rebuild, Clear, or when the panel opens on an empty index) the panel reads the status twice a second and searches again when the row count changes, until it stays put for 2 s (10 s while empty, 60 s at most).
 - **⌘K**: "History: Search History…" reveals the panel and focuses its field. **⌘J**: a query that starts with `?` searches the history inline (top 8 sessions, same filter defaults); ↩ resumes the hit when it can be resumed, else shows it in the panel with the field filled in and the row selected.
 - **Settings** (`history`, desktop side only; whether indexing runs and where the transcripts are belongs to `daemon.toml`): `sources` / `roles` (default chips, empty = all), `range` (`24h` | `7d` | `30d` | `all`), `project` (`workspace` | `all`), `show_snippets`.
 
@@ -323,7 +323,7 @@ The `agents` panel (default: second tab of the right dock in `default`, `focus` 
 
 The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws them **over the single grid** — the grid, its columns and the PTY size never change, and `terminal.blocks = false` makes the terminal look exactly as without blocks (hot-reloaded).
 
-- **Gutter**: a thin bar at the left edge, inside the terminal padding (width = the `block gutter bar` density token), one per block from its prompt to the end of its output. `--success` after exit 0, `--error` after a failure, neutral (`--muted`) while the command runs and when no exit code is known; the bar of a running block pulses slowly (steady under Reduce Motion, read from macOS; `HEELER_REDUCE_MOTION=0|1` overrides). The open prompt has no bar.
+- **Gutter**: a thin bar at the left edge, inside the terminal padding (width = the `block gutter bar` density token), one per block from its prompt to the end of its output. `--success` after exit 0, `--error` after a failure, neutral (`--muted`) while the command runs and when no exit code is known; the bar of a running block pulses slowly (steady under Reduce Motion, read from macOS; `STAFFY_REDUCE_MOTION=0|1` overrides). The open prompt has no bar.
 - **Separator** above every prompt but the first row, and a right-aligned **chip** on the prompt line: `✓ 1.2 s`, `✗ 2 3 m` (exit status, duration). A chip never covers text the prompt line shows: when the line is too full for it, it is left out.
 - **Hover** a block: a faint tint and an actions bar at the right of its first visible row — Copy command, Copy output (both through `terminal.block_text`, so they work beyond the loaded scrollback), Collapse / Expand, Rerun (types the command and Enter into the session; off while a command runs), Send to agent (a chip in the composer of the last-focused chat, `docs/agents.md`).
 - **Collapse** folds a finished block's output rows into one summary row (`… 241 lines, exit 0`) *in the view only*: nothing changes in the PTY, the scrollback or what other clients see, and older lines move down to fill the freed rows (the view stays anchored at its bottom). Folds apply to the pane, not to overview previews; they are saved per terminal in `desktop-state.json` (`collapsed_blocks`, terminal id → block ids) so they survive a desktop restart, and are forgotten with the terminal.
@@ -334,15 +334,15 @@ The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws t
 
 ```mermaid
 flowchart TD
-  L[Launch Heeler] --> C{heelerd running?}
+  L[Launch Staffy] --> C{staffyd running?}
   C -- yes --> A[Connect]
-  C -- no --> S[Start heelerd next to the app binary] --> A
+  C -- no --> S[Start staffyd next to the app binary] --> A
   Q[⌘Q / close last window] --> LV{live sessions?}
-  LV -- no --> X[Stop heelerd, quit]
+  LV -- no --> X[Stop staffyd, quit]
   LV -- yes --> P{app.on_quit}
   P -- ask --> D[Dialog: Keep running · Stop sessions & daemon · Cancel, with Don't ask again]
-  P -- keep_running --> K[Quit, heelerd keeps sessions]
-  P -- stop_daemon --> X2[Stop sessions, stop heelerd, quit]
+  P -- keep_running --> K[Quit, staffyd keeps sessions]
+  P -- stop_daemon --> X2[Stop sessions, stop staffyd, quit]
   D --> K
   D --> X2
 ```
@@ -353,7 +353,7 @@ flowchart TD
   - status: connected/reconnecting, daemon version + protocol, pid, uptime, sessions (live / total), clients, socket path, log path;
   - actions: Restart Daemon, Stop Daemon (both confirm when sessions are live: they stop; the app stays open and shows "daemon stopped" with a Start button), Start Daemon (when stopped), Open Logs;
   - **working mode** selector bound to `app.on_quit`: *Ask on quit* · *Keep sessions running after quit* · *Stop daemon with the app* — changing it writes `settings.toml`.
-- The CLI (`heeler daemon start|status|stop|restart`) controls the same daemon; the app reflects CLI-initiated stops/restarts through its reconnect state.
+- The CLI (`staffy daemon start|status|stop|restart`) controls the same daemon; the app reflects CLI-initiated stops/restarts through its reconnect state.
 - Quitting is always clean: layout saved, connection closed, exit code 0; the daemon is stopped through `daemon.shutdown`, never killed. A desktop panic writes message + backtrace to `desktop.log` before exiting.
 
 ## Keyboard defaults
@@ -387,6 +387,6 @@ The block keys apply while the primary screen shows (a program on the alternate 
 
 ## Open design questions
 
-1. App icon and name (name still a codename, see `status.md`).
+1. App icon: Staffy, mascot a Staffordshire Bull Terrier, monochrome; design pending (name decided, see `status.md`).
 2. Where approvals appear when the inspector is hidden: toast + sidebar only (current proposal).
 3. Multi-window: one workspace per window vs any (proposal: any; presets per window).

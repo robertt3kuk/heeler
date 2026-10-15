@@ -9,9 +9,9 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-heeler-client.workspace = true
-heeler-core.workspace = true
-heeler-protocol.workspace = true
+staffy-client.workspace = true
+staffy-core.workspace = true
+staffy-protocol.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

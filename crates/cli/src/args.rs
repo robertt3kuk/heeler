@@ -3,15 +3,15 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use heeler_core::{ApprovalPolicy, SandboxMode, WorkspaceId};
+use staffy_core::{ApprovalPolicy, SandboxMode, WorkspaceId};
 
 /// Exit codes: 0 ok, 1 remote or other error, 2 usage (including an ambiguous session target),
-/// 3 heelerd unreachable or lost. `attach` killed by SIGTERM/SIGHUP exits 143/129.
+/// 3 staffyd unreachable or lost. `attach` killed by SIGTERM/SIGHUP exits 143/129.
 #[derive(Debug, Parser)]
-#[command(name = "heeler", version, about = "Command-line client for heelerd")]
+#[command(name = "staffy", version, about = "Command-line client for staffyd")]
 pub struct Cli {
-    /// heelerd socket; default: $HEELER_SOCKET, else $HEELER_HOME/heelerd.sock, else the
-    /// standard location under ~/Library/Application Support/Heeler
+    /// staffyd socket; default: $STAFFY_SOCKET, else $STAFFY_HOME/staffyd.sock, else the
+    /// standard location under ~/Library/Application Support/Staffy
     #[arg(long, global = true, value_name = "PATH")]
     pub socket: Option<PathBuf>,
 
@@ -25,7 +25,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Manage the heelerd daemon
+    /// Manage the staffyd daemon
     #[command(subcommand)]
     Daemon(DaemonCommand),
     /// Manage workspaces
@@ -59,8 +59,8 @@ pub enum Command {
     /// Install, remove, or inspect the agent integrations (Codex, Claude Code, OMP)
     #[command(subcommand)]
     Integration(IntegrationCommand),
-    /// Search past sessions: Heeler terminal blocks and Claude Code, Codex and OMP transcripts
-    /// (needs `heeler index enable`)
+    /// Search past sessions: Staffy terminal blocks and Claude Code, Codex and OMP transcripts
+    /// (needs `staffy index enable`)
     Search(SearchArgs),
     /// Manage the session history index (opt-in, local)
     #[command(subcommand)]
@@ -79,7 +79,7 @@ pub enum Command {
     Assistant(AssistantCommand),
     /// List the permission requests of agent chats that wait for an answer
     Approvals,
-    /// Answer a permission request with one of the options it offers (see `heeler approvals`)
+    /// Answer a permission request with one of the options it offers (see `staffy approvals`)
     Approve(ApproveArgs),
     /// Notification intents the daemon raises when something needs you: list, acknowledge, act
     /// on, or watch them
@@ -102,7 +102,7 @@ pub enum NotifyCommand {
 
 #[derive(Debug, Args)]
 pub struct NotifyIdArgs {
-    /// Intent id or unique id prefix (at least 4 characters; see `heeler notify ls`)
+    /// Intent id or unique id prefix (at least 4 characters; see `staffy notify ls`)
     pub intent: String,
 }
 
@@ -136,7 +136,7 @@ pub enum ChatCommand {
 pub struct ChatModelArgs {
     #[arg(help = TARGET_HELP)]
     pub target: String,
-    /// The model (see `heeler provider models <provider>`)
+    /// The model (see `staffy provider models <provider>`)
     pub model: String,
     /// Switch to another provider as well (default: keep the chat's provider)
     #[arg(long, value_name = "ID")]
@@ -145,7 +145,7 @@ pub struct ChatModelArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ProviderCommand {
-    /// Configure a provider; a key is stored separately with `heeler provider key`
+    /// Configure a provider; a key is stored separately with `staffy provider key`
     Add(ProviderAddArgs),
     /// Store an API key in the Keychain (read from stdin without echo, or from an environment
     /// variable)
@@ -179,7 +179,7 @@ pub struct ProviderAddArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderKeyArgs {
-    /// The provider's id (see `heeler provider ls`)
+    /// The provider's id (see `staffy provider ls`)
     pub provider: String,
     /// Read the key from this environment variable instead of stdin
     #[arg(long, value_name = "VAR", conflicts_with = "clear")]
@@ -191,7 +191,7 @@ pub struct ProviderKeyArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderIdArgs {
-    /// The provider's id (see `heeler provider ls`)
+    /// The provider's id (see `staffy provider ls`)
     pub provider: String,
 }
 
@@ -205,13 +205,13 @@ pub struct ProviderDiscoverArgs {
 #[derive(Debug, Args)]
 pub struct ChatNewArgs {
     /// Workspace to create the session in: id, unique id prefix, or exact name (default:
-    /// $HEELER_WORKSPACE, else the workspace containing the directory, else Home)
+    /// $STAFFY_WORKSPACE, else the workspace containing the directory, else Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Directory the agent works in (default: the current directory)
     #[arg(long, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
-    /// Model from `heeler chat models` (default: the agent catalog's default); with --direct a
+    /// Model from `staffy chat models` (default: the agent catalog's default); with --direct a
     /// model of the provider (default: the provider's default model)
     #[arg(long)]
     pub model: Option<String>,
@@ -227,7 +227,7 @@ pub struct ChatNewArgs {
     /// Chat directly with a model of a provider (no agent, no tools); needs --provider
     #[arg(long, requires = "provider")]
     pub direct: bool,
-    /// The provider of a direct chat (see `heeler provider ls`)
+    /// The provider of a direct chat (see `staffy provider ls`)
     #[arg(long, value_name = "ID", requires = "direct")]
     pub provider: Option<String>,
     /// System prompt of a direct chat
@@ -252,7 +252,7 @@ pub struct AskArgs {
     /// The question
     pub question: String,
     /// Ask the assistant of this workspace: id, unique id prefix, or exact name (default:
-    /// $HEELER_WORKSPACE, else the global assistant of Home)
+    /// $STAFFY_WORKSPACE, else the global assistant of Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Context to attach, repeatable: block:<terminal>:<block>, recent:<terminal>:<lines>,
@@ -262,7 +262,7 @@ pub struct AskArgs {
         value_name = "KIND:VALUE",
         value_parser = crate::attach_spec::parse_attachment
     )]
-    pub attach: Vec<heeler_protocol::assistant::Attachment>,
+    pub attach: Vec<staffy_protocol::assistant::Attachment>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -282,7 +282,7 @@ pub struct AssistantLsArgs {
 
 #[derive(Debug, Args)]
 pub struct AssistantOpenArgs {
-    /// The workspace: id, unique id prefix, or exact name (default: $HEELER_WORKSPACE, else the
+    /// The workspace: id, unique id prefix, or exact name (default: $STAFFY_WORKSPACE, else the
     /// global assistant of Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
@@ -309,24 +309,24 @@ fn parse_sandbox(text: &str) -> Result<SandboxMode, String> {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
-    /// Start heelerd detached and wait for its socket; does nothing if it already runs
+    /// Start staffyd detached and wait for its socket; does nothing if it already runs
     Start,
-    /// Show whether heelerd runs, and its pid, uptime, and counts
+    /// Show whether staffyd runs, and its pid, uptime, and counts
     Status,
-    /// Ask heelerd to shut down; sessions that were alive come back at the next start
+    /// Ask staffyd to shut down; sessions that were alive come back at the next start
     Stop {
         /// Stop live sessions first; otherwise shutdown is refused while any run. They are
-        /// respawned by the next heelerd unless --forget is given
+        /// respawned by the next staffyd unless --forget is given
         #[arg(long)]
         stop_sessions: bool,
-        /// Record the stopped sessions as stopped so the next heelerd does not respawn them
+        /// Record the stopped sessions as stopped so the next staffyd does not respawn them
         #[arg(long, requires = "stop_sessions")]
         forget: bool,
     },
-    /// Stop heelerd and start a new one
+    /// Stop staffyd and start a new one
     Restart {
         /// Stop live sessions first; otherwise the restart is refused while any run. The new
-        /// heelerd respawns them
+        /// staffyd respawns them
         #[arg(long)]
         stop_sessions: bool,
     },
@@ -375,8 +375,8 @@ pub enum WsCommand {
         #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
         limit: u32,
     },
-    /// Print `export HEELER_WORKSPACE=<id>`: new sessions of `heeler new` go to that workspace
-    /// (use as `eval "$(heeler ws use NAME)"`)
+    /// Print `export STAFFY_WORKSPACE=<id>`: new sessions of `staffy new` go to that workspace
+    /// (use as `eval "$(staffy ws use NAME)"`)
     Use {
         #[arg(help = WS_TARGET_HELP)]
         target: String,
@@ -449,7 +449,7 @@ pub struct TargetArgs {
 #[derive(Debug, Args)]
 pub struct NewArgs {
     /// Workspace to create the session in: id, unique id prefix, or exact name (default:
-    /// $HEELER_WORKSPACE, else Home)
+    /// $STAFFY_WORKSPACE, else Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Working directory (default: the current directory)
@@ -503,8 +503,8 @@ pub struct HistoryArgs {
     pub lines: u32,
 }
 
-/// The `agent` subcommands run inside Heeler sessions on behalf of agent hooks: outside a
-/// session (no `HEELER_SESSION_ID`), without a daemon, on any daemon error, and after 200 ms
+/// The `agent` subcommands run inside Staffy sessions on behalf of agent hooks: outside a
+/// session (no `STAFFY_SESSION_ID`), without a daemon, on any daemon error, and after 200 ms
 /// they do nothing and exit 0, so a hook can never break the agent that runs it.
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // parsed once per process
@@ -586,7 +586,7 @@ pub struct AgentReleaseArgs {
     pub outcome: Option<OutcomeArg>,
 }
 
-/// `heeler agents`: the agents (and subagents) of the sessions, as the daemon observes them.
+/// `staffy agents`: the agents (and subagents) of the sessions, as the daemon observes them.
 #[derive(Debug, Args)]
 pub struct AgentsArgs {
     /// Only this session: id, unique id prefix, or title
@@ -633,7 +633,7 @@ pub enum HookAgentArg {
 
 #[derive(Debug, Subcommand)]
 pub enum IntegrationCommand {
-    /// Add Heeler's hooks to the agent's configuration (idempotent; other entries are kept and
+    /// Add Staffy's hooks to the agent's configuration (idempotent; other entries are kept and
     /// the file is backed up first)
     Install(IntegrationArgs),
     /// Remove only what `install` added
@@ -682,7 +682,7 @@ pub struct SearchArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SourceArg {
-    Heeler,
+    Staffy,
     Claude,
     Codex,
     Omp,

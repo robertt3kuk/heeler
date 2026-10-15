@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use heeler_client::Client;
-use heeler_core::{SessionState, WorkspaceId};
-use heeler_protocol::messages::{
+use serde_json::Value;
+use staffy_client::Client;
+use staffy_core::{SessionState, WorkspaceId};
+use staffy_protocol::messages::{
     AgentState, CreatedBy, Empty, RecentProjects, Request, SessionInfo, WorkspaceCreate,
     WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspaceOpen, WorkspaceOpened,
     WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
 };
-use serde_json::Value;
 
 use super::Ctx;
 use super::sessions::{age_text, now_ms};
@@ -21,8 +21,8 @@ use crate::error::CliError;
 /// Shortest workspace id prefix accepted as a target.
 const MIN_PREFIX: usize = 4;
 
-/// Environment variable naming the workspace `heeler new` uses when `--ws` is absent.
-pub(super) const WORKSPACE_ENV: &str = "HEELER_WORKSPACE";
+/// Environment variable naming the workspace `staffy new` uses when `--ws` is absent.
+pub(super) const WORKSPACE_ENV: &str = "STAFFY_WORKSPACE";
 
 impl Ctx {
     pub(super) async fn ws(&self, command: WsCommand) -> Result<(), CliError> {
@@ -204,7 +204,7 @@ impl Ctx {
     }
 }
 
-/// The workspace `heeler new` and `ls` were told to use: `--ws`, else `$HEELER_WORKSPACE`.
+/// The workspace `staffy new` and `ls` were told to use: `--ws`, else `$STAFFY_WORKSPACE`.
 pub(super) fn workspace_target(flag: Option<String>) -> Option<(String, &'static str)> {
     match flag {
         Some(target) => Some((target, "--ws")),
@@ -254,7 +254,7 @@ pub(super) fn resolve_workspace<'a>(
         String::new()
     };
     Err(CliError::Failed(format!(
-        "no workspace matches `{target}`{hint}; `heeler ws ls --all` lists workspaces"
+        "no workspace matches `{target}`{hint}; `staffy ws ls --all` lists workspaces"
     )))
 }
 

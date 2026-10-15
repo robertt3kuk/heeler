@@ -1,4 +1,4 @@
-//! `heeler provider …` and direct chats (`heeler chat new --direct`, `chat model`) against a
+//! `staffy provider …` and direct chats (`staffy chat new --direct`, `chat model`) against a
 //! real daemon (in-memory credential store) and a mock provider on a loopback port.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -10,10 +10,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{HEELER, Out, TestDaemon, WAIT, command};
-use heeler_daemon::GatewayConfig;
-use heeler_gateway::testing::{MockServer, Reply};
-use heeler_gateway::{CredentialStore, HttpConfig, MemoryStore, ProbeTarget, ProviderKind};
+use common::{Out, STAFFY, TestDaemon, WAIT, command};
+use staffy_daemon::GatewayConfig;
+use staffy_gateway::testing::{MockServer, Reply};
+use staffy_gateway::{CredentialStore, HttpConfig, MemoryStore, ProbeTarget, ProviderKind};
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 
@@ -57,9 +57,9 @@ impl Env {
         }
     }
 
-    /// `heeler <args>` with `stdin` piped in and extra environment.
-    async fn heeler_with(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> Out {
-        let mut cmd = command(Path::new(HEELER), Some(&self.t.paths.socket), args);
+    /// `staffy <args>` with `stdin` piped in and extra environment.
+    async fn staffy_with(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> Out {
+        let mut cmd = command(Path::new(STAFFY), Some(&self.t.paths.socket), args);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -91,16 +91,16 @@ impl Env {
 #[tokio::test(flavor = "multi_thread")]
 async fn providers_are_added_keyed_listed_and_removed() {
     let e = Env::start(Vec::new()).await;
-    let added = e.t.heeler(&["provider", "add", "openai"]).await.ok();
+    let added = e.t.staffy(&["provider", "add", "openai"]).await.ok();
     assert!(
         added
             .stdout
             .contains("provider openai (openai at https://api.openai.com/v1)")
-            && added.stdout.contains("heeler provider key openai"),
+            && added.stdout.contains("staffy provider key openai"),
         "{added:?}"
     );
     let compat =
-        e.t.heeler(&[
+        e.t.staffy(&[
             "provider",
             "add",
             "openai-compatible",
@@ -120,7 +120,7 @@ async fn providers_are_added_keyed_listed_and_removed() {
 
     // A key from a pipe, one from the environment, and none of them in any output.
     let piped = e
-        .heeler_with(
+        .staffy_with(
             &["provider", "key", "openai"],
             Some(&format!("{SECRET}\n")),
             &[],
@@ -134,17 +134,17 @@ async fn providers_are_added_keyed_listed_and_removed() {
     );
     assert_eq!(e.store.get("openai").unwrap().unwrap().expose(), SECRET);
     let from_env = e
-        .heeler_with(
+        .staffy_with(
             &[
                 "provider",
                 "key",
                 "lm-studio",
                 "--from-env",
-                "HEELER_TEST_KEY",
+                "STAFFY_TEST_KEY",
                 "--json",
             ],
             None,
-            &[("HEELER_TEST_KEY", SECRET)],
+            &[("STAFFY_TEST_KEY", SECRET)],
         )
         .await
         .ok();
@@ -157,7 +157,7 @@ async fn providers_are_added_keyed_listed_and_removed() {
         );
     }
 
-    let list = e.t.heeler(&["provider", "ls"]).await.ok();
+    let list = e.t.staffy(&["provider", "ls"]).await.ok();
     let lines: Vec<&str> = list.stdout.lines().collect();
     assert!(
         lines[0].starts_with("ID") && lines[0].contains("DEFAULT MODEL"),
@@ -173,24 +173,24 @@ async fn providers_are_added_keyed_listed_and_removed() {
             && lines[2].contains("gemma"),
         "{list:?}"
     );
-    let json = e.t.heeler(&["provider", "ls", "--json"]).await.ok();
+    let json = e.t.staffy(&["provider", "ls", "--json"]).await.ok();
     assert!(!json.stdout.contains("LEAKCHECK"));
     assert_eq!(json.json()["providers"].as_array().unwrap().len(), 2);
 
     // Errors: no key on stdin, an unset variable, an unknown provider, a bad kind.
     let empty = e
-        .heeler_with(&["provider", "key", "openai"], Some("\n"), &[])
+        .staffy_with(&["provider", "key", "openai"], Some("\n"), &[])
         .await;
     assert_eq!(empty.code, 1, "{empty:?}");
     assert!(empty.stderr.contains("the key is empty"), "{empty:?}");
     let unset = e
-        .heeler_with(
+        .staffy_with(
             &[
                 "provider",
                 "key",
                 "openai",
                 "--from-env",
-                "HEELER_NO_SUCH_VAR",
+                "STAFFY_NO_SUCH_VAR",
             ],
             None,
             &[],
@@ -198,31 +198,31 @@ async fn providers_are_added_keyed_listed_and_removed() {
         .await;
     assert_eq!(unset.code, 1);
     assert!(
-        unset.stderr.contains("HEELER_NO_SUCH_VAR is not set"),
+        unset.stderr.contains("STAFFY_NO_SUCH_VAR is not set"),
         "{unset:?}"
     );
     let unknown = e
-        .heeler_with(&["provider", "key", "nope"], Some("x"), &[])
+        .staffy_with(&["provider", "key", "nope"], Some("x"), &[])
         .await;
     assert_eq!(unknown.code, 1);
     assert!(unknown.stderr.contains("not_found"), "{unknown:?}");
-    let bad_kind = e.t.heeler(&["provider", "add", "gpt"]).await;
+    let bad_kind = e.t.staffy(&["provider", "add", "gpt"]).await;
     assert_eq!(bad_kind.code, 2, "{bad_kind:?}");
-    let no_url = e.t.heeler(&["provider", "add", "openai-compatible"]).await;
+    let no_url = e.t.staffy(&["provider", "add", "openai-compatible"]).await;
     assert_eq!(no_url.code, 1);
     assert!(no_url.stderr.contains("needs a base URL"), "{no_url:?}");
 
     // Clearing the key, removing the provider.
     let cleared =
-        e.t.heeler(&["provider", "key", "openai", "--clear"])
+        e.t.staffy(&["provider", "key", "openai", "--clear"])
             .await
             .ok();
     assert_eq!(cleared.stdout.trim(), "removed the key of provider openai");
     assert!(e.store.get("openai").unwrap().is_none());
-    let removed = e.t.heeler(&["provider", "rm", "lm-studio"]).await.ok();
+    let removed = e.t.staffy(&["provider", "rm", "lm-studio"]).await.ok();
     assert_eq!(removed.stdout.trim(), "removed provider lm-studio");
     assert!(e.store.get("lm-studio").unwrap().is_none());
-    let list = e.t.heeler(&["provider", "ls"]).await.ok();
+    let list = e.t.staffy(&["provider", "ls"]).await.ok();
     assert_eq!(
         list.stdout.lines().count(),
         2,
@@ -254,7 +254,7 @@ async fn models_and_discovery() {
         base_url: ollama.url(),
     }])
     .await;
-    e.t.heeler(&[
+    e.t.staffy(&[
         "provider",
         "add",
         "openai-compatible",
@@ -267,21 +267,21 @@ async fn models_and_discovery() {
     ])
     .await
     .ok();
-    let models = e.t.heeler(&["provider", "models", "mock"]).await.ok();
+    let models = e.t.staffy(&["provider", "models", "mock"]).await.ok();
     assert_eq!(models.stdout, "alpha\tme\nbeta (default)\n", "{models:?}");
 
-    let found = e.t.heeler(&["provider", "discover"]).await.ok();
+    let found = e.t.staffy(&["provider", "discover"]).await.ok();
     assert!(
         found.stdout.contains("Ollama at")
             && found.stdout.contains("1 model")
-            && found.stdout.contains("heeler provider add ollama"),
+            && found.stdout.contains("staffy provider add ollama"),
         "{found:?}"
     );
-    let added = e.t.heeler(&["provider", "discover", "--add"]).await.ok();
+    let added = e.t.staffy(&["provider", "discover", "--add"]).await.ok();
     assert!(added.stdout.contains("added as ollama"), "{added:?}");
-    let again = e.t.heeler(&["provider", "discover", "--add"]).await.ok();
+    let again = e.t.staffy(&["provider", "discover", "--add"]).await.ok();
     assert!(again.stdout.contains("configured as ollama"), "{again:?}");
-    let list = e.t.heeler(&["provider", "ls", "--json"]).await.ok().json();
+    let list = e.t.staffy(&["provider", "ls", "--json"]).await.ok().json();
     assert_eq!(list["providers"].as_array().unwrap().len(), 2);
     e.t.stop().await;
 }
@@ -292,7 +292,7 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
     mock.route("POST", "/v1/chat/completions", openai_reply("Hello"));
     mock.route("POST", "/v1/chat/completions", openai_reply("Switched"));
     let e = Env::start(Vec::new()).await;
-    e.t.heeler(&[
+    e.t.staffy(&[
         "provider",
         "add",
         "openai-compatible",
@@ -303,17 +303,17 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
     ])
     .await
     .ok();
-    e.heeler_with(&["provider", "key", "mock"], Some(SECRET), &[])
+    e.staffy_with(&["provider", "key", "mock"], Some(SECRET), &[])
         .await
         .ok();
 
     // --direct needs a provider; the model is mandatory when the provider has no default.
     let missing =
-        e.t.heeler(&["chat", "new", "--direct", "--cwd", &e.cwd()])
+        e.t.staffy(&["chat", "new", "--direct", "--cwd", &e.cwd()])
             .await;
     assert_eq!(missing.code, 2, "{missing:?}");
     let no_model =
-        e.t.heeler(&[
+        e.t.staffy(&[
             "chat",
             "new",
             "--direct",
@@ -327,7 +327,7 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
     assert!(no_model.stderr.contains("no model"), "{no_model:?}");
 
     let created =
-        e.t.heeler(&[
+        e.t.staffy(&[
             "chat",
             "new",
             "--direct",
@@ -348,7 +348,7 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
     let id = words[1].to_owned();
 
     let sent =
-        e.t.heeler(&["chat", "send", &id, "hi there", "--wait"])
+        e.t.staffy(&["chat", "send", &id, "hi there", "--wait"])
             .await
             .ok();
     assert_eq!(sent.stdout, "Hello\n", "{sent:?}");
@@ -360,13 +360,13 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
     assert_eq!(first.json()["model"], "m-1");
     assert_eq!(first.json()["messages"][0]["content"], "Be brief");
 
-    let switched = e.t.heeler(&["chat", "model", &id, "m-2"]).await.ok();
+    let switched = e.t.staffy(&["chat", "model", &id, "m-2"]).await.ok();
     assert!(
         switched.stdout.contains("direct mock / m-2"),
         "{switched:?}"
     );
     let sent =
-        e.t.heeler(&["chat", "send", &id, "and now?", "--wait"])
+        e.t.staffy(&["chat", "send", &id, "and now?", "--wait"])
             .await
             .ok();
     assert_eq!(sent.stdout, "Switched\n", "{sent:?}");
@@ -378,7 +378,7 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
         "system + 3 conversation messages"
     );
 
-    let log = e.t.heeler(&["chat", "log", &id]).await.ok();
+    let log = e.t.staffy(&["chat", "log", &id]).await.ok();
     assert!(
         log.stdout.contains("> hi there")
             && log.stdout.contains("Hello")
@@ -394,7 +394,7 @@ async fn a_direct_chat_streams_through_the_cli_and_switches_models() {
 
     // A terminal session is not a chat.
     let terminal = e.t.new_session(&[], &["sh", "-c", "sleep 30"]).await;
-    let refused = e.t.heeler(&["chat", "model", &terminal, "m"]).await;
+    let refused = e.t.staffy(&["chat", "model", &terminal, "m"]).await;
     assert_eq!(refused.code, 1, "{refused:?}");
     e.t.stop().await;
 }

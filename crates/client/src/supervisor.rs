@@ -19,16 +19,16 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use heeler_core::{Epoch, Seq, SessionId, TerminalId};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::chat::{ApprovalList, ApprovalListRequest};
-use heeler_protocol::messages::{
+use staffy_core::{Epoch, Seq, SessionId, TerminalId};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::chat::{ApprovalList, ApprovalListRequest};
+use staffy_protocol::messages::{
     Empty, Event, Request, ResumeOutcome, ResumePoint, SessionInfo, SessionSnapshot, Subscribed,
     TerminalAck, TerminalAttach, TerminalAttached, TerminalColors, TerminalRef, TerminalResize,
     TerminalSetColors, TerminalSize,
 };
-use heeler_protocol::render::TerminalRender;
-use heeler_protocol::tree::{AgentTree, AgentTreeRequest};
+use staffy_protocol::render::TerminalRender;
+use staffy_protocol::tree::{AgentTree, AgentTreeRequest};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -374,7 +374,7 @@ impl Supervisor {
                     }
                 },
                 Some(Err(error)) => {
-                    debug!(%error, "connecting to heelerd failed");
+                    debug!(%error, "connecting to staffyd failed");
                     attempt += 1;
                 }
             }
@@ -467,11 +467,11 @@ impl Supervisor {
         let synced = match synced {
             Ok(Ok(synced)) => synced,
             Ok(Err(error)) => {
-                warn!(%error, "synchronising with heelerd failed");
+                warn!(%error, "synchronising with staffyd failed");
                 return Served::Lost { connected: false };
             }
             Err(_) => {
-                warn!("synchronising with heelerd timed out");
+                warn!("synchronising with staffyd timed out");
                 return Served::Lost { connected: false };
             }
         };
@@ -598,7 +598,7 @@ impl Supervisor {
         // Before the replayed events: a consumer reloads the journal, then folds those.
         let _ = self.shared.chat.send(ChatUpdate::Resync { epoch });
         if let Some(old) = old_epoch {
-            info!(%old, new = %epoch, "heelerd restarted; terminals are gone");
+            info!(%old, new = %epoch, "staffyd restarted; terminals are gone");
             let _ = self
                 .shared
                 .notices

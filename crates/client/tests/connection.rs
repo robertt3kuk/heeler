@@ -8,10 +8,10 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use common::*;
-use heeler_client::{Connection, ConnectionState, GoneReason, Notice, TerminalUpdate};
-use heeler_core::SessionState;
-use heeler_daemon::bus::RingLimits;
-use heeler_protocol::messages::{
+use staffy_client::{Connection, ConnectionState, GoneReason, Notice, TerminalUpdate};
+use staffy_core::SessionState;
+use staffy_daemon::bus::RingLimits;
+use staffy_protocol::messages::{
     DaemonStatusInfo, Empty, Request, SessionRef, SessionResult, TerminalColors,
 };
 use tokio::time::{sleep, timeout};
@@ -73,12 +73,12 @@ fn start_and_call_under_futures_block_on() {
         // A call that fails remotely still surfaces as a remote error, not a hang.
         let missing = connection
             .call::<SessionResult>(Request::SessionStop(SessionRef {
-                session_id: heeler_core::SessionId::new(),
+                session_id: staffy_core::SessionId::new(),
             }))
             .await;
         assert!(matches!(
             missing,
-            Err(heeler_client::ClientError::Remote(_))
+            Err(staffy_client::ClientError::Remote(_))
         ));
         connection.shutdown();
     });
@@ -98,7 +98,7 @@ async fn call_while_not_connected_fails_instead_of_queueing() {
         .call::<DaemonStatusInfo>(Request::DaemonStatus(Empty {}))
         .await;
     assert!(
-        matches!(result, Err(heeler_client::ClientError::Disconnected)),
+        matches!(result, Err(staffy_client::ClientError::Disconnected)),
         "{result:?}"
     );
     env.proxy.unblock();
@@ -467,7 +467,7 @@ async fn attaching_an_unknown_terminal_reports_not_found() {
     let connection = connect(&env);
     let mut state = connection.state();
     wait_connected(&mut state).await;
-    let mut view = View::new(connection.attach(heeler_core::TerminalId(987_654), None));
+    let mut view = View::new(connection.attach(staffy_core::TerminalId(987_654), None));
     let reason = view
         .wait_update("gone", |u| match u {
             TerminalUpdate::Gone { reason } => Some(*reason),
@@ -518,6 +518,6 @@ async fn dropping_the_handle_detaches_and_shutdown_stops_everything() {
         clone
             .call::<DaemonStatusInfo>(Request::DaemonStatus(Empty {}))
             .await,
-        Err(heeler_client::ClientError::Disconnected)
+        Err(staffy_client::ClientError::Disconnected)
     ));
 }

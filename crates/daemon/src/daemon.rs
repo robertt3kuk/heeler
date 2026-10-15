@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
-use heeler_agents::CodexConfig;
-use heeler_core::Epoch;
-use heeler_storage::Storage;
+use staffy_agents::CodexConfig;
+use staffy_core::Epoch;
+use staffy_storage::Storage;
 use tokio::net::UnixListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout};
@@ -55,9 +55,9 @@ pub struct DaemonConfig {
     pub outbound_queue: usize,
     /// How long a new connection may stay silent before `hello` arrives.
     pub handshake_timeout: Duration,
-    /// The `heeler` CLI exported to sessions as `HEELER_BIN`; `None` looks for it next to this
+    /// The `staffy` CLI exported to sessions as `STAFFY_BIN`; `None` looks for it next to this
     /// executable, then on `PATH`.
-    pub heeler_bin: Option<PathBuf>,
+    pub staffy_bin: Option<PathBuf>,
     /// Shortest time between two `last_active_ms` updates of one workspace.
     pub activity_interval: Duration,
     /// How to start `codex app-server`; `None` follows `[codex]` of `daemon.toml`.
@@ -74,7 +74,7 @@ impl DaemonConfig {
             ring: RingLimits::default(),
             outbound_queue: DEFAULT_OUTBOUND_QUEUE,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
-            heeler_bin: None,
+            staffy_bin: None,
             activity_interval: registry::ACTIVITY_INTERVAL,
             codex: None,
             gateway: GatewayConfig::default(),
@@ -168,7 +168,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     let bus = Arc::new(EventBus::new(epoch, config.ring));
     let hub = Arc::new(TerminalHub::new());
     // Best effort: without the scripts terminals still work, they just carry no prompt marks.
-    let shell_integration_dir = match heeler_terminal::shell_integration::install(&paths.base) {
+    let shell_integration_dir = match staffy_terminal::shell_integration::install(&paths.base) {
         Ok(dir) => Some(dir),
         Err(error) => {
             warn!(%error, "shell integration unavailable");
@@ -181,13 +181,13 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         config
             .gateway
             .credentials
-            .unwrap_or_else(heeler_gateway::system_store),
-        heeler_gateway::Http::new(config.gateway.http)
+            .unwrap_or_else(staffy_gateway::system_store),
+        staffy_gateway::Http::new(config.gateway.http)
             .map_err(|e| DaemonError::Gateway(e.to_string()))?,
         config
             .gateway
             .discovery
-            .unwrap_or_else(heeler_gateway::discovery::default_targets),
+            .unwrap_or_else(staffy_gateway::discovery::default_targets),
         std::mem::take(&mut stored.providers),
     );
     let registry = registry::spawn(
@@ -196,7 +196,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         RegistryConfig {
             socket: paths.socket.clone(),
             shell_integration_dir,
-            heeler_bin: config.heeler_bin.unwrap_or_else(agent::resolve_heeler_bin),
+            staffy_bin: config.staffy_bin.unwrap_or_else(agent::resolve_staffy_bin),
             storage: storage.clone(),
             restore: settings.restore_sessions,
             home_folder,
@@ -254,8 +254,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         restore_mode = ?settings.restore_sessions,
         pid = std::process::id(),
         %epoch,
-        protocol = ?heeler_protocol::PROTOCOL_VERSION,
-        "heelerd listening"
+        protocol = ?staffy_protocol::PROTOCOL_VERSION,
+        "staffyd listening"
     );
 
     let held = Held {
@@ -353,7 +353,7 @@ async fn accept_loop(
         error!(%error, "closing the database failed");
     }
     drop(held);
-    info!("heelerd stopped");
+    info!("staffyd stopped");
 }
 
 /// Creates the Home folder when it is missing (and only then) and returns its canonical path.

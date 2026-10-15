@@ -9,9 +9,9 @@
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use heeler_core::ModelInfo;
-use heeler_core::agent::TokenCounts;
 use serde_json::{Value, json};
+use staffy_core::ModelInfo;
+use staffy_core::agent::TokenCounts;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::GatewayError;

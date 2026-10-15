@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use heeler_core::ModelInfo;
+use staffy_core::ModelInfo;
 use tokio_util::sync::CancellationToken;
 
 use crate::anthropic::Anthropic;

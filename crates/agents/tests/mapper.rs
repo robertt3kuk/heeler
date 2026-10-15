@@ -2,13 +2,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use heeler_agents::codex::Mapper;
-use heeler_core::agent::{
+use serde_json::{Value, json};
+use staffy_agents::codex::Mapper;
+use staffy_core::agent::{
     MAX_OUTPUT_BYTES, MessageRole, NoticeLevel, PermissionKind, PermissionOutcome, PlanStepStatus,
     ReasoningPart, ToolKind, ToolStatus,
 };
-use heeler_core::{AgentEventDraft, AgentEventKind};
-use serde_json::{Value, json};
+use staffy_core::{AgentEventDraft, AgentEventKind};
 
 const THREAD: &str = "thread-1";
 const TURN: &str = "turn-1";
@@ -664,7 +664,7 @@ fn offered_decisions_are_preserved_and_only_they_can_be_chosen() {
     assert_eq!(options[1].provider.as_ref().unwrap(), &amendment);
     assert_eq!(
         m.answer(approval_id, "decline"),
-        Err(heeler_agents::codex::AnswerError::NotOffered(
+        Err(staffy_agents::codex::AnswerError::NotOffered(
             "decline".into()
         ))
     );
@@ -676,7 +676,7 @@ fn offered_decisions_are_preserved_and_only_they_can_be_chosen() {
     // Answered once.
     assert_eq!(
         m.answer(approval_id, "accept"),
-        Err(heeler_agents::codex::AnswerError::Unknown)
+        Err(staffy_agents::codex::AnswerError::Unknown)
     );
 }
 
@@ -759,7 +759,7 @@ fn a_turn_ending_resolves_what_is_still_pending_before_its_own_event() {
     assert_eq!(drafts[1].kind, AgentEventKind::TurnCancelled);
     assert_eq!(
         m.answer(approval_id, "accept"),
-        Err(heeler_agents::codex::AnswerError::Unknown)
+        Err(staffy_agents::codex::AnswerError::Unknown)
     );
 }
 
@@ -801,7 +801,7 @@ fn permission_profiles_offer_grant_for_turn_session_or_deny() {
 }
 
 #[test]
-fn requests_heeler_cannot_serve_are_refused_not_ignored() {
+fn requests_staffy_cannot_serve_are_refused_not_ignored() {
     let mut m = mapper();
     let mapped = m.request(
         json!(8),

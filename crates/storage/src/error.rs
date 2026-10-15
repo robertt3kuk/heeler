@@ -17,7 +17,7 @@ pub enum StorageError {
     },
     #[error(
         "database {} has schema version {found}, but this build only understands up to \
-         version {supported}; it was written by a newer Heeler",
+         version {supported}; it was written by a newer Staffy",
         path.display()
     )]
     SchemaTooNew {

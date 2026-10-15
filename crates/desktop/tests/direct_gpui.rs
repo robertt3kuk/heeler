@@ -5,20 +5,20 @@ mod common;
 
 use common::{TestDaemon, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use heeler_chat_view::Body;
-use heeler_desktop::workbench::{Region, Workbench};
-use heeler_gateway::testing::{MockServer, Reply};
-use heeler_gateway::{HttpConfig, MemoryStore};
-use heeler_protocol::messages::{Empty, Request};
-use heeler_protocol::provider::ProviderList;
-use heeler_settings::{SettingsPaths, SettingsStore};
+use staffy_chat_view::Body;
+use staffy_desktop::workbench::{Region, Workbench};
+use staffy_gateway::testing::{MockServer, Reply};
+use staffy_gateway::{HttpConfig, MemoryStore};
+use staffy_protocol::messages::{Empty, Request};
+use staffy_protocol::provider::ProviderList;
+use staffy_settings::{SettingsPaths, SettingsStore};
 use std::path::Path;
 use std::sync::Arc;
 
 const KEY: &str = "sk-synthetic-desktop-test-1234567890";
 
 fn daemon() -> TestDaemon {
-    TestDaemon::start_with_gateway(heeler_daemon::GatewayConfig {
+    TestDaemon::start_with_gateway(staffy_daemon::GatewayConfig {
         credentials: Some(Arc::new(MemoryStore::new())),
         http: HttpConfig {
             no_proxy: true,

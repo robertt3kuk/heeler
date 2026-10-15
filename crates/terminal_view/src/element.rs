@@ -9,7 +9,7 @@ use gpui::{
     ScrollWheelEvent, ShapedLine, Size, Style, TextAlign, Window, WindowTextSystem, fill, outline,
     point, px, relative, size,
 };
-use heeler_protocol::render::{CellFlags, Color, CursorShape};
+use staffy_protocol::render::{CellFlags, Color, CursorShape};
 
 use crate::blocks::{self, DisplayRow, OverlayReport, Tone};
 use crate::model::{row_cells, row_width};
@@ -315,7 +315,7 @@ fn prepare(
 
     let cursor_style = if view.hover_link().is_some() && view.cmd_held {
         CursorStyle::PointingHand
-    } else if view.model.get().modes().mouse != heeler_protocol::render::MouseMode::None {
+    } else if view.model.get().modes().mouse != staffy_protocol::render::MouseMode::None {
         CursorStyle::Arrow
     } else {
         CursorStyle::IBeam
@@ -405,7 +405,7 @@ fn prepare_overlay(
         };
         if let Some(tone) = blocks::tone(block) {
             let alpha = match (block.state, tone) {
-                (heeler_protocol::blocks::BlockState::Running, _) => {
+                (staffy_protocol::blocks::BlockState::Running, _) => {
                     running_alpha(view.animation_phase, cfg.animate && interactive)
                 }
                 (_, Tone::Neutral) => 0.5,
@@ -494,7 +494,7 @@ fn prepare_overlay(
 fn shape_cached(
     cache: &mut RowCache,
     key: u64,
-    row: &heeler_protocol::render::Row,
+    row: &staffy_protocol::render::Row,
     theme: &Theme,
     font: &FontSpec,
     hover_link: Option<u32>,

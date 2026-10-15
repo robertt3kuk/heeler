@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
-use heeler_core::TerminalId;
 use serde::{Deserialize, Serialize};
+use staffy_core::TerminalId;
 
 /// Most blocks one `terminal.blocks` call returns, whatever `limit` asks for.
 pub const BLOCKS_MAX_LIMIT: u32 = 500;

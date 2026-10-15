@@ -1,6 +1,6 @@
 //! Workbench behavior around the session history index (M17-B): focusing the History panel,
 //! the ⌘J `?` search, and what a hit does — Resume (a new terminal session running the
-//! agent's resume command), Copy command, and Open block / Open session for Heeler hits.
+//! agent's resume command), Copy command, and Open block / Open session for Staffy hits.
 //!
 //! Resume starts in the active workspace when one of its folders holds the hit's directory;
 //! otherwise `workspace.open` finds (or creates) the workspace that contains it and the window
@@ -13,16 +13,16 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{ClipboardItem, Context, Entity, Window};
-use heeler_client::ClientError;
-use heeler_core::SessionId;
-use heeler_protocol::ErrorCode;
-use heeler_protocol::history::{HistoryHit, HistoryHits, HistorySource};
-use heeler_protocol::messages::{TerminalSpec, WorkspaceInfo, WorkspaceKind};
+use staffy_client::ClientError;
+use staffy_core::SessionId;
+use staffy_protocol::ErrorCode;
+use staffy_protocol::history::{HistoryHit, HistoryHits, HistorySource};
+use staffy_protocol::messages::{TerminalSpec, WorkspaceInfo, WorkspaceKind};
 
 use super::model::PanelId;
 use super::panels::{
-    HISTORY_DEBOUNCE, HISTORY_PICKER_LIMIT, HeelerTarget, HistoryFilters, HistoryPanel,
-    HistoryResume, age_label, hit_title, parse_snippet, short_path, source_icon, source_label,
+    HISTORY_DEBOUNCE, HISTORY_PICKER_LIMIT, HistoryFilters, HistoryPanel, HistoryResume,
+    StaffyTarget, age_label, hit_title, parse_snippet, short_path, source_icon, source_label,
 };
 use super::view::Workbench;
 use super::workspaces::{HistoryState, PickerAction, PickerEntry};
@@ -154,7 +154,7 @@ impl Workbench {
         if !connection.supports_history() {
             picker.history.clear();
             picker.history_state =
-                if store.connection_state() == heeler_client::ConnectionState::Connected {
+                if store.connection_state() == staffy_client::ConnectionState::Connected {
                     HistoryState::Unsupported
                 } else {
                     HistoryState::Failed("the daemon is not connected".to_owned())
@@ -336,12 +336,12 @@ impl Workbench {
         .detach();
     }
 
-    /// Shows the Heeler session a hit points at and, for a block, scrolls its terminal to the
+    /// Shows the Staffy session a hit points at and, for a block, scrolls its terminal to the
     /// block when it still exists. The block is found by its start time (the index keeps no
     /// block id).
     pub fn open_history_hit(
         &mut self,
-        target: HeelerTarget,
+        target: StaffyTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

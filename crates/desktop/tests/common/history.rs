@@ -1,5 +1,5 @@
 //! Synthetic Claude Code / Codex / OMP transcripts in temporary roots (the shapes of the
-//! `heeler-index` fixtures), a `daemon.toml` that points the index at them, and stand-in
+//! `staffy-index` fixtures), a `daemon.toml` that points the index at them, and stand-in
 //! agents for `PATH`. Nothing here ever touches the real `~/.claude`, `~/.codex` or `~/.omp`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -19,7 +19,7 @@ pub const OMP_ID: &str = "0f4c7d52";
 pub const UNRESUMABLE_ID: &str = "bad'id";
 /// A Claude session whose recorded directory no longer exists.
 pub const GONE_ID: &str = "gone-dir-1";
-pub const GONE_CWD: &str = "/nonexistent/heeler-test/vanished";
+pub const GONE_CWD: &str = "/nonexistent/staffy-test/vanished";
 
 pub struct HistoryEnv {
     _tmp: TempDir,
@@ -116,14 +116,14 @@ impl HistoryEnv {
         fs::write(path, lines.join("\n") + "\n").unwrap();
     }
 
-    /// Five sessions; the first three (Claude, Codex, OMP) have the word `heelertest` in a user
+    /// Five sessions; the first three (Claude, Codex, OMP) have the word `staffytest` in a user
     /// message.
     ///
     /// - Claude, `project_a`, an hour old: several rows say `stall`
     /// - Codex, `project_b`, two hours old
     /// - OMP, `project_a`, from 2020 (outside every date filter but `all`)
-    /// - Claude `bad'id`, `project_b`: `pangolin heelerfallback`, no resume command
-    /// - Claude `gone-dir-1`: `zebrafish heelergone`, its directory does not exist
+    /// - Claude `bad'id`, `project_b`: `pangolin staffyfallback`, no resume command
+    /// - Claude `gone-dir-1`: `zebrafish staffygone`, its directory does not exist
     pub fn write_fixtures(&self) {
         let now = now_ms();
         let a = self.project_a.display();
@@ -132,7 +132,7 @@ impl HistoryEnv {
         self.write(
             &self.claude.join(format!("-app-a/{CLAUDE_ID}.jsonl")),
             &[
-                format!(r#"{{"type":"user","timestamp":"{t1}","cwd":"{a}","sessionId":"{CLAUDE_ID}","message":{{"role":"user","content":[{{"type":"text","text":"why does the quokka scheduler stall under load heelertest"}}]}}}}"#),
+                format!(r#"{{"type":"user","timestamp":"{t1}","cwd":"{a}","sessionId":"{CLAUDE_ID}","message":{{"role":"user","content":[{{"type":"text","text":"why does the quokka scheduler stall under load staffytest"}}]}}}}"#),
                 format!(r#"{{"type":"assistant","timestamp":"{t2}","cwd":"{a}","message":{{"role":"assistant","content":[{{"type":"text","text":"Checking the scheduler stall."}},{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"grep -rn stall crates/scheduler/src"}}}}]}}}}"#),
                 format!(r#"{{"type":"user","timestamp":"{t2}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"crates/scheduler/src/queue.rs:42: // stall when the queue is full"}}]}}}}"#),
                 format!(r#"{{"type":"ai-title","aiTitle":"Scheduler stall investigation","sessionId":"{CLAUDE_ID}"}}"#),
@@ -145,7 +145,7 @@ impl HistoryEnv {
             )),
             &[
                 format!(r#"{{"timestamp":"{t}","type":"session_meta","payload":{{"id":"{CODEX_ID}","cwd":"{b}"}}}}"#),
-                format!(r#"{{"timestamp":"{t}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"add retry with jitter to the capybara client heelertest"}}]}}}}"#),
+                format!(r#"{{"timestamp":"{t}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"add retry with jitter to the capybara client staffytest"}}]}}}}"#),
                 format!(r#"{{"timestamp":"{t}","type":"response_item","payload":{{"type":"function_call","name":"shell","arguments":"{{\"command\":[\"bash\",\"-lc\",\"cargo test -p capybara\"]}}","call_id":"c1"}}}}"#),
                 format!(r#"{{"timestamp":"{t}","type":"response_item","payload":{{"type":"function_call_output","call_id":"c1","output":"test result: ok. 4 passed"}}}}"#),
             ],
@@ -156,7 +156,7 @@ impl HistoryEnv {
             &[
                 format!(r#"{{"type":"title","v":1,"title":"Axolotl cache design","updatedAt":"{old}","pad":"      "}}"#),
                 format!(r#"{{"type":"session","version":3,"id":"{OMP_ID}","timestamp":"{old}","cwd":"{a}"}}"#),
-                format!(r#"{{"type":"message","timestamp":"{old}","message":{{"role":"user","content":[{{"type":"text","text":"sketch the axolotl eviction policy heelertest"}}]}}}}"#),
+                format!(r#"{{"type":"message","timestamp":"{old}","message":{{"role":"user","content":[{{"type":"text","text":"sketch the axolotl eviction policy staffytest"}}]}}}}"#),
                 format!(r#"{{"type":"message","timestamp":"{old}","message":{{"role":"assistant","content":[{{"type":"text","text":"Use LRU with a size cap."}}]}}}}"#),
             ],
         );
@@ -164,14 +164,14 @@ impl HistoryEnv {
         self.write(
             &self.claude.join(format!("-app-b/{UNRESUMABLE_ID}.jsonl")),
             &[format!(
-                r#"{{"type":"user","timestamp":"{t}","cwd":"{b}","message":{{"role":"user","content":[{{"type":"text","text":"remember the pangolin plan heelerfallback"}}]}}}}"#
+                r#"{{"type":"user","timestamp":"{t}","cwd":"{b}","message":{{"role":"user","content":[{{"type":"text","text":"remember the pangolin plan staffyfallback"}}]}}}}"#
             )],
         );
         let t = iso(now - 4 * HOUR);
         self.write(
             &self.claude.join(format!("-gone/{GONE_ID}.jsonl")),
             &[format!(
-                r#"{{"type":"user","timestamp":"{t}","cwd":"{GONE_CWD}","message":{{"role":"user","content":[{{"type":"text","text":"count the zebrafish heelergone"}}]}}}}"#
+                r#"{{"type":"user","timestamp":"{t}","cwd":"{GONE_CWD}","message":{{"role":"user","content":[{{"type":"text","text":"count the zebrafish staffygone"}}]}}}}"#
             )],
         );
     }

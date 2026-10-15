@@ -1,6 +1,6 @@
 //! Opt-in latency tracing for the performance budgets (`docs/perf.md`).
 //!
-//! `HEELER_TRACE_LATENCY=1` turns it on; events go to the file named by `HEELER_TRACE_FILE`
+//! `STAFFY_TRACE_LATENCY=1` turns it on; events go to the file named by `STAFFY_TRACE_FILE`
 //! (appended, one JSON object per line) or to stderr without it. With the variable unset every
 //! hook is one atomic load.
 //!
@@ -29,17 +29,17 @@ static TRACER: LazyLock<Option<Tracer>> = LazyLock::new(init_tracer);
 static KEY_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn init_tracer() -> Option<Tracer> {
-    let on = std::env::var("HEELER_TRACE_LATENCY").is_ok_and(|v| !v.is_empty() && v != "0");
+    let on = std::env::var("STAFFY_TRACE_LATENCY").is_ok_and(|v| !v.is_empty() && v != "0");
     if !on {
         return None;
     }
-    let sink: Box<dyn std::io::Write + Send> = match std::env::var_os("HEELER_TRACE_FILE")
+    let sink: Box<dyn std::io::Write + Send> = match std::env::var_os("STAFFY_TRACE_FILE")
         .filter(|p| !p.is_empty())
         .map(|path| OpenOptions::new().create(true).append(true).open(path))
     {
         Some(Ok(file)) => Box::new(file),
         Some(Err(err)) => {
-            eprintln!("heeler: cannot open HEELER_TRACE_FILE: {err}; tracing to stderr");
+            eprintln!("staffy: cannot open STAFFY_TRACE_FILE: {err}; tracing to stderr");
             Box::new(std::io::stderr())
         }
         None => Box::new(std::io::stderr()),

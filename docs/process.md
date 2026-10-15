@@ -1,6 +1,6 @@
 # Development Process
 
-How Heeler is built so that any person or agent can stop at any point and anyone can resume from the repository alone.
+How Staffy is built so that any person or agent can stop at any point and anyone can resume from the repository alone.
 
 ## Why this process (analysis)
 
@@ -31,7 +31,7 @@ flowchart LR
 - **Milestone** (`docs/roadmap.md`): user-visible capability with acceptance checks. Done only when its demo script passes.
 - **Slice**: smallest change that delivers working behavior end-to-end through the layers it touches. Has an ID (`M2.3`), owner, status checkbox in the roadmap.
 - **ADR** (`docs/adr/NNNN-*.md`): any decision that is expensive to reverse — dependency choice, protocol shape, persistence format, state ownership, security policy. Status `proposed → accepted → superseded by NNNN`.
-- **Spike**: time-boxed throwaway experiment outside the workspace (`/tmp/heeler-spikes/<name>`), producing a `REPORT.md`. Evidence is summarized into the ADR; spike code is never merged.
+- **Spike**: time-boxed throwaway experiment outside the workspace (`/tmp/staffy-spikes/<name>`), producing a `REPORT.md`. Evidence is summarized into the ADR; spike code is never merged.
 
 ## Session protocol (humans and agents)
 
@@ -72,7 +72,7 @@ Rules: additive changes bump the minor protocol version and are capability-gated
 ## Parallel agent work
 
 - Split by crate boundary (`terminal`, `agents`, `gateway`, `storage`, `desktop` views) — they share only `core`/`protocol` types.
-- Each parallel slice runs in its own git worktree/branch: `../heeler-wt/<slice>` on `slice/<slice>`.
+- Each parallel slice runs in its own git worktree/branch: `../staffy-wt/<slice>` on `slice/<slice>`.
 - One integration owner merges, resolves conflicts, runs the full gate.
 - Implementers get self-contained briefs (`docs/briefs/<slice>.md`): slice ID, files/crates in scope, contract, acceptance checks. They must not edit `protocol` unless they own the contract change.
 
@@ -84,14 +84,14 @@ Two working modes:
 
 | Mode | When | Where |
 |---|---|---|
-| **Worktree** (default) | Parallel slices, or the orchestrator keeps working in the main checkout meanwhile | `../heeler-wt/<slice>` on `slice/<slice>` |
-| **Main checkout** | One slice at a time, nothing else editing the repo (small fixes, debugging, work that needs the user's live environment) | `/Users/workie/proj/heeler` on `slice/<slice>` (task says so explicitly); no worktree |
+| **Worktree** (default) | Parallel slices, or the orchestrator keeps working in the main checkout meanwhile | `../staffy-wt/<slice>` on `slice/<slice>` |
+| **Main checkout** | One slice at a time, nothing else editing the repo (small fixes, debugging, work that needs the user's live environment) | `/Users/workie/proj/staffy` on `slice/<slice>` (task says so explicitly); no worktree |
 
 Humans and the orchestrator can always work directly in the main checkout; only concurrent agents need worktrees.
 
 Loop per slice:
 1. Commit the brief (`docs/briefs/<slice>.md`, template in `docs/briefs/README.md`) on `master`.
-2. Worktree mode: `git worktree add ../heeler-wt/<slice> -b slice/<slice>`; main-checkout mode: `git switch -c slice/<slice>` in the main checkout (working tree clean). Dispatch a `task` with `agent: "implementer"` naming the checkout path, the mode, and the brief. Independent slices go in one batch (worktree mode) so they run concurrently.
+2. Worktree mode: `git worktree add ../staffy-wt/<slice> -b slice/<slice>`; main-checkout mode: `git switch -c slice/<slice>` in the main checkout (working tree clean). Dispatch a `task` with `agent: "implementer"` naming the checkout path, the mode, and the brief. Independent slices go in one batch (worktree mode) so they run concurrently.
 3. Review the diff against the brief's contract and `AGENTS.md` invariants; run `just check` in the slice checkout; exercise acceptance steps yourself.
 4. Send fixes to the same agent (`write agent://<id>`) or fix directly; then rebase onto `master`, merge fast-forward, remove the worktree (worktree mode) or `git switch master` (main-checkout mode), delete the branch.
 5. Record the slice in `status.md` (what landed, verification run, deviations).
@@ -100,7 +100,7 @@ Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract chang
 
 ## Branching and commits
 
-- Trunk-based on `master`; short-lived `slice/<id>` branches; rebase before merge; `master` always passes the gate. Remote: `origin` = <https://github.com/robertt3kuk/heeler> (public). Push `master` after each merge + status update; slice branches stay local.
+- Trunk-based on `master`; short-lived `slice/<id>` branches; rebase before merge; `master` always passes the gate. Remote: `origin` = <https://github.com/robertt3kuk/staffy> (public). Push `master` after each merge + status update; slice branches stay local.
 - Conventional commits; scope = crate name or `docs`, `adr`, `ci`.
 - No commits of spike code, secrets, recorded transcripts with tokens.
 
@@ -114,7 +114,7 @@ Rules: implementers never edit `status.md`/`roadmap.md`; a needed contract chang
 | Licenses/advisories | `cargo deny check` | M0 |
 | Protocol compat | golden JSON fixtures per protocol version | M1 |
 | Terminal conformance | recorded PTY transcript corpus replayed through engine, grid snapshots compared | M1 |
-| Perf budgets | `heeler bench` scripts: output flood, RSS, keystroke latency | M2 |
+| Perf budgets | `staffy bench` scripts: output flood, RSS, keystroke latency | M2 |
 | Milestone demo | `docs/demos/Mx.md` checklist executed and recorded in status | every milestone |
 
 All gates wrap into one entry point (`just check`) created in M0.

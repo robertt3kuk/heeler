@@ -1,4 +1,4 @@
-//! `heeler search --resume N`: a new session in the hit's working directory running the agent's
+//! `staffy search --resume N`: a new session in the hit's working directory running the agent's
 //! resume command. The only test of this binary because it changes the process `PATH` (so that
 //! `claude` is a stand-in script, never the real agent) before the in-process daemon starts.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 use common::{TestDaemon, WAIT};
-use heeler_daemon::{DaemonConfig, Paths};
+use staffy_daemon::{DaemonConfig, Paths};
 use tokio::time::sleep;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -42,13 +42,13 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
     fs::write(
         home.join("daemon.toml"),
         format!(
-            "[history]\nenabled = true\ncodex = false\nomp = false\nheeler = false\n[history.roots]\nclaude = \"{}\"\n",
+            "[history]\nenabled = true\ncodex = false\nomp = false\nstaffy = false\n[history.roots]\nclaude = \"{}\"\n",
             claude.display()
         ),
     )
     .unwrap();
     let paths = Paths::in_home(&home);
-    let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     let t = TestDaemon {
@@ -67,7 +67,7 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
 
     let start = Instant::now();
     loop {
-        let out = t.heeler(&["search", "--json", "pangolin"]).await;
+        let out = t.staffy(&["search", "--json", "pangolin"]).await;
         if out.code == 0 && !out.json()["hits"].as_array().unwrap().is_empty() {
             break;
         }
@@ -77,7 +77,7 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
 
     // Not a terminal: the session is created but not attached.
     let out = t
-        .heeler(&["search", "--json", "pangolin", "--resume", "1"])
+        .staffy(&["search", "--json", "pangolin", "--resume", "1"])
         .await
         .ok();
     let id = out.json()["session"]["id"].as_str().unwrap().to_owned();
@@ -92,7 +92,7 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
     let expected = format!("FAKE-CLAUDE --resume sess-xyz IN {}", project.display());
     let start = Instant::now();
     loop {
-        let out = t.heeler(&["history", &id]).await;
+        let out = t.staffy(&["history", &id]).await;
         // The screen is 80 columns wide: the line wraps.
         if out.stdout.replace('\n', "").contains(&expected) {
             break;

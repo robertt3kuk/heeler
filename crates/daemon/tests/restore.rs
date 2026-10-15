@@ -1,5 +1,5 @@
 //! Durable state end to end (roadmap M3.1, M3.2): the daemon runs in-process on a temporary
-//! `HEELER_HOME`, is stopped, and a new daemon started on the same directory must bring back
+//! `STAFFY_HOME`, is stopped, and a new daemon started on the same directory must bring back
 //! the workspaces and sessions. Real shells run in real PTYs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::*;
-use heeler_client::Client;
-use heeler_core::{SessionId, SessionKind, SessionState, WorkspaceId};
-use heeler_daemon::{DaemonConfig, DaemonError, Paths};
-use heeler_protocol::messages::{
+use staffy_client::Client;
+use staffy_core::{SessionId, SessionKind, SessionState, WorkspaceId};
+use staffy_daemon::{DaemonConfig, DaemonError, Paths};
+use staffy_protocol::messages::{
     DaemonShutdown, Empty, Request, SessionInfo, SessionRef, SessionRename, SessionResult,
     SessionSnapshot, TerminalSpec, WorkspaceCreate, WorkspaceInfo,
 };
-use heeler_storage::{Migration, SessionRow, Storage, WorkspaceKind};
+use staffy_storage::{Migration, SessionRow, Storage, WorkspaceKind};
 use tokio::time::{sleep, timeout};
 
 async fn snapshot(client: &Client) -> SessionSnapshot {
@@ -328,7 +328,7 @@ async fn user_changes_survive_a_restart() {
     let drop_me = workspace(&client, "temporary", vec![]).await;
     client
         .call::<Empty>(Request::WorkspaceRename(
-            heeler_protocol::messages::WorkspaceRename {
+            staffy_protocol::messages::WorkspaceRename {
                 workspace_id: keep.id,
                 name: "kept".into(),
             },
@@ -338,7 +338,7 @@ async fn user_changes_survive_a_restart() {
     let in_dropped = exited(&client, sh("exit 0"), &drop_me).await;
     client
         .call::<Empty>(Request::WorkspaceClose(
-            heeler_protocol::messages::WorkspaceRef {
+            staffy_protocol::messages::WorkspaceRef {
                 workspace_id: drop_me.id,
             },
         ))
@@ -384,7 +384,7 @@ async fn cwd_and_title_changes_reach_the_database_without_a_shutdown() {
     client
         .send_input(
             terminal_of(&session),
-            b"\x1b]2;from-program\x07\r\x1b]7;file://h/tmp/heeler%20x\x07\r",
+            b"\x1b]2;from-program\x07\r\x1b]7;file://h/tmp/staffy%20x\x07\r",
         )
         .await
         .unwrap();
@@ -392,7 +392,7 @@ async fn cwd_and_title_changes_reach_the_database_without_a_shutdown() {
         rows.iter().any(|r| {
             r.id == session.id
                 && r.title == "from-program"
-                && r.cwd.as_deref() == Some(Path::new("/tmp/heeler x"))
+                && r.cwd.as_deref() == Some(Path::new("/tmp/staffy x"))
                 && r.state == SessionState::Running
         })
     })
@@ -439,7 +439,7 @@ async fn resume_references_replace_the_spec_command_and_unusable_rows_fail_clean
     let resumed = row(
         "agent",
         &cat_spec,
-        Some(r#"{"argv":["/bin/sh","-c","echo RESUMED-$HEELER_SESSION_ID; exec cat"]}"#),
+        Some(r#"{"argv":["/bin/sh","-c","echo RESUMED-$STAFFY_SESSION_ID; exec cat"]}"#),
         None,
     );
     let broken = row("broken", "this is not json", None, None);
@@ -449,7 +449,7 @@ async fn resume_references_replace_the_spec_command_and_unusable_rows_fail_clean
     }
     storage.close();
 
-    let daemon = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let daemon = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap();
     let t = TestDaemon {
@@ -501,22 +501,22 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
     Storage::open_with_migrations(
         &paths.database,
         &[
-            heeler_storage::MIGRATIONS[0],
-            heeler_storage::MIGRATIONS[1],
-            heeler_storage::MIGRATIONS[2],
-            heeler_storage::MIGRATIONS[3],
-            heeler_storage::MIGRATIONS[4],
+            staffy_storage::MIGRATIONS[0],
+            staffy_storage::MIGRATIONS[1],
+            staffy_storage::MIGRATIONS[2],
+            staffy_storage::MIGRATIONS[3],
+            staffy_storage::MIGRATIONS[4],
             newer,
         ],
     )
     .unwrap()
     .close();
-    let error = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let error = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap_err();
     assert!(matches!(error, DaemonError::Storage { .. }), "{error}");
     let message = error.to_string();
-    assert!(message.contains("heeler.db"), "{message}");
+    assert!(message.contains("staffy.db"), "{message}");
     assert!(message.contains("newer"), "{message}");
     assert!(!paths.socket.exists(), "no socket must be left behind");
 
@@ -529,7 +529,7 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
         "[daemon]\nrestore_sessions = \"maybe\"\n",
     )
     .unwrap();
-    let error = heeler_daemon::start(DaemonConfig::new(paths.clone()))
+    let error = staffy_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap_err();
     assert!(matches!(error, DaemonError::Config { .. }), "{error}");

@@ -2,7 +2,7 @@
 //! watcher that tells it which files changed, and the cloneable [`IndexHandle`] for everything
 //! else.
 //!
-//! Nothing runs on a timer. The worker sleeps in `recv` until a file event, a Heeler record, or
+//! Nothing runs on a timer. The worker sleeps in `recv` until a file event, a Staffy record, or
 //! a command arrives; at startup it does one `stat` pass over the source roots and reads only
 //! the files whose stamp changed.
 
@@ -27,7 +27,7 @@ use crate::store;
 use crate::sys;
 use crate::text::{chunks, idents};
 use crate::types::{
-    HeelerRecord, Hit, Role, SearchQuery, SessionText, SessionTextQuery, Source, Status,
+    Hit, Role, SearchQuery, SessionText, SessionTextQuery, Source, StaffyRecord, Status,
 };
 
 /// Quiet time after the last file event before the changed files are read.
@@ -46,13 +46,13 @@ pub struct IndexConfig {
     pub range_days: u32,
     /// Transcript sources to read, with their roots. A source that is not listed is never read.
     pub roots: Vec<(Source, PathBuf)>,
-    /// Accept Heeler records ([`IndexHandle::push_heeler`]).
-    pub heeler: bool,
+    /// Accept Staffy records ([`IndexHandle::push_staffy`]).
+    pub staffy: bool,
 }
 
 enum Msg {
     Fs(Vec<PathBuf>),
-    Heeler(Box<HeelerRecord>),
+    Staffy(Box<StaffyRecord>),
     Flush(SyncSender<()>),
     Clear(SyncSender<Result<()>>),
     Rebuild,
@@ -65,7 +65,7 @@ struct Shared {
     tx: SyncSender<Msg>,
     /// Events were dropped because the queue was full: the worker repeats the stat pass.
     overflow: AtomicBool,
-    /// Heeler records dropped because the queue was full.
+    /// Staffy records dropped because the queue was full.
     dropped: AtomicU64,
     metrics: Arc<Metrics>,
     sources: Vec<Source>,
@@ -99,10 +99,10 @@ impl IndexHandle {
         })
     }
 
-    /// Queues one Heeler record. `false` when the queue is full (the record is dropped and
+    /// Queues one Staffy record. `false` when the queue is full (the record is dropped and
     /// counted) or the indexer has stopped.
-    pub fn push_heeler(&self, record: HeelerRecord) -> bool {
-        match self.shared.tx.try_send(Msg::Heeler(Box::new(record))) {
+    pub fn push_staffy(&self, record: StaffyRecord) -> bool {
+        match self.shared.tx.try_send(Msg::Staffy(Box::new(record))) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
@@ -112,7 +112,7 @@ impl IndexHandle {
         }
     }
 
-    /// Heeler records dropped so far because the worker could not keep up.
+    /// Staffy records dropped so far because the worker could not keep up.
     pub fn dropped(&self) -> u64 {
         self.shared.dropped.load(Ordering::Relaxed)
     }
@@ -140,7 +140,7 @@ impl IndexHandle {
     }
 
     /// Forgets everything read from transcript files and reads all of them again, in the
-    /// background. Heeler rows are kept.
+    /// background. Staffy rows are kept.
     pub fn rebuild(&self) -> Result<()> {
         self.shared
             .tx
@@ -182,8 +182,8 @@ impl Indexer {
             })
             .collect();
         let mut sources: Vec<Source> = config.roots.iter().map(|(source, _)| *source).collect();
-        if config.heeler {
-            sources.push(Source::Heeler);
+        if config.staffy {
+            sources.push(Source::Staffy);
         }
         sources.sort();
         sources.dedup();
@@ -204,14 +204,14 @@ impl Indexer {
             db_path: config.db_path,
             range_days: config.range_days,
             roots,
-            heeler: config.heeler,
+            staffy: config.staffy,
             shared: Arc::clone(&shared),
             pending: BTreeSet::new(),
             first_pending: None,
             last_event: None,
         };
         let thread = std::thread::Builder::new()
-            .name("heeler-index".to_owned())
+            .name("staffy-index".to_owned())
             .spawn(move || worker.run(&rx))
             .map_err(IndexError::io("starting the history indexer"))?;
         Ok(Self {
@@ -291,7 +291,7 @@ struct Worker {
     db_path: PathBuf,
     range_days: u32,
     roots: Vec<Root>,
-    heeler: bool,
+    staffy: bool,
     shared: Arc<Shared>,
     pending: BTreeSet<PathBuf>,
     first_pending: Option<Instant>,
@@ -324,7 +324,7 @@ impl Worker {
                     self.last_event = Some(now);
                     self.pending.extend(paths);
                 }
-                Msg::Heeler(record) => self.index_heeler(&record),
+                Msg::Staffy(record) => self.index_staffy(&record),
                 Msg::Flush(reply) => {
                     self.read_pending();
                     let _ = reply.send(());
@@ -487,8 +487,8 @@ impl Worker {
         }
     }
 
-    fn index_heeler(&mut self, record: &HeelerRecord) {
-        if !self.heeler {
+    fn index_staffy(&mut self, record: &StaffyRecord) {
+        if !self.staffy {
             return;
         }
         let cutoff = self.cutoff_ms();
@@ -499,10 +499,10 @@ impl Worker {
             let conn = self.conn()?;
             let tx = conn
                 .transaction()
-                .map_err(IndexError::sqlite("starting a Heeler write"))?;
+                .map_err(IndexError::sqlite("starting a Staffy write"))?;
             let session = store::ensure_session(
                 &tx,
-                Source::Heeler,
+                Source::Staffy,
                 &record.session_key,
                 None,
                 record.title.as_deref(),
@@ -532,12 +532,12 @@ impl Worker {
                     &idents,
                 )?;
             }
-            store::set_meta(&tx, "heeler_last_indexed_ms", &now_ms().to_string())?;
+            store::set_meta(&tx, "staffy_last_indexed_ms", &now_ms().to_string())?;
             tx.commit()
-                .map_err(IndexError::sqlite("committing a Heeler write"))
+                .map_err(IndexError::sqlite("committing a Staffy write"))
         })();
         if let Err(error) = result {
-            warn!(%error, "indexing a Heeler record failed");
+            warn!(%error, "indexing a Staffy record failed");
         }
     }
 

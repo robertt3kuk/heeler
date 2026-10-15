@@ -1,6 +1,6 @@
 //! Agent reports in GPUI tests: a [`Reporter`] that plays one reporting integration (`omp`,
 //! `claude-hooks`, …) against the in-process daemon, building the node reports the integrations
-//! send (`heeler agent report --node …`) and numbering them the way the daemon wants.
+//! send (`staffy agent report --node …`) and numbering them the way the daemon wants.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
@@ -8,11 +8,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use heeler_core::{NodeKind, NodeOutcome, SessionId, Usage};
-use heeler_protocol::messages::{
+use staffy_core::{NodeKind, NodeOutcome, SessionId, Usage};
+use staffy_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Request,
 };
-use heeler_protocol::tree::NodeReport;
+use staffy_protocol::tree::NodeReport;
 
 use super::TestDaemon;
 

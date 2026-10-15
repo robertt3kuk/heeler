@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use heeler_settings::{AppearanceSettings, Setting, SettingsStore};
 use serde_json::Value as Json;
+use staffy_settings::{AppearanceSettings, Setting, SettingsStore};
 
 use crate::settings::{
     AgentsSettings, AppSettings, ChatSettings, HistorySettings, InspectorPanelSettings,
@@ -291,7 +291,7 @@ pub fn search<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heeler_settings::SettingsPaths;
+    use staffy_settings::SettingsPaths;
 
     fn store() -> (tempfile::TempDir, SettingsStore) {
         let dir = tempfile::tempdir().unwrap();

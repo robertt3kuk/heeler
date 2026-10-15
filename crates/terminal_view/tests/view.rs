@@ -10,12 +10,12 @@ use gpui::{
     Entity, Focusable as _, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TestAppContext,
     TouchPhase, VisualTestContext, point, px, size,
 };
-use heeler_protocol::blocks::BlockPart;
-use heeler_protocol::render::{
+use staffy_protocol::blocks::BlockPart;
+use staffy_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, Run,
     TerminalFrame, TerminalRender, TerminalSnapshot,
 };
-use heeler_terminal_view::{
+use staffy_terminal_view::{
     DefaultColors, TerminalBackend, TerminalSize, TerminalView, TerminalViewEvent,
     TerminalViewSettings, ViewStatus,
 };
@@ -199,13 +199,13 @@ fn creation_reports_the_default_colors(cx: &mut TestAppContext) {
         .expect("set_default_colors on creation");
     assert_eq!(
         colors.background,
-        heeler_terminal_view::Rgb(0x1e, 0x1e, 0x1e)
+        staffy_terminal_view::Rgb(0x1e, 0x1e, 0x1e)
     );
     assert_eq!(
         colors.foreground,
-        heeler_terminal_view::Rgb(0xd4, 0xd4, 0xd4)
+        staffy_terminal_view::Rgb(0xd4, 0xd4, 0xd4)
     );
-    assert_eq!(colors.cursor, heeler_terminal_view::Rgb(0xd4, 0xd4, 0xd4));
+    assert_eq!(colors.cursor, staffy_terminal_view::Rgb(0xd4, 0xd4, 0xd4));
 }
 
 #[gpui::test]
@@ -835,7 +835,7 @@ fn settings_changes_report_new_default_colors(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| {
         v.update_settings(
             TerminalViewSettings {
-                palette: heeler_terminal_view::TerminalPalette::HEELER_LIGHT,
+                palette: staffy_terminal_view::TerminalPalette::STAFFY_LIGHT,
                 ..TerminalViewSettings::default()
             },
             cx,
@@ -843,7 +843,7 @@ fn settings_changes_report_new_default_colors(cx: &mut TestAppContext) {
     });
     let calls = recorder.take();
     assert!(
-        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == heeler_terminal_view::Rgb(255, 255, 255))),
+        calls.iter().any(|c| matches!(c, Call::Colors(c) if c.background == staffy_terminal_view::Rgb(255, 255, 255))),
         "{calls:?}"
     );
 }
@@ -1006,7 +1006,7 @@ impl gpui::Render for Pair {
 #[gpui::test]
 fn two_views_share_one_model_and_one_ack(cx: &mut TestAppContext) {
     use gpui::AppContext as _;
-    use heeler_terminal_view::{SharedTerminal, ViewMode};
+    use staffy_terminal_view::{SharedTerminal, ViewMode};
     let recorder = Rc::new(Recorder::default());
     let backend: Rc<dyn TerminalBackend> = recorder.clone();
     let (pair, cx) = cx.add_window_view(|window, cx| {

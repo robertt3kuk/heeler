@@ -1,11 +1,11 @@
-//! `heeler notify ls|ack|act|watch`: the daemon's notification intents (protocol 0.13,
+//! `staffy notify ls|ack|act|watch`: the daemon's notification intents (protocol 0.13,
 //! `docs/protocol.md` § Notification intents).
 
 use std::collections::HashSet;
 
-use heeler_protocol::messages::{Empty, Event, Request, Subscribed};
-use heeler_protocol::notify::{ActRoute, NotificationIntent, NotifyList};
 use serde_json::json;
+use staffy_protocol::messages::{Empty, Event, Request, Subscribed};
+use staffy_protocol::notify::{ActRoute, NotificationIntent, NotifyList};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::Ctx;
@@ -83,7 +83,7 @@ impl Ctx {
                 Ok(_) | Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => {
                     return Err(CliError::Unreachable(
-                        "lost the connection to heelerd".into(),
+                        "lost the connection to staffyd".into(),
                     ));
                 }
             }
@@ -122,7 +122,7 @@ fn resolve_intent<'a>(
     match matches.as_slice() {
         [one] => Ok(one),
         [] => Err(CliError::Failed(format!(
-            "no pending notification matches `{target}`; `heeler notify ls` lists them"
+            "no pending notification matches `{target}`; `staffy notify ls` lists them"
         ))),
         many => {
             let mut message = format!(
@@ -189,8 +189,8 @@ fn intent_table(intents: &[NotificationIntent]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use heeler_core::SessionId;
-    use heeler_protocol::notify::{IntentAction, IntentKind};
+    use staffy_core::SessionId;
+    use staffy_protocol::notify::{IntentAction, IntentKind};
 
     use super::*;
 

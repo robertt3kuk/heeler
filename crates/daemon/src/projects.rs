@@ -7,7 +7,7 @@ use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use heeler_protocol::control::{ErrorBody, ErrorCode};
+use staffy_protocol::control::{ErrorBody, ErrorCode};
 
 /// Creates the Home folder (mode `0700`, with missing parents) unless it exists, and returns
 /// its canonical path. An existing folder is never touched and nothing is created inside it.
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn the_home_folder_is_created_private_once_and_left_alone_after() {
         let dir = tempfile::tempdir().unwrap();
-        let home = canonical(&dir).join("deep/Heeler");
+        let home = canonical(&dir).join("deep/Staffy");
         let made = ensure_home_folder(&home).unwrap();
         assert_eq!(made, home);
         let mode = fs::metadata(&home).unwrap().permissions().mode() & 0o777;

@@ -9,9 +9,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::mpsc;
 
-use heeler_core::{Epoch, Seq};
-use heeler_protocol::messages::{ClientKind, Event, ResumeOutcome, ResumePoint};
-use heeler_protocol::{ControlMessage, Frame, MAX_PAYLOAD, ProtocolError};
+use staffy_core::{Epoch, Seq};
+use staffy_protocol::messages::{ClientKind, Event, ResumeOutcome, ResumePoint};
+use staffy_protocol::{ControlMessage, Frame, MAX_PAYLOAD, ProtocolError};
 
 use crate::conn::{ConnHandle, ConnId, Outbound};
 
@@ -243,8 +243,8 @@ impl Inner {
 /// exits, and the journaled end of a chat turn or of an assistant message (never streaming
 /// deltas, never replays).
 fn feeds_notifications(event: &Event) -> bool {
-    use heeler_core::AgentEventKind;
-    use heeler_core::agent::{Delivery, MessageRole};
+    use staffy_core::AgentEventKind;
+    use staffy_core::agent::{Delivery, MessageRole};
     match event {
         Event::ApprovalRequired { .. }
         | Event::ApprovalResolved { .. }
@@ -268,7 +268,7 @@ fn feeds_notifications(event: &Event) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use heeler_core::WorkspaceId;
+    use staffy_core::WorkspaceId;
 
     use super::*;
 

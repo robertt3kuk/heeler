@@ -1,6 +1,6 @@
 //! Filesystem layout of the daemon (architecture.md § Paths).
 //!
-//! `HEELER_HOME` moves everything under one directory; `HEELER_SOCKET` moves only the socket.
+//! `STAFFY_HOME` moves everything under one directory; `STAFFY_SOCKET` moves only the socket.
 
 use std::ffi::OsString;
 use std::fs;
@@ -8,18 +8,18 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-pub const SOCKET_FILE: &str = "heelerd.sock";
-pub const LOCK_FILE: &str = "heelerd.lock";
-pub const LOG_FILE: &str = "heelerd.log";
-pub const DATABASE_FILE: &str = "heeler.db";
+pub const SOCKET_FILE: &str = "staffyd.sock";
+pub const LOCK_FILE: &str = "staffyd.lock";
+pub const LOG_FILE: &str = "staffyd.log";
+pub const DATABASE_FILE: &str = "staffy.db";
 pub const INDEX_FILE: &str = "index.sqlite";
 pub const CONFIG_FILE: &str = "daemon.toml";
-/// Name of the Home folder created in the user's home directory (or in `HEELER_HOME`).
-pub const HOME_FOLDER_NAME: &str = "Heeler";
+/// Name of the Home folder created in the user's home directory (or in `STAFFY_HOME`).
+pub const HOME_FOLDER_NAME: &str = "Staffy";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathsError {
-    #[error("cannot determine the home directory; set HEELER_HOME")]
+    #[error("cannot determine the home directory; set STAFFY_HOME")]
     NoHomeDir,
 }
 
@@ -37,8 +37,8 @@ pub struct Paths {
     /// Optional daemon settings, `daemon.toml`.
     pub config_file: PathBuf,
     pub log_dir: PathBuf,
-    /// Folder of the Home workspace unless `daemon.toml` names another: `~/Heeler`, or
-    /// `Heeler` inside `HEELER_HOME` when that is set, so an isolated daemon never creates
+    /// Folder of the Home workspace unless `daemon.toml` names another: `~/Staffy`, or
+    /// `Staffy` inside `STAFFY_HOME` when that is set, so an isolated daemon never creates
     /// folders in the real home directory.
     pub default_home_folder: PathBuf,
     /// The user's home directory, for `~` in `daemon.toml`.
@@ -49,19 +49,19 @@ impl Paths {
     /// Resolves from the process environment.
     pub fn from_env() -> Result<Self, PathsError> {
         Self::resolve(
-            std::env::var_os("HEELER_HOME"),
-            std::env::var_os("HEELER_SOCKET"),
+            std::env::var_os("STAFFY_HOME"),
+            std::env::var_os("STAFFY_SOCKET"),
             std::env::home_dir(),
         )
     }
 
     /// Pure resolution; empty override values count as unset.
     pub fn resolve(
-        heeler_home: Option<OsString>,
-        heeler_socket: Option<OsString>,
+        staffy_home: Option<OsString>,
+        staffy_socket: Option<OsString>,
         user_home: Option<PathBuf>,
     ) -> Result<Self, PathsError> {
-        let mut paths = match heeler_home.filter(|v| !v.is_empty()) {
+        let mut paths = match staffy_home.filter(|v| !v.is_empty()) {
             Some(home) => Self {
                 user_home,
                 ..Self::in_home(PathBuf::from(home))
@@ -72,19 +72,19 @@ impl Paths {
                     default_home_folder: user_home.join(HOME_FOLDER_NAME),
                     user_home: Some(user_home.clone()),
                     ..Self::new(
-                        user_home.join("Library/Application Support/Heeler"),
-                        user_home.join("Library/Logs/Heeler"),
+                        user_home.join("Library/Application Support/Staffy"),
+                        user_home.join("Library/Logs/Staffy"),
                     )
                 }
             }
         };
-        if let Some(socket) = heeler_socket.filter(|v| !v.is_empty()) {
+        if let Some(socket) = staffy_socket.filter(|v| !v.is_empty()) {
             paths.socket = PathBuf::from(socket);
         }
         Ok(paths)
     }
 
-    /// Everything under one directory (the `HEELER_HOME` layout).
+    /// Everything under one directory (the `STAFFY_HOME` layout).
     pub fn in_home(base: impl Into<PathBuf>) -> Self {
         let base = base.into();
         let log_dir = base.join("logs");
@@ -144,54 +144,54 @@ mod tests {
         let p = Paths::resolve(None, None, Some("/Users/u".into())).unwrap();
         assert_eq!(
             p.socket,
-            Path::new("/Users/u/Library/Application Support/Heeler/heelerd.sock")
+            Path::new("/Users/u/Library/Application Support/Staffy/staffyd.sock")
         );
         assert_eq!(
             p.lock,
-            Path::new("/Users/u/Library/Application Support/Heeler/heelerd.lock")
+            Path::new("/Users/u/Library/Application Support/Staffy/staffyd.lock")
         );
-        assert_eq!(p.log_dir, Path::new("/Users/u/Library/Logs/Heeler"));
+        assert_eq!(p.log_dir, Path::new("/Users/u/Library/Logs/Staffy"));
         assert_eq!(
             p.database,
-            Path::new("/Users/u/Library/Application Support/Heeler/heeler.db")
+            Path::new("/Users/u/Library/Application Support/Staffy/staffy.db")
         );
     }
 
     #[test]
-    fn heeler_home_moves_everything() {
+    fn staffy_home_moves_everything() {
         let p = Paths::resolve(os("/tmp/hh"), None, None).unwrap();
         assert_eq!(p.base, Path::new("/tmp/hh"));
-        assert_eq!(p.socket, Path::new("/tmp/hh/heelerd.sock"));
-        assert_eq!(p.lock, Path::new("/tmp/hh/heelerd.lock"));
+        assert_eq!(p.socket, Path::new("/tmp/hh/staffyd.sock"));
+        assert_eq!(p.lock, Path::new("/tmp/hh/staffyd.lock"));
         assert_eq!(p.log_dir, Path::new("/tmp/hh/logs"));
-        assert_eq!(p.database, Path::new("/tmp/hh/heeler.db"));
+        assert_eq!(p.database, Path::new("/tmp/hh/staffy.db"));
         assert_eq!(p.index_database, Path::new("/tmp/hh/index.sqlite"));
         assert_eq!(p.config_file, Path::new("/tmp/hh/daemon.toml"));
-        assert_eq!(p.log_file(), Path::new("/tmp/hh/logs/heelerd.log"));
+        assert_eq!(p.log_file(), Path::new("/tmp/hh/logs/staffyd.log"));
     }
 
     #[test]
-    fn the_home_folder_defaults_to_the_user_home_or_stays_inside_heeler_home() {
+    fn the_home_folder_defaults_to_the_user_home_or_stays_inside_staffy_home() {
         let real = Paths::resolve(None, None, Some("/Users/u".into())).unwrap();
-        assert_eq!(real.default_home_folder, Path::new("/Users/u/Heeler"));
+        assert_eq!(real.default_home_folder, Path::new("/Users/u/Staffy"));
         assert_eq!(real.user_home.as_deref(), Some(Path::new("/Users/u")));
         let isolated = Paths::resolve(os("/tmp/hh"), None, Some("/Users/u".into())).unwrap();
-        assert_eq!(isolated.default_home_folder, Path::new("/tmp/hh/Heeler"));
+        assert_eq!(isolated.default_home_folder, Path::new("/tmp/hh/Staffy"));
         assert_eq!(isolated.user_home.as_deref(), Some(Path::new("/Users/u")));
         assert_eq!(
             Paths::in_home("/tmp/x").default_home_folder,
-            Path::new("/tmp/x/Heeler")
+            Path::new("/tmp/x/Staffy")
         );
     }
 
     #[test]
-    fn heeler_socket_overrides_only_the_socket() {
+    fn staffy_socket_overrides_only_the_socket() {
         let p = Paths::resolve(os("/tmp/hh"), os("/tmp/x.sock"), None).unwrap();
         assert_eq!(p.socket, Path::new("/tmp/x.sock"));
-        assert_eq!(p.lock, Path::new("/tmp/hh/heelerd.lock"));
+        assert_eq!(p.lock, Path::new("/tmp/hh/staffyd.lock"));
         assert_eq!(
             p.database,
-            Path::new("/tmp/hh/heeler.db"),
+            Path::new("/tmp/hh/staffy.db"),
             "the database follows the home"
         );
     }
@@ -201,7 +201,7 @@ mod tests {
         let p = Paths::resolve(os(""), os(""), Some("/Users/u".into())).unwrap();
         assert!(
             p.socket
-                .starts_with("/Users/u/Library/Application Support/Heeler")
+                .starts_with("/Users/u/Library/Application Support/Staffy")
         );
     }
 

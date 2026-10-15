@@ -1,29 +1,29 @@
 [package]
-name = "heeler-daemon"
-description = "heelerd: Heeler daemon lifecycle, connection layer, event bus, request router, and terminal sessions"
+name = "staffy-daemon"
+description = "staffyd: Staffy daemon lifecycle, connection layer, event bus, request router, and terminal sessions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-name = "heeler_daemon"
+name = "staffy_daemon"
 
 [[bin]]
-name = "heelerd"
+name = "staffyd"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
 futures.workspace = true
-heeler-agents.workspace = true
-heeler-core.workspace = true
-heeler-gateway.workspace = true
-heeler-index.workspace = true
-heeler-protocol.workspace = true
-heeler-storage.workspace = true
-heeler-terminal.workspace = true
+staffy-agents.workspace = true
+staffy-core.workspace = true
+staffy-gateway.workspace = true
+staffy-index.workspace = true
+staffy-protocol.workspace = true
+staffy-storage.workspace = true
+staffy-terminal.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -38,8 +38,8 @@ tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
-heeler-client.workspace = true
-heeler-gateway = { workspace = true, features = ["test-support"] }
+staffy-client.workspace = true
+staffy-gateway = { workspace = true, features = ["test-support"] }
 rusqlite.workspace = true
 tempfile.workspace = true
 

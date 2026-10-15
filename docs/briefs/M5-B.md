@@ -17,8 +17,8 @@ Read `AGENTS.md`, ADR 0008 (credentials — the desktop never stores or logs a s
 
 ## Acceptance
 - GPUI tests with an in-process daemon using the in-memory credential store (never the login keychain — check how M5-A's daemon tests inject `MemoryStore` and use the same) and a local mock OpenAI-compatible HTTP server (reuse M5-A's mock): add provider → set key (assert the secret never appears in desktop state files, logs, or the view tree after submit) → models listed → new direct chat → streamed reply renders → switch model → next turn uses it (mock asserts the model) → 401 path shows the Set key action.
-- Manual: desktop on a temp `HEELER_HOME` against the mock server; no screenshots (orchestrator verifies visually). A real `heelerd` reads the login keychain — do not run one with real providers.
+- Manual: desktop on a temp `STAFFY_HOME` against the mock server; no screenshots (orchestrator verifies visually). A real `staffyd` reads the login keychain — do not run one with real providers.
 - `just check` green; committed on `slice/M5-B`.
 
 ## Rules
-Inline `HEELER_HOME=<temp dir>`; never touch `/tmp/hh-*`, the real Heeler home, or the login keychain. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase; stop every daemon you start (`pgrep -x heelerd` clean before finishing).
+Inline `STAFFY_HOME=<temp dir>`; never touch `/tmp/hh-*`, the real Staffy home, or the login keychain. No push, no hard reset; `git grep -n '^<<<<<<<'` empty after any rebase; stop every daemon you start (`pgrep -x staffyd` clean before finishing).

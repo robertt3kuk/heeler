@@ -5,7 +5,7 @@
 //! than 80×24 is stored as `<name>.size` (`COLSxROWS`) so the replay uses it.
 //!
 //! ```text
-//! cargo run -p heeler-terminal --example record -- <name> [options] -- <argv…>
+//! cargo run -p staffy-terminal --example record -- <name> [options] -- <argv…>
 //!   --send <delay_ms>:<bytes>   after <delay_ms>, type <bytes> (escapes: \e \a \r \n \t \\ \xHH);
 //!                               repeatable, executed in order
 //!   --timeout-ms <ms>           kill the program if it runs longer (default 10000)
@@ -20,10 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use heeler_protocol::messages::TerminalSize;
-use heeler_terminal::Emulator;
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use staffy_protocol::messages::TerminalSize;
+use staffy_terminal::Emulator;
 
 /// A boxed error is enough for a dev tool.
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
     let mut cmd = CommandBuilder::from_argv(args.argv.iter().map(Into::into).collect());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "heeler");
+    cmd.env("TERM_PROGRAM", "staffy");
     for (key, value) in &args.env {
         cmd.env(key, value);
     }

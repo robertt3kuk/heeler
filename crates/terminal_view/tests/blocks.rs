@@ -8,14 +8,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{Entity, Focusable as _, Modifiers, TestAppContext, VisualTestContext, point, px, size};
-use heeler_client::BlockList;
-use heeler_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
-use heeler_protocol::render::{
+use staffy_client::BlockList;
+use staffy_protocol::blocks::{Block, BlockPart, BlockState, TerminalBlocksResult};
+use staffy_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Modes, Palette, Row, Run, TerminalRender,
     TerminalSnapshot,
 };
-use heeler_terminal_view::blocks::Tone;
-use heeler_terminal_view::{
+use staffy_terminal_view::blocks::Tone;
+use staffy_terminal_view::{
     BlockSettings, DefaultColors, SharedEvent, TerminalBackend, TerminalSize, TerminalView,
     TerminalViewSettings, ViewMode,
 };
@@ -245,7 +245,7 @@ fn raw(view: &Entity<TerminalView>, cx: &VisualTestContext) -> Vec<String> {
         v.model()
             .viewport()
             .iter()
-            .map(heeler_terminal_view::model::TerminalModel::row_text)
+            .map(staffy_terminal_view::model::TerminalModel::row_text)
             .collect()
     })
 }
@@ -341,7 +341,7 @@ fn the_alternate_screen_hides_the_overlay_and_blocks_off_removes_it(cx: &mut Tes
     assert!(!view.read_with(cx, |v, _| v.blocks_visible()));
     assert_eq!(
         view.read_with(cx, |v, _| v.painted_overlay().clone()),
-        heeler_terminal_view::blocks::OverlayReport::default()
+        staffy_terminal_view::blocks::OverlayReport::default()
     );
     recorder.take();
     cx.simulate_keystrokes("cmd-up");
@@ -367,7 +367,7 @@ fn the_alternate_screen_hides_the_overlay_and_blocks_off_removes_it(cx: &mut Tes
     assert!(!view.read_with(cx, |v, _| v.blocks_visible()));
     assert_eq!(
         view.read_with(cx, |v, _| v.painted_overlay().clone()),
-        heeler_terminal_view::blocks::OverlayReport::default()
+        staffy_terminal_view::blocks::OverlayReport::default()
     );
     cx.simulate_keystrokes("cmd-up");
     assert_eq!(view.read_with(cx, |v, _| v.highlighted_block()), None);
@@ -612,7 +612,7 @@ fn select_and_copy_act_on_the_current_blocks_output(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_bound_actions_do_the_same_as_the_chords(cx: &mut TestAppContext) {
     let (view, cx, recorder) = setup(cx, TerminalViewSettings::default());
-    cx.update(|_, cx| heeler_terminal_view::bind_default_keys(cx));
+    cx.update(|_, cx| staffy_terminal_view::bind_default_keys(cx));
     show(&view, cx, scenario(), Modes::default());
     focus(&view, cx);
     recorder
@@ -626,11 +626,11 @@ fn the_bound_actions_do_the_same_as_the_chords(cx: &mut TestAppContext) {
         cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
         Some("b1\nb2")
     );
-    cx.dispatch_action(heeler_terminal_view::ToggleBlockCollapse);
+    cx.dispatch_action(staffy_terminal_view::ToggleBlockCollapse);
     assert!(view.read_with(cx, |v, _| v.model().is_collapsed(2)));
-    cx.dispatch_action(heeler_terminal_view::ToggleBlockCollapse);
+    cx.dispatch_action(staffy_terminal_view::ToggleBlockCollapse);
     assert!(view.read_with(cx, |v, _| v.model().collapsed().is_empty()));
-    cx.dispatch_action(heeler_terminal_view::RerunBlock);
+    cx.dispatch_action(staffy_terminal_view::RerunBlock);
     assert_eq!(recorder.inputs(), vec![b"cmd-b\r".to_vec()]);
 }
 
@@ -684,7 +684,7 @@ fn send_to_agent_asks_the_owner_and_never_the_open_prompt(cx: &mut TestAppContex
     cx.update(|_, cx| {
         cx.subscribe(
             &view,
-            move |_, event: &heeler_terminal_view::TerminalViewEvent, _| {
+            move |_, event: &staffy_terminal_view::TerminalViewEvent, _| {
                 sink.borrow_mut().push(event.clone());
             },
         )
@@ -695,7 +695,7 @@ fn send_to_agent_asks_the_owner_and_never_the_open_prompt(cx: &mut TestAppContex
     assert!(!view.update(cx, |v, cx| v.send_block_to_agent(3, cx)));
     assert_eq!(
         *events.borrow(),
-        [heeler_terminal_view::TerminalViewEvent::SendBlockToAgent { block: 2 }]
+        [staffy_terminal_view::TerminalViewEvent::SendBlockToAgent { block: 2 }]
     );
 }
 
@@ -794,7 +794,7 @@ impl gpui::Render for Pair {
 #[gpui::test]
 fn previews_show_the_gutter_bars_only_and_never_fold(cx: &mut TestAppContext) {
     use gpui::AppContext as _;
-    use heeler_terminal_view::SharedTerminal;
+    use staffy_terminal_view::SharedTerminal;
 
     let recorder = Rc::new(Recorder::default());
     let backend: Rc<dyn TerminalBackend> = recorder;

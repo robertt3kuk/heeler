@@ -5,33 +5,33 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use heeler_core::agent::{
+use staffy_core::agent::{
     FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
     PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
 };
-use heeler_core::{
+use staffy_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, AgentNode, AgentObservation, ApprovalId,
     ApprovalPolicy, ItemId, Liveness, ModelInfo, NodeKind, NodeOutcome, NodeState, SandboxMode,
     TurnId, Usage,
 };
-use heeler_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
-use heeler_protocol::assistant::*;
-use heeler_protocol::blocks::{
+use staffy_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use staffy_protocol::assistant::*;
+use staffy_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
     TerminalBlocksResult,
 };
-use heeler_protocol::chat::*;
-use heeler_protocol::control::ControlMessage;
-use heeler_protocol::history::*;
-use heeler_protocol::messages::*;
-use heeler_protocol::notify::{
+use staffy_protocol::chat::*;
+use staffy_protocol::control::ControlMessage;
+use staffy_protocol::history::*;
+use staffy_protocol::messages::*;
+use staffy_protocol::notify::{
     ActRoute, ClientFocus, IntentAction, IntentKind, NotificationIntent, NotifyAck, NotifyAct,
     NotifyActed, NotifyList,
 };
-use heeler_protocol::provider::*;
-use heeler_protocol::render::*;
-use heeler_protocol::tree::*;
-use heeler_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
+use staffy_protocol::provider::*;
+use staffy_protocol::render::*;
+use staffy_protocol::tree::*;
+use staffy_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
 fn ws() -> WorkspaceId {
     "01K7F3B5N2Q9W8E4R6T1Y0V3JA".parse().unwrap()
 }
@@ -207,7 +207,7 @@ fn attachments_meta_fixture() -> Vec<AttachmentMeta> {
 
 fn assistant_session_info() -> SessionInfo {
     SessionInfo {
-        title: "Assistant · heeler".into(),
+        title: "Assistant · staffy".into(),
         state: SessionState::Idle,
         command: vec!["assistant".into()],
         chat: Some(ChatInfo {
@@ -260,7 +260,7 @@ fn ws2() -> WorkspaceId {
 fn workspace_info() -> WorkspaceInfo {
     WorkspaceInfo {
         id: ws(),
-        name: "heeler".into(),
+        name: "staffy".into(),
         roots: vec!["/repo".into(), "/other-repo".into()],
         kind: WorkspaceKind::Project,
         pinned: true,
@@ -276,7 +276,7 @@ fn home_info() -> WorkspaceInfo {
     WorkspaceInfo {
         id: ws2(),
         name: "Home".into(),
-        roots: vec!["/Users/me/Heeler".into()],
+        roots: vec!["/Users/me/Staffy".into()],
         kind: WorkspaceKind::Home,
         pinned: false,
         position: 0,
@@ -376,7 +376,7 @@ fn requests() -> Vec<(&'static str, Request)> {
         (
             "workspace_create",
             Request::WorkspaceCreate(WorkspaceCreate {
-                name: "heeler".into(),
+                name: "staffy".into(),
                 roots: vec!["/repo".into()],
                 created_by: None,
             }),
@@ -623,7 +623,7 @@ fn requests() -> Vec<(&'static str, Request)> {
             Request::HistorySearch(HistorySearch {
                 query: "cargo test -p daemon".into(),
                 limit: 20,
-                sources: vec![HistorySource::Claude, HistorySource::Heeler],
+                sources: vec![HistorySource::Claude, HistorySource::Staffy],
                 roles: vec![HistoryRole::Command, HistoryRole::User],
                 project: Some("/repo".into()),
                 since_ms: Some(1_791_000_000_000),
@@ -967,7 +967,7 @@ fn requests() -> Vec<(&'static str, Request)> {
             "notify_act_open",
             Request::NotifyAct(NotifyAct {
                 id: "01K7F3B5N2Q9W8E4R6T1Y0V3NU".into(),
-                action_id: heeler_protocol::notify::ACTION_OPEN.into(),
+                action_id: staffy_protocol::notify::ACTION_OPEN.into(),
             }),
         ),
         (
@@ -1373,7 +1373,7 @@ fn open_intent() -> NotificationIntent {
         title: "omp finished".into(),
         body: "Refactored the scheduler.".into(),
         actions: vec![IntentAction {
-            id: heeler_protocol::notify::ACTION_OPEN.into(),
+            id: staffy_protocol::notify::ACTION_OPEN.into(),
             label: "Open".into(),
         }],
         created_at_ms: 1_791_894_170_000,
@@ -1661,7 +1661,7 @@ fn responses_match_fixtures() {
                     projects: vec![
                         RecentProject {
                             path: "/repo".into(),
-                            name: "heeler".into(),
+                            name: "staffy".into(),
                             last_opened_ms: 1_791_894_170_000,
                             workspace_id: Some(ws()),
                         },
@@ -1701,7 +1701,7 @@ fn responses_match_fixtures() {
                             session_id: None,
                         },
                         HistoryHit {
-                            source: HistorySource::Heeler,
+                            source: HistorySource::Staffy,
                             session_key: sid().to_string(),
                             title: None,
                             cwd: None,
@@ -1733,7 +1733,7 @@ fn responses_match_fixtures() {
                             errors: 0,
                         },
                         HistorySourceStatus {
-                            name: "heeler".into(),
+                            name: "staffy".into(),
                             files: 0,
                             rows: 4,
                             last_indexed_ms: None,

@@ -1,6 +1,6 @@
-# Heeler — agent and contributor guide
+# Staffy — agent and contributor guide
 
-macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, source of truth) + GPUI desktop + CLI over a versioned Unix-socket protocol.
+macOS-first Rust agentic development environment: `staffyd` (Tokio daemon, source of truth) + GPUI desktop + CLI over a versioned Unix-socket protocol.
 
 ## Resume work (do this first, every session)
 1. Read `docs/status.md` → current milestone, active slice, **Next action**, blockers.
@@ -16,10 +16,10 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - `docs/roadmap.md` — milestones, slices (checkboxes), risk register
 - `docs/shell-integration.md` — automatic OSC 133/OSC 7 injection for zsh, bash, fish
 - `docs/history-index.md` — opt-in session history index and search (sources, formats, ranking, privacy, performance)
-- `docs/gateway.md` — direct model chat: providers (OpenAI-compatible, Anthropic, Ollama), Keychain credentials, direct chat sessions, `heeler provider` / `heeler chat` commands, tests
-- `docs/assistant.md` — assistant chat: scopes, context attachments (shell, agent transcripts, files, search), redaction and budgets, permissions, `heeler ask`
+- `docs/gateway.md` — direct model chat: providers (OpenAI-compatible, Anthropic, Ollama), Keychain credentials, direct chat sessions, `staffy provider` / `staffy chat` commands, tests
+- `docs/assistant.md` — assistant chat: scopes, context attachments (shell, agent transcripts, files, search), redaction and budgets, permissions, `staffy ask`
 - `docs/agents.md` — Codex chat sessions: adapter, `AgentEvent`, approvals, journal, how to re-record the test transcripts
-- `docs/integrations.md` — agent reporting (state + resume command), `heeler agent`, `heeler integration` for Codex, Claude Code, OMP
+- `docs/integrations.md` — agent reporting (state + resume command), `staffy agent`, `staffy integration` for Codex, Claude Code, OMP
 - `docs/packaging.md` — the signed app bundle (`just bundle`): layout, ad-hoc signing, how the executables find each other, what M6-B adds
 - `docs/process.md` — how we work, gates, testing strategy
 - `docs/adr/` — decisions; `docs/spikes/` — evidence behind them
@@ -36,7 +36,7 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - Hard-to-reverse decision → ADR first; missing evidence → spike outside the repo, report into `docs/spikes/`.
 
 ## Conventions
-- Rust 1.98.0 (`rust-toolchain.toml`), edition 2024, packages named `heeler-<dir>` under `crates/`, `thiserror` in libraries, `anyhow` only in binaries, `tracing` for logs. New dependencies go into root `[workspace.dependencies]`.
+- Rust 1.98.0 (`rust-toolchain.toml`), edition 2024, packages named `staffy-<dir>` under `crates/`, `thiserror` in libraries, `anyhow` only in binaries, `tracing` for logs. New dependencies go into root `[workspace.dependencies]`.
 - No `unwrap()`/`expect()` outside tests and proven invariants (comment why); clippy enforces it.
 - Conventional commits, scope = crate or `docs`/`adr`.
 - Quality gate: `just check` (fmt, clippy `-D warnings`, nextest, cargo-deny). Tools: `brew install just cargo-deny cargo-nextest`.
@@ -44,6 +44,6 @@ macOS-first Rust agentic development environment: `heelerd` (Tokio daemon, sourc
 - Real model/API calls never run in the default gate; use recorded fixtures.
 
 ## Parallel work
-Anyone can work directly in the main checkout. Concurrent agents split by crate and get one worktree per slice (`../heeler-wt/<slice>` on `slice/<slice>`); a single agent may also run in the main checkout on a `slice/<slice>` branch when nothing else edits the repo (`process.md` § Implementer agents). Implementer = omp `implementer` agent (`.omp/agents/implementer.md`, Claude Sonnet 5.5); one integration owner merges into `master`; only the contract owner edits `core`/`protocol`.
+Anyone can work directly in the main checkout. Concurrent agents split by crate and get one worktree per slice (`../staffy-wt/<slice>` on `slice/<slice>`); a single agent may also run in the main checkout on a `slice/<slice>` branch when nothing else edits the repo (`process.md` § Implementer agents). Implementer = omp `implementer` agent (`.omp/agents/implementer.md`, Claude Sonnet 5.5); one integration owner merges into `master`; only the contract owner edits `core`/`protocol`.
 
 If you are an implementer working from a brief (`docs/briefs/<slice>.md`): stay inside the brief's scope, do not edit `docs/status.md` or `docs/roadmap.md`, report contract problems instead of changing `core`/`protocol`, and finish with `just check` green and a commit on your slice branch.

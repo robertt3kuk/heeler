@@ -38,28 +38,28 @@ impl SettingsPaths {
         }
     }
 
-    /// `$HEELER_HOME` (empty counts as unset), else `~/Library/Application Support/Heeler`.
+    /// `$STAFFY_HOME` (empty counts as unset), else `~/Library/Application Support/Staffy`.
     pub fn from_env() -> Result<Self, SettingsError> {
-        Self::resolve(std::env::var_os("HEELER_HOME"), std::env::home_dir())
+        Self::resolve(std::env::var_os("STAFFY_HOME"), std::env::home_dir())
     }
 
     /// Pure form of [`SettingsPaths::from_env`].
     pub fn resolve(
-        heeler_home: Option<std::ffi::OsString>,
+        staffy_home: Option<std::ffi::OsString>,
         user_home: Option<PathBuf>,
     ) -> Result<Self, SettingsError> {
-        match heeler_home.filter(|v| !v.is_empty()) {
+        match staffy_home.filter(|v| !v.is_empty()) {
             Some(home) => Ok(Self::in_dir(PathBuf::from(home))),
             None => {
                 let home = user_home.ok_or_else(|| {
                     SettingsError::error(
                         None,
                         "",
-                        "cannot determine the home directory; set HEELER_HOME",
+                        "cannot determine the home directory; set STAFFY_HOME",
                     )
                 })?;
                 Ok(Self::in_dir(
-                    home.join("Library/Application Support/Heeler"),
+                    home.join("Library/Application Support/Staffy"),
                 ))
             }
         }
@@ -247,7 +247,7 @@ struct State {
 }
 
 fn workspace_file(root: &Path) -> PathBuf {
-    root.join(".heeler").join("settings.toml")
+    root.join(".staffy").join("settings.toml")
 }
 
 impl State {
@@ -506,8 +506,8 @@ impl Shared {
             }
         }
         if let Some(root) = &state.workspace_root {
-            let dot = root.join(".heeler");
-            // `.heeler` may not exist yet; watch the root until it does (watch handler refilters).
+            let dot = root.join(".staffy");
+            // `.staffy` may not exist yet; watch the root until it does (watch handler refilters).
             dirs.insert(if dot.is_dir() { dot } else { root.clone() });
         }
         dirs
@@ -604,7 +604,7 @@ impl SettingsStore {
             .ok()
     }
 
-    /// Uses `<root>/.heeler/settings.toml` as the workspace layer (`None` removes it).
+    /// Uses `<root>/.staffy/settings.toml` as the workspace layer (`None` removes it).
     pub fn set_workspace_root(&self, root: Option<PathBuf>) {
         {
             let mut state = self.shared.state.write();

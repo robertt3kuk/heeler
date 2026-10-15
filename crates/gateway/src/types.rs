@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use heeler_core::agent::TokenCounts;
+use staffy_core::agent::TokenCounts;
 
 use crate::error::GatewayError;
 

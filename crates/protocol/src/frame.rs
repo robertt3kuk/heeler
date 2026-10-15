@@ -1,7 +1,7 @@
 //! Wire frames: `u32 length (BE, payload only) | u8 kind | payload` (ADR 0002).
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use heeler_core::TerminalId;
+use staffy_core::TerminalId;
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::error::ProtocolError;

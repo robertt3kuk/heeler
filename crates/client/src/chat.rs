@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use heeler_core::{AgentEvent, Epoch};
+use staffy_core::{AgentEvent, Epoch};
 
 /// One step of the chat event stream of a [`Connection`](crate::Connection).
 ///

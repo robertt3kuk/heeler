@@ -1,5 +1,5 @@
 //! The `history` panel: search over the session history index (protocol 0.8, docs/history-index.md)
-//! — Heeler terminal blocks and the transcripts of Claude Code, Codex and OMP.
+//! — Staffy terminal blocks and the transcripts of Claude Code, Codex and OMP.
 //!
 //! While indexing is off the panel explains what turning it on reads and offers to do it. While
 //! it is on: a debounced search field, filter chips, one row per matching session with its best
@@ -14,16 +14,16 @@ use gpui::{
     KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, StyledText, Task, Window, div, prelude::*, px,
 };
-use heeler_client::{ClientError, ConnectionState};
-use heeler_core::SessionId;
-use heeler_protocol::ErrorCode;
-use heeler_protocol::history::{HistoryHit, HistorySource, HistoryStatusInfo};
+use staffy_client::{ClientError, ConnectionState};
+use staffy_core::SessionId;
+use staffy_protocol::ErrorCode;
+use staffy_protocol::history::{HistoryHit, HistorySource, HistoryStatusInfo};
 
 use super::common::{age_label, panel_header};
 use super::history_model::{
-    DEBOUNCE, Filters, HeelerTarget, HistoryResume, PANEL_LIMIT, ROLES, SOURCES, format_bytes,
-    heeler_target, hit_title, parse_snippet, resume_blocker, role_label, shell_join, short_path,
-    source_icon, source_label,
+    DEBOUNCE, Filters, HistoryResume, PANEL_LIMIT, ROLES, SOURCES, StaffyTarget, format_bytes,
+    hit_title, parse_snippet, resume_blocker, role_label, shell_join, short_path, source_icon,
+    source_label, staffy_target,
 };
 use crate::settings::{HistoryRange, HistoryScope, HistorySettings};
 use crate::theme::{DensityExt as _, Theme, Tokens};
@@ -213,7 +213,7 @@ impl HistoryPanel {
 
     /// Focuses the search field; while it is not on screen yet (the index state is still
     /// unknown, or indexing is off) the focus moves there as soon as it appears. The index
-    /// state is read again, so a `heeler index enable` made meanwhile shows up.
+    /// state is read again, so a `staffy index enable` made meanwhile shows up.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_status(cx);
         if self.status().is_some_and(|info| info.enabled) {
@@ -300,7 +300,7 @@ impl HistoryPanel {
 
     fn finish_search(
         &mut self,
-        result: Result<heeler_protocol::history::HistoryHits, ClientError>,
+        result: Result<staffy_protocol::history::HistoryHits, ClientError>,
         cx: &mut Context<Self>,
     ) {
         self.searching = false;
@@ -527,17 +527,17 @@ impl HistoryPanel {
 
     // ---- hit actions -----------------------------------------------------------------------
 
-    /// What opening the selected row does by default: resume it, or show the Heeler session.
+    /// What opening the selected row does by default: resume it, or show the Staffy session.
     fn primary(&self, hit: &HistoryHit, cx: &gpui::App) -> Option<Box<dyn gpui::Action>> {
         if let Some(resume) = HistoryResume::of(hit) {
             return Some(Box::new(ResumeHistoryHit(resume)));
         }
-        let target = heeler_target(hit)?;
+        let target = staffy_target(hit)?;
         self.session_exists(&target, cx)
             .then(|| Box::new(OpenHistoryHit(target)) as Box<dyn gpui::Action>)
     }
 
-    fn session_exists(&self, target: &HeelerTarget, cx: &gpui::App) -> bool {
+    fn session_exists(&self, target: &StaffyTarget, cx: &gpui::App) -> bool {
         target
             .session
             .parse::<SessionId>()
@@ -687,8 +687,8 @@ impl Render for HistoryPanel {
         let (theme, tokens) = (style.theme, style.density.ui());
         let body = match &self.index {
             Index::Unsupported => self.render_note(
-                "This heelerd does not offer history search (protocol 0.8). Restart it from the \
-                 Daemon menu after updating Heeler.",
+                "This staffyd does not offer history search (protocol 0.8). Restart it from the \
+                 Daemon menu after updating Staffy.",
                 &theme,
                 &tokens,
             ),
@@ -787,8 +787,8 @@ impl HistoryPanel {
                     .flex_col()
                     .gap(px(tokens.spacing))
                     .child(source(
-                        source_icon(HistorySource::Heeler),
-                        "Heeler terminals",
+                        source_icon(HistorySource::Staffy),
+                        "Staffy terminals",
                         "commands, their output and agent reports",
                     ))
                     .child(source(
@@ -1148,7 +1148,7 @@ impl HistoryPanel {
                 note = resume_blocker(hit).map(|why| format!("Cannot resume: {why}"));
             }
         }
-        if let Some(target) = heeler_target(hit) {
+        if let Some(target) = staffy_target(hit) {
             let label = if target.block_started_at_ms.is_some() {
                 "Open block"
             } else {
@@ -1282,7 +1282,7 @@ impl HistoryPanel {
             Some(what) => {
                 let question = match what {
                     Confirm::Clear => {
-                        "Delete the whole index? Heeler's own records cannot be rebuilt."
+                        "Delete the whole index? Staffy's own records cannot be rebuilt."
                     }
                     Confirm::Rebuild => "Read every transcript again?",
                 };

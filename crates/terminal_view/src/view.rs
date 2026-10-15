@@ -14,9 +14,9 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Styled,
     Subscription, Task, UTF16Selection, Window, actions, div, point, px, rgba,
 };
-use heeler_protocol::blocks::{Block, BlockPart, BlockState};
-use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
+use staffy_protocol::blocks::{Block, BlockPart, BlockState};
+use staffy_protocol::messages::TerminalSize;
+use staffy_protocol::render::{CursorShape, MouseMode, Palette, Row, TerminalRender};
 
 use crate::TerminalBackend;
 use crate::blocks::{self, DisplayRow};
@@ -35,7 +35,7 @@ use crate::shared::{ModelRef, SharedEvent, SharedTerminal};
 use crate::theme::{DefaultColors, Theme};
 
 actions!(
-    heeler_terminal_view,
+    staffy_terminal_view,
     [
         /// Copies the selection to the clipboard.
         Copy,
@@ -62,7 +62,7 @@ actions!(
 );
 
 /// Key context of the view's root element, for keymap bindings.
-pub const KEY_CONTEXT: &str = "HeelerTerminal";
+pub const KEY_CONTEXT: &str = "StaffyTerminal";
 
 /// Binds ⌘C and ⌘V to [`Copy`] and [`Paste`], and the block keys (⌘↑ ⌘↓ ⌘⇧A ⌘⇧C) in the view's
 /// key context. Optional: the view also handles these chords itself when no binding claims them.
@@ -192,7 +192,7 @@ pub struct TerminalView {
     /// What the last paint drew of the overlay.
     pub(crate) painted_overlay: blocks::OverlayReport,
     pub(crate) rows: RowCache,
-    /// Keystroke → paint correlation, fed only while `HEELER_TRACE_LATENCY` is on.
+    /// Keystroke → paint correlation, fed only while `STAFFY_TRACE_LATENCY` is on.
     latency: crate::trace::LatencyTracker,
     /// Cursor position after the previous applied frame (tracing only).
     traced_cursor: Option<(u16, u16)>,
@@ -610,10 +610,10 @@ impl TerminalView {
                 if screen <= layout.rows {
                     return 0;
                 }
-                let blank = |row: &heeler_protocol::render::Row| {
+                let blank = |row: &staffy_protocol::render::Row| {
                     row.runs.iter().all(|run| {
                         run.text.trim().is_empty()
-                            && run.bg == heeler_protocol::render::Color::Default
+                            && run.bg == staffy_protocol::render::Color::Default
                     })
                 };
                 let last_content = model
@@ -1822,7 +1822,7 @@ impl TerminalView {
         };
         Some(
             div()
-                .id("heeler-block-actions")
+                .id("staffy-block-actions")
                 .absolute()
                 .top(px(self.settings.padding) + layout.cell.height * row as f32)
                 .right(px(self.settings.padding))
@@ -1881,7 +1881,7 @@ impl Render for TerminalView {
         let background = hsla(self.theme.background());
         if self.mode == ViewMode::Preview {
             return div()
-                .id("heeler-terminal-preview")
+                .id("staffy-terminal-preview")
                 .relative()
                 .size_full()
                 .overflow_hidden()
@@ -1896,7 +1896,7 @@ impl Render for TerminalView {
         };
         let bar = self.actions_bar(cx);
         let root = div()
-            .id("heeler-terminal")
+            .id("staffy-terminal")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))

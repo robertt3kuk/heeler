@@ -22,23 +22,23 @@ use portable_pty::CommandBuilder;
 
 use crate::error::TerminalError;
 
-/// Revision of the injected scripts, exported as `HEELER_SHELL_INTEGRATION_VERSION` and part
+/// Revision of the injected scripts, exported as `STAFFY_SHELL_INTEGRATION_VERSION` and part
 /// of the install path. Bump it when a script changes in a way later slices must tell apart.
 pub const VERSION: &str = "1";
 
 /// Session environment variable that disables the integration when set to `0`.
-pub const OPT_OUT_ENV: &str = "HEELER_SHELL_INTEGRATION";
+pub const OPT_OUT_ENV: &str = "STAFFY_SHELL_INTEGRATION";
 
-const ENV_DIR: &str = "HEELER_SHELL_INTEGRATION_DIR";
-const ENV_VERSION: &str = "HEELER_SHELL_INTEGRATION_VERSION";
-const ENV_ORIG_ZDOTDIR: &str = "HEELER_ORIG_ZDOTDIR";
-const ENV_ORIG_XDG: &str = "HEELER_ORIG_XDG_DATA_DIRS";
-const ENV_XDG_UNSET: &str = "HEELER_XDG_DATA_DIRS_UNSET";
-const ENV_BASH_INJECT: &str = "HEELER_BASH_INJECT";
-const ENV_BASH_RCFILE: &str = "HEELER_BASH_RCFILE";
+const ENV_DIR: &str = "STAFFY_SHELL_INTEGRATION_DIR";
+const ENV_VERSION: &str = "STAFFY_SHELL_INTEGRATION_VERSION";
+const ENV_ORIG_ZDOTDIR: &str = "STAFFY_ORIG_ZDOTDIR";
+const ENV_ORIG_XDG: &str = "STAFFY_ORIG_XDG_DATA_DIRS";
+const ENV_XDG_UNSET: &str = "STAFFY_XDG_DATA_DIRS_UNSET";
+const ENV_BASH_INJECT: &str = "STAFFY_BASH_INJECT";
+const ENV_BASH_RCFILE: &str = "STAFFY_BASH_RCFILE";
 
 /// Variables the injection owns. They are cleared first so a daemon started from inside a
-/// Heeler terminal cannot leak a stale injection into sessions that get none.
+/// Staffy terminal cannot leak a stale injection into sessions that get none.
 const OWNED_ENV: [&str; 7] = [
     ENV_DIR,
     ENV_VERSION,
@@ -52,7 +52,7 @@ const OWNED_ENV: [&str; 7] = [
 /// fish's default when `XDG_DATA_DIRS` is unset (XDG Base Directory specification).
 const XDG_DEFAULT_DATA_DIRS: &str = "/usr/local/share:/usr/share";
 
-const BASH_SHIM: &str = "bash/heeler.bash";
+const BASH_SHIM: &str = "bash/staffy.bash";
 
 const FILES: [(&str, &str); 4] = [
     (
@@ -60,16 +60,16 @@ const FILES: [(&str, &str); 4] = [
         include_str!("../shell-integration/zsh/.zshenv"),
     ),
     (
-        "zsh/heeler-integration.zsh",
-        include_str!("../shell-integration/zsh/heeler-integration.zsh"),
+        "zsh/staffy-integration.zsh",
+        include_str!("../shell-integration/zsh/staffy-integration.zsh"),
     ),
     (
         BASH_SHIM,
-        include_str!("../shell-integration/bash/heeler.bash"),
+        include_str!("../shell-integration/bash/staffy.bash"),
     ),
     (
-        "fish/vendor_conf.d/heeler-shell-integration.fish",
-        include_str!("../shell-integration/fish/vendor_conf.d/heeler-shell-integration.fish"),
+        "fish/vendor_conf.d/staffy-shell-integration.fish",
+        include_str!("../shell-integration/fish/vendor_conf.d/staffy-shell-integration.fish"),
     ),
 ];
 
@@ -123,7 +123,7 @@ fn shell_of(program: &OsStr) -> Option<Shell> {
 }
 
 /// Points `cmd` at the integration under `root` when it runs zsh, bash or fish. Any other
-/// program, sessions that opted out with `HEELER_SHELL_INTEGRATION=0`, and `root == None` get
+/// program, sessions that opted out with `STAFFY_SHELL_INTEGRATION=0`, and `root == None` get
 /// no injection; in every case stale injection variables inherited from the daemon's
 /// environment are removed. `cwd` is the directory the process starts in: an injected shell
 /// reports its working directory, so it must call it by the path the session asked for rather
@@ -356,7 +356,7 @@ mod tests {
         inject(&mut cmd, Some(Path::new("/si")), None);
         assert_eq!(
             argv_of(&cmd),
-            ["/bin/bash", "--rcfile", "/si/bash/heeler.bash"]
+            ["/bin/bash", "--rcfile", "/si/bash/staffy.bash"]
         );
         assert_eq!(env_of(&cmd, ENV_BASH_INJECT).as_deref(), Some("login"));
         assert_eq!(env_of(&cmd, ENV_BASH_RCFILE), None);
@@ -371,7 +371,7 @@ mod tests {
             [
                 "bash",
                 "--rcfile",
-                "/si/bash/heeler.bash",
+                "/si/bash/staffy.bash",
                 "-i",
                 "--noediting"
             ]

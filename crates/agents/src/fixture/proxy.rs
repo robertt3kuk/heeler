@@ -1,4 +1,4 @@
-//! Records a real session: stands in for `codex` between Heeler and the real app server and
+//! Records a real session: stands in for `codex` between Staffy and the real app server and
 //! writes everything that passes to a raw transcript (`scrub` makes a fixture of it).
 
 use std::fs::File;

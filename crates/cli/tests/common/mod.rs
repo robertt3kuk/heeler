@@ -1,5 +1,5 @@
-//! Shared harness for the session and attach tests: the real `heeler` binary against a real
-//! `heelerd` (in-process on a temporary `HEELER_HOME`, or a spawned process).
+//! Shared harness for the session and attach tests: the real `staffy` binary against a real
+//! `staffyd` (in-process on a temporary `STAFFY_HOME`, or a spawned process).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 #![allow(dead_code)] // each test binary uses a different subset
@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use heeler_daemon::{DaemonConfig, Paths, RunningDaemon};
 use serde_json::Value;
+use staffy_daemon::{DaemonConfig, Paths, RunningDaemon};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::time::{sleep, timeout};
 
-pub const HEELER: &str = env!("CARGO_BIN_EXE_heeler");
+pub const STAFFY: &str = env!("CARGO_BIN_EXE_staffy");
 pub const WAIT: Duration = Duration::from_secs(20);
 
 #[derive(Debug)]
@@ -52,13 +52,13 @@ impl TestDaemon {
     pub async fn start_with(tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
-        // Sessions find this build of the CLI through `HEELER_BIN`, as in a real install.
+        // Sessions find this build of the CLI through `STAFFY_BIN`, as in a real install.
         let mut config = DaemonConfig {
-            heeler_bin: Some(PathBuf::from(HEELER)),
+            staffy_bin: Some(PathBuf::from(STAFFY)),
             ..DaemonConfig::new(paths.clone())
         };
         tweak(&mut config);
-        let daemon = heeler_daemon::start(config).await.unwrap();
+        let daemon = staffy_daemon::start(config).await.unwrap();
         Self {
             _dir: dir,
             paths,
@@ -66,23 +66,23 @@ impl TestDaemon {
         }
     }
 
-    pub async fn heeler(&self, args: &[&str]) -> Out {
-        heeler(&self.paths.socket, args).await
+    pub async fn staffy(&self, args: &[&str]) -> Out {
+        staffy(&self.paths.socket, args).await
     }
 
-    /// `heeler new --json` of `argv`; returns the session id.
+    /// `staffy new --json` of `argv`; returns the session id.
     pub async fn new_session(&self, extra: &[&str], argv: &[&str]) -> String {
         let mut args = vec!["new", "--json"];
         args.extend_from_slice(extra);
         args.push("--");
         args.extend_from_slice(argv);
-        let out = self.heeler(&args).await.ok();
+        let out = self.staffy(&args).await.ok();
         out.json()["session"]["id"].as_str().unwrap().to_owned()
     }
 
-    /// The session objects of `heeler ls --json`.
+    /// The session objects of `staffy ls --json`.
     pub async fn sessions(&self) -> Vec<Value> {
-        let out = self.heeler(&["ls", "--json"]).await.ok();
+        let out = self.staffy(&["ls", "--json"]).await.ok();
         out.json()["sessions"].as_array().unwrap().clone()
     }
 
@@ -94,7 +94,7 @@ impl TestDaemon {
             .unwrap_or_else(|| panic!("session {id} not listed"))
     }
 
-    /// Polls `heeler ls` until the session's `state.state` is `state`.
+    /// Polls `staffy ls` until the session's `state.state` is `state`.
     pub async fn wait_state(&self, id: &str, state: &str) -> Value {
         let result = timeout(WAIT, async {
             loop {
@@ -115,7 +115,7 @@ impl TestDaemon {
     }
 }
 
-/// Environment-free invocation: `HEELER_*` from the parent never leak in. `--socket` goes
+/// Environment-free invocation: `STAFFY_*` from the parent never leak in. `--socket` goes
 /// first so it cannot end up inside a trailing `-- ARGV`.
 pub fn command(binary: &Path, socket: Option<&Path>, args: &[&str]) -> Command {
     let mut command = Command::new(binary);
@@ -124,8 +124,8 @@ pub fn command(binary: &Path, socket: Option<&Path>, args: &[&str]) -> Command {
     }
     command
         .args(args)
-        .env_remove("HEELER_HOME")
-        .env_remove("HEELER_SOCKET")
+        .env_remove("STAFFY_HOME")
+        .env_remove("STAFFY_SOCKET")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     command
@@ -140,31 +140,31 @@ pub async fn finish(mut command: Command) -> Out {
     }
 }
 
-pub async fn heeler(socket: &Path, args: &[&str]) -> Out {
-    finish(command(Path::new(HEELER), Some(socket), args)).await
+pub async fn staffy(socket: &Path, args: &[&str]) -> Out {
+    finish(command(Path::new(STAFFY), Some(socket), args)).await
 }
 
-/// Directory holding `heelerd`, next to the `heeler` test binary (same profile). Tests never
+/// Directory holding `staffyd`, next to the `staffy` test binary (same profile). Tests never
 /// build it: `just test` builds the workspace binaries first.
-pub fn heelerd_dir() -> PathBuf {
-    let dir = Path::new(HEELER).parent().unwrap().to_owned();
+pub fn staffyd_dir() -> PathBuf {
+    let dir = Path::new(STAFFY).parent().unwrap().to_owned();
     assert!(
-        dir.join("heelerd").is_file(),
-        "heelerd not built: run `cargo build -p heeler-daemon --bin heelerd` (or `just test`)"
+        dir.join("staffyd").is_file(),
+        "staffyd not built: run `cargo build -p staffy-daemon --bin staffyd` (or `just test`)"
     );
     dir
 }
 
-/// The fake codex app server, next to the `heeler` test binary; `just test` builds the
+/// The fake codex app server, next to the `staffy` test binary; `just test` builds the
 /// workspace binaries first.
 pub fn codex_fixture_bin() -> PathBuf {
-    let bin = Path::new(HEELER)
+    let bin = Path::new(STAFFY)
         .parent()
         .unwrap()
-        .join("heeler-codex-fixture");
+        .join("staffy-codex-fixture");
     assert!(
         bin.is_file(),
-        "heeler-codex-fixture not built: run `cargo build -p heeler-agents --bins` (or `just test`)"
+        "staffy-codex-fixture not built: run `cargo build -p staffy-agents --bins` (or `just test`)"
     );
     bin
 }

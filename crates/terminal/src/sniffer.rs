@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
-use heeler_protocol::blocks::Block;
+use staffy_protocol::blocks::Block;
 
 use crate::queries::is_color_query;
 

@@ -6,8 +6,8 @@
 //! straddling the cut is gone as a whole, and the headers (which carry a command line or a
 //! path) are redacted as well.
 
-use heeler_index::redact::redact;
-use heeler_protocol::assistant::{Attachment, AttachmentKind, AttachmentMeta};
+use staffy_index::redact::redact;
+use staffy_protocol::assistant::{Attachment, AttachmentKind, AttachmentMeta};
 
 /// Characters read beyond a part's share so that redaction sees a secret that straddles the cut.
 pub const REDACT_SLACK: usize = 512;
@@ -293,7 +293,7 @@ pub fn last_turns(messages: &[Message], turns: usize) -> (String, usize) {
 /// Checks an attachment's own bounds (`lines`, `last_turns`, `limit`, ranges, empty names).
 /// The message of the error says what was wrong.
 pub fn check_bounds(attachment: &Attachment) -> Result<(), String> {
-    use heeler_protocol::assistant::{
+    use staffy_protocol::assistant::{
         SEARCH_MAX_LIMIT, SHELL_RECENT_MAX_LINES, TRANSCRIPT_MAX_TURNS,
     };
     match attachment {
@@ -350,7 +350,7 @@ pub fn check_bounds(attachment: &Attachment) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heeler_protocol::assistant::LineRange;
+    use staffy_protocol::assistant::LineRange;
 
     #[test]
     fn bound_keeps_the_requested_end_on_character_boundaries() {
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn attachment_bounds_are_checked() {
         let ok = |a: Attachment| check_bounds(&a).is_ok();
-        let terminal_id = heeler_core::TerminalId(1);
+        let terminal_id = staffy_core::TerminalId(1);
         assert!(ok(Attachment::ShellRecent {
             terminal_id,
             lines: 500

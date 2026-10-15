@@ -5,8 +5,8 @@
 
 use std::fmt;
 
-use heeler_core::{ModelInfo, SessionId};
 use serde::{Deserialize, Serialize};
+use staffy_core::{ModelInfo, SessionId};
 
 /// The `agent` of a `chat.create` that talks to a model provider directly.
 pub const AGENT_DIRECT: &str = "direct";

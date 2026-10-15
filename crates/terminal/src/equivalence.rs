@@ -3,8 +3,8 @@
 //! engine must give identical history, viewport and logical lines (ADR 0013).
 #![allow(clippy::expect_used, clippy::unwrap_used)] // tests assert by panicking
 
-use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::{CellFlags, Color, Link, Row};
+use staffy_protocol::messages::TerminalSize;
+use staffy_protocol::render::{CellFlags, Color, Link, Row};
 
 use crate::emulator::{Emulator, LineScope, LogicalLine};
 use crate::render::RenderTracker;

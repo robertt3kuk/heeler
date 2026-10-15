@@ -2,11 +2,11 @@
 //! and only ever touches a temporary keychain file it creates (never the login keychain):
 //!
 //! ```sh
-//! cargo test -p heeler-gateway --test credentials -- --ignored
+//! cargo test -p staffy-gateway --test credentials -- --ignored
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use heeler_gateway::{CredentialStore, KEYCHAIN_SERVICE, MemoryStore, Secret, keychain_ref};
+use staffy_gateway::{CredentialStore, KEYCHAIN_SERVICE, MemoryStore, Secret, keychain_ref};
 
 #[test]
 fn the_memory_store_sets_replaces_and_deletes() {
@@ -37,9 +37,9 @@ mod keychain {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use heeler_gateway::{CredentialStore, KEYCHAIN_SERVICE, KeychainStore, Secret};
+    use staffy_gateway::{CredentialStore, KEYCHAIN_SERVICE, KeychainStore, Secret};
 
-    const PASSWORD: &str = "heeler-test-keychain-password";
+    const PASSWORD: &str = "staffy-test-keychain-password";
 
     fn security(args: &[&str]) -> std::process::Output {
         Command::new("security")
@@ -62,7 +62,7 @@ mod keychain {
     impl TempKeychain {
         fn create() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("heeler-test.keychain-db");
+            let path = dir.path().join("staffy-test.keychain-db");
             let created = security(&["create-keychain", "-p", PASSWORD, path.to_str().unwrap()]);
             assert!(
                 created.status.success(),
@@ -96,7 +96,7 @@ mod keychain {
     #[ignore = "creates and deletes a temporary keychain via /usr/bin/security; run manually"]
     fn the_keychain_store_round_trips_in_a_temporary_keychain() {
         let before = search_list();
-        let account = format!("heeler-test-{}", std::process::id());
+        let account = format!("staffy-test-{}", std::process::id());
         {
             let keychain = TempKeychain::create();
             let store = KeychainStore::open_file(keychain.path(), PASSWORD).unwrap();

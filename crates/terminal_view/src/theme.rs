@@ -1,6 +1,6 @@
 //! Colors: the client theme plus the application's OSC 4/10/11/12 overrides (ADR 0004).
 
-use heeler_protocol::render::{CellFlags, Color, Palette};
+use staffy_protocol::render::{CellFlags, Color, Palette};
 
 /// 8-bit RGB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,8 +43,8 @@ pub struct TerminalPalette {
 }
 
 impl TerminalPalette {
-    /// Built-in `heeler-dark` (design.md § Visual system): bg `#1e1e1e`, fg `#d4d4d4`.
-    pub const HEELER_DARK: Self = Self {
+    /// Built-in `staffy-dark` (design.md § Visual system): bg `#1e1e1e`, fg `#d4d4d4`.
+    pub const STAFFY_DARK: Self = Self {
         ansi: [
             Rgb::from_hex(0x000000),
             Rgb::from_hex(0xcd3131),
@@ -69,8 +69,8 @@ impl TerminalPalette {
         selection: Rgb::from_hex(0x264f78),
     };
 
-    /// Built-in `heeler-light`.
-    pub const HEELER_LIGHT: Self = Self {
+    /// Built-in `staffy-light`.
+    pub const STAFFY_LIGHT: Self = Self {
         ansi: [
             Rgb::from_hex(0x000000),
             Rgb::from_hex(0xcd3131),
@@ -98,7 +98,7 @@ impl TerminalPalette {
 
 impl Default for TerminalPalette {
     fn default() -> Self {
-        Self::HEELER_DARK
+        Self::STAFFY_DARK
     }
 }
 
@@ -251,7 +251,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_palette_is_heeler_dark() {
+    fn default_palette_is_staffy_dark() {
         let p = TerminalPalette::default();
         assert_eq!(p.background, Rgb(0x1e, 0x1e, 0x1e));
         assert_eq!(p.foreground, Rgb(0xd4, 0xd4, 0xd4));
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(theme.indexed(231), Rgb(255, 255, 255));
         assert_eq!(theme.indexed(232), Rgb(8, 8, 8));
         assert_eq!(theme.indexed(255), Rgb(238, 238, 238));
-        assert_eq!(theme.indexed(1), TerminalPalette::HEELER_DARK.ansi[1]);
+        assert_eq!(theme.indexed(1), TerminalPalette::STAFFY_DARK.ansi[1]);
     }
 
     #[test]

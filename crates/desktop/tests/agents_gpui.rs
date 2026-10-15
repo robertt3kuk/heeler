@@ -14,14 +14,14 @@ use common::agents::{Node, Reporter, usage_context};
 use common::chat::ChatEnv;
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
-use heeler_core::{NodeOutcome, SessionId};
-use heeler_desktop::sessions::AgentAttentionChanged;
-use heeler_desktop::settings::{AgentsScope, AgentsSettings};
-use heeler_desktop::workbench::actions;
-use heeler_desktop::workbench::model::{DockPosition, ItemRef, LayoutPreset};
-use heeler_desktop::workbench::panels::{AGENTS_TICK, AgentsPanel, SectionView};
-use heeler_desktop::workbench::{BadgeSite, Region, Workbench};
-use heeler_settings::{SettingsPaths, SettingsStore};
+use staffy_core::{NodeOutcome, SessionId};
+use staffy_desktop::sessions::AgentAttentionChanged;
+use staffy_desktop::settings::{AgentsScope, AgentsSettings};
+use staffy_desktop::workbench::actions;
+use staffy_desktop::workbench::model::{DockPosition, ItemRef, LayoutPreset};
+use staffy_desktop::workbench::panels::{AGENTS_TICK, AgentsPanel, SectionView};
+use staffy_desktop::workbench::{BadgeSite, Region, Workbench};
+use staffy_settings::{SettingsPaths, SettingsStore};
 
 fn open<'a>(
     cx: &'a mut TestAppContext,
@@ -164,7 +164,7 @@ fn the_panel_is_registered_in_the_right_dock_of_the_default_and_overview_presets
     // Movable like every panel: to the bottom dock.
     cx.dispatch_action(actions::OpenPanel("agents".into()));
     cx.dispatch_action(actions::MoveActivePanel(
-        heeler_desktop::workbench::model::PanelDest::Dock(DockPosition::Bottom),
+        staffy_desktop::workbench::model::PanelDest::Dock(DockPosition::Bottom),
     ));
     draw(cx);
     let state = view.read_with(cx, |wb, _| wb.state().clone());
@@ -313,7 +313,7 @@ fn a_release_finishes_a_node_and_a_restart_leaves_the_main_agent_unknown(cx: &mu
     let database = daemon.paths.database.clone();
     let deadline = std::time::Instant::now() + common::WAIT;
     loop {
-        let storage = heeler_storage::Storage::open(&database).unwrap();
+        let storage = staffy_storage::Storage::open(&database).unwrap();
         let stored = storage.agent_trees().list().unwrap();
         storage.close();
         if stored
@@ -576,7 +576,7 @@ fn the_node_menu_opens_the_transcript_and_copies_the_node_id(cx: &mut TestAppCon
         &daemon,
         Node::sub("agent-7", "root")
             .name("Explore")
-            .transcript("/tmp/heeler-test/agent-7.jsonl")
+            .transcript("/tmp/staffy-test/agent-7.jsonl")
             .finished(NodeOutcome::Completed),
     );
     rep.report(&daemon, Node::sub("agent-8", "root").working().name("Plan"));
@@ -597,7 +597,7 @@ fn the_node_menu_opens_the_transcript_and_copies_the_node_id(cx: &mut TestAppCon
     view.update_in(cx, |wb, window, cx| wb.run_menu_entry(1, window, cx));
     assert_eq!(
         *revealed.borrow(),
-        [PathBuf::from("/tmp/heeler-test/agent-7.jsonl")]
+        [PathBuf::from("/tmp/staffy-test/agent-7.jsonl")]
     );
     right_click(
         &view,

@@ -14,9 +14,9 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use gpui::{Context, EventEmitter};
-use heeler_client::BlockList;
-use heeler_protocol::blocks::Block;
-use heeler_protocol::render::{Row, TerminalRender};
+use staffy_client::BlockList;
+use staffy_protocol::blocks::Block;
+use staffy_protocol::render::{Row, TerminalRender};
 
 use crate::ViewStatus;
 use crate::model::{Applied, TerminalModel};

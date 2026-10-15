@@ -3,8 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 
-use heeler_cli::HostRenderer;
-use heeler_protocol::render::{
+use staffy_cli::HostRenderer;
+use staffy_protocol::render::{
     CellFlags, Color, Cursor, CursorShape, Link, Modes, MouseMode, Palette, Row, Run,
     TerminalFrame, TerminalSnapshot,
 };
@@ -603,7 +603,7 @@ fn hyperlinks_use_osc8_and_close_at_the_end_of_the_row() {
     let out = host.snapshot(&s);
     assert!(contains(
         &out,
-        "see \x1b]8;id=heeler-7;https://example.com/a?b=c\x1b\\docs\x1b]8;;\x1b\\ now"
+        "see \x1b]8;id=staffy-7;https://example.com/a?b=c\x1b\\docs\x1b]8;;\x1b\\ now"
     ));
     assert_eq!(host.line(0), "see docs now");
 
@@ -630,7 +630,7 @@ fn links_learned_in_a_frame_are_usable_in_that_frame() {
         uri: "https://x.test/".into(),
     }];
     let out = host.frame(&f);
-    assert!(contains(&out, "\x1b]8;id=heeler-2;https://x.test/\x1b\\go"));
+    assert!(contains(&out, "\x1b]8;id=staffy-2;https://x.test/\x1b\\go"));
 }
 
 #[test]

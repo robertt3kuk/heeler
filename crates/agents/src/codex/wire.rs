@@ -1,4 +1,4 @@
-//! Typed structs for the Codex app-server messages Heeler uses, written against the schema
+//! Typed structs for the Codex app-server messages Staffy uses, written against the schema
 //! `codex app-server generate-json-schema` produces for 0.162.1 (`docs/agents.md` explains how
 //! to regenerate and compare). Every field the adapter does not read is left out, and every
 //! field the server may omit is optional: the structs must accept what newer servers add.
@@ -57,7 +57,7 @@ pub struct ThreadResumeParams<'a> {
     pub approval_policy: &'a str,
     pub sandbox: &'a str,
     pub approvals_reviewer: &'static str,
-    /// Heeler's journal is the history; the provider's copy is not sent back.
+    /// Staffy's journal is the history; the provider's copy is not sent back.
     pub exclude_turns: bool,
 }
 

@@ -1,7 +1,7 @@
 //! Index a generated corpus and report what it costs (`docs/history-index.md` § Performance).
 //!
 //! ```text
-//! cargo run --release -p heeler-index --example perf -- [--messages 100000] [--idle-secs 10]
+//! cargo run --release -p staffy-index --example perf -- [--messages 100000] [--idle-secs 10]
 //! ```
 //!
 //! The corpus is synthetic Claude Code transcripts in a temporary directory: about a third user
@@ -16,7 +16,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use heeler_index::{IndexConfig, Indexer, Role, SearchQuery, Source, process_cpu_micros};
+use staffy_index::{IndexConfig, Indexer, Role, SearchQuery, Source, process_cpu_micros};
 
 struct Rng(u64);
 
@@ -209,7 +209,7 @@ fn main() {
         db_path: db.clone(),
         range_days: 0,
         roots: vec![(Source::Claude, corpus.clone())],
-        heeler: false,
+        staffy: false,
     })
     .unwrap();
     let handle = indexer.handle();

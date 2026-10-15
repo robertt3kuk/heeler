@@ -1,6 +1,6 @@
 [package]
-name = "heeler-index"
-description = "Heeler session history index: SQLite FTS5 over Heeler blocks and external agent transcripts, incremental scanning, redaction"
+name = "staffy-index"
+description = "Staffy session history index: SQLite FTS5 over Staffy blocks and external agent transcripts, incremental scanning, redaction"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

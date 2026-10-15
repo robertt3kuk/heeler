@@ -6,14 +6,14 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use heeler_core::agent::{
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use staffy_core::agent::{
     FileChange, FileChangeKind, MAX_OUTPUT_BYTES, MAX_PAYLOAD_BYTES, MessageRole, NoticeLevel,
     PermissionKind, PermissionOption, PermissionOptionKind, PermissionOutcome, PlanStep,
     PlanStepStatus, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
-use heeler_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use staffy_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
 use tracing::debug;
 
 use super::wire::{
@@ -53,7 +53,7 @@ const IGNORED: &[&str] = &[
 #[derive(Debug, Default)]
 pub struct Mapped {
     pub drafts: Vec<AgentEventDraft>,
-    /// Answer to send right away (requests Heeler does not support); approvals are answered
+    /// Answer to send right away (requests Staffy does not support); approvals are answered
     /// later through [`Mapper::answer`].
     pub reply: Option<Reply>,
 }
@@ -851,7 +851,7 @@ impl Mapper {
         let notice = self.notice(
             NoticeLevel::Warning,
             format!(
-                "the agent sent `{method}`, which Heeler does not support yet; it was declined"
+                "the agent sent `{method}`, which Staffy does not support yet; it was declined"
             ),
             &params,
         );
@@ -1122,7 +1122,7 @@ fn file_change(change: &FileUpdateChange) -> FileChange {
         _ => FileChangeKind::Update,
     };
     // Added files carry their content, deleted files the old content; updates a unified diff.
-    // Heeler's model keeps the provider's text in `patch` in every case.
+    // Staffy's model keeps the provider's text in `patch` in every case.
     FileChange {
         path: change.path.clone(),
         kind,

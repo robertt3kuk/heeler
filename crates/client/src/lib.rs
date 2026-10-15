@@ -1,4 +1,4 @@
-//! Async client for the heelerd protocol (ADR 0002).
+//! Async client for the staffyd protocol (ADR 0002).
 //!
 //! Two layers:
 //! * [`Client`] is one connection: [`Client::connect`] dials the daemon (optionally spawning

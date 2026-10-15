@@ -1,6 +1,6 @@
 //! Detach key handling: ctrl+\ then `d`, with sequences split at arbitrary read boundaries.
 
-use heeler_cli::DetachDetector;
+use staffy_cli::DetachDetector;
 
 const P: u8 = 0x1c;
 

@@ -4,9 +4,9 @@
 //! answered with its `id`; typed decoding happens in [`Request::decode`](crate::Request::decode)
 //! and [`Event::decode`](crate::Event::decode).
 
-use heeler_core::{Epoch, Seq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use staffy_core::{Epoch, Seq};
 
 use crate::error::ProtocolError;
 use crate::frame::{Frame, FrameKind};

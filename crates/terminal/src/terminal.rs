@@ -20,11 +20,11 @@ use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use heeler_protocol::blocks::{Block, BlockPart};
-use heeler_protocol::messages::TerminalSize;
-use heeler_protocol::render::{Row, TerminalFrame, TerminalRender, TerminalSnapshot};
 use parking_lot::{Condvar, Mutex};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use staffy_protocol::blocks::{Block, BlockPart};
+use staffy_protocol::messages::TerminalSize;
+use staffy_protocol::render::{Row, TerminalFrame, TerminalRender, TerminalSnapshot};
 use tokio::sync::{broadcast, watch};
 
 use crate::blocks::{BlockText, BlockTextError};
@@ -63,7 +63,7 @@ pub struct TerminalConfig {
     /// Colours reported for OSC 10/11/12 queries while the application has not set its own.
     pub default_colors: DefaultColors,
     /// Inject OSC 133 / OSC 7 shell integration when the session runs zsh, bash or fish
-    /// (default true). The session environment variable `HEELER_SHELL_INTEGRATION=0` opts
+    /// (default true). The session environment variable `STAFFY_SHELL_INTEGRATION=0` opts
     /// out as well.
     pub shell_integration: bool,
     /// Directory written by [`crate::shell_integration::install`]; `None` = nothing to inject.
@@ -185,7 +185,7 @@ impl Core {
         sys::signal_group(pid, Signal::Hangup).map_err(TerminalError::Signal)?;
         let core = Arc::clone(self);
         thread::Builder::new()
-            .name("heeler-term-kill".into())
+            .name("staffy-term-kill".into())
             .spawn(move || {
                 let deadline = Instant::now() + grace;
                 let mut status = core.exit_status.lock();
@@ -207,7 +207,7 @@ impl Core {
                 }
             })
             .map_err(|source| TerminalError::Thread {
-                name: "heeler-term-kill",
+                name: "staffy-term-kill",
                 source,
             })?;
         Ok(())
@@ -274,7 +274,7 @@ fn command(cfg: &TerminalConfig) -> CommandBuilder {
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "heeler");
+    cmd.env("TERM_PROGRAM", "staffy");
     let integration_dir = cfg
         .shell_integration_dir
         .as_deref()
@@ -557,21 +557,21 @@ fn start_threads(
     };
 
     let c = Arc::clone(core);
-    spawn("heeler-term-read", Box::new(move || reader_loop(c, reader)))
+    spawn("staffy-term-read", Box::new(move || reader_loop(c, reader)))
         .map_err(|e| release(HELPER_THREADS, e))?;
     let c = Arc::clone(core);
     spawn(
-        "heeler-term-write",
+        "staffy-term-write",
         Box::new(move || writer_loop(c, writer, write_rx)),
     )
     .map_err(|e| release(HELPER_THREADS - 1, e))?;
     let c = Arc::clone(core);
-    spawn("heeler-term-sync", Box::new(move || sync_loop(c)))
+    spawn("staffy-term-sync", Box::new(move || sync_loop(c)))
         .map_err(|e| release(HELPER_THREADS - 2, e))?;
     let c = Arc::clone(core);
     let slot = Arc::clone(child);
     spawn(
-        "heeler-term-wait",
+        "staffy-term-wait",
         Box::new(move || {
             // `take` can only fail if the slot was already emptied by the failure path.
             let child = slot.lock().take();

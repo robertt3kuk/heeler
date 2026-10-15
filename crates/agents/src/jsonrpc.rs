@@ -358,7 +358,7 @@ fn resolve(pending: &Pending, id: &Value, message: &mut Value) {
 async fn stderr_loop(stderr: ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        debug!(target: "heeler_agents::stderr", "{line}");
+        debug!(target: "staffy_agents::stderr", "{line}");
         let mut tail = lock(&tail);
         if tail.len() == STDERR_LINES {
             tail.pop_front();

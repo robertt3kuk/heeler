@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use heeler_protocol::blocks::{Block, BlockState};
+use staffy_protocol::blocks::{Block, BlockState};
 
 /// Blocks kept per terminal; the oldest are dropped first.
 pub(crate) const MAX_BLOCKS: usize = 2_000;

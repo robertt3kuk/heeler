@@ -1,5 +1,5 @@
 //! The agent reporting channel (roadmap M3.3, protocol 0.4) end to end: an in-process daemon
-//! on a temporary `HEELER_HOME`, real PTY sessions, and a fake agent script that records the
+//! on a temporary `STAFFY_HOME`, real PTY sessions, and a fake agent script that records the
 //! command line it was resumed with.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::*;
-use heeler_client::Client;
-use heeler_core::{SessionId, SessionState};
-use heeler_daemon::{DaemonConfig, Paths};
-use heeler_protocol::ErrorCode;
-use heeler_protocol::messages::{
+use staffy_client::Client;
+use staffy_core::{SessionId, SessionState};
+use staffy_daemon::{DaemonConfig, Paths};
+use staffy_protocol::ErrorCode;
+use staffy_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Empty, Event, Request,
     SessionInfo, SessionSnapshot, TerminalSpec,
 };
-use heeler_storage::{SessionRow, Storage};
+use staffy_storage::{SessionRow, Storage};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
@@ -383,12 +383,12 @@ async fn a_returning_shell_prompt_clears_a_stale_report() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_get_the_heeler_environment_and_the_daemon_wins_over_the_spec() {
+async fn sessions_get_the_staffy_environment_and_the_daemon_wins_over_the_spec() {
     let dir = TempDir::new().unwrap();
     let paths = Paths::in_home(dir.path());
-    let heeler_bin = PathBuf::from("/opt/heeler/bin/heeler");
-    let daemon = heeler_daemon::start(DaemonConfig {
-        heeler_bin: Some(heeler_bin.clone()),
+    let staffy_bin = PathBuf::from("/opt/staffy/bin/staffy");
+    let daemon = staffy_daemon::start(DaemonConfig {
+        staffy_bin: Some(staffy_bin.clone()),
         ..DaemonConfig::new(paths.clone())
     })
     .await
@@ -396,18 +396,18 @@ async fn sessions_get_the_heeler_environment_and_the_daemon_wins_over_the_spec()
     let out_dir = TempDir::new().unwrap();
     let out = out_dir.path().join("env");
     let script = format!(
-        "echo \"$HEELER_ENV|$HEELER_BIN|$HEELER_SESSION_ID|$HEELER_SOCKET\" > '{}'; exec sleep 600",
+        "echo \"$STAFFY_ENV|$STAFFY_BIN|$STAFFY_SESSION_ID|$STAFFY_SOCKET\" > '{}'; exec sleep 600",
         out.display()
     );
     let mut spec = sh(&script);
-    spec.env.insert("HEELER_ENV".into(), "0".into());
-    spec.env.insert("HEELER_BIN".into(), "/evil/heeler".into());
+    spec.env.insert("STAFFY_ENV".into(), "0".into());
+    spec.env.insert("STAFFY_BIN".into(), "/evil/staffy".into());
 
-    let client = Client::connect(heeler_client::ConnectOptions {
+    let client = Client::connect(staffy_client::ConnectOptions {
         socket: Some(paths.socket.clone()),
         autostart: None,
-        client: heeler_protocol::messages::ClientInfo {
-            kind: heeler_protocol::messages::ClientKind::Cli,
+        client: staffy_protocol::messages::ClientInfo {
+            kind: staffy_protocol::messages::ClientKind::Cli,
             version: "test".into(),
         },
     })
@@ -419,7 +419,7 @@ async fn sessions_get_the_heeler_environment_and_the_daemon_wins_over_the_spec()
         text.trim(),
         format!(
             "1|{}|{}|{}",
-            heeler_bin.display(),
+            staffy_bin.display(),
             session.id,
             paths.socket.display()
         )
@@ -434,7 +434,7 @@ fn install_fake_agent(dir: &Path) {
     let script = dir.join("fake-agent");
     std::fs::write(
         &script,
-        "#!/bin/sh\n{ echo \"$HEELER_SESSION_ID\"; for a in \"$@\"; do echo \"$a\"; done; } > \"$FAKE_AGENT_OUT\"\nexec sleep 600\n",
+        "#!/bin/sh\n{ echo \"$STAFFY_SESSION_ID\"; for a in \"$@\"; do echo \"$a\"; done; } > \"$FAKE_AGENT_OUT\"\nexec sleep 600\n",
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -515,9 +515,9 @@ async fn a_daemon_restart_resumes_the_agent_with_its_reported_command() {
     );
     // A restart of an ended session uses the spec again, not the resume command.
     stop(&client, session.id).await.unwrap();
-    let restarted: heeler_protocol::messages::SessionResult = client
+    let restarted: staffy_protocol::messages::SessionResult = client
         .call(Request::SessionRestart(
-            heeler_protocol::messages::SessionRef {
+            staffy_protocol::messages::SessionRef {
                 session_id: session.id,
             },
         ))
@@ -571,8 +571,8 @@ async fn a_released_agent_is_not_resumed_after_a_restart() {
 
 // ---- agent observation tree (protocol 0.10) ------------------------------------------------
 
-use heeler_core::{AgentObservation, Liveness, NodeKind, NodeOutcome, NodeState, Usage};
-use heeler_protocol::tree::{AgentTree, AgentTreeRequest, NodeReport};
+use staffy_core::{AgentObservation, Liveness, NodeKind, NodeOutcome, NodeState, Usage};
+use staffy_protocol::tree::{AgentTree, AgentTreeRequest, NodeReport};
 
 fn node_report(id: &str, kind: NodeKind, parent: Option<&str>) -> NodeReport {
     NodeReport {

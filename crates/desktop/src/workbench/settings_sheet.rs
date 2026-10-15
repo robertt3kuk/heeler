@@ -12,8 +12,8 @@ use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use heeler_settings::Severity;
 use serde_json::Value as Json;
+use staffy_settings::Severity;
 
 use super::actions::sheet as sheet_actions;
 use super::modal::PromptSpec;
