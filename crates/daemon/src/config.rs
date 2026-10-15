@@ -377,6 +377,7 @@ struct File {
     notify: NotifySettings,
     #[serde(default)]
     terminal: TerminalSettings,
+    #[serde(default)]
     tasks: TasksSettings,
 }
 

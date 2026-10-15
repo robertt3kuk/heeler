@@ -831,23 +831,22 @@ impl TaskService {
             .await?
             .worktrees;
         // The repository `worktree.create` would use: the first of the workspace.
-        if let Some(repo) = listed.first().map(|w| w.repo_root.clone()) {
-            if let Some(existing) = listed
+        if let Some(repo) = listed.first().map(|w| w.repo_root.clone())
+            && let Some(existing) = listed
                 .iter()
                 .find(|w| w.repo_root == repo && w.branch.as_deref() == Some(branch.as_str()))
-            {
-                if existing.main {
-                    return Err(ErrorBody::new(
-                        ErrorCode::InvalidState,
-                        format!(
-                            "branch `{branch}` is checked out in the main checkout {}; a worktree \
-                             needs a branch that is not (use main placement, or another branch)",
-                            existing.path.display()
-                        ),
-                    ));
-                }
-                return Ok(existing.path.clone());
+        {
+            if existing.main {
+                return Err(ErrorBody::new(
+                    ErrorCode::InvalidState,
+                    format!(
+                        "branch `{branch}` is checked out in the main checkout {}; a worktree \
+                         needs a branch that is not (use main placement, or another branch)",
+                        existing.path.display()
+                    ),
+                ));
             }
+            return Ok(existing.path.clone());
         }
         let created = self
             .worktrees
