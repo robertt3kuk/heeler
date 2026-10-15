@@ -149,6 +149,9 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - Desktop: `agents` panel (tree, filters), badges on session rows/tabs/overview cards, notifications hook for M6.
 - Spike first: what OMP, Claude Code, Codex, OpenCode expose today (files, RPC, hooks) — evidence into `docs/spikes/`.
 
+## M13-C — Resource manager
+- [ ] M13-C Process trees and usage per session, stop/kill sessions and processes, interrupt agents and subagents (daemon + CLI); Resources panel after D-1
+
 ## M14 — Embedded browser
 - Browser items/panels in the workbench (WKWebView hosted in a GPUI window region), address bar, back/forward, localhost previews, open-links-from-terminal (⌘-click) setting, agents can open URLs into it; spike on GPUI native view embedding first (ADR).
 
