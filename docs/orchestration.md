@@ -76,7 +76,7 @@ Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a wor
 - **Finishing**: exit 0 → `done`, a non-zero exit or a failed session → `failed`, a stopped session → `cancelled`; an agent reporting through the integration hooks (`docs/integrations.md`) that goes idle after a working stretch → `done`, one that ends failed → `failed`; a chat turn that completes → `done`, fails or is cancelled → `failed`. `hutan task done` overrides. Dependants become `ready`.
 - **Auto start**: a ready task with `auto_start` starts when fewer than `[tasks] max_parallel` (daemon.toml, default 3) tasks run; the rest wait in the order they became ready. Starting by hand ignores the limit.
 - **Restart**: a running task whose session was restored stays running; any other becomes `failed` with outcome `interrupted`.
-- **Intents**: `task_done` / `task_failed` join the notification intents (`docs/protocol.md` § Notification intents) for the session that ran the task.
+- **Intents**: `task_done` / `task_failed` join the notification intents (`docs/protocol.md` § Notification intents) for the session that ran the task. They replace that session's own pending `session_exited_with_error` / `agent_finished` intent, so one task ending is one notification. Resetting an `auto` task whose dependencies are done starts it again right away.
 - To run a finished task again, reset it (`hutan task reset`, or `task.update {state: todo}`): the outcome and times are cleared, earlier sessions stay listed, readiness is recomputed; a running task is refused (cancel it first).
 
 ### CLI

@@ -331,6 +331,15 @@ impl Core {
         let Some(session) = task.sessions.last().copied().filter(|_| fresh) else {
             return Vec::new();
         };
+        // The task's intent says it all: the session's own "exited with an error" / "agent
+        // finished" for the same run would be a second notification of one event.
+        self.withdraw_where(|e| {
+            e.intent.session_id == session
+                && matches!(
+                    e.intent.kind,
+                    IntentKind::SessionExitedWithError | IntentKind::AgentFinished
+                )
+        });
         let outcome = task.outcome.as_deref().filter(|o| !o.is_empty());
         let body = match (task.started_at_ms, task.ended_at_ms) {
             (Some(start), Some(end)) => format!(
@@ -1805,6 +1814,12 @@ mod tests {
         let event = Event::TaskUpdated { task: task.clone() };
         let raised = raise(&mut core, &event, 75_100);
         assert_eq!(raised.len(), 1, "not lost to the rate limit: {raised:?}");
+        // One event, one notification: the task's intent replaces the session's exit intent.
+        assert_eq!(core.withdrawn, [exit[0].id.clone()]);
+        assert_eq!(
+            core.list(75_100).iter().map(|i| i.kind).collect::<Vec<_>>(),
+            [IntentKind::TaskFailed]
+        );
         // A task intent does not start the session's rate limit either.
         let again = raise(
             &mut core,
