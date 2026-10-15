@@ -774,3 +774,52 @@ async fn the_daemon_advertises_the_capability_and_protocol_0_13() {
     assert_eq!(raw["protocol"]["minor"], 13);
     t.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_credential_cut_short_by_the_tree_never_reaches_an_intent() {
+    let mut t = Env::plain().await;
+    let session = create(&t.client, idle_session()).await;
+    report(&t.client, main_report(session.id, AgentState::Working, 1)).await;
+    // The tree keeps 200 characters of an activity: this one loses the closing quote (and most
+    // of the key) before the daemon builds the intent.
+    let secret = "Zq9xK".repeat(60);
+    let activity = format!("calling the API with api_key=\"{secret}\" and retrying");
+    report(
+        &t.client,
+        sub_report(session.id, AgentState::Blocked, 2, Some(&activity)),
+    )
+    .await;
+    let kept = {
+        let tree: heeler_protocol::tree::AgentTree = t
+            .client
+            .call(Request::AgentTree(
+                heeler_protocol::tree::AgentTreeRequest {
+                    session_id: Some(session.id),
+                },
+            ))
+            .await
+            .unwrap();
+        tree.observations[0]
+            .nodes
+            .values()
+            .find_map(|n| n.activity.clone())
+            .expect("the blocked node's activity")
+    };
+    assert!(
+        kept.contains("Zq9xK") && !kept.contains("retrying"),
+        "the fixture must be cut inside the quoted key: {kept}"
+    );
+
+    let intent = t
+        .next_intent("the blocked intent", |i| i.kind == IntentKind::AgentBlocked)
+        .await;
+    assert!(!intent.body.contains("Zq9xK"), "{}", intent.body);
+    assert!(!intent.title.contains("Zq9xK"), "{}", intent.title);
+    assert!(
+        intent.body.contains("api_key=[REDACTED]"),
+        "{}",
+        intent.body
+    );
+    assert!(intent.body.starts_with("calling the API with"));
+    t.stop().await;
+}

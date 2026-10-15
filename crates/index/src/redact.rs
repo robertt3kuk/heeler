@@ -37,7 +37,7 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     authorization: compile(r"(?i)\b(authorization\s*[:=]\s*)(?:basic|bearer|token)\s+[^\s\x22']+"),
     url_credentials: compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@"),
     assignment: compile(&format!(
-        r#"({NAME_PATTERN}["']?\s*[:=]\s*)("[^"\n]{{4,}}"|'[^'\n]{{4,}}'|[^\s"',;)}}\]]{{6,}})"#
+        r#"({NAME_PATTERN}["']?\s*[:=]\s*)("[^"\n]{{4,}}(?:"|\z)|'[^'\n]{{4,}}(?:'|\z)|[^\s"',;)}}\]]{{6,}})"#
     )),
 });
 
@@ -176,6 +176,30 @@ mod tests {
         assert_eq!(
             clean("password: correct-horse-battery"),
             "password: [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn a_quoted_value_cut_off_by_the_end_of_the_text_is_removed_too() {
+        // Text that was shortened before it got here (a truncated activity or message) loses
+        // the closing quote; like a private key block, the value runs to the end of the text.
+        assert_eq!(
+            clean(r#"running with api_key="sk_live_abcdefghijklmnop"#),
+            "running with api_key=[REDACTED]"
+        );
+        assert_eq!(
+            clean("DB_PASSWORD='p@ss w0rd and more"),
+            "DB_PASSWORD=[REDACTED]"
+        );
+        // Closed values still stop at their quote, and an open quote before a line break is
+        // not the end of the text.
+        assert_eq!(
+            clean(r#"api_key="abcd1234efgh" then more"#),
+            "api_key=[REDACTED] then more"
+        );
+        assert_eq!(
+            clean("note: password=\"abcdefgh\nmore"),
+            "note: password=\"abcdefgh\nmore"
         );
     }
 

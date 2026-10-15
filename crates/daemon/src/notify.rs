@@ -1284,15 +1284,11 @@ mod tests {
 
     #[test]
     fn a_secret_that_ends_beyond_any_prefix_is_still_masked() {
-        // A quoted assignment whose closing quote lies past 8192 characters: the mask needs the
-        // quote, so clipping first leaves the opening of the secret in the body.
+        // A quoted assignment whose closing quote lies far beyond any prefix. (The redactor now
+        // also masks a quoted value that is cut off at the end of the text, so this one no longer
+        // distinguishes the orders; the URL below does.)
         let secret = "abcdefghij".repeat(1000);
         let quoted = format!("private_key=\"{secret}\" and then some text");
-        let clipped = clean_clipping_first(&quoted, BODY_MAX_CHARS);
-        assert!(
-            clipped.contains("abcdefghij"),
-            "the fixture must leak under the old order: {clipped}"
-        );
         let body = clean(&quoted, BODY_MAX_CHARS);
         assert!(!body.contains("abcdefghij"), "{body}");
         assert!(body.starts_with("private_key=[REDACTED] and"), "{body}");
