@@ -40,6 +40,8 @@ pub enum DaemonError {
     },
     #[error("cannot set up the model gateway: {0}")]
     Gateway(String),
+    #[error("cannot restore the tasks: {0}")]
+    Tasks(String),
     #[error("daemon task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
 }

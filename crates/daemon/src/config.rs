@@ -48,10 +48,13 @@
 //! [notify]                       # notification intents (protocol 0.13, docs/protocol.md)
 //! enabled = true
 //! min_turn_secs = 20             # a main agent's turn must take this long to count as "finished"
-//! kinds = ["approval_required", "agent_blocked", "agent_finished",
-//!          "session_exited_with_error", "chat_turn_finished"]   # which intents are raised
+//! kinds = ["approval_required", "agent_blocked", "agent_finished", "session_exited_with_error",
+//!          "chat_turn_finished", "task_done", "task_failed"]   # which intents are raised
 //! expire_secs = 3600             # a pending intent (not an approval's) lapses after this long
 //! native = true                  # also post intents to the system's notification centre (only from Hutan.app)
+//!
+//! [tasks]                        # tasks with dependencies (protocol 0.16, docs/orchestration.md)
+//! max_parallel = 3               # tasks with `auto_start` start by themselves up to this many at once
 //! ```
 
 use std::io;
@@ -88,6 +91,7 @@ pub struct DaemonSettings {
     pub assistant: AssistantSettings,
     pub notify: NotifySettings,
     pub terminal: TerminalSettings,
+    pub tasks: TasksSettings,
 }
 
 /// `[terminal]` of `daemon.toml`: how new terminal sessions get their environment.
@@ -332,6 +336,25 @@ impl Default for NotifySettings {
         }
     }
 }
+/// `tasks.max_parallel` when the setting is absent.
+pub const DEFAULT_MAX_PARALLEL: usize = 3;
+
+/// `[tasks]` of `daemon.toml`: how many tasks start by themselves at once (protocol 0.16).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct TasksSettings {
+    /// The most tasks that are running (or blocked) while ready tasks with `auto_start` start
+    /// by themselves; the others wait, longest first. Starting a task by hand ignores it.
+    pub max_parallel: usize,
+}
+
+impl Default for TasksSettings {
+    fn default() -> Self {
+        Self {
+            max_parallel: DEFAULT_MAX_PARALLEL,
+        }
+    }
+}
 
 /// The `range_days` values the settings accept.
 pub const RANGE_DAYS: [u32; 3] = [0, 30, 90];
@@ -354,6 +377,7 @@ struct File {
     notify: NotifySettings,
     #[serde(default)]
     terminal: TerminalSettings,
+    tasks: TasksSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -411,6 +435,11 @@ impl DaemonSettings {
                 "notify.expire_secs must be at least 1",
             ));
         }
+        if file.tasks.max_parallel == 0 {
+            return Err(toml::de::Error::custom(
+                "tasks.max_parallel must be at least 1",
+            ));
+        }
         Ok(Self {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
@@ -420,6 +449,7 @@ impl DaemonSettings {
             assistant: file.assistant,
             notify: file.notify,
             terminal: file.terminal,
+            tasks: file.tasks,
         })
     }
 }
@@ -777,5 +807,30 @@ mod tests {
         assert!(!notify.native);
         assert!(notify.enabled, "intents are still raised");
         assert!(DaemonSettings::parse("[notify]\nnative = 1\n", None).is_err());
+    }
+
+    #[test]
+    fn task_settings_default_to_three_in_parallel_and_are_validated() {
+        let defaults = DaemonSettings::parse("", None).unwrap().tasks;
+        assert_eq!(defaults.max_parallel, 3);
+        assert_eq!(defaults, TasksSettings::default());
+        let tasks = DaemonSettings::parse("[tasks]\nmax_parallel = 8\n", None)
+            .unwrap()
+            .tasks;
+        assert_eq!(tasks.max_parallel, 8);
+        assert!(DaemonSettings::parse("[tasks]\nmax_parallel = 0\n", None).is_err());
+        assert!(DaemonSettings::parse("[tasks]\nmax_parallel = -1\n", None).is_err());
+        assert!(DaemonSettings::parse("[tasks]\nmax_parallel = \"3\"\n", None).is_err());
+    }
+
+    #[test]
+    fn the_default_intent_kinds_include_tasks() {
+        let notify = DaemonSettings::parse("", None).unwrap().notify;
+        assert!(notify.kinds.contains(&IntentKind::TaskDone));
+        assert!(notify.kinds.contains(&IntentKind::TaskFailed));
+        let only = DaemonSettings::parse("[notify]\nkinds = [\"task_failed\"]\n", None)
+            .unwrap()
+            .notify;
+        assert_eq!(only.kinds, [IntentKind::TaskFailed]);
     }
 }

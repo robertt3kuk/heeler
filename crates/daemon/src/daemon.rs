@@ -34,6 +34,7 @@ use crate::providers::{GatewayConfig, ProviderService};
 use crate::registry::{self, RegistryConfig};
 use crate::restore::{self, Stored};
 use crate::router::{Router, Services};
+use crate::tasks::TaskService;
 use crate::terminals::TerminalHub;
 use crate::worktrees::WorktreeService;
 
@@ -199,6 +200,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         );
     }
     let restoring = stored.sessions.len();
+    let stored_tasks = std::mem::take(&mut stored.tasks);
     let providers = ProviderService::new(
         storage.clone(),
         config
@@ -259,6 +261,19 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     // Observes the bus until shutdown; nothing needs its handle.
     drop(notify.start(shutdown.clone()));
     let worktrees = WorktreeService::new(registry.clone(), storage.clone(), bus.clone());
+    // After the registry restored its sessions and the notifier listens: a task whose session
+    // did not survive the last daemon ends here, and says so.
+    let tasks = TaskService::open(
+        registry.clone(),
+        worktrees.clone(),
+        storage.clone(),
+        bus.clone(),
+        &settings.tasks,
+        stored_tasks,
+    )
+    .await
+    .map_err(|error| DaemonError::Tasks(error.message))?;
+    drop(tasks.run(shutdown.clone()));
     let router = Router::new(
         registry,
         hub,
@@ -267,6 +282,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             assistant,
             notify,
             worktrees,
+            tasks,
         },
         bus.clone(),
         shutdown.clone(),

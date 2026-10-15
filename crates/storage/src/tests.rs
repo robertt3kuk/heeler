@@ -5,7 +5,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hutan_core::{Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
+use hutan_core::{
+    Epoch, SessionId, SessionKind, SessionState, Task, TaskId, TaskPlacement, TaskPlacementKind,
+    TaskRun, TaskState, WorkspaceId,
+};
 use tempfile::TempDir;
 
 use crate::migrate::Migration;
@@ -97,7 +100,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -147,7 +150,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -413,7 +416,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -1158,7 +1161,7 @@ fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "providers"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
     storage.close();
     assert!(table_exists(&db(&dir), "providers"));
     integrity_ok(&db(&dir));
@@ -1225,8 +1228,119 @@ fn migrating_v5_adds_the_worktree_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "worktrees"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 6);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
     storage.close();
     assert!(table_exists(&db(&dir), "worktrees"));
+    integrity_ok(&db(&dir));
+}
+
+fn task(workspace: WorkspaceId, title: &str, created: u64, deps: &[TaskId]) -> Task {
+    Task {
+        id: TaskId::new(),
+        workspace_id: workspace,
+        title: title.to_owned(),
+        prompt: Some("do it".to_owned()),
+        state: TaskState::Todo,
+        depends_on: deps.to_vec(),
+        placement: TaskPlacement {
+            kind: TaskPlacementKind::Worktree,
+            branch: Some("task/x".to_owned()),
+            base: Some("main".to_owned()),
+        },
+        run: Some(TaskRun::Terminal {
+            argv: vec!["cargo".to_owned(), "test".to_owned()],
+        }),
+        auto_start: true,
+        sessions: Vec::new(),
+        created_at_ms: created,
+        started_at_ms: None,
+        ended_at_ms: None,
+        outcome: None,
+    }
+}
+
+#[test]
+fn tasks_are_stored_with_their_dependencies_and_sessions_and_come_back_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    let first = task(ws.id, "first", 10, &[]);
+    let mut second = task(ws.id, "second", 20, &[first.id]);
+    let mut third = task(ws.id, "third", 20, &[second.id, first.id]);
+    third.run = None;
+    third.prompt = None;
+    third.placement = TaskPlacement::default();
+    third.auto_start = false;
+    let (s1, s2) = (SessionId::new(), SessionId::new());
+    {
+        let storage = Storage::open(db(&dir)).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        assert!(storage.tasks().list().unwrap().is_empty());
+        // The order is the creation time, then the row's insertion.
+        storage.tasks().upsert(first.clone()).unwrap();
+        storage.tasks().upsert(second.clone()).unwrap();
+        storage.tasks().upsert(third.clone()).unwrap();
+        storage.close();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(
+        storage.tasks().list().unwrap(),
+        [first.clone(), second.clone(), third.clone()]
+    );
+
+    // A change replaces the dependencies and sessions with the new ones; the order stays.
+    second.depends_on = Vec::new();
+    second.state = TaskState::Running;
+    second.started_at_ms = Some(30);
+    second.sessions = vec![s1, s2];
+    second.outcome = Some("exited 0".to_owned());
+    storage.tasks().upsert(second.clone()).unwrap();
+    let listed = storage.tasks().list().unwrap();
+    assert_eq!(listed, [first.clone(), second.clone(), third.clone()]);
+
+    // Derived states are stored as the states they derive from.
+    let mut shown = third.clone();
+    shown.state = TaskState::Ready;
+    storage.tasks().upsert(shown.clone()).unwrap();
+    assert_eq!(storage.tasks().list().unwrap()[2].state, TaskState::Todo);
+    shown.state = TaskState::Blocked;
+    storage.tasks().upsert(shown).unwrap();
+    assert_eq!(storage.tasks().list().unwrap()[2].state, TaskState::Running);
+
+    // A task that names a dependency nobody stored is not written at all.
+    let orphan = task(ws.id, "orphan", 40, &[TaskId::new()]);
+    storage.tasks().upsert(orphan).unwrap();
+    assert_eq!(storage.tasks().list().unwrap().len(), 3);
+
+    // Deleting a task takes the edges that name it, and deleting the workspace the tasks.
+    storage.tasks().delete(first.id).unwrap();
+    storage.tasks().delete(TaskId::new()).unwrap();
+    let listed = storage.tasks().list().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1].depends_on, [second.id]);
+    storage.workspaces().delete(ws.id).unwrap();
+    assert!(storage.tasks().list().unwrap().is_empty());
+    storage.close();
+}
+
+#[test]
+fn migrating_v6_adds_the_task_tables_and_keeps_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..6]).unwrap();
+        storage.workspaces().insert(ws.clone()).unwrap();
+        storage.close();
+    }
+    for table in ["tasks", "task_deps", "task_sessions"] {
+        assert!(!table_exists(&db(&dir), table));
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert!(storage.tasks().list().unwrap().is_empty());
+    storage.close();
+    for table in ["tasks", "task_deps", "task_sessions"] {
+        assert!(table_exists(&db(&dir), table), "{table}");
+    }
     integrity_ok(&db(&dir));
 }

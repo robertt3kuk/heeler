@@ -316,7 +316,10 @@ impl SessionsStore {
             | Notice::DaemonRestarted { .. }
             | Notice::NotifyIntent { .. }
             // The desktop lists worktrees when a command asks for them.
-            | Notice::WorktreesChanged { .. } => {}
+            | Notice::WorktreesChanged { .. }
+            // The tasks panel is M7-C's.
+            | Notice::TaskUpdated { .. }
+            | Notice::TaskRemoved { .. } => {}
         }
     }
 

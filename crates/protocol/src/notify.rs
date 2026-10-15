@@ -30,15 +30,21 @@ pub enum IntentKind {
     SessionExitedWithError,
     /// A chat turn finished while no client had the session focused.
     ChatTurnFinished,
+    /// A task finished successfully (protocol 0.16). `session_id` is the session that ran it.
+    TaskDone,
+    /// A task failed (protocol 0.16): a non-zero exit, a failed turn, a lost session.
+    TaskFailed,
 }
 
 impl IntentKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::ApprovalRequired,
         Self::AgentBlocked,
         Self::AgentFinished,
         Self::SessionExitedWithError,
         Self::ChatTurnFinished,
+        Self::TaskDone,
+        Self::TaskFailed,
     ];
 
     /// The wire (and `daemon.toml`) name.
@@ -49,6 +55,8 @@ impl IntentKind {
             Self::AgentFinished => "agent_finished",
             Self::SessionExitedWithError => "session_exited_with_error",
             Self::ChatTurnFinished => "chat_turn_finished",
+            Self::TaskDone => "task_done",
+            Self::TaskFailed => "task_failed",
         }
     }
 }

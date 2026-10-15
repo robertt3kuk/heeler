@@ -88,6 +88,98 @@ pub enum Command {
     /// Git worktrees: isolated checkouts for parallel agents (`hutan wt new|ls|rm`)
     #[command(subcommand)]
     Wt(WtCommand),
+    /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|cancel|rm|show`)
+    #[command(subcommand)]
+    Task(TaskCommand),
+}
+/// Tasks with dependencies: plan work, run it in the main checkout or a worktree, in a
+/// terminal or a Codex chat, and let the daemon start what is ready.
+#[derive(Debug, Subcommand)]
+pub enum TaskCommand {
+    /// Create a task; prints its id
+    Add(TaskAddArgs),
+    /// List tasks: dependencies first, each under the task it waits for, with state glyphs
+    Ls(TaskLsArgs),
+    /// Start a ready task now (it runs in a new session)
+    Start(TaskTargetArgs),
+    /// Say a task is done (the user's word overrides what the daemon saw)
+    Done(TaskTargetArgs),
+    /// Give a task up: stops its session when it runs
+    Cancel(TaskTargetArgs),
+    /// Delete a task; refused while others depend on it unless --cascade
+    Rm(TaskRmArgs),
+    /// Show everything about a task: fields, dependencies, dependants, sessions
+    Show(TaskTargetArgs),
+}
+
+const TASK_HELP: &str = "Task: id, unique id prefix (at least 4 characters), or exact title";
+
+#[derive(Debug, Args)]
+pub struct TaskAddArgs {
+    /// What the task is about (one line)
+    pub title: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// A task that must be done first; repeatable
+    #[arg(long = "after", value_name = "TASK", help = TASK_HELP)]
+    pub after: Vec<String>,
+    /// Run in a git worktree: of this branch, or (alone) of `task/<slug of the title>`; made
+    /// when there is none. Without it the task runs in the main checkout.
+    #[arg(
+        long,
+        value_name = "BRANCH",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "",
+        help = "Run in a git worktree: `--worktree` for task/<slug of the title>, \
+                `--worktree=BRANCH` for that branch"
+    )]
+    pub worktree: Option<String>,
+    /// Where a new worktree branch starts (default: HEAD of the repository)
+    #[arg(long, value_name = "REF", requires = "worktree")]
+    pub base: Option<String>,
+    /// The task's prompt: the first message of a Codex chat
+    #[arg(long, value_name = "TEXT")]
+    pub prompt: Option<String>,
+    /// Run it as a Codex chat (needs --prompt)
+    #[arg(long, requires = "prompt", conflicts_with = "argv")]
+    pub codex: bool,
+    /// Start by itself when ready, within the daemon's `[tasks] max_parallel`
+    #[arg(long)]
+    pub auto: bool,
+    /// Command to run in a terminal session after `--`; without a command or --codex starting
+    /// the task opens the login shell
+    #[arg(last = true, value_name = "ARGV")]
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskLsArgs {
+    /// Only this workspace's tasks (default: $HUTAN_WORKSPACE, else the workspace containing
+    /// the current directory, else all workspaces)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskTargetArgs {
+    #[arg(help = TASK_HELP)]
+    pub target: String,
+    /// Which workspace's task an exact title means when several have it (default:
+    /// $HUTAN_WORKSPACE, else the workspace containing the current directory)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskRmArgs {
+    #[arg(help = TASK_HELP)]
+    pub target: String,
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+    /// Delete the tasks that depend on it too
+    #[arg(long)]
+    pub cascade: bool,
 }
 
 const WT_WS_HELP: &str = "Workspace: id, unique id prefix, or exact name (default: \

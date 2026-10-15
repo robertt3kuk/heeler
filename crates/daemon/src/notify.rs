@@ -10,6 +10,7 @@
 //! | `agent_finished` | the main agent goes `working` → `idle` with outcome `completed` after `min_turn_secs` |
 //! | `session_exited_with_error` | a session's process exits with a non-zero code |
 //! | `chat_turn_finished` | a chat turn completes while no client has the session focused |
+//! | `task_done` / `task_failed` | a task (`task.updated`) changes into `done` / `failed`, for the session that ran it; exempt from the rate limit |
 //!
 //! Every candidate passes the same gate: the `[notify]` settings (`enabled`, `kinds`), dedup by
 //! `(kind, session, node)` against the pending intents, and a rate limit of one intent per
@@ -29,7 +30,7 @@ use std::time::Duration;
 use hutan_core::agent::{Delivery, MessageRole, PermissionOptionKind};
 use hutan_core::{
     AgentEventKind, AgentNode, ApprovalId, Liveness, NodeKind, NodeOutcome, NodeState, SessionId,
-    WorkspaceId,
+    Task, TaskId, TaskState, WorkspaceId,
 };
 use hutan_protocol::chat::ApprovalInfo;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
@@ -65,6 +66,9 @@ pub const OBSERVER_QUEUE: usize = 1024;
 /// Per-node memory of the agent trees is dropped when it grows past this many entries (a safety
 /// net: trees are bounded and report their removals).
 const MAX_MEMOS: usize = 4096;
+/// A task seen for the first time that ended less than this long ago raises its intent (what a
+/// daemon restart makes of a task that was running).
+const TASK_FRESH_MS: u64 = 60_000;
 
 /// What the session is called in an intent, and where it lives.
 #[derive(Debug, Clone, Default)]
@@ -117,6 +121,9 @@ struct Core {
     nodes: HashMap<(SessionId, String), NodeMemo>,
     /// The latest finished assistant message of each chat, already redacted and bounded.
     last_message: HashMap<SessionId, String>,
+    /// The state last seen of each task (a task raises its intent on the change into
+    /// `done` or `failed`).
+    tasks: HashMap<TaskId, TaskState>,
     focus: HashMap<ConnId, SessionId>,
     /// Ids of the intents that left `pending` (acknowledged, acted on, expired, resolved,
     /// pushed out) since the service last took them: their native notifications go too.
@@ -132,6 +139,7 @@ impl Core {
             last_raised: HashMap::new(),
             nodes: HashMap::new(),
             last_message: HashMap::new(),
+            tasks: HashMap::new(),
             focus: HashMap::new(),
         }
     }
@@ -210,6 +218,7 @@ impl Core {
                     _ => Vec::new(),
                 }
             }
+            Event::TaskUpdated { task } => self.plan_task(task, now_ms),
             _ => Vec::new(),
         }
     }
@@ -300,6 +309,48 @@ impl Core {
         raised
     }
 
+    /// A task that has just ended raises `task_done` / `task_failed` for the session that ran
+    /// it. Only the change into the state counts: a title edited later does not; a task seen
+    /// for the first time (the daemon restarted) counts when it ended just now.
+    fn plan_task(&mut self, task: &Task, now_ms: u64) -> Vec<Candidate> {
+        let before = self.tasks.insert(task.id, task.state);
+        if self.tasks.len() > MAX_MEMOS {
+            self.tasks.clear();
+        }
+        let (kind, headline, verb) = match task.state {
+            TaskState::Done => (IntentKind::TaskDone, "task done", "Finished"),
+            TaskState::Failed => (IntentKind::TaskFailed, "task failed", "Failed"),
+            _ => return Vec::new(),
+        };
+        let fresh = match before {
+            Some(state) => state != task.state,
+            None => task
+                .ended_at_ms
+                .is_some_and(|at| now_ms.saturating_sub(at) < TASK_FRESH_MS),
+        };
+        let Some(session) = task.sessions.last().copied().filter(|_| fresh) else {
+            return Vec::new();
+        };
+        let outcome = task.outcome.as_deref().filter(|o| !o.is_empty());
+        let body = match (task.started_at_ms, task.ended_at_ms) {
+            (Some(start), Some(end)) => format!(
+                "{verb} after {}{}.",
+                human_duration(end.saturating_sub(start)),
+                outcome.map_or_else(String::new, |o| format!(" ({o})"))
+            ),
+            _ => outcome.map_or_else(|| format!("{verb}."), |o| format!("{verb}: {o}.")),
+        };
+        vec![Candidate {
+            kind,
+            session,
+            node: task.id.to_string(),
+            headline: headline.to_owned(),
+            body,
+            actions: vec![open_action()],
+            approval: None,
+        }]
+    }
+
     /// A session ended: what is remembered about its agents and chat is of no use any more.
     fn forget_session(&mut self, session: SessionId) {
         self.nodes.retain(|(s, _), _| *s != session);
@@ -316,6 +367,13 @@ impl Core {
         }
         self.expire(now_ms);
         let approval = candidate.kind == IntentKind::ApprovalRequired;
+        // A task ends once; the gate's rate limit is about chatty sessions, and a finished task
+        // should not be lost because the session's own exit raised an intent a moment before.
+        let rate_limited = !approval
+            && !matches!(
+                candidate.kind,
+                IntentKind::TaskDone | IntentKind::TaskFailed
+            );
         if candidate.kind == IntentKind::ChatTurnFinished
             && self.focus.values().any(|s| *s == candidate.session)
         {
@@ -330,7 +388,7 @@ impl Core {
             debug!(kind = candidate.kind.as_str(), session = %candidate.session, "duplicate intent dropped");
             return None;
         }
-        if !approval
+        if rate_limited
             && self
                 .last_raised
                 .get(&candidate.session)
@@ -360,7 +418,7 @@ impl Core {
             created_at_ms: now_ms,
             expires_at_ms,
         };
-        if !approval {
+        if rate_limited {
             self.last_raised.insert(candidate.session, now_ms);
             if self.last_raised.len() > MAX_MEMOS {
                 self.last_raised
@@ -1629,5 +1687,147 @@ mod tests {
             ],
             "the first three options, then Open"
         );
+    }
+
+    fn ended_task(state: TaskState, outcome: &str, sessions: Vec<SessionId>) -> Task {
+        Task {
+            id: TaskId::new(),
+            workspace_id: WorkspaceId::new(),
+            title: "Build".to_owned(),
+            prompt: None,
+            state,
+            depends_on: Vec::new(),
+            placement: hutan_core::TaskPlacement::default(),
+            run: None,
+            auto_start: false,
+            sessions,
+            created_at_ms: 1_000,
+            started_at_ms: Some(10_000),
+            ended_at_ms: Some(75_000),
+            outcome: Some(outcome.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_task_that_ends_raises_an_intent_for_the_session_that_ran_it_once() {
+        let mut core = core();
+        let session = SessionId::new();
+        let mut task = ended_task(TaskState::Running, "", vec![SessionId::new(), session]);
+        task.outcome = None;
+        task.ended_at_ms = None;
+        let updated = |task: &Task| Event::TaskUpdated { task: task.clone() };
+        assert!(raise(&mut core, &updated(&task), 20_000).is_empty());
+
+        task.state = TaskState::Done;
+        task.outcome = Some("exited 0".to_owned());
+        task.ended_at_ms = Some(75_000);
+        let raised = raise(&mut core, &updated(&task), 75_000);
+        let [intent] = raised.as_slice() else {
+            panic!("{raised:?}")
+        };
+        assert_eq!(intent.kind, IntentKind::TaskDone);
+        assert_eq!(intent.session_id, session, "the last session");
+        assert_eq!(intent.title, "api: task done");
+        assert_eq!(intent.body, "Finished after 1m 5s (exited 0).");
+        assert_eq!(intent.actions[0].id, ACTION_OPEN);
+
+        // The same state again (a title edit) raises nothing, even after the intent is gone.
+        core.remove(&intent.id);
+        task.title = "Build it".to_owned();
+        assert!(raise(&mut core, &updated(&task), 80_000).is_empty());
+
+        // A failure carries its outcome; a task never started has no duration.
+        let mut failed = ended_task(TaskState::Running, "", vec![session]);
+        assert!(raise(&mut core, &updated(&failed), 80_000).is_empty());
+        failed.state = TaskState::Failed;
+        failed.outcome = Some("exited 3".to_owned());
+        let raised = raise(&mut core, &updated(&failed), 80_000);
+        assert_eq!(raised[0].kind, IntentKind::TaskFailed);
+        assert_eq!(raised[0].body, "Failed after 1m 5s (exited 3).");
+        let mut by_hand = ended_task(TaskState::Todo, "", vec![session]);
+        assert!(raise(&mut core, &updated(&by_hand), 80_000).is_empty());
+        by_hand.state = TaskState::Done;
+        by_hand.started_at_ms = None;
+        by_hand.outcome = Some("marked done".to_owned());
+        let raised = raise(&mut core, &updated(&by_hand), 80_000);
+        assert_eq!(raised[0].body, "Finished: marked done.");
+    }
+
+    #[test]
+    fn a_task_seen_for_the_first_time_counts_only_when_it_ended_just_now() {
+        let mut core = core();
+        let session = SessionId::new();
+        // What a daemon restart announces: the task failed a moment ago.
+        let fresh = ended_task(TaskState::Failed, "interrupted", vec![session]);
+        let raised = raise(
+            &mut core,
+            &Event::TaskUpdated { task: fresh },
+            75_000 + 1_000,
+        );
+        assert_eq!(raised.len(), 1, "{raised:?}");
+        assert_eq!(raised[0].body, "Failed after 1m 5s (interrupted).");
+        // An old task that is merely listed again is not news.
+        let old = ended_task(TaskState::Done, "exited 0", vec![session]);
+        assert!(
+            raise(
+                &mut core,
+                &Event::TaskUpdated { task: old },
+                75_000 + TASK_FRESH_MS + 1
+            )
+            .is_empty()
+        );
+        // And without a session there is nobody to open.
+        let sessionless = ended_task(TaskState::Done, "marked done", Vec::new());
+        assert!(raise(&mut core, &Event::TaskUpdated { task: sessionless }, 76_000).is_empty());
+    }
+
+    #[test]
+    fn task_intents_pass_the_settings_and_dedup_but_not_the_session_rate_limit() {
+        let session = SessionId::new();
+        let mut core = core();
+        // The session's own failed exit raised an intent a moment ago.
+        let exit = raise(
+            &mut core,
+            &Event::SessionExited {
+                session_id: session,
+                code: Some(1),
+                signal: None,
+            },
+            75_000,
+        );
+        assert_eq!(exit.len(), 1);
+        let mut task = ended_task(TaskState::Running, "", vec![session]);
+        let first = Event::TaskUpdated { task: task.clone() };
+        raise(&mut core, &first, 75_000);
+        task.state = TaskState::Failed;
+        task.outcome = Some("exited 1".to_owned());
+        let event = Event::TaskUpdated { task: task.clone() };
+        let raised = raise(&mut core, &event, 75_100);
+        assert_eq!(raised.len(), 1, "not lost to the rate limit: {raised:?}");
+        // A task intent does not start the session's rate limit either.
+        let again = raise(
+            &mut core,
+            &Event::SessionExited {
+                session_id: session,
+                code: Some(2),
+                signal: None,
+            },
+            75_200,
+        );
+        assert!(again.is_empty(), "the exit intent's own window still holds");
+
+        // The settings gate them like any kind.
+        let mut quiet = Core::new(NotifySettings {
+            kinds: vec![IntentKind::TaskFailed],
+            ..NotifySettings::default()
+        });
+        let mut done = ended_task(TaskState::Running, "", vec![session]);
+        raise(
+            &mut quiet,
+            &Event::TaskUpdated { task: done.clone() },
+            1_000,
+        );
+        done.state = TaskState::Done;
+        assert!(raise(&mut quiet, &Event::TaskUpdated { task: done }, 2_000).is_empty());
     }
 }

@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use hutan_core::{SessionId, SessionKind, SessionState, WorkspaceId};
+use hutan_core::{
+    SessionId, SessionKind, SessionState, Task, TaskId, TaskPlacement, TaskRun, TaskState,
+    WorkspaceId,
+};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -87,6 +90,12 @@ pub enum Write {
     /// Remembers a worktree Hutan created, replacing the row of the same path.
     UpsertWorktree(Box<WorktreeRow>),
     DeleteWorktree(PathBuf),
+    /// Inserts a task or replaces it, with its dependencies and sessions, in one transaction
+    /// (the creation time stays). The state is stored folded (`ready` is `todo`, `blocked` is
+    /// `running`). Its dependencies must exist.
+    UpsertTask(Box<Task>),
+    /// Also deletes the task's dependency edges, both ways, and its sessions' links.
+    DeleteTask(TaskId),
     /// Crash-injection points for the tests.
     #[cfg(test)]
     Fault(Fault),
@@ -256,6 +265,11 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
                 [path.to_string_lossy()],
             )
             .map_err(StorageError::sqlite("deleting a worktree"))?;
+        }
+        Write::UpsertTask(task) => upsert_task(conn, task)?,
+        Write::DeleteTask(id) => {
+            conn.execute("DELETE FROM tasks WHERE id = ?1", [id.to_string()])
+                .map_err(StorageError::sqlite("deleting a task"))?;
         }
         #[cfg(test)]
         Write::Fault(Fault::Panic) => panic!("injected writer panic"),
@@ -866,4 +880,167 @@ pub fn list_worktrees(conn: &Connection) -> Result<Vec<WorktreeRow>> {
         });
     }
     Ok(out)
+}
+
+fn upsert_task(conn: &Connection, task: &Task) -> Result<()> {
+    let context = "writing a task";
+    let encode = |value: Result<String, serde_json::Error>, what: &'static str| {
+        value.map_err(|e| StorageError::Encode {
+            what,
+            detail: e.to_string(),
+        })
+    };
+    let placement = encode(serde_json::to_string(&task.placement), "task placement")?;
+    let run = task
+        .run
+        .as_ref()
+        .map(|run| encode(serde_json::to_string(run), "task run"))
+        .transpose()?;
+    let state = task.state.stored();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(StorageError::sqlite(context))?;
+    tx.execute(
+        "INSERT INTO tasks (id, workspace_id, title, prompt, state, placement_json, run_json, \
+             auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         ON CONFLICT (id) DO UPDATE SET \
+             workspace_id = excluded.workspace_id, title = excluded.title, \
+             prompt = excluded.prompt, state = excluded.state, \
+             placement_json = excluded.placement_json, run_json = excluded.run_json, \
+             auto_start = excluded.auto_start, started_at_ms = excluded.started_at_ms, \
+             ended_at_ms = excluded.ended_at_ms, outcome = excluded.outcome",
+        params![
+            task.id.to_string(),
+            task.workspace_id.to_string(),
+            task.title,
+            task.prompt,
+            state.as_str(),
+            placement,
+            run,
+            task.auto_start,
+            ms(task.created_at_ms),
+            task.started_at_ms.map(ms),
+            task.ended_at_ms.map(ms),
+            task.outcome,
+        ],
+    )
+    .map_err(StorageError::sqlite(context))?;
+    tx.execute(
+        "DELETE FROM task_deps WHERE task_id = ?1",
+        [task.id.to_string()],
+    )
+    .map_err(StorageError::sqlite(context))?;
+    for (position, dep) in task.depends_on.iter().enumerate() {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_deps (task_id, depends_on, position) VALUES (?1, ?2, ?3)",
+            params![task.id.to_string(), dep.to_string(), ms(position as u64)],
+        )
+        .map_err(StorageError::sqlite(context))?;
+    }
+    tx.execute(
+        "DELETE FROM task_sessions WHERE task_id = ?1",
+        [task.id.to_string()],
+    )
+    .map_err(StorageError::sqlite(context))?;
+    for (position, session) in task.sessions.iter().enumerate() {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_sessions (task_id, session_id, position) \
+             VALUES (?1, ?2, ?3)",
+            params![
+                task.id.to_string(),
+                session.to_string(),
+                ms(position as u64)
+            ],
+        )
+        .map_err(StorageError::sqlite(context))?;
+    }
+    tx.commit().map_err(StorageError::sqlite(context))
+}
+
+/// Every task, oldest first, with its dependencies and sessions in the order they were given.
+pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
+    let context = "listing tasks";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, workspace_id, title, prompt, state, placement_json, run_json, \
+                 auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome \
+             FROM tasks ORDER BY created_at_ms, rowid",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map([], |row| Ok(task_from(row)))
+        .map_err(StorageError::sqlite(context))?;
+    let mut tasks = collect(rows, context)?;
+    let mut deps = conn
+        .prepare("SELECT task_id, depends_on FROM task_deps ORDER BY task_id, position")
+        .map_err(StorageError::sqlite(context))?;
+    let mut sessions = conn
+        .prepare("SELECT task_id, session_id FROM task_sessions ORDER BY task_id, position")
+        .map_err(StorageError::sqlite(context))?;
+    let edges = |stmt: &mut rusqlite::Statement<'_>| -> Result<Vec<(String, String)>> {
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(StorageError::sqlite(context))?
+            .map(|row| row.map_err(StorageError::sqlite(context)))
+            .collect()
+    };
+    let index: std::collections::HashMap<String, usize> = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.to_string(), i))
+        .collect();
+    for (task_id, dep) in edges(&mut deps)? {
+        if let Some(&at) = index.get(&task_id) {
+            tasks[at].depends_on.push(
+                dep.parse()
+                    .map_err(|e| StorageError::corrupt(format!("task_deps of {task_id}"), e))?,
+            );
+        }
+    }
+    for (task_id, session) in edges(&mut sessions)? {
+        if let Some(&at) = index.get(&task_id) {
+            tasks[at].sessions.push(
+                session
+                    .parse()
+                    .map_err(|e| StorageError::corrupt(format!("task_sessions of {task_id}"), e))?,
+            );
+        }
+    }
+    Ok(tasks)
+}
+
+/// A task without its dependencies and sessions (`list_tasks` adds them).
+fn task_from(row: &Row<'_>) -> Result<Task> {
+    let id: String = row.get(0).map_err(read_err)?;
+    let at = |column: &str| format!("tasks.{column} of {id}");
+    let workspace_id: String = row.get(1).map_err(read_err)?;
+    let state: String = row.get(4).map_err(read_err)?;
+    let placement: String = row.get(5).map_err(read_err)?;
+    let run: Option<String> = row.get(6).map_err(read_err)?;
+    Ok(Task {
+        id: id
+            .parse()
+            .map_err(|e| StorageError::corrupt("tasks.id", e))?,
+        workspace_id: workspace_id
+            .parse()
+            .map_err(|e| StorageError::corrupt(at("workspace_id"), e))?,
+        title: row.get(2).map_err(read_err)?,
+        prompt: row.get(3).map_err(read_err)?,
+        state: state
+            .parse::<TaskState>()
+            .map_err(|e| StorageError::corrupt(at("state"), e))?,
+        depends_on: Vec::new(),
+        placement: serde_json::from_str::<TaskPlacement>(&placement)
+            .map_err(|e| StorageError::corrupt(at("placement_json"), e))?,
+        run: run
+            .map(|text| serde_json::from_str::<TaskRun>(&text))
+            .transpose()
+            .map_err(|e| StorageError::corrupt(at("run_json"), e))?,
+        auto_start: row.get(7).map_err(read_err)?,
+        sessions: Vec::new(),
+        created_at_ms: unms(row.get(8).map_err(read_err)?),
+        started_at_ms: row.get::<_, Option<i64>>(9).map_err(read_err)?.map(unms),
+        ended_at_ms: row.get::<_, Option<i64>>(10).map_err(read_err)?.map(unms),
+        outcome: row.get(11).map_err(read_err)?,
+    })
 }

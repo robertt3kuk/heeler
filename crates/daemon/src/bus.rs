@@ -55,6 +55,8 @@ struct Inner {
     tap: Option<mpsc::Sender<Event>>,
     /// Internal consumer of the events notification intents are derived from.
     observer: Option<mpsc::Sender<Event>>,
+    /// Internal consumer of the events the task service follows.
+    task_observer: Option<mpsc::Sender<Event>>,
 }
 
 #[derive(Debug)]
@@ -76,6 +78,7 @@ impl EventBus {
                 subscribers: HashMap::new(),
                 tap: None,
                 observer: None,
+                task_observer: None,
             }),
         }
     }
@@ -101,6 +104,12 @@ impl EventBus {
     /// observer's queue is full the event is dropped for it.
     pub fn set_observer(&self, observer: Option<mpsc::Sender<Event>>) {
         self.lock().observer = observer;
+    }
+    /// Sends a copy of every event the task service follows (see [`feeds_tasks`]) to `observer`
+    /// from now on (`None` stops). Never blocks: when the queue is full the event is dropped
+    /// for it (the service looks at its sessions directly now and then).
+    pub fn set_task_observer(&self, observer: Option<mpsc::Sender<Event>>) {
+        self.lock().task_observer = observer;
     }
 
     /// Seq of the most recent event (`0` before the first).
@@ -173,6 +182,17 @@ impl EventBus {
                 Err(mpsc::error::TrySendError::Closed(_)) => inner.observer = None,
             }
         }
+        if feeds_tasks(event)
+            && let Some(observer) = &inner.task_observer
+        {
+            match observer.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!("task observer is full; dropped an event");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => inner.task_observer = None,
+            }
+        }
         Ok(seq)
     }
 
@@ -238,10 +258,24 @@ impl Inner {
         )
     }
 }
+/// The events the task service follows: session states (ends, blocked agents), agent tree
+/// changes, the end of a live chat turn, and closed workspaces.
+fn feeds_tasks(event: &Event) -> bool {
+    use hutan_core::agent::Delivery;
+    match event {
+        Event::SessionUpdated { .. }
+        | Event::AgentTreeUpdated { .. }
+        | Event::WorkspaceClosed { .. } => true,
+        Event::ChatEvent { event, .. } => {
+            event.delivery == Delivery::Live && event.kind.ends_turn()
+        }
+        _ => false,
+    }
+}
 
 /// The events notification intents are derived from: approvals, agent tree changes, session
-/// exits, and the journaled end of a chat turn or of an assistant message (never streaming
-/// deltas, never replays).
+/// exits, task updates, and the journaled end of a chat turn or of an assistant message (never
+/// streaming deltas, never replays).
 fn feeds_notifications(event: &Event) -> bool {
     use hutan_core::AgentEventKind;
     use hutan_core::agent::{Delivery, MessageRole};
@@ -249,7 +283,8 @@ fn feeds_notifications(event: &Event) -> bool {
         Event::ApprovalRequired { .. }
         | Event::ApprovalResolved { .. }
         | Event::AgentTreeUpdated { .. }
-        | Event::SessionExited { .. } => true,
+        | Event::SessionExited { .. }
+        | Event::TaskUpdated { .. } => true,
         Event::ChatEvent { event, .. } => {
             event.delivery == Delivery::Live
                 && matches!(

@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use hutan_core::{
-    AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, TerminalId, WorkspaceId,
+    AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, Task, TaskId, TerminalId,
+    WorkspaceId,
 };
 use hutan_protocol::blocks::Block;
 use hutan_protocol::chat::ApprovalInfo;
@@ -87,6 +88,15 @@ pub enum Notice {
     /// protocol 0.14): list them again.
     WorktreesChanged {
         workspace: WorkspaceId,
+    },
+    /// A task was created or changed (`task.updated`, protocol 0.16): the whole task as it is
+    /// now.
+    TaskUpdated {
+        task: Box<Task>,
+    },
+    /// A task was deleted (`task.removed`, protocol 0.16).
+    TaskRemoved {
+        id: TaskId,
     },
 }
 
@@ -309,6 +319,10 @@ impl StoreState {
                     workspace: workspace_id,
                 });
             }
+            Event::TaskUpdated { task } => effects.notices.push(Notice::TaskUpdated {
+                task: Box::new(task),
+            }),
+            Event::TaskRemoved { id } => effects.notices.push(Notice::TaskRemoved { id }),
         }
         effects
     }

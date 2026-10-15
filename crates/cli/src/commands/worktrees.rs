@@ -155,7 +155,7 @@ impl Ctx {
 
     /// The workspace the worktree commands act on and whether the current directory chose it:
     /// `--ws`, else `$HUTAN_WORKSPACE`, else the workspace containing the current directory.
-    async fn wt_scope(
+    pub(super) async fn wt_scope(
         &self,
         client: &Client,
         flag: Option<String>,
@@ -173,7 +173,7 @@ impl Ctx {
     }
 }
 
-fn no_workspace() -> CliError {
+pub(super) fn no_workspace() -> CliError {
     CliError::Usage(
         "no workspace contains the current directory; pass --ws, set $HUTAN_WORKSPACE, or run \
          `hutan ws open .` first"

@@ -11,6 +11,7 @@ use hutan_protocol::chat::ChatSent;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
 use hutan_protocol::notify::NotifyList;
+use hutan_protocol::task::TaskResult;
 use hutan_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use serde::Serialize;
 use serde_json::Value;
@@ -24,6 +25,7 @@ use crate::history::HistoryService;
 use crate::notify::NotifyService;
 use crate::providers::ProviderService;
 use crate::registry::RegistryHandle;
+use crate::tasks::TaskService;
 use crate::terminals::TerminalHub;
 use crate::worktrees::WorktreeService;
 
@@ -34,6 +36,7 @@ pub struct Services {
     pub assistant: Arc<AssistantService>,
     pub notify: Arc<NotifyService>,
     pub worktrees: Arc<WorktreeService>,
+    pub tasks: Arc<TaskService>,
 }
 
 #[derive(Debug)]
@@ -44,6 +47,7 @@ pub struct Router {
     assistant: Arc<AssistantService>,
     notify: Arc<NotifyService>,
     worktrees: Arc<WorktreeService>,
+    tasks: Arc<TaskService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -68,6 +72,7 @@ impl Router {
             assistant: services.assistant,
             notify: services.notify,
             worktrees: services.worktrees,
+            tasks: services.tasks,
             bus,
             started: Instant::now(),
             shutdown,
@@ -247,6 +252,15 @@ impl Router {
             Request::WorktreeCreate(req) => ok(&self.worktrees.create(req).await?),
             Request::WorktreeList(req) => ok(&self.worktrees.list(req).await?),
             Request::WorktreeRemove(req) => ok(&self.worktrees.remove(req).await?),
+            Request::TaskCreate(req) => ok(&TaskResult {
+                task: self.tasks.create(req).await?,
+            }),
+            Request::TaskList(req) => ok(&self.tasks.list(req)),
+            Request::TaskUpdate(req) => ok(&TaskResult {
+                task: self.tasks.update(req).await?,
+            }),
+            Request::TaskDelete(req) => ok(&self.tasks.delete(req)?),
+            Request::TaskStart(req) => ok(&self.tasks.start(req.id).await?),
             Request::ProviderList(_) => ok(&self.providers().list().await?),
             Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
             Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),

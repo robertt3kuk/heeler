@@ -1,6 +1,6 @@
-# Orchestration: worktrees and session placement
+# Orchestration: worktrees, session placement and tasks
 
-Roadmap M7, part 1 (slice M7-A, protocol 0.14, capability `worktree`). Tasks and their dependencies are M7-B and not described here. Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
+Roadmap M7: worktrees and placement (slice M7-A, protocol 0.14, capability `worktree`) and tasks with dependencies (slice M7-B, protocol 0.16, capability `task`; § Tasks below). Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
 
 Wire details: `docs/protocol.md` § Worktrees and placement. Code: `crates/daemon/src/{worktrees,placement}.rs` (daemon), `crates/protocol/src/worktree.rs` (DTOs), `crates/cli/src/commands/worktrees.rs` (CLI), `crates/desktop/src/workbench/worktrees.rs` and `crates/desktop/src/sessions/placement.rs` (desktop).
 
@@ -64,6 +64,39 @@ Deliberately small (the layout and panels are ADR 0010's business):
 - `crates/desktop/tests/worktrees_gpui.rs`: rows draw the badge, tab tooltips carry it, the warning follows two agents, the commands are in the palette.
 - `crates/protocol/tests/fixtures/v0/*worktree*`, `*placement*`: golden fixtures.
 
+## Tasks
+
+Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a workspace: a title, an optional prompt, the tasks it depends on, where it runs (the main checkout or a worktree) and what it runs (a terminal command or a Codex chat). Tasks are daemon state in SQLite (migration 7: `tasks`, `task_deps`, `task_sessions`); the desktop panel is M7-C. Wire details: `docs/protocol.md` § Tasks. Code: `crates/core/src/task.rs` (no I/O: states, readiness, cycles, ordering, the start queue), `crates/daemon/src/tasks.rs`, `crates/cli/src/commands/tasks.rs`.
+
+### Life of a task
+
+`todo → ready → running → (blocked) → done | failed | cancelled`. Only `todo`, `running`, `done`, `failed`, `cancelled` are stored; `ready` (every dependency `done`) and `blocked` (the running task's agent waits for the user) are derived when a task is shown. A cycle in the dependencies is refused and named; deleting a task others depend on needs `--cascade`.
+
+- **Starting** (`hutan task start`, or by itself with `--auto`): the task becomes `running`, the placement is made (`main`: the workspace's git folder, with a warning when another live agent already works in that checkout; `worktree`: the existing worktree of the branch, else a new one through M7-A, branch default `task/<slug of the title>`), and a session starts there: a terminal running `argv` with `HUTAN_TASK_ID` set, a login shell when the task has no command, or a Codex chat that gets the prompt as its first message. If the setup fails the task is back to `todo` and the error says why.
+- **Finishing**: exit 0 → `done`, a non-zero exit or a failed session → `failed`, a stopped session → `cancelled`; an agent reporting through the integration hooks (`docs/integrations.md`) that goes idle after a working stretch → `done`, one that ends failed → `failed`; a chat turn that completes → `done`, fails or is cancelled → `failed`. `hutan task done` overrides. Dependants become `ready`.
+- **Auto start**: a ready task with `auto_start` starts when fewer than `[tasks] max_parallel` (daemon.toml, default 3) tasks run; the rest wait in the order they became ready. Starting by hand ignores the limit.
+- **Restart**: a running task whose session was restored stays running; any other becomes `failed` with outcome `interrupted`.
+- **Intents**: `task_done` / `task_failed` join the notification intents (`docs/protocol.md` § Notification intents) for the session that ran the task.
+- To run a failed or cancelled task again set its state to `todo` (`hutan api task.update '{"id":"…","state":"todo"}'`).
+
+### CLI
+
+```text
+hutan task add "<title>" [--ws ID|NAME] [--after TASK]… [--worktree[=BRANCH]] [--base REF]
+                         [--prompt TEXT] [--codex | -- ARGV…] [--auto]
+hutan task ls [--ws ID|NAME] [--json]
+hutan task start|done|cancel|show TASK
+hutan task rm TASK [--cascade]
+```
+
+- `TASK` is an id, a unique id prefix of at least 4 characters, or an exact title (equal titles are told apart by the workspace). The workspace is `--ws`, else `$HUTAN_WORKSPACE`, else the workspace containing the current directory.
+- `add` prints the new id. `--worktree` alone means `task/<slug of the title>`, `--worktree=BRANCH` a branch; `--codex` needs `--prompt`.
+- `ls` prints each task once, dependencies first, under the task it waits for last (a task with several dependencies lists the others as `also after …`), with state glyphs `○ todo`, `◎ ready`, `▶ running`, `◆ blocked`, `✓ done`, `✗ failed`, `⊘ cancelled`, the shortest unique id and notes (worktree, command, `auto`, outcome). `--json` prints `{"tasks": [...]}`; `show` prints fields, dependencies, dependants and sessions (`--json`: `{task, depends_on, dependants, sessions}`).
+
+### Tests
+
+`crates/core/src/task.rs` (state machine, readiness, cycles, order, scheduling with a limit), `crates/storage` (migration, round trip, cascade), `crates/daemon/tests/tasks.rs` (CRUD, refused cycles and cascade, main and worktree starts, finish detection for exit codes, agent idle/failed, chat turns, auto start within the limit, restart, intents), `crates/cli/tests/tasks.rs` (the commands end to end), golden fixtures `crates/protocol/tests/fixtures/v0/*task*`.
+
 ## Not here
 
-Tasks and dependencies (M7-B), scheduling parallel agents, merging a worktree back, diff review, a worktrees panel. Remote repositories and fetching are never done by these requests.
+Merging a worktree back, diff review, a worktrees panel and a tasks panel (M7-C). Remote repositories and fetching are never done by these requests.

@@ -11,6 +11,7 @@
 //! - [`restore`]: loading durable state and the rules for what is stored.
 //! - [`placement`]: which git checkout a session works in and which agents share one.
 //! - [`worktrees`]: git worktrees (`worktree.*`) on top of the git command line.
+//! - [`tasks`]: tasks with dependencies (`task.*`): finish detection, auto-start, restart.
 //! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 //! - [`history`]: the opt-in session history index (`hutan-index`) and the `history.*` requests.
@@ -49,12 +50,15 @@ pub mod providers;
 pub mod registry;
 pub mod restore;
 pub mod router;
+pub mod tasks;
 pub mod terminals;
 pub mod tree;
 pub mod worktrees;
 
 pub use bus::RingLimits;
-pub use config::{AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, RestoreMode};
+pub use config::{
+    AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, RestoreMode, TasksSettings,
+};
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;
 pub use paths::Paths;

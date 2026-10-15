@@ -92,6 +92,11 @@ ulid_id!(
     ApprovalId,
     "approval"
 );
+ulid_id!(
+    /// A task: a unit of work with dependencies, run as one or more sessions.
+    TaskId,
+    "task"
+);
 
 /// Daemon-assigned terminal handle, unique within an epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

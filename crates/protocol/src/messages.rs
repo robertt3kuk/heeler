@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
     AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, Seq, SessionId, SessionKind,
-    SessionState, TerminalId, WorkspaceId,
+    SessionState, Task, TaskId, TerminalId, WorkspaceId,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ use crate::provider::{
     ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
 };
 use crate::render::Row;
+use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskUpdate};
 use crate::tree::{AgentTreeRequest, NodeReport};
 use crate::worktree::{Placement, WorktreeCreate, WorktreeListRequest, WorktreeRemove};
 
@@ -221,6 +222,21 @@ pub enum Request {
     /// Capability `worktree`: remove a worktree; answered with `WorktreeRemoved`.
     #[serde(rename = "worktree.remove")]
     WorktreeRemove(WorktreeRemove),
+    /// Capability `task` (protocol 0.16): a new task; answered with `TaskResult`.
+    #[serde(rename = "task.create")]
+    TaskCreate(TaskCreate),
+    /// Capability `task`: the tasks of a workspace, or of all; answered with `TaskList`.
+    #[serde(rename = "task.list")]
+    TaskList(TaskListRequest),
+    /// Capability `task`: change a task or its state; answered with `TaskResult`.
+    #[serde(rename = "task.update")]
+    TaskUpdate(TaskUpdate),
+    /// Capability `task`: delete a task; answered with `TaskDeleted`.
+    #[serde(rename = "task.delete")]
+    TaskDelete(TaskDelete),
+    /// Capability `task`: run a ready task; answered with `TaskStarted`.
+    #[serde(rename = "task.start")]
+    TaskStart(TaskRef),
 }
 
 impl Request {
@@ -823,6 +839,14 @@ pub enum Event {
     /// repositories; clients list them again.
     #[serde(rename = "worktree.changed")]
     WorktreeChanged { workspace_id: WorkspaceId },
+    /// Capability `task` (protocol 0.16): a task was created or changed (its state, fields,
+    /// sessions, or the state shown for it because a dependency changed); `task` is the whole
+    /// task as it is now.
+    #[serde(rename = "task.updated")]
+    TaskUpdated { task: Task },
+    /// Capability `task`: a task was deleted.
+    #[serde(rename = "task.removed")]
+    TaskRemoved { id: TaskId },
 }
 
 impl Event {
@@ -857,6 +881,8 @@ impl Event {
         "notify.intent",
         "ui.open",
         "worktree.changed",
+        "task.updated",
+        "task.removed",
     ];
 }
 

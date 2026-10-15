@@ -28,6 +28,7 @@ mod integration;
 mod notify;
 mod providers;
 mod sessions;
+mod tasks;
 mod workspaces;
 mod worktrees;
 
@@ -75,6 +76,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Approve(args) => ctx?.approve(args).await,
         Command::Notify(command) => ctx?.notify(command).await,
         Command::Wt(command) => ctx?.wt(command).await,
+        Command::Task(command) => ctx?.task(command).await,
     }
 }
 

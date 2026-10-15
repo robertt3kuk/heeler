@@ -15,6 +15,7 @@ use hutan_core::{
     TurnId, Usage,
 };
 use hutan_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use hutan_core::{Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState};
 use hutan_protocol::assistant::*;
 use hutan_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
@@ -30,6 +31,7 @@ use hutan_protocol::notify::{
 };
 use hutan_protocol::provider::*;
 use hutan_protocol::render::*;
+use hutan_protocol::task::*;
 use hutan_protocol::tree::*;
 use hutan_protocol::worktree::*;
 use hutan_protocol::{ErrorBody, ErrorCode, Frame, PROTOCOL_VERSION};
@@ -351,6 +353,60 @@ fn observation() -> AgentObservation {
 
 fn sid2() -> SessionId {
     "01K7F3B5N2Q9W8E4R6T1Y0V3KN".parse().unwrap()
+}
+
+fn tid() -> TaskId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3TA".parse().unwrap()
+}
+
+fn tid2() -> TaskId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3TB".parse().unwrap()
+}
+
+/// A task that ran in a worktree with a chat session and was started by hand.
+fn running_task() -> Task {
+    Task {
+        id: tid(),
+        workspace_id: ws(),
+        title: "Fix the login bug".into(),
+        prompt: Some("Users are logged out after a minute; find out why.".into()),
+        state: TaskState::Running,
+        depends_on: vec![tid2()],
+        placement: TaskPlacement {
+            kind: TaskPlacementKind::Worktree,
+            branch: Some("task/fix-login".into()),
+            base: Some("main".into()),
+        },
+        run: Some(TaskRun::Chat {
+            agent: "codex".into(),
+        }),
+        auto_start: true,
+        sessions: vec![sid()],
+        created_at_ms: 1_791_894_100_000,
+        started_at_ms: Some(1_791_894_164_332),
+        ended_at_ms: None,
+        outcome: None,
+    }
+}
+
+/// A task nobody has started: no prompt, no run, the main checkout.
+fn minimal_task() -> Task {
+    Task {
+        id: tid2(),
+        workspace_id: ws(),
+        title: "Think about it".into(),
+        prompt: None,
+        state: TaskState::Ready,
+        depends_on: vec![],
+        placement: TaskPlacement::default(),
+        run: None,
+        auto_start: false,
+        sessions: vec![],
+        created_at_ms: 1_791_894_090_000,
+        started_at_ms: None,
+        ended_at_ms: None,
+        outcome: None,
+    }
 }
 
 fn worktree_info() -> WorktreeInfo {
@@ -1077,6 +1133,104 @@ fn requests() -> Vec<(&'static str, Request)> {
                 delete_branch: true,
             }),
         ),
+        (
+            "task_create",
+            Request::TaskCreate(TaskCreate {
+                workspace_id: ws(),
+                title: "Fix the login bug".into(),
+                prompt: Some("Users are logged out after a minute; find out why.".into()),
+                depends_on: vec![tid2()],
+                placement: Some(TaskPlacement {
+                    kind: TaskPlacementKind::Worktree,
+                    branch: Some("task/fix-login".into()),
+                    base: Some("main".into()),
+                }),
+                run: Some(TaskRun::Chat {
+                    agent: "codex".into(),
+                }),
+                auto_start: true,
+            }),
+        ),
+        (
+            "task_create_terminal",
+            Request::TaskCreate(TaskCreate {
+                workspace_id: ws(),
+                title: "Run the tests".into(),
+                prompt: None,
+                depends_on: vec![],
+                placement: None,
+                run: Some(TaskRun::Terminal {
+                    argv: vec!["cargo".into(), "test".into()],
+                }),
+                auto_start: false,
+            }),
+        ),
+        (
+            "task_create_minimal",
+            Request::TaskCreate(TaskCreate {
+                workspace_id: ws(),
+                title: "Think about it".into(),
+                prompt: None,
+                depends_on: vec![],
+                placement: None,
+                run: None,
+                auto_start: false,
+            }),
+        ),
+        (
+            "task_list",
+            Request::TaskList(TaskListRequest {
+                workspace_id: Some(ws()),
+                state: Some(TaskState::Ready),
+            }),
+        ),
+        (
+            "task_list_all",
+            Request::TaskList(TaskListRequest::default()),
+        ),
+        (
+            "task_update_state",
+            Request::TaskUpdate(TaskUpdate {
+                id: tid(),
+                title: None,
+                prompt: None,
+                depends_on: None,
+                placement: None,
+                run: None,
+                auto_start: None,
+                state: Some(TaskState::Cancelled),
+            }),
+        ),
+        (
+            "task_update_fields",
+            Request::TaskUpdate(TaskUpdate {
+                id: tid(),
+                title: Some("Fix the logout bug".into()),
+                prompt: Some(String::new()),
+                depends_on: Some(vec![]),
+                placement: Some(TaskPlacement::default()),
+                run: Some(TaskRun::Terminal {
+                    argv: vec!["sh".into(), "-c".into(), "make".into()],
+                }),
+                auto_start: Some(false),
+                state: None,
+            }),
+        ),
+        (
+            "task_delete",
+            Request::TaskDelete(TaskDelete {
+                id: tid(),
+                cascade: false,
+            }),
+        ),
+        (
+            "task_delete_cascade",
+            Request::TaskDelete(TaskDelete {
+                id: tid(),
+                cascade: true,
+            }),
+        ),
+        ("task_start", Request::TaskStart(TaskRef { id: tid() })),
     ]
 }
 
@@ -1538,6 +1692,38 @@ fn events() -> Vec<(&'static str, Event)> {
                 ),
             },
         ),
+        (
+            "notify_intent_task_done",
+            Event::NotifyIntent {
+                intent: NotificationIntent {
+                    id: "01K7F3B5N2Q9W8E4R6T1Y0V3NV".into(),
+                    kind: IntentKind::TaskDone,
+                    session_id: sid(),
+                    workspace_id: Some(ws()),
+                    title: "Fix the login bug: task done".into(),
+                    body: "Finished after 4m 12s (exited 0).".into(),
+                    actions: vec![IntentAction {
+                        id: "open".into(),
+                        label: "Open".into(),
+                    }],
+                    created_at_ms: 1_791_894_190_000,
+                    expires_at_ms: Some(1_791_897_790_000),
+                },
+            },
+        ),
+        (
+            "task_updated",
+            Event::TaskUpdated {
+                task: running_task(),
+            },
+        ),
+        (
+            "task_updated_minimal",
+            Event::TaskUpdated {
+                task: minimal_task(),
+            },
+        ),
+        ("task_removed", Event::TaskRemoved { id: tid() }),
     ]
 }
 
@@ -2271,6 +2457,81 @@ fn responses_match_fixtures() {
                         }),
                         ..session_info()
                     },
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_result",
+            ControlMessage::ok(
+                28,
+                &TaskResult {
+                    task: running_task(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_result_minimal",
+            ControlMessage::ok(
+                29,
+                &TaskResult {
+                    task: minimal_task(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_list",
+            ControlMessage::ok(
+                30,
+                &TaskList {
+                    tasks: vec![minimal_task(), running_task()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_deleted",
+            ControlMessage::ok(
+                31,
+                &TaskDeleted {
+                    removed: vec![tid(), tid2()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_started",
+            ControlMessage::ok(
+                32,
+                &TaskStarted {
+                    task: running_task(),
+                    session: SessionInfo {
+                        placement: Some(Placement {
+                            kind: PlacementKind::Worktree,
+                            root: "/work/repo-wt/task-fix-login".into(),
+                            branch: Some("task/fix-login".into()),
+                            shared_with: vec![],
+                        }),
+                        ..session_info()
+                    },
+                    warnings: vec![],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_started_warning",
+            ControlMessage::ok(
+                33,
+                &TaskStarted {
+                    task: running_task(),
+                    session: session_info(),
+                    warnings: vec![
+                        "another agent already works in /work/repo: session 01K7F3B5N2Q9W8E4R6T1Y0V3KN"
+                            .into(),
+                    ],
                 },
             )
             .unwrap(),

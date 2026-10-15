@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
-use hutan_core::{ApprovalId, Epoch, Seq, SessionId, TerminalId, WorkspaceId};
+use hutan_core::{
+    ApprovalId, Epoch, Seq, SessionId, Task, TaskId, TaskState, TerminalId, WorkspaceId,
+};
 use hutan_protocol::assistant::{
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
 };
@@ -30,6 +32,10 @@ use hutan_protocol::provider::{
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
 use hutan_protocol::render::TerminalRender;
+use hutan_protocol::task::{
+    TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
+    TaskStarted, TaskUpdate,
+};
 use hutan_protocol::tree::{AgentTree, AgentTreeRequest};
 use hutan_protocol::worktree::{
     WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeListRequest,
@@ -71,6 +77,8 @@ pub(crate) const NOTIFY_CAPABILITY: &str = "notify.intents";
 /// Capability for `worktree.*`, the `worktree.changed` event and `SessionInfo.placement`
 /// (protocol 0.14).
 pub(crate) const WORKTREE_CAPABILITY: &str = "worktree";
+/// Capability for `task.*` and the `task.updated` / `task.removed` events (protocol 0.16).
+pub(crate) const TASK_CAPABILITY: &str = "task";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -85,6 +93,7 @@ const CAPABILITIES: &[&str] = &[
     ASSISTANT_CAPABILITY,
     NOTIFY_CAPABILITY,
     WORKTREE_CAPABILITY,
+    TASK_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -456,6 +465,55 @@ impl Client {
         req: WorktreeRemove,
     ) -> Result<WorktreeRemoved, ClientError> {
         self.call(Request::WorktreeRemove(req)).await
+    }
+
+    /// True when the daemon advertised capability `task` (protocol 0.16).
+    pub fn supports_tasks(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == TASK_CAPABILITY)
+    }
+
+    /// Creates a task (`task.create`).
+    pub async fn task_create(&self, req: TaskCreate) -> Result<Task, ClientError> {
+        let created: TaskResult = self.call(Request::TaskCreate(req)).await?;
+        Ok(created.task)
+    }
+
+    /// The tasks of one workspace, or of every workspace, in dependency order; `state` keeps
+    /// only those shown in it.
+    pub async fn task_list(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        state: Option<TaskState>,
+    ) -> Result<Vec<Task>, ClientError> {
+        let list: TaskList = self
+            .call(Request::TaskList(TaskListRequest {
+                workspace_id,
+                state,
+            }))
+            .await?;
+        Ok(list.tasks)
+    }
+
+    /// Changes a task or its state (`task.update`).
+    pub async fn task_update(&self, req: TaskUpdate) -> Result<Task, ClientError> {
+        let updated: TaskResult = self.call(Request::TaskUpdate(req)).await?;
+        Ok(updated.task)
+    }
+
+    /// Deletes a task, and with `cascade` the tasks that depend on it; the ids that went.
+    pub async fn task_delete(&self, id: TaskId, cascade: bool) -> Result<Vec<TaskId>, ClientError> {
+        let deleted: TaskDeleted = self
+            .call(Request::TaskDelete(TaskDelete { id, cascade }))
+            .await?;
+        Ok(deleted.removed)
+    }
+
+    /// Runs a ready task now (`task.start`): the task, its session and any warnings.
+    pub async fn task_start(&self, id: TaskId) -> Result<TaskStarted, ClientError> {
+        self.call(Request::TaskStart(TaskRef { id })).await
     }
 
     /// Stops the turn in progress.

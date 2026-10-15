@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
-use hutan_core::{Epoch, SessionId, WorkspaceId};
+use hutan_core::{Epoch, SessionId, Task, TaskId, WorkspaceId};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use tracing::{debug, error};
@@ -160,6 +160,10 @@ impl Storage {
 
     pub fn worktrees(&self) -> Worktrees<'_> {
         Worktrees(self)
+    }
+
+    pub fn tasks(&self) -> Tasks<'_> {
+        Tasks(self)
     }
 
     pub fn app_meta(&self) -> AppMeta<'_> {
@@ -497,6 +501,28 @@ impl Worktrees<'_> {
     /// Oldest first.
     pub fn list(&self) -> Result<Vec<WorktreeRow>> {
         self.0.read(sql::list_worktrees)
+    }
+}
+
+/// Tasks with their dependencies and sessions (roadmap M7-B).
+#[derive(Debug, Clone, Copy)]
+pub struct Tasks<'a>(&'a Storage);
+
+impl Tasks<'_> {
+    /// Writes the task with its dependencies and sessions, replacing what was stored. Every
+    /// dependency must have been written before (or the write fails and is logged).
+    pub fn upsert(&self, task: Task) -> Result<()> {
+        self.0.write(Write::UpsertTask(Box::new(task)))
+    }
+
+    /// Deletes the task; the edges that name it go with it.
+    pub fn delete(&self, id: TaskId) -> Result<()> {
+        self.0.write(Write::DeleteTask(id))
+    }
+
+    /// Oldest first.
+    pub fn list(&self) -> Result<Vec<Task>> {
+        self.0.read(sql::list_tasks)
     }
 }
 

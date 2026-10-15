@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use hutan_core::{ObservationTree, SessionId};
+use hutan_core::{ObservationTree, SessionId, Task};
 use hutan_protocol::messages::TerminalSpec;
 use hutan_storage::{ProviderRow, RecentProject, SessionRow, Storage, StorageError, WorkspaceRow};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,9 @@ pub struct Stored {
     pub agent_trees: HashMap<SessionId, ObservationTree>,
     /// Configured model providers, oldest first.
     pub providers: Vec<ProviderRow>,
+    /// Tasks, oldest first, with their stored states (`todo`, `running`, `done`, `failed`,
+    /// `cancelled`).
+    pub tasks: Vec<Task>,
 }
 
 /// Blocking: reads the whole durable state. Run it off the async threads.
@@ -28,6 +31,7 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
         recent_projects: storage.recent_projects().list()?,
         agent_trees: crate::tree::load(storage)?,
         providers: storage.providers().list()?,
+        tasks: storage.tasks().list()?,
     })
 }
 
