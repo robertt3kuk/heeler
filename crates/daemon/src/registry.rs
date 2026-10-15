@@ -34,7 +34,7 @@ use hutan_protocol::tree::{AgentTree, NodeReport};
 use hutan_protocol::worktree::Placement;
 use hutan_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
 use hutan_terminal::{
-    ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
+    EnvInherit, ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, warn};
@@ -458,6 +458,8 @@ struct SessionRegistry {
     socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     shell_integration_dir: Option<PathBuf>,
+    /// Where new terminals' base environment comes from (`[terminal] env_inherit`).
+    env_inherit: EnvInherit,
     /// Exported to children as `HUTAN_BIN`.
     hutan_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
@@ -492,6 +494,8 @@ pub struct RegistryConfig {
     pub socket: PathBuf,
     /// Installed shell-integration scripts handed to every new terminal; `None` = no injection.
     pub shell_integration_dir: Option<PathBuf>,
+    /// `[terminal] env_inherit`: where new terminals' base environment comes from.
+    pub env_inherit: EnvInherit,
     /// The `hutan` CLI exported to sessions as `HUTAN_BIN`.
     pub hutan_bin: PathBuf,
     pub storage: Storage,
@@ -535,6 +539,7 @@ pub fn spawn(
         hub,
         socket: config.socket,
         shell_integration_dir: config.shell_integration_dir,
+        env_inherit: config.env_inherit,
         hutan_bin: config.hutan_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
         home,
@@ -1465,6 +1470,7 @@ impl SessionRegistry {
             argv: restore_argv.unwrap_or_else(|| session.spec.command.clone()),
             cwd: session.info.cwd.clone(),
             env,
+            env_inherit: self.env_inherit,
             shell_integration_dir: self.shell_integration_dir.clone(),
             ..TerminalConfig::default()
         };

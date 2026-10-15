@@ -10,8 +10,8 @@ use gpui::{
     InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
-use hutan_core::SessionId;
-use hutan_protocol::messages::SessionInfo;
+use hutan_core::{SessionId, WorkspaceId};
+use hutan_protocol::messages::{SessionInfo, TerminalSpec};
 use hutan_settings::{ChangeSet, KEYMAP_NAMESPACE};
 use hutan_terminal_view::{
     DefaultColors, SharedEvent, SharedTerminal, TerminalView, TerminalViewEvent, ViewMode,
@@ -401,6 +401,28 @@ impl Workbench {
         self.open_session(session, window, cx);
     }
 
+    /// What a new terminal in `workspace` starts with: `cwd`, and the `terminal.shell` and
+    /// `terminal.env` settings as resolved for that workspace's first root (its
+    /// `.hutan/settings.toml` over the user's), which need not be the workspace on screen.
+    pub(crate) fn new_terminal_spec(
+        &self,
+        workspace: Option<WorkspaceId>,
+        cwd: Option<PathBuf>,
+        cx: &gpui::App,
+    ) -> TerminalSpec {
+        let root = workspace
+            .and_then(|id| self.sessions.read(cx).workspace(id))
+            .and_then(|w| w.roots.first().cloned());
+        let mut spec = TerminalSpec {
+            cwd,
+            ..TerminalSpec::default()
+        };
+        self.settings
+            .get_for_workspace::<TerminalSettings>(root.as_deref())
+            .apply_to_spec(&mut spec);
+        spec
+    }
+
     /// Starts a terminal in the active workspace (Home when none is shown), in its first root
     /// or `$HOME`, and opens it.
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -412,9 +434,10 @@ impl Workbench {
                 .or_else(std::env::home_dir);
             (workspace.map(|w| w.id), cwd)
         };
+        let spec = self.new_terminal_spec(workspace, cwd, cx);
         let task = self
             .sessions
-            .update(cx, |store, cx| store.create_terminal(workspace, cwd, cx));
+            .update(cx, |store, cx| store.create_session(workspace, spec, cx));
         cx.spawn_in(window, async move |this, cx| match task.await {
             Ok(info) => {
                 this.update_in(cx, |this, window, cx| {
@@ -483,9 +506,10 @@ impl Workbench {
             return;
         }
         let (workspace, cwd) = self.split_target(pane, cx);
+        let spec = self.new_terminal_spec(workspace, cwd, cx);
         let task = self
             .sessions
-            .update(cx, |store, cx| store.create_terminal(workspace, cwd, cx));
+            .update(cx, |store, cx| store.create_session(workspace, spec, cx));
         cx.spawn_in(window, async move |this, cx| match task.await {
             Ok(info) => {
                 this.update_in(cx, |this, window, cx| {

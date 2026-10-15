@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use hutan_protocol::messages::TerminalSpec;
 pub use hutan_settings::AppearanceSettings;
 use hutan_settings::themes::{self, SystemAppearance};
 use hutan_settings::{Setting, SettingsStore};
@@ -82,6 +83,13 @@ pub struct TerminalSettings {
     /// Draw prompt blocks over the terminal: gutter bars, status chips, hover actions, folds.
     /// Off, the terminal looks as if blocks did not exist.
     pub blocks: bool,
+    /// The shell new terminals run (absolute path or a name on `PATH`); empty = the account's
+    /// login shell. Sent to the daemon as the session's `SHELL`.
+    pub shell: String,
+    /// Extra environment variables of new terminals, merged over the daemon's login environment
+    /// (`[terminal] env_inherit` in `daemon.toml`). A workspace's `terminal.env` overrides the
+    /// user's per variable. Values may be secrets: they go to the daemon and nowhere else.
+    pub env: BTreeMap<String, String>,
 }
 
 impl Default for TerminalSettings {
@@ -96,6 +104,8 @@ impl Default for TerminalSettings {
             copy_on_select: false,
             scroll_to_bottom_on_input: true,
             blocks: true,
+            shell: String::new(),
+            env: BTreeMap::new(),
         }
     }
 }
@@ -110,6 +120,25 @@ fn rgb(c: themes::Rgb) -> Rgb {
 }
 
 impl TerminalSettings {
+    /// Puts `shell` and `env` into the session `spec` a new terminal is created with: `env`, and
+    /// a non-empty `shell` as `SHELL` (over `env.SHELL`). Variables `spec` already carries win
+    /// over the settings; an explicit `SHELL` in `spec.env` is what the daemon then runs (its
+    /// `default_shell` rule).
+    pub fn apply_to_spec(&self, spec: &mut TerminalSpec) {
+        let shell = (!self.shell.is_empty()).then_some(("SHELL", self.shell.as_str()));
+        let settings = self
+            .env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .filter(|(name, _)| shell.is_none() || *name != "SHELL")
+            .chain(shell);
+        for (name, value) in settings {
+            spec.env
+                .entry(name.to_owned())
+                .or_insert_with(|| value.to_owned());
+        }
+    }
+
     /// The view configuration for this namespace with the theme resolved against `system`.
     pub fn view_settings(&self, system: SystemAppearance) -> TerminalViewSettings {
         let theme = themes::resolve(&self.theme, system);
@@ -731,6 +760,33 @@ pub fn panel_ids(names: &[String]) -> Vec<PanelId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_shell_and_env_go_into_the_session_spec() {
+        let mut settings = TerminalSettings::default();
+        let mut spec = TerminalSpec::default();
+        settings.apply_to_spec(&mut spec);
+        assert!(spec.env.is_empty(), "defaults add nothing: {:?}", spec.env);
+
+        settings.shell = "/opt/homebrew/bin/fish".to_owned();
+        settings.env.insert("EDITOR".into(), "hx".into());
+        settings.env.insert("SHELL".into(), "/bin/ignored".into());
+        let mut spec = TerminalSpec::default();
+        settings.apply_to_spec(&mut spec);
+        assert_eq!(spec.env["EDITOR"], "hx");
+        assert_eq!(
+            spec.env["SHELL"], "/opt/homebrew/bin/fish",
+            "`shell` beats env.SHELL"
+        );
+
+        // What the caller already asked for stays.
+        let mut spec = TerminalSpec::default();
+        spec.env.insert("EDITOR".into(), "ed".into());
+        spec.env.insert("SHELL".into(), "/bin/sh".into());
+        settings.apply_to_spec(&mut spec);
+        assert_eq!(spec.env["EDITOR"], "ed");
+        assert_eq!(spec.env["SHELL"], "/bin/sh");
+    }
 
     #[test]
     fn builtin_presets_are_always_present_and_user_presets_extend_them() {

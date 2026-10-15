@@ -889,6 +889,74 @@ fn new_terminal_starts_in_the_focused_workspace_root_or_home(cx: &mut TestAppCon
     assert_same_dir(second.cwd.as_deref(), root.path());
 }
 
+/// `terminal.shell` and `terminal.env`: the user's values, overridden per variable by the
+/// workspace's `.hutan/settings.toml`, reach `session.create` and so the new terminal's process.
+/// The shell is a stand-in script that prints what it was started with.
+#[gpui::test]
+fn terminal_shell_and_env_settings_reach_new_sessions_with_workspace_overrides(
+    cx: &mut TestAppContext,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let daemon = TestDaemon::start();
+    let tools = tempfile::tempdir().unwrap();
+    let shell = tools.path().join("stand-in-shell");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\necho \"mark=$B1_MARK user=$B1_USER_ONLY ws=$B1_WS_ONLY shell=$SHELL\"\nexec cat\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write(
+        daemon.home(),
+        "settings.toml",
+        &format!(
+            "[terminal]\nshell = \"{}\"\n[terminal.env]\nB1_MARK = \"user\"\nB1_USER_ONLY = \"u\"\n",
+            shell.display()
+        ),
+    );
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".hutan")).unwrap();
+    std::fs::write(
+        root.path().join(".hutan/settings.toml"),
+        "[terminal.env]\nB1_MARK = \"workspace\"\nB1_WS_ONLY = \"w\"\n",
+    )
+    .unwrap();
+    let ws = daemon.create_workspace("proj", &[root.path()]);
+    let member = daemon.create_session(&["sleep", "600"], Some(ws.id));
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+
+    // Home carries no workspace file: the user's values and shell.
+    cx.simulate_keystrokes("cmd-t");
+    wait_until(cx, "the Home terminal", |cx| {
+        view.read_with(cx, |wb, _| wb.focused_session()).is_some()
+    });
+    let home = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
+    wait_screen(
+        &view,
+        cx,
+        home,
+        &format!("mark=user user=u ws= shell={}", shell.display()),
+    );
+
+    // `proj`: its `terminal.env` wins per variable and adds its own; the rest stays.
+    open_session(&view, cx, member.id);
+    cx.simulate_keystrokes("cmd-t");
+    wait_until(cx, "the project terminal", |cx| {
+        view.read_with(cx, |wb, _| wb.focused_session())
+            .is_some_and(|s| s != member.id && s != home)
+    });
+    let project = view.read_with(cx, |wb, _| wb.focused_session()).unwrap();
+    assert_eq!(daemon.session(project).workspace_id, ws.id);
+    wait_screen(
+        &view,
+        cx,
+        project,
+        &format!("mark=workspace user=u ws=w shell={}", shell.display()),
+    );
+}
+
 #[gpui::test]
 fn closing_a_tab_detaches_and_the_layout_reattaches_after_a_restart(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();

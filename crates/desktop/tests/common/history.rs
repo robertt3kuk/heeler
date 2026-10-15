@@ -102,9 +102,10 @@ impl HistoryEnv {
     }
 
     /// A `daemon.toml` that points every source at the temporary roots.
+    /// `env_inherit = "daemon"`: the stand-in agents are found through the test process's `PATH`.
     pub fn daemon_toml(&self, enabled: bool) -> String {
         format!(
-            "[history]\nenabled = {enabled}\n[history.roots]\nclaude = \"{}\"\ncodex = \"{}\"\nomp = \"{}\"\n",
+            "[terminal]\nenv_inherit = \"daemon\"\n[history]\nenabled = {enabled}\n[history.roots]\nclaude = \"{}\"\ncodex = \"{}\"\nomp = \"{}\"\n",
             self.claude.display(),
             self.codex.display(),
             self.omp.display()

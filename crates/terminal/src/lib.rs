@@ -11,6 +11,7 @@ mod behavior;
 mod block_tests;
 mod blocks;
 mod emulator;
+pub mod env;
 #[cfg(test)]
 mod equivalence;
 mod error;
@@ -24,6 +25,7 @@ mod terminal;
 
 pub use blocks::{BlockText, BlockTextError};
 pub use emulator::{DefaultColors, Emulator, LineScope, LogicalLine, LogicalLines};
+pub use env::EnvInherit;
 pub use error::TerminalError;
 pub use render::RenderTracker;
 pub use sniffer::{PromptMark, TerminalMeta};

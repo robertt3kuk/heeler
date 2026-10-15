@@ -667,23 +667,6 @@ impl SessionsStore {
 
     // ---- lifecycle commands ----------------------------------------------------------------
 
-    /// Starts a login shell in `workspace` (the daemon's default when `None`) at `cwd`.
-    pub fn create_terminal(
-        &mut self,
-        workspace: Option<WorkspaceId>,
-        cwd: Option<PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<SessionInfo, String>> {
-        self.create_session(
-            workspace,
-            TerminalSpec {
-                cwd,
-                ..TerminalSpec::default()
-            },
-            cx,
-        )
-    }
-
     /// Starts the terminal session `spec` describes in `workspace` (the daemon's default when
     /// `None`).
     pub fn create_session(

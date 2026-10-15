@@ -176,6 +176,11 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             None
         }
     };
+    if settings.terminal.env_inherit == hutan_terminal::EnvInherit::Login {
+        // The facts of the login environment come from a few subprocesses; do not make the
+        // first session (or a restored one) wait for them.
+        hutan_terminal::env::warm_up();
+    }
     let restoring = stored.sessions.len();
     let providers = ProviderService::new(
         storage.clone(),
@@ -197,6 +202,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         RegistryConfig {
             socket: paths.socket.clone(),
             shell_integration_dir,
+            env_inherit: settings.terminal.env_inherit,
             hutan_bin: config.hutan_bin.unwrap_or_else(agent::resolve_hutan_bin),
             storage: storage.clone(),
             restore: settings.restore_sessions,

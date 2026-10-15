@@ -1,5 +1,5 @@
 //! The only module of the crate that needs `unsafe`: thin wrappers over `kill(2)`/`killpg(2)`,
-//! `waitpid(2)`, and `getpwuid_r(3)`.
+//! `waitpid(2)`, `getpwuid_r(3)`, and `confstr(3)`.
 #![allow(unsafe_code)]
 
 use std::io;
@@ -72,9 +72,32 @@ pub(crate) fn wait_child(pid: u32) -> io::Result<Reaped> {
     }
 }
 
-/// The current user's login shell from the account database (what `chsh` sets; on macOS the
-/// directory service `UserShell`). `None` if the lookup fails or the entry has no shell.
-pub(crate) fn login_shell() -> Option<String> {
+/// The current user's account entry, from the account database (what `chsh` edits; on macOS the
+/// directory service).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Account {
+    pub(crate) name: String,
+    pub(crate) home: String,
+    /// `None` when the entry has no shell.
+    pub(crate) shell: Option<String>,
+}
+
+fn field(pointer: *const libc::c_char) -> Option<String> {
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the caller passes a field of a successful `getpwuid_r` result: a NUL-terminated
+    // string inside the lookup buffer, which is still alive.
+    let text = unsafe { std::ffi::CStr::from_ptr(pointer) };
+    text.to_str()
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// The current user's account entry; `None` if the lookup fails or the entry has no name or
+/// home directory.
+pub(crate) fn account() -> Option<Account> {
     // SAFETY: `getuid` has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     let mut buffer = vec![0 as libc::c_char; 4096];
@@ -99,15 +122,44 @@ pub(crate) fn login_shell() -> Option<String> {
             buffer.resize(buffer.len() * 2, 0);
             continue;
         }
-        if rc != 0 || result.is_null() || entry.pw_shell.is_null() {
+        if rc != 0 || result.is_null() {
             return None;
         }
-        // SAFETY: on success `pw_shell` is a NUL-terminated string inside `buffer`.
-        let shell = unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) };
-        return shell
-            .to_str()
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+        return Some(Account {
+            name: field(entry.pw_name)?,
+            home: field(entry.pw_dir)?,
+            shell: field(entry.pw_shell),
+        });
     }
+}
+
+/// The current user's login shell from the account database. `None` if the lookup fails or the
+/// entry has no shell.
+pub(crate) fn login_shell() -> Option<String> {
+    account()?.shell
+}
+
+/// The per-user temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, what launchd exports
+/// as `TMPDIR`, with a trailing slash). `None` where the system has no such directory.
+#[cfg(target_os = "macos")]
+pub(crate) fn user_temp_dir() -> Option<String> {
+    let mut buffer = vec![0 as libc::c_char; libc::PATH_MAX as usize + 1];
+    // SAFETY: `buffer` is writable for `buffer.len()` bytes; `confstr` writes at most that many,
+    // NUL-terminated, and returns the length it needs (0 on failure).
+    let needed = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+        )
+    };
+    if needed == 0 || needed > buffer.len() {
+        return None;
+    }
+    field(buffer.as_ptr())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn user_temp_dir() -> Option<String> {
+    None
 }

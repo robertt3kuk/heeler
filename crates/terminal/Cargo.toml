@@ -12,6 +12,7 @@ hutan-protocol.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 portable-pty.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

@@ -39,10 +39,12 @@ async fn resume_opens_a_session_in_the_hits_cwd_with_the_resume_command() {
     // SAFETY: this binary has a single test and no other thread reads the environment yet.
     unsafe { std::env::set_var("PATH", path) };
 
+    // The stand-in is found through the daemon's own `PATH`; a login environment would not have
+    // the temporary `bin` directory.
     fs::write(
         home.join("daemon.toml"),
         format!(
-            "[history]\nenabled = true\ncodex = false\nomp = false\nhutan = false\n[history.roots]\nclaude = \"{}\"\n",
+            "[terminal]\nenv_inherit = \"daemon\"\n[history]\nenabled = true\ncodex = false\nomp = false\nhutan = false\n[history.roots]\nclaude = \"{}\"\n",
             claude.display()
         ),
     )

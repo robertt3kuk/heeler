@@ -602,6 +602,52 @@ impl SettingsStore {
             .ok()
     }
 
+    /// The value of `T` as it is for the workspace rooted at `root`: defaults, the user layer,
+    /// `<root>/.hutan/settings.toml` (read now, only for namespaces that may be overridden per
+    /// workspace), then the runtime layer. It does not touch the active workspace layer, so a
+    /// window can resolve settings for a workspace that is not the one it shows. `None`, an
+    /// unreadable or invalid workspace file, or a value that does not validate give
+    /// [`get`](Self::get) (the active workspace's value, or the last good one).
+    pub fn get_for_workspace<T: Setting>(&self, root: Option<&Path>) -> Arc<T> {
+        let active = self.get::<T>();
+        let Some(root) = root else {
+            return active;
+        };
+        let state = self.shared.state.read();
+        if state.workspace_root.as_deref() == Some(root) {
+            return active;
+        }
+        let Some(entry) = state.registry.get(T::NAMESPACE) else {
+            return active;
+        };
+        if entry.type_id != TypeId::of::<T>() || !entry.overridable {
+            return active;
+        }
+        let workspace = match std::fs::read_to_string(workspace_file(root)) {
+            Ok(text) => match toml::from_str::<toml::Table>(&text) {
+                Ok(table) => table,
+                Err(_) => return active,
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+            Err(_) => return active,
+        };
+        let mut merged = entry.default.clone();
+        for layer in [
+            subtree(&state.user.table, T::NAMESPACE),
+            subtree(&workspace, T::NAMESPACE),
+            state.runtime.get(T::NAMESPACE),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            deep_merge(&mut merged, layer);
+        }
+        match (entry.load)(&merged) {
+            Ok(loaded) => loaded.computed.value.downcast::<T>().unwrap_or(active),
+            Err(_) => active,
+        }
+    }
+
     /// Uses `<root>/.hutan/settings.toml` as the workspace layer (`None` removes it).
     pub fn set_workspace_root(&self, root: Option<PathBuf>) {
         {

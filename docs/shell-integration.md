@@ -18,6 +18,8 @@ Sequences from the scripts end with BEL. An empty Enter produces `A B` with no `
 
 ## Where it applies
 
+The environment the shell starts with (a fresh login environment by default) is described in `docs/architecture.md` § Session environment; the integration variables are set after it and win over the client's.
+
 Only when the session runs the login shell (empty command; `$SHELL -l`, see `default_shell`) or a command whose basename is `zsh`, `bash` or `fish`. Other programs get nothing, and variables of an outer Hutan terminal that leaked into the daemon's environment are removed from their environment (`HUTAN_SHELL_INTEGRATION_DIR`, `_VERSION`, `HUTAN_ORIG_*`, ...).
 
 Opt-out: `TerminalConfig::shell_integration = false`, or `HUTAN_SHELL_INTEGRATION=0` in the session environment (or the daemon's). The scripts live in `$HUTAN_HOME/shell-integration/<version>/`, rewritten atomically by the daemon at start when their content differs. A shell that is running keeps what it already loaded.

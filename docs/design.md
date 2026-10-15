@@ -218,6 +218,7 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 - Precedence: built-in defaults < user < workspace < runtime toggles (e.g. density switch writes back to user file).
 - Every component owns one namespace with a typed, documented schema; unknown keys warn, invalid values fall back to defaults with a visible error in the settings UI. Files hot-reload.
 - Settings UI (⌘,): generated from the schemas, searchable; each panel's gear (⚙) opens its own section.
+- `terminal` namespace, session start (B-1): `shell` (string; empty = the account's login shell) and `env` (table of strings, extra variables) are overridable per workspace; `<repo>/.hutan/settings.toml` `terminal.env` overrides the user's per variable. They are resolved for the workspace a new terminal starts in (its first root, which need not be the one on screen) and sent in `session.create` as `TerminalSpec.env` (`shell` as `SHELL`). Values are passed to the daemon and never logged or shown. Where the rest of the environment comes from: `daemon.toml` `[terminal] env_inherit` (`docs/architecture.md` § Session environment).
 - Layout geometry the user drags (sizes, open tabs, split ratios) is **state**, saved in `desktop-state.json`; it becomes a **preset** in settings only when the user saves it.
 
 ```toml

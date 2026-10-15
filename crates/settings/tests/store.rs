@@ -122,6 +122,71 @@ fn workspace_override_allowed_for_overridable_namespaces() {
 }
 
 #[test]
+fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
+    let f = Fixture::new(Some(
+        "[layout]\npreset = \"user\"\n[layout.presets.a]\nsize = 1\n[layout.presets.b]\nsize = 2\n",
+    ));
+    let other = f.dir.path().join("other");
+    write_file(
+        &other.join(".hutan/settings.toml"),
+        "[layout]\npreset = \"other\"\n[layout.presets.a]\nsize = 10\n",
+    );
+    let bare = f.dir.path().join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let active = f.workspace("[layout]\npreset = \"active\"\n");
+
+    let other_layout = f.store.get_for_workspace::<Layout>(Some(&other));
+    assert_eq!(
+        other_layout.preset, "other",
+        "that workspace's file wins over the user's"
+    );
+    assert_eq!(other_layout.presets["a"].size, 10);
+    assert_eq!(
+        other_layout.presets["b"].size, 2,
+        "deep merge over the user layer"
+    );
+    // The active workspace layer is untouched.
+    assert_eq!(f.store.get::<Layout>().preset, "active");
+    // A workspace without a file, and no workspace at all.
+    assert_eq!(
+        f.store.get_for_workspace::<Layout>(Some(&bare)).preset,
+        "user"
+    );
+    assert_eq!(f.store.get_for_workspace::<Layout>(None).preset, "active");
+    // The active root is the cached value.
+    assert_eq!(
+        f.store.get_for_workspace::<Layout>(Some(&active)).preset,
+        "active"
+    );
+
+    // The file is read at the time of the call.
+    write_file(
+        &other.join(".hutan/settings.toml"),
+        "[layout]\npreset = \"again\"\n",
+    );
+    assert_eq!(
+        f.store.get_for_workspace::<Layout>(Some(&other)).preset,
+        "again"
+    );
+    // Broken TOML, or a namespace that may not be overridden: the active value.
+    write_file(&other.join(".hutan/settings.toml"), "[layout\n");
+    assert_eq!(
+        f.store.get_for_workspace::<Layout>(Some(&other)).preset,
+        "active"
+    );
+    write_file(
+        &other.join(".hutan/settings.toml"),
+        "[terminal]\nfont_size = 99\n",
+    );
+    assert_eq!(
+        f.store
+            .get_for_workspace::<Terminal>(Some(&other))
+            .font_size,
+        13
+    );
+}
+
+#[test]
 fn workspace_override_refused_for_other_namespaces() {
     let f = Fixture::new(Some("[terminal]\nfont_size = 15\n"));
     f.store.register::<Terminal>();

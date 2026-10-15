@@ -42,6 +42,9 @@
 //! [assistant.workspaces.hutan]  # per workspace (name or id): only what differs
 //! files = false
 //!
+//! [terminal]                     # the environment of new terminal sessions (docs/shell-integration.md)
+//! env_inherit = "login"          # "login": a fresh login environment; "daemon": hutand's own
+//!
 //! [notify]                       # notification intents (protocol 0.13, docs/protocol.md)
 //! enabled = true
 //! min_turn_secs = 20             # a main agent's turn must take this long to count as "finished"
@@ -55,6 +58,7 @@ use std::path::{Path, PathBuf};
 
 use hutan_protocol::assistant::AttachmentKind;
 use hutan_protocol::notify::IntentKind;
+use hutan_terminal::EnvInherit;
 use serde::Deserialize;
 use serde::de::Error as _;
 
@@ -82,6 +86,16 @@ pub struct DaemonSettings {
     pub gateway: GatewaySettings,
     pub assistant: AssistantSettings,
     pub notify: NotifySettings,
+    pub terminal: TerminalSettings,
+}
+
+/// `[terminal]` of `daemon.toml`: how new terminal sessions get their environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// `login` (default): the child starts from the user's login environment, like a terminal
+    /// emulator's tab; `daemon`: it inherits `hutand`'s own environment.
+    pub env_inherit: EnvInherit,
 }
 
 /// `gateway.max_context_chars` when the setting is absent.
@@ -333,6 +347,8 @@ struct File {
     assistant: AssistantSettings,
     #[serde(default)]
     notify: NotifySettings,
+    #[serde(default)]
+    terminal: TerminalSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -398,6 +414,7 @@ impl DaemonSettings {
             gateway: file.gateway,
             assistant: file.assistant,
             notify: file.notify,
+            terminal: file.terminal,
         })
     }
 }
@@ -694,6 +711,24 @@ mod tests {
     fn assistant_budget_must_be_positive() {
         assert!(DaemonSettings::parse("[assistant]\ncontext_budget_chars = 0\n", None).is_err());
         assert!(DaemonSettings::parse("[assistant.context]\nshell = \"yes\"\n", None).is_err());
+    }
+
+    #[test]
+    fn terminal_sessions_start_from_the_login_environment_unless_told_otherwise() {
+        let inherit =
+            |toml: &str| DaemonSettings::parse(toml, None).map(|s| s.terminal.env_inherit);
+        assert_eq!(inherit("").unwrap(), EnvInherit::Login);
+        assert_eq!(inherit("[terminal]\n").unwrap(), EnvInherit::Login);
+        assert_eq!(
+            inherit("[terminal]\nenv_inherit = \"login\"\n").unwrap(),
+            EnvInherit::Login
+        );
+        assert_eq!(
+            inherit("[terminal]\nenv_inherit = \"daemon\"\n").unwrap(),
+            EnvInherit::Daemon
+        );
+        assert!(inherit("[terminal]\nenv_inherit = \"shell\"\n").is_err());
+        assert!(inherit("[terminal]\nenv_inherit = true\n").is_err());
     }
 
     #[test]

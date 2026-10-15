@@ -29,6 +29,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::blocks::{BlockText, BlockTextError};
 use crate::emulator::{DefaultColors, Emulator};
+use crate::env::{self, EnvInherit, SystemFacts};
 use crate::error::TerminalError;
 use crate::render::RenderTracker;
 use crate::shell_integration;
@@ -54,9 +55,11 @@ pub struct TerminalConfig {
     /// Program and arguments; empty = the user's login shell with `-l` ([`default_shell`]).
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
-    /// Applied on top of the inherited environment; `TERM`, `COLORTERM` and `TERM_PROGRAM`
-    /// are forced afterwards.
+    /// Applied on top of the base environment ([`env_inherit`](Self::env_inherit)); `TERM`,
+    /// `COLORTERM`, `TERM_PROGRAM` and the shell-integration variables are forced afterwards.
     pub env: BTreeMap<String, String>,
+    /// Where the base environment comes from (see [`crate::env`]).
+    pub env_inherit: EnvInherit,
     pub size: TerminalSize,
     /// History lines retained; default 10 000.
     pub scrollback_lines: usize,
@@ -76,6 +79,7 @@ impl Default for TerminalConfig {
             argv: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
+            env_inherit: EnvInherit::default(),
             size: TerminalSize {
                 cols: 80,
                 rows: 24,
@@ -257,14 +261,50 @@ pub fn default_shell(env: &BTreeMap<String, String>) -> String {
         .unwrap_or_else(|| "/bin/zsh".to_owned())
 }
 
-fn command(cfg: &TerminalConfig) -> CommandBuilder {
+/// What the base environment is built from: the system facts for [`EnvInherit::Login`], the
+/// daemon's environment for [`EnvInherit::Daemon`].
+struct EnvSource {
+    facts: SystemFacts,
+    daemon_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+}
+
+impl EnvSource {
+    /// This machine and this process.
+    fn system(inherit: EnvInherit) -> Self {
+        match inherit {
+            EnvInherit::Login => Self {
+                facts: env::system_facts(),
+                daemon_env: Vec::new(),
+            },
+            EnvInherit::Daemon => Self {
+                facts: SystemFacts::default(),
+                daemon_env: std::env::vars_os().collect(),
+            },
+        }
+    }
+}
+
+fn command(cfg: &TerminalConfig, source: &EnvSource) -> CommandBuilder {
     let login_shell = cfg.argv.is_empty().then(|| default_shell(&cfg.env));
     let argv: Vec<String> = match &login_shell {
         Some(shell) => vec![shell.clone(), "-l".to_owned()],
         None => cfg.argv.clone(),
     };
-    // `CommandBuilder` starts from the daemon's own environment.
     let mut cmd = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
+    // `CommandBuilder` starts from the daemon's own environment; the base is set explicitly.
+    cmd.env_clear();
+    match cfg.env_inherit {
+        EnvInherit::Login => {
+            for (key, value) in env::base_env(&source.facts) {
+                cmd.env(key, value);
+            }
+        }
+        EnvInherit::Daemon => {
+            for (key, value) in &source.daemon_env {
+                cmd.env(key, value);
+            }
+        }
+    }
     for (key, value) in &cfg.env {
         cmd.env(key, value);
     }
@@ -308,7 +348,7 @@ impl Terminal {
             .first()
             .cloned()
             .unwrap_or_else(|| "$SHELL".to_owned());
-        let cmd = command(&cfg);
+        let cmd = command(&cfg, &EnvSource::system(cfg.env_inherit));
 
         let (child, master, reader, writer) = {
             let _spawn = SPAWN_LOCK.lock();
@@ -693,4 +733,156 @@ fn release_pty(core: &Core) {
     }
     drop(live);
     drop(core.master.lock().take());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use super::*;
+
+    /// `Debug` is not enough to assert on a `CommandBuilder`; read its resulting environment.
+    fn env_of(cmd: &CommandBuilder) -> BTreeMap<String, String> {
+        cmd.iter_full_env_as_str()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect()
+    }
+
+    fn source() -> EnvSource {
+        EnvSource {
+            facts: SystemFacts {
+                home: Some("/Users/ada".into()),
+                user: Some("ada".into()),
+                shell: Some("/bin/zsh".into()),
+                temp_dir: Some("/var/folders/xx/T/".into()),
+                path_helper: Some("PATH=\"/usr/local/bin:/usr/bin:/bin\"; export PATH;".into()),
+                ..SystemFacts::default()
+            },
+            daemon_env: vec![
+                (OsString::from("HUTAN_SENTINEL"), OsString::from("leaked")),
+                (OsString::from("PATH"), OsString::from("/daemon/bin")),
+                (
+                    OsString::from("VIRTUAL_ENV"),
+                    OsString::from("/daemon/venv"),
+                ),
+                (OsString::from("TERM"), OsString::from("dumb")),
+            ],
+        }
+    }
+
+    fn config(env_inherit: EnvInherit, env: &[(&str, &str)]) -> TerminalConfig {
+        TerminalConfig {
+            argv: vec!["/usr/bin/env".to_owned()],
+            env_inherit,
+            env: env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            ..TerminalConfig::default()
+        }
+    }
+
+    #[test]
+    fn login_mode_starts_from_the_facts_and_never_sees_the_daemons_environment() {
+        let env = env_of(&command(&config(EnvInherit::Login, &[]), &source()));
+        assert_eq!(
+            env.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "COLORTERM",
+                "HOME",
+                "LANG",
+                "LOGNAME",
+                "PATH",
+                "SHELL",
+                "TERM",
+                "TERM_PROGRAM",
+                "TMPDIR",
+                "USER"
+            ]
+        );
+        assert_eq!(env["PATH"], "/usr/local/bin:/usr/bin:/bin");
+        assert_eq!(env["TERM"], "xterm-256color", "not the daemon's TERM");
+        assert!(!env.contains_key("HUTAN_SENTINEL") && !env.contains_key("VIRTUAL_ENV"));
+    }
+
+    #[test]
+    fn daemon_mode_keeps_the_daemons_environment_and_none_of_the_facts() {
+        let env = env_of(&command(&config(EnvInherit::Daemon, &[]), &source()));
+        assert_eq!(env["HUTAN_SENTINEL"], "leaked");
+        assert_eq!(env["PATH"], "/daemon/bin");
+        assert_eq!(env["VIRTUAL_ENV"], "/daemon/venv");
+        assert!(!env.contains_key("HOME") && !env.contains_key("TMPDIR"));
+        assert_eq!(
+            env["TERM"], "xterm-256color",
+            "terminal variables still win"
+        );
+    }
+
+    #[test]
+    fn precedence_is_base_then_client_then_terminal_variables() {
+        let cfg = config(
+            EnvInherit::Login,
+            &[
+                ("PATH", "/client/bin"),
+                ("EDITOR", "vim"),
+                ("HOME", "/client/home"),
+                ("TERM", "vt100"),
+                ("COLORTERM", "no"),
+                ("TERM_PROGRAM", "other"),
+            ],
+        );
+        let env = env_of(&command(&cfg, &source()));
+        assert_eq!(env["PATH"], "/client/bin", "client beats the base");
+        assert_eq!(env["HOME"], "/client/home");
+        assert_eq!(env["EDITOR"], "vim");
+        assert_eq!(
+            env["TERM"], "xterm-256color",
+            "terminal variables beat the client"
+        );
+        assert_eq!(env["COLORTERM"], "truecolor");
+        assert_eq!(env["TERM_PROGRAM"], "hutan");
+        assert_eq!(env["USER"], "ada", "untouched base facts stay");
+    }
+
+    #[test]
+    fn integration_variables_beat_the_client_and_the_daemon_managed_ones_survive() {
+        let root = Path::new("/integration");
+        let mut cfg = config(
+            EnvInherit::Login,
+            &[
+                ("HUTAN_SESSION_ID", "daemon-managed"),
+                ("HUTAN_SHELL_INTEGRATION_DIR", "/client/dir"),
+            ],
+        );
+        cfg.argv = vec!["/bin/zsh".to_owned(), "-l".to_owned()];
+        cfg.shell_integration_dir = Some(root.to_owned());
+        let env = env_of(&command(&cfg, &source()));
+        assert_eq!(env["HUTAN_SHELL_INTEGRATION_DIR"], "/integration");
+        assert_eq!(env["ZDOTDIR"], "/integration/zsh");
+        assert_eq!(env["HUTAN_SESSION_ID"], "daemon-managed");
+    }
+
+    #[test]
+    fn an_explicit_shell_in_the_session_env_still_selects_the_shell() {
+        let mut cfg = config(EnvInherit::Login, &[("SHELL", "/bin/sh")]);
+        cfg.argv.clear();
+        let cmd = command(&cfg, &source());
+        assert_eq!(
+            cmd.get_argv()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["/bin/sh", "-l"]
+        );
+        assert_eq!(env_of(&cmd)["SHELL"], "/bin/sh");
+
+        // Without one the account's login shell is used and `$SHELL` says so.
+        let mut cfg = config(EnvInherit::Login, &[]);
+        cfg.argv.clear();
+        let cmd = command(&cfg, &source());
+        let shell = default_shell(&BTreeMap::new());
+        assert_eq!(cmd.get_argv()[0].to_string_lossy(), shell);
+        assert_eq!(env_of(&cmd)["SHELL"], shell);
+    }
 }

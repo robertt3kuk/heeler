@@ -27,7 +27,7 @@ use super::panels::{
 use super::view::Workbench;
 use super::workspaces::{HistoryState, PickerAction, PickerEntry};
 use crate::sessions::SessionsStore;
-use crate::settings::HistorySettings;
+use crate::settings::{HistorySettings, TerminalSettings};
 
 /// How often (and how many times) Open block waits for the terminal view of a session it has
 /// just shown before it gives up on scrolling to the block.
@@ -264,7 +264,7 @@ impl Workbench {
             (Some(recorded), None) => Some(recorded.clone()),
             _ => None,
         };
-        let spec = TerminalSpec {
+        let mut spec = TerminalSpec {
             title: Some(match title {
                 Some(title) => format!("resume: {title}"),
                 None => argv.join(" "),
@@ -273,6 +273,13 @@ impl Workbench {
             cwd: start_dir.clone(),
             ..TerminalSpec::default()
         };
+        // The settings of the workspace the session will belong to.
+        let root = dir
+            .clone()
+            .or_else(|| target.as_ref().and_then(|w| w.roots.first().cloned()));
+        self.settings
+            .get_for_workspace::<TerminalSettings>(root.as_deref())
+            .apply_to_spec(&mut spec);
         let opening = open.map(|dir| {
             self.sessions
                 .update(cx, |store, cx| store.open_workspace(dir, cx))
