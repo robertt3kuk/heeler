@@ -414,3 +414,41 @@ async fn bad_targets_and_arguments_are_usage_errors() {
     assert!(out.stderr.contains("hutan ws open"), "{out:?}");
     e.t.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reset_runs_an_ended_task_again_and_refuses_a_running_one() {
+    let e = Env::start().await;
+    let build = e.add("Build", &["--", "sh", "-c", "exit 3"]).await;
+    let test = e
+        .add("Test", &["--after", "Build", "--", "sh", "-c", "exit 0"])
+        .await;
+    e.hutan(&["task", "start", "Build"]).await.ok();
+    let failed = e.wait_state(&build, "failed").await;
+    assert_eq!(failed["outcome"], "exited 3");
+    let session = failed["sessions"][0].as_str().unwrap().to_owned();
+
+    // A reset task is ready again with a clean slate; its first run stays in the history.
+    let out = e.hutan(&["task", "reset", "Build"]).await.ok();
+    assert_eq!(out.stdout.trim(), "`Build` is ready");
+    let reset = e.task(&build).await;
+    assert_eq!(reset["state"], "ready");
+    for field in ["outcome", "ended_at_ms", "started_at_ms"] {
+        assert_eq!(reset[field], Value::Null, "{field}");
+    }
+    assert_eq!(reset["sessions"], serde_json::json!([session]));
+    assert_eq!(e.task(&test).await["state"], "todo");
+
+    // Running again works, and a running task cannot be reset.
+    let running = e.add("Long", &["--", "sh", "-c", "exec sleep 600"]).await;
+    e.hutan(&["task", "start", "Long"]).await.ok();
+    e.wait_state(&running, "running").await;
+    let out = e.hutan(&["task", "reset", "Long"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("running"), "{out:?}");
+    e.hutan(&["task", "cancel", "Long"]).await.ok();
+    assert_eq!(
+        e.hutan(&["task", "reset", "Long"]).await.ok().stdout.trim(),
+        "`Long` is ready"
+    );
+    e.t.stop().await;
+}

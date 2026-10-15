@@ -348,6 +348,7 @@ impl Core {
             body,
             actions: vec![open_action()],
             approval: None,
+            destructive: Vec::new(),
         }]
     }
 

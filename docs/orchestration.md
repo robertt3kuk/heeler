@@ -77,7 +77,7 @@ Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a wor
 - **Auto start**: a ready task with `auto_start` starts when fewer than `[tasks] max_parallel` (daemon.toml, default 3) tasks run; the rest wait in the order they became ready. Starting by hand ignores the limit.
 - **Restart**: a running task whose session was restored stays running; any other becomes `failed` with outcome `interrupted`.
 - **Intents**: `task_done` / `task_failed` join the notification intents (`docs/protocol.md` § Notification intents) for the session that ran the task.
-- To run a failed or cancelled task again set its state to `todo` (`hutan api task.update '{"id":"…","state":"todo"}'`).
+- To run a finished task again, reset it (`hutan task reset`, or `task.update {state: todo}`): the outcome and times are cleared, earlier sessions stay listed, readiness is recomputed; a running task is refused (cancel it first).
 
 ### CLI
 
@@ -85,7 +85,7 @@ Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a wor
 hutan task add "<title>" [--ws ID|NAME] [--after TASK]… [--worktree[=BRANCH]] [--base REF]
                          [--prompt TEXT] [--codex | -- ARGV…] [--auto]
 hutan task ls [--ws ID|NAME] [--json]
-hutan task start|done|cancel|show TASK
+hutan task start|done|cancel|reset|show TASK
 hutan task rm TASK [--cascade]
 ```
 

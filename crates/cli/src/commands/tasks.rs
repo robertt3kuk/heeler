@@ -27,6 +27,7 @@ impl Ctx {
             TaskCommand::Start(args) => self.task_start(args).await,
             TaskCommand::Done(args) => self.task_set_state(args, TaskState::Done).await,
             TaskCommand::Cancel(args) => self.task_set_state(args, TaskState::Cancelled).await,
+            TaskCommand::Reset(args) => self.task_set_state(args, TaskState::Todo).await,
             TaskCommand::Rm(args) => self.task_rm(args).await,
             TaskCommand::Show(args) => self.task_show(args).await,
         }

@@ -88,7 +88,7 @@ pub enum Command {
     /// Git worktrees: isolated checkouts for parallel agents (`hutan wt new|ls|rm`)
     #[command(subcommand)]
     Wt(WtCommand),
-    /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|cancel|rm|show`)
+    /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|cancel|reset|rm|show`)
     #[command(subcommand)]
     Task(TaskCommand),
 }
@@ -106,6 +106,8 @@ pub enum TaskCommand {
     Done(TaskTargetArgs),
     /// Give a task up: stops its session when it runs
     Cancel(TaskTargetArgs),
+    /// Run an ended task again: back to todo, outcome cleared, earlier sessions kept in its history
+    Reset(TaskTargetArgs),
     /// Delete a task; refused while others depend on it unless --cascade
     Rm(TaskRmArgs),
     /// Show everything about a task: fields, dependencies, dependants, sessions

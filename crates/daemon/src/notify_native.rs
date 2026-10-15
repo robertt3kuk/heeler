@@ -436,6 +436,15 @@ mod tests {
     }
 
     #[test]
+    fn task_intents_are_posted_with_their_own_category_and_just_open() {
+        for kind in [IntentKind::TaskDone, IntentKind::TaskFailed] {
+            let n = NativeNotification::from_intent(&open_only(kind), &[]);
+            assert_eq!(n.category, format!("hutan.{}", kind.as_str()));
+            assert_eq!(ids(&n), [OPEN_ACTION_ID]);
+        }
+    }
+
+    #[test]
     fn an_approval_offers_its_options_then_open_with_refusals_destructive() {
         let intent = intent(
             IntentKind::ApprovalRequired,
