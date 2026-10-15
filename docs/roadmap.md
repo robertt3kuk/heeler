@@ -96,6 +96,8 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 **First vertical slice complete after M6** — run the full acceptance list from the spec.
 
 ## M7 — Orchestration
+- [x] M7-A Worktrees (create/list/remove) and session placement with a same-checkout warning (protocol 0.14, `docs/orchestration.md`)
+- [ ] M7-B Task list with dependencies; parallel agents per task; attention rollups; diff review and merge
 - Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
