@@ -157,8 +157,8 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - Rich items: Markdown preview, Mermaid and SVG rendering, images, simple charts (CSV/JSON) as workbench items; agent artifacts open as items; reused by chat (M4) and the editor (M11).
 
 ## M18 — Projects (ADR 0014)
-- [ ] M18-A Automatic projects (git common dir), groups (daemon + CLI, protocol 0.18)
-- [ ] M18-B Sidebar groups → projects → sessions with folder and worktree badge
+- [ ] M18-A Automatic projects (git common dir) alongside user workspaces that contain projects; easier workspace management (daemon + CLI, protocol 0.18)
+- [ ] M18-B Sidebar workspaces → projects → sessions (or flat projects) with folder and worktree badge; drag a project into a workspace, new workspace from selection
 
 ## D — Design
 - [ ] D-1 Visual system v2: Claude-Desktop-like style, terminal-first layout (`docs/design.md` § Visual system)

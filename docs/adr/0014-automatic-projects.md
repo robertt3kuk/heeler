@@ -1,20 +1,24 @@
-# 0014. Automatic projects instead of hand-made workspaces
+# 0014. Automatic projects alongside user workspaces
 
-- Status: accepted (2026-10-15, with the user)
+- Status: accepted (2026-10-15, with the user; revised the same day: workspaces stay as the user's own mechanism, both ways are supported)
 - Milestone: M18
 
 ## Context
-M12 made the user open workspaces (`workspace.open`, ⌘O) and put sessions into the active one. In practice a session's folder already says where it belongs, and since M7-A every session also knows its checkout (`SessionInfo.placement`: main or a worktree of a repository). The user wants sessions grouped by project without managing workspaces, each session showing its folder and worktree, and optional groups for several projects together.
+M12 made the user open workspaces (`workspace.open`, ⌘O) and put sessions into the active one; a workspace has roots, its own `.hutan/settings.toml` layer, a layout, a pin and an order. Since M7-A every session also knows its checkout (`SessionInfo.placement`). The user wants sessions grouped by project without ceremony **and** keeps workspaces as the deliberate way to organize work (several repos, own settings and layout), with easier management than today.
 
 ## Decision
-- **A project is a repository or a folder.** Its identity is the git *common* directory (`git rev-parse --git-common-dir`, read from `.git`/`commondir` on disk like M7-A placement), so the main checkout and every worktree of a repository are one project; a folder outside git is its own project (its path). Sessions outside any project (e.g. in `~`) go to **Home**.
-- **Projects are created automatically** by the daemon from a session's start cwd (`session.create`, `chat.create`, tasks, restore). A session keeps the project it started in; its *current* folder (OSC 7) and placement (`main` / `wt <branch>`) are shown live. Nobody has to open a project first; ⌘O still exists to open a folder you have no session in yet.
-- **Groups** (optional) collect several projects under one name (a multi-repo product, a client). A project is in at most one group. Groups have a name, an order and a pin; nothing else.
-- **Wire compatibility**: the daemon keeps the `workspace.*` messages and `WorkspaceInfo` (a project *is* a workspace with `kind: project`), adds `WorkspaceInfo.project {common_dir?, folder, group_id?}` and `group.create|list|rename|delete|move|assign`, and auto-creation. Additive: protocol minor bump, capability `projects.auto`. Existing workspaces with several roots are migrated: each root becomes a project, and the old workspace becomes a group of them.
-- **UI language**: the desktop and CLI say *project* and *group*; `workspace` remains only in the protocol. The sidebar lists groups → projects → sessions; a session row shows its title, its folder (last two path parts) and its placement badge.
-- Per-project layouts (M12-B) stay, keyed by project. `.hutan/settings.toml` is read from the project's main checkout root.
+- **Two kinds of container**, both `WorkspaceInfo` on the wire:
+  - **Project** (`kind: project`), automatic: identity = the deepest enclosing git repository's *common dir* (main checkout and all its worktrees are one project), else the folder; `$HOME`, `/` and the Home folder are not projects. Created by the daemon when a session, chat, task, worktree or restore needs one and `projects.auto` is on (default on).
+  - **Workspace** (`kind: workspace`), made by the user: a name, a pin, an order, settings and a layout, containing **projects** (each project is in at most one workspace: `WorkspaceInfo.parent_id`). Adding a folder to a workspace adds (or creates) the project for that folder. This is today's workspace with its roots expressed as member projects.
+  - **Home** (`kind: home`) unchanged.
+- **Where a new session goes**: an explicit `workspace_id` wins; else the project of its cwd (auto) — and that project's workspace, if any, is the session's workspace for settings and layout; with `projects.auto = false`, the original rule (active workspace, else Home).
+- **Settings layering**: user < workspace (`<first project root>/.hutan/settings.toml` of the workspace, as today) < project (`<project root>/.hutan/settings.toml`). A project outside any workspace layers only its own.
+- **Sidebar** (`sidebar.organize = "workspaces" | "projects"`, default `workspaces`): workspaces → their projects → sessions, then projects that belong to no workspace, then Home; or a flat list of projects. Every session row shows its title, its live folder (last two path parts) and its placement badge (`main` / `wt <branch>`).
+- **Easier management**: one-step create (`workspace.create {name, paths?, project_ids?}`), drag a project onto a workspace (`workspace.assign {project_id, workspace_id?}`), "New Workspace from Selection" (multi-select projects), inline rename, delete keeps the projects (they become ungrouped), ⌘O "Open Folder…" offers "in workspace ▸". CLI `hutan ws new NAME [PATH…]`, `hutan ws add WS PATH|PROJECT`, `hutan ws remove WS PROJECT`, `hutan ws rename|pin|unpin|rm`, `hutan ws ls` as a tree; `hutan project ls|open|rename|close`.
+- **Migration**: every existing workspace stays a workspace (name, pin, order, layout); each of its roots becomes a member project. Home stays Home.
+- **Wire**: additive (protocol minor bump, capability `projects.auto`): `WorkspaceInfo.kind` gains `project`/`workspace`, `WorkspaceInfo.parent_id?`, `WorkspaceInfo.project {common_dir?, root}`, `SessionInfo.folder`; `workspace.create`, `workspace.assign`, `workspace.delete`. No separate `group.*` family.
 
 ## Consequences
-- Fewer concepts for the user; `hutan ws` becomes `hutan project` (alias kept for one release is *not* added: clean cutover per AGENTS.md; `ws` is removed).
-- A session started in a subfolder of a repo belongs to the repo, not the subfolder (deepest repository wins for nested repos/submodules).
-- Restore must re-derive the project for sessions whose repository moved; a missing folder keeps the stored project.
+- Users who never create a workspace still get tidy per-project lists; users who do keep full control.
+- Nested repos and submodules are their own projects; the deepest repository wins.
+- Restore re-derives the project only when the stored one's root is gone.
