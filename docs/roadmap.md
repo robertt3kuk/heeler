@@ -102,6 +102,9 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 - Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
+- [ ] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
+- [ ] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
+- [ ] M8-C MCP servers passed to harness sessions; Hutan as an MCP server
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
 
 ## M9 — Extensibility and remote
@@ -152,6 +155,13 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 ## M15 — Visualizations and rich content
 - Terminal images: kitty graphics protocol and iTerm2 inline images (daemon parses, render DTOs carry image placements; ADR amending 0004).
 - Rich items: Markdown preview, Mermaid and SVG rendering, images, simple charts (CSV/JSON) as workbench items; agent artifacts open as items; reused by chat (M4) and the editor (M11).
+
+## M18 — Projects (ADR 0014)
+- [ ] M18-A Automatic projects (git common dir), groups (daemon + CLI, protocol 0.18)
+- [ ] M18-B Sidebar groups → projects → sessions with folder and worktree badge
+
+## D — Design
+- [ ] D-1 Visual system v2: Claude-Desktop-like style, terminal-first layout (`docs/design.md` § Visual system)
 
 ## Backlog (agreed, not yet scheduled)
 
