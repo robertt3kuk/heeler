@@ -797,7 +797,10 @@ fn the_settings_sheet_lists_the_app_namespace(cx: &mut TestAppContext) {
             .map(|s| s.fields().iter().map(|f| f.dotted()).collect())
             .unwrap_or_default()
     });
-    assert_eq!(fields, ["on_quit"]);
+    assert_eq!(
+        fields,
+        ["on_quit", "keep_running", "menu_bar", "dock_badge"]
+    );
 }
 
 #[gpui::test]
@@ -814,7 +817,10 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
             "Restart Daemon",
             "Stop Daemon",
             "Start Daemon",
-            "Open Logs"
+            "Open Logs",
+            // Outside Hutan.app (no login item here): present but disabled.
+            "Keep Running (available in Hutan.app)",
+            "Open Login Items"
         ]
     );
     let enabled = |name: &str, actions: &[(String, bool)]| {
@@ -822,6 +828,11 @@ fn the_daemon_menu_follows_the_connection(cx: &mut TestAppContext) {
     };
     assert_eq!(enabled("Stop Daemon", &actions), Some(true));
     assert_eq!(enabled("Start Daemon", &actions), Some(false));
+    assert_eq!(
+        enabled("Keep Running (available in Hutan.app)", &actions),
+        Some(false)
+    );
+    assert_eq!(enabled("Open Login Items", &actions), Some(false));
 
     // A stop from elsewhere (the CLI) shows through the reconnect state.
     daemon.stop();

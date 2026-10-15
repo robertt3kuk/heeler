@@ -289,7 +289,7 @@ mod system {
     fn glyph() -> Retained<NSImage> {
         let one = NSData::with_bytes(GLYPH_1X);
         let two = NSData::with_bytes(GLYPH_2X);
-        let image = NSImage::initWithData(NSImage::alloc(), &one).unwrap_or_else(NSImage::new);
+        let image = NSImage::initWithData(NSImage::alloc(), &one).unwrap_or_default();
         let size = NSSize::new(GLYPH_POINTS, GLYPH_POINTS);
         if let Some(rep) = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &two) {
             // 36 pixels in 18 points: the representation for 2x displays.

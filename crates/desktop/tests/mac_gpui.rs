@@ -16,7 +16,6 @@ use gpui::{Entity, OwnedMenuItem, TestAppContext, VisualTestContext};
 use hutan_client::{ConnectOptions, Connection};
 use hutan_core::SessionId;
 use hutan_desktop::app::start_connection;
-use hutan_desktop::macos::login_item::LoginItem as _;
 use hutan_desktop::macos::{
     FakeDock, FakeHotkey, FakeLoginItem, FakeStatusItem, LoginItemCall, LoginItemStatus, MacEvent,
     MacServices, MenuCommand, MenuSpec, event_channel,
