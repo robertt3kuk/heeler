@@ -50,6 +50,18 @@ pub enum Write {
         id: WorkspaceId,
         last_active_ms: u64,
     },
+    SetWorkspaceKind {
+        id: WorkspaceId,
+        kind: WorkspaceKind,
+    },
+    SetWorkspaceParent {
+        id: WorkspaceId,
+        parent_id: Option<WorkspaceId>,
+    },
+    SetWorkspaceCommonDir {
+        id: WorkspaceId,
+        common_dir: Option<PathBuf>,
+    },
     /// Adds or refreshes a recent project (a newer `last_opened_ms` wins; the name is replaced),
     /// keeping the newest [`RECENT_PROJECTS_KEPT`].
     UpsertRecentProject(RecentProject),
@@ -115,8 +127,8 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         Write::InsertWorkspace(row) => {
             conn.execute(
                 "INSERT INTO workspaces (id, name, roots_json, kind, pinned, created_by, \
-                     created_at_ms, last_active_ms, position) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                     created_at_ms, last_active_ms, position, common_dir, parent_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
                  ON CONFLICT (id) DO UPDATE SET name = excluded.name, roots_json = excluded.roots_json",
                 params![
                     row.id.to_string(),
@@ -127,10 +139,36 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
                     to_text(&row.created_by, "workspace origin")?,
                     ms(row.created_at_ms),
                     ms(row.last_active_ms),
-                    row.position
+                    row.position,
+                    row.common_dir.as_deref().map(path_str).transpose()?,
+                    row.parent_id.map(|parent| parent.to_string())
                 ],
             )
             .map_err(StorageError::sqlite("inserting a workspace"))?;
+        }
+        Write::SetWorkspaceKind { id, kind } => {
+            conn.execute(
+                "UPDATE workspaces SET kind = ?2 WHERE id = ?1",
+                params![id.to_string(), to_text(kind, "workspace kind")?],
+            )
+            .map_err(StorageError::sqlite("changing a workspace kind"))?;
+        }
+        Write::SetWorkspaceParent { id, parent_id } => {
+            conn.execute(
+                "UPDATE workspaces SET parent_id = ?2 WHERE id = ?1",
+                params![id.to_string(), parent_id.map(|parent| parent.to_string())],
+            )
+            .map_err(StorageError::sqlite("moving a project into a workspace"))?;
+        }
+        Write::SetWorkspaceCommonDir { id, common_dir } => {
+            conn.execute(
+                "UPDATE workspaces SET common_dir = ?2 WHERE id = ?1",
+                params![
+                    id.to_string(),
+                    common_dir.as_deref().map(path_str).transpose()?
+                ],
+            )
+            .map_err(StorageError::sqlite("updating a project identity"))?;
         }
         Write::SetWorkspaceRoots { id, roots } => {
             conn.execute(
@@ -397,7 +435,7 @@ pub fn list_workspaces(conn: &Connection) -> Result<Vec<WorkspaceRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, roots_json, kind, pinned, created_by, created_at_ms, \
-                 last_active_ms, position FROM workspaces \
+                 last_active_ms, position, common_dir, parent_id FROM workspaces \
              ORDER BY position, created_at_ms, id",
         )
         .map_err(StorageError::sqlite("listing workspaces"))?;
@@ -476,6 +514,19 @@ fn workspace_from(row: &Row<'_>) -> Result<WorkspaceRow> {
         created_at_ms: unms(row.get(6).map_err(read_err)?),
         last_active_ms: unms(row.get(7).map_err(read_err)?),
         position: row.get(8).map_err(read_err)?,
+        common_dir: row
+            .get::<_, Option<String>>(9)
+            .map_err(read_err)?
+            .map(PathBuf::from),
+        parent_id: row
+            .get::<_, Option<String>>(10)
+            .map_err(read_err)?
+            .map(|parent| {
+                parent
+                    .parse()
+                    .map_err(|e| StorageError::corrupt(at("parent_id"), e))
+            })
+            .transpose()?,
     })
 }
 

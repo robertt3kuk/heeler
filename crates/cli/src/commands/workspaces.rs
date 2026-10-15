@@ -1,5 +1,6 @@
-//! Workspace commands: `ws ls|open|new|rename|close|move|pin|unpin|recent|use`, and the target
-//! resolution `new` and `ls --ws` share.
+//! Workspace commands: `ws ls|new|add|remove|rename|rm|move|pin|unpin|use`, the target
+//! resolution every command that takes a workspace shares, and the tree `ws ls` prints.
+//! Projects are `commands/projects.rs`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,10 +8,10 @@ use std::path::PathBuf;
 use hutan_client::Client;
 use hutan_core::{SessionState, WorkspaceId};
 use hutan_protocol::messages::{
-    AgentState, CreatedBy, Empty, RecentProjects, Request, SessionInfo, WorkspaceCreate,
-    WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspaceOpen, WorkspaceOpened,
-    WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
+    AgentState, CreatedBy, Empty, Request, SessionInfo, WorkspaceCreate, WorkspaceInfo,
+    WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspacePin, WorkspaceRename, WorkspaceRoot,
 };
+use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
 use serde_json::Value;
 
 use super::Ctx;
@@ -28,21 +29,25 @@ impl Ctx {
     pub(super) async fn ws(&self, command: WsCommand) -> Result<(), CliError> {
         match command {
             WsCommand::Ls(args) => self.ws_ls(args).await,
-            WsCommand::Open { path } => self.ws_open(path).await,
-            WsCommand::New { name, roots } => self.ws_new(name, roots).await,
-            WsCommand::Rename { id, name } => self.ws_rename(id, name).await,
-            WsCommand::Close { id } => self.ws_close(id).await,
+            WsCommand::New { name, paths } => self.ws_new(name, paths).await,
+            WsCommand::Add { workspace, what } => self.ws_add(&workspace, &what).await,
+            WsCommand::Remove { workspace, project } => self.ws_remove(&workspace, &project).await,
+            WsCommand::Rename { target, name } => {
+                self.rename_workspace(&target, name, Kind::Container).await
+            }
+            WsCommand::Rm { target } => self.ws_rm(&target).await,
             WsCommand::Move(args) => self.ws_move(args).await,
-            WsCommand::Pin { target } => self.ws_pin(&target, true).await,
-            WsCommand::Unpin { target } => self.ws_pin(&target, false).await,
-            WsCommand::Recent { limit } => self.ws_recent(limit).await,
+            WsCommand::Pin { target } => self.pin_workspace(&target, true, Kind::Container).await,
+            WsCommand::Unpin { target } => {
+                self.pin_workspace(&target, false, Kind::Container).await
+            }
             WsCommand::Use { target } => self.ws_use(&target).await,
         }
     }
 
     async fn ws_ls(&self, args: WsLsArgs) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let mut list = self.workspace_list(&client).await?;
+        let list = self.workspace_list(&client).await?;
         // Only the attention order needs to look at the sessions.
         let attention = if args.sort == WsSort::Attention {
             let sessions = self.session_list(&client, None).await?;
@@ -50,35 +55,17 @@ impl Ctx {
         } else {
             HashMap::new()
         };
-        if !args.all {
-            list.workspaces.retain(is_listed_by_default);
-        }
-        sort_workspaces(&mut list.workspaces, args.sort, &attention);
-        self.print(&list, || workspace_table(&list.workspaces, now_ms()))
+        let tree = workspace_tree(&list.workspaces, args.sort, &attention, args.all);
+        // `--json` carries the same rows in the same order; `parent_id` rebuilds the tree.
+        let shown = WorkspaceList {
+            workspaces: tree.iter().map(|row| row.workspace.clone()).collect(),
+        };
+        self.print(&shown, || tree_table(&tree, now_ms()))
     }
 
-    async fn ws_open(&self, path: PathBuf) -> Result<(), CliError> {
+    async fn ws_new(&self, name: String, paths: Vec<PathBuf>) -> Result<(), CliError> {
         // The daemon resolves paths from its own working directory, not ours.
-        let path = std::path::absolute(path)?;
-        let client = self.connect().await?;
-        let opened: WorkspaceOpened = self
-            .call(
-                &client,
-                Request::WorkspaceOpen(WorkspaceOpen {
-                    path,
-                    created_by: Some(CreatedBy::Cli),
-                }),
-            )
-            .await?;
-        self.print(&opened, || {
-            let verb = if opened.created { "created" } else { "opened" };
-            format!("{verb} {} ({})", opened.workspace.id, opened.workspace.name)
-        })
-    }
-
-    async fn ws_new(&self, name: String, roots: Vec<PathBuf>) -> Result<(), CliError> {
-        // The daemon resolves paths from its own working directory, not ours.
-        let roots = roots
+        let paths = paths
             .iter()
             .map(std::path::absolute)
             .collect::<Result<Vec<_>, _>>()?;
@@ -88,39 +75,122 @@ impl Ctx {
                 &client,
                 Request::WorkspaceCreate(WorkspaceCreate {
                     name,
-                    roots,
+                    paths,
+                    project_ids: Vec::new(),
                     created_by: Some(CreatedBy::Cli),
                 }),
             )
             .await?;
-        self.print(&ws, || format!("created {} ({})", ws.id, ws.name))
+        self.print(&ws, || {
+            format!(
+                "created {} ({}) with {} project(s)",
+                ws.id,
+                ws.name,
+                ws.roots.len()
+            )
+        })
     }
 
-    async fn ws_rename(&self, id: WorkspaceId, name: String) -> Result<(), CliError> {
+    /// `ws add WS PATH|PROJECT`: a path (it exists, and no project is called that) adds the
+    /// project of the folder, anything else names an existing project.
+    async fn ws_add(&self, workspace: &str, what: &str) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let ws: WorkspaceInfo = self
+        let all = self.workspace_list(&client).await?.workspaces;
+        let ws = resolve_of(&all, workspace, Kind::Workspace)?;
+        let looks_like_path = what.contains('/') || what.starts_with('.') || what.starts_with('~');
+        let project = if looks_like_path {
+            None
+        } else {
+            match resolve_of(&all, what, Kind::Project) {
+                Ok(project) => Some(project.id),
+                Err(CliError::Failed(_)) if std::path::Path::new(what).is_dir() => None,
+                Err(error) => return Err(error),
+            }
+        };
+        let updated: WorkspaceInfo = match project {
+            Some(project_id) => {
+                let _: WorkspaceInfo = self
+                    .call(
+                        &client,
+                        Request::WorkspaceAssign(WorkspaceAssign {
+                            project_id,
+                            workspace_id: Some(ws.id),
+                        }),
+                    )
+                    .await?;
+                // The workspace as it is now: its roots changed.
+                self.workspace_list(&client)
+                    .await?
+                    .workspaces
+                    .into_iter()
+                    .find(|w| w.id == ws.id)
+                    .ok_or_else(|| CliError::Failed(format!("workspace {} disappeared", ws.id)))?
+            }
+            None => {
+                let path = std::path::absolute(what)?;
+                self.call(
+                    &client,
+                    Request::WorkspaceAddRoot(WorkspaceRoot {
+                        workspace_id: ws.id,
+                        path,
+                    }),
+                )
+                .await?
+            }
+        };
+        self.print(&updated, || {
+            format!(
+                "added to {} ({}); it has {} project(s)",
+                updated.id,
+                updated.name,
+                updated.roots.len()
+            )
+        })
+    }
+
+    async fn ws_remove(&self, workspace: &str, project: &str) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let all = self.workspace_list(&client).await?.workspaces;
+        let ws = resolve_of(&all, workspace, Kind::Workspace)?;
+        let project = resolve_of(&all, project, Kind::Project)?;
+        if project.parent_id != Some(ws.id) {
+            return Err(CliError::Failed(format!(
+                "project {} ({}) is not in workspace {} ({})",
+                project.id, project.name, ws.id, ws.name
+            )));
+        }
+        let updated: WorkspaceInfo = self
             .call(
                 &client,
-                Request::WorkspaceRename(WorkspaceRename {
-                    workspace_id: id,
-                    name,
+                Request::WorkspaceAssign(WorkspaceAssign {
+                    project_id: project.id,
+                    workspace_id: None,
                 }),
             )
             .await?;
-        self.print(&ws, || format!("renamed {} to {}", ws.id, ws.name))
+        self.print(&updated, || {
+            format!(
+                "removed {} ({}) from {} ({}); it stays a project",
+                project.id, project.name, ws.id, ws.name
+            )
+        })
     }
 
-    async fn ws_close(&self, id: WorkspaceId) -> Result<(), CliError> {
+    async fn ws_rm(&self, target: &str) -> Result<(), CliError> {
         let client = self.connect().await?;
+        let all = self.workspace_list(&client).await?.workspaces;
+        let ws = resolve_of(&all, target, Kind::Workspace)?;
         let _: Value = self
             .call(
                 &client,
-                Request::WorkspaceClose(WorkspaceRef { workspace_id: id }),
+                Request::WorkspaceDelete(WorkspaceDelete {
+                    workspace_id: ws.id,
+                }),
             )
             .await?;
         self.print(
-            &serde_json::json!({"workspace_id": id, "closed": true}),
-            || format!("closed {id}"),
+            &serde_json::json!({"workspace_id": ws.id, "deleted": true}),
+            || format!("deleted {} ({}); its projects stay", ws.id, ws.name),
         )
     }
 
@@ -147,9 +217,38 @@ impl Ctx {
         })
     }
 
-    async fn ws_pin(&self, target: &str, pinned: bool) -> Result<(), CliError> {
+    /// `ws rename` and `project rename`.
+    pub(super) async fn rename_workspace(
+        &self,
+        target: &str,
+        name: String,
+        kind: Kind,
+    ) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let id = self.resolve_workspace_id(&client, target).await?;
+        let all = self.workspace_list(&client).await?.workspaces;
+        let id = resolve_of(&all, target, kind)?.id;
+        let ws: WorkspaceInfo = self
+            .call(
+                &client,
+                Request::WorkspaceRename(WorkspaceRename {
+                    workspace_id: id,
+                    name,
+                }),
+            )
+            .await?;
+        self.print(&ws, || format!("renamed {} to {}", ws.id, ws.name))
+    }
+
+    /// `ws pin|unpin` and `project pin|unpin`.
+    pub(super) async fn pin_workspace(
+        &self,
+        target: &str,
+        pinned: bool,
+        kind: Kind,
+    ) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let all = self.workspace_list(&client).await?.workspaces;
+        let id = resolve_of(&all, target, kind)?.id;
         let ws: WorkspaceInfo = self
             .call(
                 &client,
@@ -163,17 +262,6 @@ impl Ctx {
             let verb = if pinned { "pinned" } else { "unpinned" };
             format!("{verb} {} ({})", ws.id, ws.name)
         })
-    }
-
-    async fn ws_recent(&self, limit: u32) -> Result<(), CliError> {
-        let client = self.connect().await?;
-        let recent: RecentProjects = self
-            .call(
-                &client,
-                Request::WorkspaceRecent(WorkspaceRecent { limit: Some(limit) }),
-            )
-            .await?;
-        self.print(&recent, || recent_table(&recent, now_ms()))
     }
 
     async fn ws_use(&self, target: &str) -> Result<(), CliError> {
@@ -215,38 +303,104 @@ pub(super) fn workspace_target(flag: Option<String>) -> Option<(String, &'static
     }
 }
 
-/// Picks one workspace. Tried in order: full id, exact name, name ignoring case, id prefix of at
-/// least [`MIN_PREFIX`] characters. A name or prefix matching several workspaces is a usage
-/// error that lists the candidates; no match is a plain failure.
+/// What a target may name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// A workspace (the user's container of projects).
+    Workspace,
+    /// A workspace or Home: what `ws rename` and `ws pin` take.
+    Container,
+    /// A project.
+    Project,
+    /// Any of them, Home included.
+    Any,
+}
+
+impl Kind {
+    fn accepts(self, workspace: &WorkspaceInfo) -> bool {
+        match self {
+            Kind::Workspace => workspace.kind == WorkspaceKind::Workspace,
+            Kind::Container => workspace.kind != WorkspaceKind::Project,
+            Kind::Project => workspace.kind == WorkspaceKind::Project,
+            Kind::Any => true,
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Kind::Workspace | Kind::Container => "workspace",
+            Kind::Project => "project",
+            Kind::Any => "workspace or project",
+        }
+    }
+
+    fn listing(self) -> &'static str {
+        match self {
+            Kind::Workspace | Kind::Container => "hutan ws ls --all",
+            Kind::Project => "hutan project ls --all",
+            Kind::Any => "hutan ws ls --all",
+        }
+    }
+}
+
+/// Picks one workspace or project (or Home) by [`resolve_of`].
 pub(super) fn resolve_workspace<'a>(
     workspaces: &'a [WorkspaceInfo],
     target: &str,
 ) -> Result<&'a WorkspaceInfo, CliError> {
+    resolve_of(workspaces, target, Kind::Any)
+}
+
+/// Picks one workspace of `kind`. Tried in order: full id, exact name, name ignoring case, id
+/// prefix of at least [`MIN_PREFIX`] characters. A name or prefix matching several is a usage
+/// error that lists the candidates; no match is a plain failure, which says so when the target
+/// names something of another kind.
+pub(super) fn resolve_of<'a>(
+    workspaces: &'a [WorkspaceInfo],
+    target: &str,
+    kind: Kind,
+) -> Result<&'a WorkspaceInfo, CliError> {
+    let pool: Vec<&WorkspaceInfo> = workspaces.iter().filter(|w| kind.accepts(w)).collect();
     if let Ok(id) = target.parse::<WorkspaceId>()
-        && let Some(workspace) = workspaces.iter().find(|w| w.id == id)
+        && let Some(workspace) = pool.iter().find(|w| w.id == id)
     {
         return Ok(workspace);
     }
-    let by_name: Vec<_> = workspaces.iter().filter(|w| w.name == target).collect();
+    let by_name: Vec<_> = pool.iter().copied().filter(|w| w.name == target).collect();
     if !by_name.is_empty() {
-        return unique(target, by_name);
+        return unique(target, by_name, kind);
     }
-    let by_name_folded: Vec<_> = workspaces
+    let by_name_folded: Vec<_> = pool
         .iter()
+        .copied()
         .filter(|w| w.name.to_lowercase() == target.to_lowercase())
         .collect();
     if !by_name_folded.is_empty() {
-        return unique(target, by_name_folded);
+        return unique(target, by_name_folded, kind);
     }
     if target.len() >= MIN_PREFIX {
         let prefix = target.to_ascii_uppercase();
-        let by_prefix: Vec<_> = workspaces
+        let by_prefix: Vec<_> = pool
             .iter()
+            .copied()
             .filter(|w| w.id.to_string().starts_with(&prefix))
             .collect();
         if !by_prefix.is_empty() {
-            return unique(target, by_prefix);
+            return unique(target, by_prefix, kind);
         }
+    }
+    if kind != Kind::Any
+        && let Ok(other) = resolve_of(workspaces, target, Kind::Any)
+    {
+        return Err(CliError::Failed(format!(
+            "`{target}` is {}, not a {}",
+            match other.kind {
+                WorkspaceKind::Home => "the Home workspace",
+                WorkspaceKind::Project => "a project",
+                WorkspaceKind::Workspace => "a workspace",
+            },
+            kind.noun()
+        )));
     }
     let hint = if target.len() < MIN_PREFIX {
         format!(" (an id prefix needs at least {MIN_PREFIX} characters)")
@@ -254,18 +408,21 @@ pub(super) fn resolve_workspace<'a>(
         String::new()
     };
     Err(CliError::Failed(format!(
-        "no workspace matches `{target}`{hint}; `hutan ws ls --all` lists workspaces"
+        "no {} matches `{target}`{hint}; `{}` lists them",
+        kind.noun(),
+        kind.listing()
     )))
 }
 
 fn unique<'a>(
     target: &str,
     mut matches: Vec<&'a WorkspaceInfo>,
+    kind: Kind,
 ) -> Result<&'a WorkspaceInfo, CliError> {
     match matches.len() {
         1 => Ok(matches.remove(0)),
         n => {
-            let mut message = format!("`{target}` matches {n} workspaces; use a longer id:");
+            let mut message = format!("`{target}` matches {n} {}s; use a longer id:", kind.noun());
             for workspace in matches {
                 message.push_str(&format!("\n  {}  {}", workspace.id, workspace.name));
             }
@@ -274,14 +431,18 @@ fn unique<'a>(
     }
 }
 
-/// Without `--all`: Home, pinned workspaces, and those that have sessions.
-fn is_listed_by_default(workspace: &WorkspaceInfo) -> bool {
-    workspace.kind == WorkspaceKind::Home || workspace.pinned || workspace.total_sessions > 0
+/// Without `--all`: Home, workspaces, pinned projects, projects in a workspace, and projects
+/// that have sessions.
+pub(super) fn is_listed_by_default(workspace: &WorkspaceInfo) -> bool {
+    workspace.kind != WorkspaceKind::Project
+        || workspace.pinned
+        || workspace.parent_id.is_some()
+        || workspace.total_sessions > 0
 }
 
 /// Sessions per workspace that wait for the user: a pending approval, or an agent that reports
 /// being blocked on one.
-fn attention_counts(sessions: &[SessionInfo]) -> HashMap<WorkspaceId, u32> {
+pub(super) fn attention_counts(sessions: &[SessionInfo]) -> HashMap<WorkspaceId, u32> {
     let mut counts = HashMap::new();
     for session in sessions {
         let waiting = session.state == SessionState::WaitingApproval
@@ -297,8 +458,8 @@ fn attention_counts(sessions: &[SessionInfo]) -> HashMap<WorkspaceId, u32> {
     counts
 }
 
-/// Pinned workspaces first, then by `mode`; the daemon's manual order breaks every tie.
-fn sort_workspaces(
+/// Pinned first, then by `mode`; the daemon's manual order breaks every tie.
+pub(super) fn sort_workspaces(
     workspaces: &mut [WorkspaceInfo],
     mode: WsSort,
     attention: &HashMap<WorkspaceId, u32>,
@@ -319,60 +480,127 @@ fn sort_workspaces(
     });
 }
 
-fn workspace_table(workspaces: &[WorkspaceInfo], now_ms: u64) -> String {
-    if workspaces.is_empty() {
+/// One line of `ws ls`: a workspace or project and how deep it sits.
+#[derive(Debug, PartialEq)]
+pub(super) struct TreeRow {
+    pub depth: usize,
+    pub workspace: WorkspaceInfo,
+}
+
+/// The listing of `ws ls`: every workspace followed by its projects, then the projects in no
+/// workspace, then Home. Each level follows `mode`; empty projects that are in no workspace
+/// are left out unless `all` (or pinned).
+pub(super) fn workspace_tree(
+    workspaces: &[WorkspaceInfo],
+    mode: WsSort,
+    attention: &HashMap<WorkspaceId, u32>,
+    all: bool,
+) -> Vec<TreeRow> {
+    // A workspace waits for the user when one of its projects does.
+    let mut attention = attention.clone();
+    for project in workspaces {
+        if let Some(parent) = project.parent_id
+            && let Some(waiting) = attention.get(&project.id).copied()
+        {
+            *attention.entry(parent).or_insert(0) += waiting;
+        }
+    }
+    let of_kind = |kind: WorkspaceKind, parent: Option<WorkspaceId>| {
+        let mut found: Vec<WorkspaceInfo> = workspaces
+            .iter()
+            .filter(|w| w.kind == kind && w.parent_id == parent)
+            .filter(|w| all || is_listed_by_default(w))
+            .cloned()
+            .collect();
+        sort_workspaces(&mut found, mode, &attention);
+        found
+    };
+    let mut rows = Vec::new();
+    for container in of_kind(WorkspaceKind::Workspace, None) {
+        let id = container.id;
+        rows.push(TreeRow {
+            depth: 0,
+            workspace: container,
+        });
+        // Members are always shown: someone put them there.
+        let mut members: Vec<WorkspaceInfo> = workspaces
+            .iter()
+            .filter(|w| w.kind == WorkspaceKind::Project && w.parent_id == Some(id))
+            .cloned()
+            .collect();
+        sort_workspaces(&mut members, mode, &attention);
+        rows.extend(members.into_iter().map(|workspace| TreeRow {
+            depth: 1,
+            workspace,
+        }));
+    }
+    rows.extend(
+        of_kind(WorkspaceKind::Project, None)
+            .into_iter()
+            .map(|workspace| TreeRow {
+                depth: 0,
+                workspace,
+            }),
+    );
+    rows.extend(
+        workspaces
+            .iter()
+            .filter(|w| w.kind == WorkspaceKind::Home)
+            .cloned()
+            .map(|workspace| TreeRow {
+                depth: 0,
+                workspace,
+            }),
+    );
+    rows
+}
+
+fn kind_text(workspace: &WorkspaceInfo) -> &'static str {
+    match workspace.kind {
+        WorkspaceKind::Home => "home",
+        WorkspaceKind::Project => "project",
+        WorkspaceKind::Workspace => "workspace",
+    }
+}
+
+/// The folder column: a project's folder, Home's folder; a workspace has none of its own.
+fn folder_text(workspace: &WorkspaceInfo) -> String {
+    match workspace.kind {
+        WorkspaceKind::Workspace => String::new(),
+        _ => workspace
+            .roots
+            .first()
+            .map_or_else(String::new, |root| root.display().to_string()),
+    }
+}
+
+fn tree_table(rows: &[TreeRow], now_ms: u64) -> String {
+    if rows.is_empty() {
         return "no workspaces".to_owned();
     }
-    let rows = workspaces
+    let cells = rows
         .iter()
-        .map(|w| {
+        .map(|row| {
+            let w = &row.workspace;
             vec![
                 w.id.to_string(),
-                w.name.clone(),
-                match w.kind {
-                    WorkspaceKind::Home => "home",
-                    WorkspaceKind::Project => "project",
-                }
-                .to_owned(),
+                format!("{}{}", "  ".repeat(row.depth), w.name),
+                kind_text(w).to_owned(),
                 if w.pinned { "pinned" } else { "" }.to_owned(),
                 format!("{}/{}", w.live_sessions, w.total_sessions),
                 active_text(w.last_active_ms, now_ms),
-                w.roots
-                    .iter()
-                    .map(|r| r.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                folder_text(w),
             ]
         })
         .collect();
     table(
-        &["ID", "NAME", "KIND", "PIN", "SESSIONS", "ACTIVE", "ROOTS"],
-        rows,
+        &["ID", "NAME", "KIND", "PIN", "SESSIONS", "ACTIVE", "FOLDER"],
+        cells,
     )
 }
 
-fn recent_table(recent: &RecentProjects, now_ms: u64) -> String {
-    if recent.projects.is_empty() {
-        return "no recent projects".to_owned();
-    }
-    let rows = recent
-        .projects
-        .iter()
-        .map(|p| {
-            vec![
-                p.name.clone(),
-                p.workspace_id
-                    .map_or_else(|| "closed".to_owned(), |id| id.to_string()),
-                active_text(p.last_opened_ms, now_ms),
-                p.path.display().to_string(),
-            ]
-        })
-        .collect();
-    table(&["NAME", "WORKSPACE", "OPENED", "PATH"], rows)
-}
-
 /// `5s`, `3m`, ... since `at_ms`; `-` when it never happened.
-fn active_text(at_ms: u64, now_ms: u64) -> String {
+pub(super) fn active_text(at_ms: u64, now_ms: u64) -> String {
     if at_ms == 0 {
         "-".to_owned()
     } else {
@@ -381,7 +609,7 @@ fn active_text(at_ms: u64, now_ms: u64) -> String {
 }
 
 /// Columns padded to their widest cell, two spaces apart; the last column is not padded.
-fn table(header: &[&str], rows: Vec<Vec<String>>) -> String {
+pub(super) fn table(header: &[&str], rows: Vec<Vec<String>>) -> String {
     let header: Vec<String> = header.iter().map(|h| (*h).to_owned()).collect();
     let mut widths = vec![0; header.len()];
     for row in std::iter::once(&header).chain(&rows) {
@@ -423,6 +651,8 @@ mod tests {
             last_active_ms: 0,
             live_sessions: 0,
             total_sessions: 0,
+            parent_id: None,
+            project: None,
         }
     }
 
@@ -466,10 +696,54 @@ mod tests {
     }
 
     #[test]
-    fn the_default_listing_hides_empty_workspaces_except_pinned_and_home() {
+    fn a_target_of_the_wrong_kind_says_what_it_is() {
+        let mut all = fixture();
+        all[0].kind = WorkspaceKind::Workspace;
+        assert_eq!(
+            resolve_of(&all, "alpha", Kind::Workspace)
+                .unwrap()
+                .id
+                .to_string(),
+            A
+        );
+        let error = resolve_of(&all, "Beta", Kind::Workspace).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`Beta` is a project, not a workspace"),
+            "{error}"
+        );
+        let error = resolve_of(&all, "alpha", Kind::Project).unwrap_err();
+        assert!(
+            error.to_string().contains("is a workspace, not a project"),
+            "{error}"
+        );
+        // The same name in two kinds is no ambiguity once the kind is known.
+        all[1].name = "alpha".to_owned();
+        assert_eq!(
+            resolve_of(&all, "alpha", Kind::Project)
+                .unwrap()
+                .id
+                .to_string(),
+            B
+        );
+        assert!(matches!(
+            resolve_of(&all, "alpha", Kind::Any),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn the_default_listing_hides_empty_projects_except_pinned_and_members() {
         let mut all = fixture();
         all[1].total_sessions = 1;
         all[2].pinned = true;
+        let mut member = ws("01J0000000000000000000000M", "member", 3);
+        member.parent_id = Some(all[0].id);
+        all.push(member);
+        let mut container = ws("01J0000000000000000000000W", "shop", 4);
+        container.kind = WorkspaceKind::Workspace;
+        all.push(container);
         let mut home = ws("01J0000000000000000000000H", "Home", -1);
         home.kind = WorkspaceKind::Home;
         all.push(home);
@@ -478,7 +752,7 @@ mod tests {
             .filter(|w| is_listed_by_default(w))
             .map(|w| w.name.as_str())
             .collect();
-        assert_eq!(shown, ["Beta", "alpha-2", "Home"]);
+        assert_eq!(shown, ["Beta", "alpha-2", "member", "shop", "Home"]);
     }
 
     #[test]
@@ -511,6 +785,50 @@ mod tests {
             ["alpha-2", "alpha", "Beta"]
         );
         assert_eq!(order(WsSort::Name, &mut all), ["alpha-2", "alpha", "Beta"]);
+    }
+
+    #[test]
+    fn the_tree_lists_workspaces_with_their_projects_then_loose_projects_then_home() {
+        let id = |n: u32| format!("01J00000000000000000000{n:03}");
+        let mut home = ws(&id(1), "Home", 0);
+        home.kind = WorkspaceKind::Home;
+        let mut shop = ws(&id(2), "shop", 1);
+        shop.kind = WorkspaceKind::Workspace;
+        let mut lab = ws(&id(3), "lab", 2);
+        lab.kind = WorkspaceKind::Workspace;
+        let mut web = ws(&id(4), "web", 3);
+        web.parent_id = Some(shop.id);
+        let mut api = ws(&id(5), "api", 4);
+        api.parent_id = Some(shop.id);
+        api.pinned = true;
+        let mut busy = ws(&id(6), "busy", 5);
+        busy.total_sessions = 2;
+        let idle = ws(&id(7), "idle", 6);
+        let all = [home, web, shop, busy, idle, api, lab];
+
+        let names = |tree: &[TreeRow]| {
+            tree.iter()
+                .map(|row| format!("{}{}", "-".repeat(row.depth), row.workspace.name))
+                .collect::<Vec<_>>()
+        };
+        let tree = workspace_tree(&all, WsSort::Manual, &HashMap::new(), false);
+        // Pinned members first inside their workspace; the empty loose project is hidden.
+        assert_eq!(
+            names(&tree),
+            ["shop", "-api", "-web", "lab", "busy", "Home"]
+        );
+        let tree = workspace_tree(&all, WsSort::Name, &HashMap::new(), true);
+        assert_eq!(
+            names(&tree),
+            ["lab", "shop", "-api", "-web", "busy", "idle", "Home"]
+        );
+        // A project that waits for the user brings its workspace up.
+        let waiting = HashMap::from([(all[1].id, 1)]);
+        let tree = workspace_tree(&all, WsSort::Attention, &waiting, false);
+        assert_eq!(names(&tree)[0], "shop");
+        let text = tree_table(&tree, 10_000);
+        assert!(text.lines().next().unwrap().starts_with("ID"), "{text}");
+        assert!(text.contains("  api"), "members are indented: {text}");
     }
 
     #[test]

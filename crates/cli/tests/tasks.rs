@@ -70,7 +70,7 @@ impl Env {
         let t = TestDaemon::start().await;
         let repo = Repo::new();
         let workspace = t
-            .hutan(&["ws", "open", repo.root.to_str().unwrap(), "--json"])
+            .hutan(&["project", "open", repo.root.to_str().unwrap(), "--json"])
             .await
             .ok()
             .json()["workspace"]["id"]
@@ -216,7 +216,7 @@ async fn add_creates_tasks_with_dependencies_placement_and_run_and_ls_shows_the_
 
     // `ls` is per workspace by default and `--ws` names one.
     let other = Repo::new();
-    e.t.hutan(&["ws", "open", other.root.to_str().unwrap()])
+    e.t.hutan(&["project", "open", other.root.to_str().unwrap()])
         .await
         .ok();
     let out = e.hutan(&["task", "ls", "--ws", &e.workspace]).await.ok();
@@ -401,17 +401,19 @@ async fn bad_targets_and_arguments_are_usage_errors() {
     assert!(out.stderr.contains("needs a title"), "{out:?}");
     assert_eq!(e.tasks().await.len(), 2);
 
-    // Outside every workspace there is nothing to add to.
-    let elsewhere = tempfile::tempdir().unwrap();
+    // In Home (or the home directory) there is no project to add to.
+    let home = fs::create_dir_all(&e.t.paths.default_home_folder)
+        .map(|()| fs::canonicalize(&e.t.paths.default_home_folder).unwrap())
+        .unwrap();
     let mut cmd = command(
         Path::new(HUTAN),
         Some(&e.t.paths.socket),
         &["task", "add", "Lost"],
     );
-    cmd.current_dir(fs::canonicalize(elsewhere.path()).unwrap());
+    cmd.current_dir(home);
     let out = finish(cmd).await;
     assert_eq!(out.code, 2, "{out:?}");
-    assert!(out.stderr.contains("hutan ws open"), "{out:?}");
+    assert!(out.stderr.contains("belongs to no project"), "{out:?}");
     e.t.stop().await;
 }
 

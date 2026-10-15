@@ -1,6 +1,6 @@
-# Orchestration: worktrees, session placement and tasks
+# Orchestration: projects, worktrees, session placement and tasks
 
-Roadmap M7: worktrees and placement (slice M7-A, protocol 0.14, capability `worktree`) and tasks with dependencies (slice M7-B, protocol 0.16, capability `task`; § Tasks below). Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
+Roadmap M7 and M18: automatic projects and user workspaces (slice M18-A, protocol 0.19, capability `projects.auto`; § Projects and workspaces below), worktrees and placement (slice M7-A, protocol 0.14, capability `worktree`) and tasks with dependencies (slice M7-B, protocol 0.16, capability `task`; § Tasks below). Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
 
 Wire details: `docs/protocol.md` § Worktrees and placement. Code: `crates/daemon/src/{worktrees,placement}.rs` (daemon), `crates/protocol/src/worktree.rs` (DTOs), `crates/cli/src/commands/worktrees.rs` (CLI), `crates/desktop/src/workbench/worktrees.rs` and `crates/desktop/src/sessions/placement.rs` (desktop).
 
@@ -42,7 +42,7 @@ hutan new --worktree <branch> [--ws ...] [--title T] [--attach] [-- argv]
 hutan ls
 ```
 
-- The workspace is `--ws`, else `$HUTAN_WORKSPACE`, else the workspace whose root contains the current directory (`wt ls` falls back to all workspaces; the others stop with a hint to run `hutan ws open .`). When the current directory chose the workspace it also picks the repository (`--repo` overrides); otherwise the workspace's first git root is used.
+- The workspace is `--ws` (a workspace or a project), else `$HUTAN_WORKSPACE`, else the project of the current directory — the daemon finds it through the repository (`workspace.open`), so a linked worktree belongs to the project of its main checkout, and makes it when the directory has none yet (`wt ls` falls back to all workspaces in Home or the home directory; the others stop with a hint). When the current directory chose the project it also picks the repository (`--repo` overrides); otherwise the workspace's first git root is used.
 - `wt new` prints the path of the worktree on stdout (`cd "$(hutan wt new feature/x)"`); `--json` prints `{"worktree": {...}}`.
 - `wt ls` prints `BRANCH PATH STATE` (`main`, `hutan` = created by Hutan, `dirty`, `locked`, `prunable`, live session count); `--json` prints `{"worktrees": [...]}` with every field.
 - `wt rm` takes a path (as written, or relative to the current directory) or a branch; a branch that exists in several repositories is a usage error listing the paths. `--delete-branch` reports a branch that stayed.
@@ -63,6 +63,30 @@ Deliberately small (the layout and panels are ADR 0010's business):
 - `crates/cli/tests/worktrees.rs`: the real `hutan` for `wt new|ls|rm`, `new --worktree`, the `PLACE` column.
 - `crates/desktop/tests/worktrees_gpui.rs`: rows draw the badge, tab tooltips carry it, the warning follows two agents, the commands are in the palette.
 - `crates/protocol/tests/fixtures/v0/*worktree*`, `*placement*`: golden fixtures.
+
+## Projects and workspaces
+
+ADR 0014, slice M18-A (protocol 0.19, capability `projects.auto`). Wire details: `docs/protocol.md` § Projects and workspaces (0.19). Code: `crates/daemon/src/{projects,placement,registry,project_migration}.rs`, `crates/cli/src/commands/{workspaces,projects}.rs`.
+
+Sessions belong to a **project** without anyone opening one; the user's own **workspaces** collect projects deliberately. Both are `WorkspaceInfo` on the wire; the UI says *project* and *workspace*.
+
+- **A project is a repository or a folder.** Identity = the git common directory of the deepest repository around the folder (`.git`, or a `.git` file's `gitdir:` → `commondir`, read from disk like placement; `placement::repository_of`), canonical. So the main checkout and every `git worktree` of it are one project, rooted at the main checkout; a submodule and a repository nested in another one's tree are their own projects; a folder outside git is its own project. `$HOME`, `/` and the Home folder are never projects — they are Home — and a repository *rooted in* `$HOME` (dotfiles) is ignored so it does not swallow every folder below it.
+- **Projects are made automatically** (`[projects] auto = true`, default) by the daemon when a session, chat or task needs one: `session.create` / `chat.create` without `workspace_id` go to the project of their folder; so does a task of a workspace (the session's folder is in a member project). Restore keeps the stored assignment and re-derives it only when the stored project's folder is gone while the session's start folder still exists. `auto = false` brings back the old rule: Home, unless the client names a workspace (the desktop names the active one). An explicit `workspace_id` always wins. A session keeps the project it started in; where it is *now* is `SessionInfo.folder` (OSC 7), and `placement` (`main` / `wt <branch>`) tells which checkout.
+- **A workspace is the user's container**: a name, a pin, an order, its own `.hutan/settings.toml` layer and layout, and member projects (`parent_id`; a project is in at most one workspace). One step to make one (`workspace.create {name, paths?, project_ids?}`), move a project in or out (`workspace.assign`), delete one without losing its projects (`workspace.delete`). A workspace's `roots`, session counts and activity are those of its projects.
+- **Settings layering** (client side): user < workspace < project, where the project layer is `<project root>/.hutan/settings.toml` of the main checkout; a project in no workspace layers only its own.
+- **Migration**: every earlier workspace stays a workspace and each of its folders becomes a member project (`project_migration.rs`, once, recorded in `app_meta.projects_auto`); nothing keyed by the workspace id changes and no session moves.
+
+### CLI
+
+- `hutan ws ls [--sort manual|recent|attention|name] [--all]` — the tree: workspaces, each with its projects (indented), then projects in no workspace, then Home. Empty loose projects are hidden unless pinned or `--all`; members and workspaces always show.
+- `hutan ws new NAME [PATH…]` makes a workspace with the projects of those folders; `ws add WS PATH|PROJECT` adds a folder (its project is made if needed) or an existing project (a project of another workspace moves); `ws remove WS PROJECT` takes it out again; `ws rename|pin|unpin|rm|move|use` as before (`rm` deletes the workspace only, never its projects; `use` prints `export HUTAN_WORKSPACE=<id>`).
+- `hutan project ls|open PATH|rename|pin|unpin|close|recent` — projects flat, with their workspace; `open` makes sure a folder has its project; `close` is refused while its sessions are live and keeps it in `recent`.
+- `hutan ls` shows the PROJECT and FOLDER of every session next to its placement badge.
+- A target (`WS`, `PROJECT`, `--ws`) is a full id, an exact name (then ignoring case) or an id prefix of at least 4 characters; a target of the wrong kind says what it is.
+
+### Tests
+
+`crates/daemon/src/projects.rs` (identity of a main checkout, linked worktree, nested repository, submodule, folder; Home rules), `project_migration.rs` (single- and multi-root workspaces, shared repositories, Home), `crates/daemon/tests/projects.rs` (sessions, chats and tasks land in their project over a real daemon; workspaces CRUD, events and counts; restore; migration at start), `crates/cli/tests/projects.rs` (the commands against a daemon), `crates/storage/src/tests.rs` (schema 8 rebuild keeps sessions and tasks).
 
 ## Tasks
 
@@ -89,7 +113,7 @@ hutan task start|done|cancel|reset|show TASK
 hutan task rm TASK [--cascade]
 ```
 
-- `TASK` is an id, a unique id prefix of at least 4 characters, or an exact title (equal titles are told apart by the workspace). The workspace is `--ws`, else `$HUTAN_WORKSPACE`, else the workspace containing the current directory.
+- `TASK` is an id, a unique id prefix of at least 4 characters, or an exact title (equal titles are told apart by the workspace). The workspace is `--ws`, else `$HUTAN_WORKSPACE`, else the project of the current directory.
 - `add` prints the new id. `--worktree` alone means `task/<slug of the title>`, `--worktree=BRANCH` a branch; `--agent` (and its shorthand `--codex`) needs `--prompt`.
 - `ls` prints each task once, dependencies first, under the task it waits for last (a task with several dependencies lists the others as `also after …`), with state glyphs `○ todo`, `◎ ready`, `▶ running`, `◆ blocked`, `✓ done`, `✗ failed`, `⊘ cancelled`, the shortest unique id and notes (worktree, command, `auto`, outcome). `--json` prints `{"tasks": [...]}`; `show` prints fields, dependencies, dependants and sessions (`--json`: `{task, depends_on, dependants, sessions}`).
 

@@ -31,6 +31,7 @@ use crate::history::HistoryService;
 use crate::notify::NotifyService;
 use crate::notify_native::NativePoster;
 use crate::paths::Paths;
+use crate::project_migration;
 use crate::projects;
 use crate::providers::{GatewayConfig, ProviderService};
 use crate::registry::{self, RegistryConfig};
@@ -159,6 +160,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         .unwrap_or_else(|| paths.default_home_folder.clone());
     let home_folder = prepare_home_folder(home_folder).await?;
     let (storage, mut stored) = open_storage(&paths.database).await?;
+    stored = convert_workspaces(&storage, stored, &paths.database).await?;
     remove_stale_socket(&paths.socket)?;
     let listener = UnixListener::bind(&paths.socket).map_err(DaemonError::io(format!(
         "binding {}",
@@ -244,6 +246,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             storage: storage.clone(),
             restore: settings.restore_sessions,
             home_folder,
+            user_home: paths.user_home.clone(),
+            auto_projects: settings.projects.auto,
             activity_interval: config.activity_interval,
             codex: codex_config.clone(),
             harnesses: harnesses.clone(),
@@ -454,6 +458,22 @@ async fn open_storage(database: &Path) -> Result<(Storage, Stored), DaemonError>
         // Agents died with the previous daemon; whatever they asked can no longer be answered.
         chat::expire_dangling_approvals(&storage)?;
         Ok((storage, stored))
+    })
+    .await?
+    .map_err(DaemonError::storage(database))
+}
+
+/// Turns the workspaces of earlier versions into workspaces with member projects, once
+/// (`docs/orchestration.md` § Projects), off the async threads.
+async fn convert_workspaces(
+    storage: &Storage,
+    mut stored: Stored,
+    database: &Path,
+) -> Result<Stored, DaemonError> {
+    let storage = storage.clone();
+    tokio::task::spawn_blocking(move || {
+        project_migration::run(&storage, &mut stored)?;
+        Ok(stored)
     })
     .await?
     .map_err(DaemonError::storage(database))

@@ -40,7 +40,8 @@ async fn workspace(client: &Client, name: &str, roots: Vec<PathBuf>) -> Workspac
     client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.into(),
-            roots,
+            paths: roots,
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await
@@ -353,8 +354,12 @@ async fn user_changes_survive_a_restart() {
     let snap = snapshot(&client).await;
 
     let names: Vec<_> = snap.workspaces.iter().map(|w| w.name.as_str()).collect();
-    assert_eq!(names, ["Home", "kept"], "creation order, closed one gone");
-    assert_eq!(snap.workspaces[1].roots, [PathBuf::from("/tmp")]);
+    // Creation order, the closed one gone; the folder of `kept` is a project in it.
+    assert_eq!(names, ["Home", "kept", "tmp"]);
+    // Folders are stored canonical: `/tmp` is `/private/tmp` on macOS.
+    let tmp = std::fs::canonicalize("/tmp").unwrap();
+    assert_eq!(snap.workspaces[1].roots, [tmp]);
+    assert_eq!(snap.workspaces[2].parent_id, Some(keep.id));
     assert!(snap.sessions.iter().all(|s| s.id != in_dropped.id));
     assert_eq!(find(&snap, named.id).title, "mine");
 
@@ -494,7 +499,7 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
 
     // A database written by a newer build.
     let newer = Migration {
-        version: 8,
+        version: 9,
         name: "from the future",
         sql: "CREATE TABLE future (x INTEGER NOT NULL);",
     };
@@ -508,6 +513,7 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
             hutan_storage::MIGRATIONS[4],
             hutan_storage::MIGRATIONS[5],
             hutan_storage::MIGRATIONS[6],
+            hutan_storage::MIGRATIONS[7],
             newer,
         ],
     )

@@ -27,6 +27,7 @@ mod chat;
 mod history;
 mod integration;
 mod notify;
+mod projects;
 mod providers;
 mod resources;
 mod sessions;
@@ -62,6 +63,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Top(args) => ctx?.top(args).await,
         Command::Kill(args) => ctx?.kill(args).await,
         Command::Ws(command) => ctx?.ws(command).await,
+        Command::Project(command) => ctx?.project(command).await,
         Command::Api(args) => ctx?.api(args).await,
         Command::Events(args) => ctx?.events(args).await,
         Command::New(args) => ctx?.new_session(args).await,

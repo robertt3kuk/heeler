@@ -724,7 +724,8 @@ async fn workspace_close_is_refused_for_home_and_for_live_sessions() {
     let other: WorkspaceInfo = client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: "other".into(),
-            roots: vec![],
+            paths: vec![],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await
@@ -980,7 +981,8 @@ async fn titles_cwd_and_listing_follow_the_spec_and_filters() {
     let other: WorkspaceInfo = client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: "other".into(),
-            roots: vec![],
+            paths: vec![],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await

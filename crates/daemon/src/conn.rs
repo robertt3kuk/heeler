@@ -47,6 +47,7 @@ pub const CAPABILITIES: &[&str] = &[
     "harness.acp",
     "accounts",
     "resources",
+    "projects.auto",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

@@ -867,7 +867,8 @@ async fn attached_context_reaches_a_harness_as_embedded_resources() {
         .client
         .call::<WorkspaceInfo>(Request::WorkspaceCreate(WorkspaceCreate {
             name: "proj".into(),
-            roots: vec![root.clone()],
+            paths: vec![root.clone()],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await
@@ -919,7 +920,8 @@ async fn tasks_run_as_omp_and_claude_chats() {
         .client
         .call::<WorkspaceInfo>(Request::WorkspaceCreate(WorkspaceCreate {
             name: "tasks".into(),
-            roots: vec![root],
+            paths: vec![root],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await

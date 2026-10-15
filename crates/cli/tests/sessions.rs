@@ -40,7 +40,9 @@ async fn new_then_ls_json_shows_a_running_session() {
     let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
     assert_eq!(
         header,
-        ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"]
+        [
+            "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
+        ]
     );
     let row = lines.next().unwrap();
     assert!(
@@ -339,7 +341,10 @@ async fn usage_errors_and_missing_daemon() {
     // `--ws` takes an id, a prefix or a name; one that matches nothing is a failure, not usage.
     let out = t.hutan(&["new", "--ws", "not-a-workspace"]).await;
     assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stderr.contains("no workspace matches"), "{out:?}");
+    assert!(
+        out.stderr.contains("no workspace or project matches"),
+        "{out:?}"
+    );
     // attach needs a terminal; stdin is /dev/null here.
     let out = t.hutan(&["attach", "anything"]).await;
     assert_eq!(out.code, 2, "{out:?}");

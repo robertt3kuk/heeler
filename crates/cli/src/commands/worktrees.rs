@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use hutan_client::Client;
 use hutan_core::WorkspaceId;
-use hutan_protocol::messages::{WorkspaceInfo, WorkspaceKind};
+use hutan_protocol::messages::{CreatedBy, Request, WorkspaceKind, WorkspaceOpen, WorkspaceOpened};
 use hutan_protocol::worktree::{
     WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeRemove,
 };
@@ -153,8 +153,10 @@ impl Ctx {
         }
     }
 
-    /// The workspace the worktree commands act on and whether the current directory chose it:
-    /// `--ws`, else `$HUTAN_WORKSPACE`, else the workspace containing the current directory.
+    /// The workspace the worktree and task commands act on and whether the current directory
+    /// chose it: `--ws`, else `$HUTAN_WORKSPACE`, else the project of the current directory (the
+    /// daemon finds it through the repository, so a linked worktree belongs to the project of
+    /// its main checkout, and makes it when the directory has none yet). Home is no project.
     pub(super) async fn wt_scope(
         &self,
         client: &Client,
@@ -167,41 +169,28 @@ impl Ctx {
                 .map_err(|error| with_source(error, &target, source))?;
             return Ok(Some((id, false)));
         }
-        let all = self.workspace_list(client).await?.workspaces;
-        let cwd = std::env::current_dir()?;
-        Ok(workspace_containing(&all, &cwd).map(|w| (w.id, true)))
+        let opened: WorkspaceOpened = self
+            .call(
+                client,
+                Request::WorkspaceOpen(WorkspaceOpen {
+                    path: std::env::current_dir()?,
+                    created_by: Some(CreatedBy::Cli),
+                }),
+            )
+            .await?;
+        Ok(
+            (opened.workspace.kind == WorkspaceKind::Project)
+                .then_some((opened.workspace.id, true)),
+        )
     }
 }
 
 pub(super) fn no_workspace() -> CliError {
     CliError::Usage(
-        "no workspace contains the current directory; pass --ws, set $HUTAN_WORKSPACE, or run \
-         `hutan ws open .` first"
+        "the current directory belongs to no project (it is Home or the home directory); pass \
+         --ws, set $HUTAN_WORKSPACE, or run the command in a repository or folder"
             .to_owned(),
     )
-}
-
-/// The project workspace with the deepest root containing `dir` (Home never counts: it is not
-/// a repository).
-fn workspace_containing<'a>(
-    workspaces: &'a [WorkspaceInfo],
-    dir: &Path,
-) -> Option<&'a WorkspaceInfo> {
-    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    workspaces
-        .iter()
-        .filter(|w| w.kind == WorkspaceKind::Project)
-        .filter_map(|w| {
-            w.roots
-                .iter()
-                .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
-                .filter(|root| dir.starts_with(root))
-                .map(|root| root.components().count())
-                .max()
-                .map(|depth| (depth, w))
-        })
-        .max_by_key(|(depth, _)| *depth)
-        .map(|(_, w)| w)
 }
 
 /// The worktree `target` names: a path (as written, or relative to `cwd`), else a branch.
@@ -468,33 +457,5 @@ mod tests {
             "{table}"
         );
         assert_eq!(worktree_table(&[]), "no worktrees");
-    }
-
-    #[test]
-    fn the_workspace_is_found_by_the_deepest_root_containing_the_directory() {
-        use hutan_protocol::messages::CreatedBy;
-        let ws = |name: &str, roots: &[&str], kind| WorkspaceInfo {
-            id: WorkspaceId::new(),
-            name: name.to_owned(),
-            roots: roots.iter().map(PathBuf::from).collect(),
-            kind,
-            pinned: false,
-            position: 0,
-            created_by: CreatedBy::User,
-            last_active_ms: 0,
-            live_sessions: 0,
-            total_sessions: 0,
-        };
-        let all = [
-            ws("home", &["/w"], WorkspaceKind::Home),
-            ws("outer", &["/w/p"], WorkspaceKind::Project),
-            ws("inner", &["/w/p/sub"], WorkspaceKind::Project),
-            ws("other", &["/x"], WorkspaceKind::Project),
-        ];
-        let name = |dir: &str| workspace_containing(&all, Path::new(dir)).map(|w| w.name.as_str());
-        assert_eq!(name("/w/p/src"), Some("outer"));
-        assert_eq!(name("/w/p/sub/deep"), Some("inner"));
-        assert_eq!(name("/w/other"), None, "Home never counts");
-        assert_eq!(name("/y"), None);
     }
 }

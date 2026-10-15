@@ -24,6 +24,7 @@ use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::history::{HistorySearch, HistorySetEnabled};
 use crate::notify::{ClientFocus, NotificationIntent, NotifyAck, NotifyAct};
+use crate::project::{ProjectInfo, WorkspaceAssign, WorkspaceDelete};
 use crate::provider::{
     ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
 };
@@ -82,6 +83,14 @@ pub enum Request {
     /// Capability `workspace.projects` (protocol 0.6).
     #[serde(rename = "workspace.pin")]
     WorkspacePin(WorkspacePin),
+    /// Capability `projects.auto` (protocol 0.19): puts a project into a workspace or out of it;
+    /// answered with the project's `WorkspaceInfo`.
+    #[serde(rename = "workspace.assign")]
+    WorkspaceAssign(WorkspaceAssign),
+    /// Capability `projects.auto`: removes a workspace, its projects stay; answered with
+    /// `Empty`.
+    #[serde(rename = "workspace.delete")]
+    WorkspaceDelete(WorkspaceDelete),
     #[serde(rename = "session.create")]
     SessionCreate(SessionCreate),
     #[serde(rename = "session.list")]
@@ -343,8 +352,13 @@ pub struct DaemonShutdown {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCreate {
     pub name: String,
-    #[serde(default)]
-    pub roots: Vec<PathBuf>,
+    /// Folders to add as member projects (an existing project of a folder is reused, a new one
+    /// made when there is none); protocol 0.19 (`roots` before, which an older client sends).
+    #[serde(default, alias = "roots")]
+    pub paths: Vec<PathBuf>,
+    /// Existing projects to move into the new workspace (protocol 0.19).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_ids: Vec<WorkspaceId>,
     /// Who asks (protocol 0.6); absent means `user`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<CreatedBy>,
@@ -361,13 +375,16 @@ pub enum CreatedBy {
     Agent,
 }
 
-/// What a workspace is (protocol 0.6). Exactly one workspace is `home`.
+/// What a workspace is (protocol 0.6). Exactly one workspace is `home`. Protocol 0.19 adds
+/// `workspace`: a container the user made, with projects in it (`WorkspaceInfo.parent_id`);
+/// `project` is then the automatic kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
     Home,
     #[default]
     Project,
+    Workspace,
 }
 
 /// `workspace.open` (protocol 0.6): finds the workspace one of whose roots contains `path`, or
@@ -702,6 +719,12 @@ pub struct WorkspaceInfo {
     pub live_sessions: u32,
     #[serde(default)]
     pub total_sessions: u32,
+    /// Protocol 0.19 (capability `projects.auto`): the workspace a project is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<WorkspaceId>,
+    /// Protocol 0.19: what identifies a project; absent for Home and workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -734,6 +757,11 @@ pub struct SessionInfo {
     /// outside a git repository or while its directory is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,
+    /// Protocol 0.19 (capability `projects.auto`): the folder the session is in now — the
+    /// directory the shell reported (OSC 7), else the one it started in; absent while unknown.
+    /// The session's project is the one it started in and does not follow this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 /// The latest report of a coding agent running in a session: the main agent, with the state

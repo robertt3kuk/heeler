@@ -1,1 +1,1 @@
-{"id":8,"result":{"created_by":"cli","id":"01K7F3B5N2Q9W8E4R6T1Y0V3JA","kind":"project","last_active_ms":1791894170000,"live_sessions":2,"name":"hutan","pinned":true,"position":2,"roots":["/repo","/other-repo"],"total_sessions":5}}
+{"id":8,"result":{"created_by":"cli","id":"01K7F3B5N2Q9W8E4R6T1Y0V3JA","kind":"project","last_active_ms":1791894170000,"live_sessions":2,"name":"hutan","parent_id":"01K7F3B5N2Q9W8E4R6T1Y0V3JC","pinned":true,"position":2,"project":{"common_dir":"/repo/.git","root":"/repo"},"roots":["/repo"],"total_sessions":5}}

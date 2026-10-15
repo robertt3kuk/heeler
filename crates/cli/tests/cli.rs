@@ -81,21 +81,28 @@ async fn socket_is_found_through_hutan_home_and_hutan_socket() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_new_then_ls_json() {
+    let folders = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(folders.path()).unwrap();
+    std::fs::create_dir_all(base.join("a")).unwrap();
+    std::fs::create_dir_all(base.join("rel/b")).unwrap();
     let t = TestDaemon::start().await;
-    let created = t
-        .hutan(&[
-            "ws", "new", "alpha", "--root", "/srv/a", "--root", "rel/b", "--json",
-        ])
-        .await;
+    let a = base.join("a");
+    let mut new = command(
+        Path::new(HUTAN),
+        Some(&t.paths.socket),
+        &["ws", "new", "alpha", a.to_str().unwrap(), "rel/b", "--json"],
+    );
+    new.current_dir(&base);
+    let created = finish(new).await;
     assert_eq!(created.code, 0, "{created:?}");
     let created = created.json();
     assert_eq!(created["name"], "alpha");
+    assert_eq!(created["kind"], "workspace");
     let id = created["id"].as_str().unwrap().to_owned();
-    let cwd = std::env::current_dir().unwrap();
     assert_eq!(
         created["roots"],
-        json!(["/srv/a", cwd.join("rel/b").to_str().unwrap()]),
-        "relative roots are resolved against the caller's directory"
+        json!([a.to_str().unwrap(), base.join("rel/b").to_str().unwrap()]),
+        "relative folders are resolved against the caller's directory"
     );
 
     t.hutan(&["ws", "new", "beta"]).await;
@@ -108,9 +115,10 @@ async fn ws_new_then_ls_json() {
         .iter()
         .map(|w| w["name"].as_str().unwrap().to_owned())
         .collect();
-    // The daemon always has its Home workspace, first.
-    assert_eq!(names, ["Home", "alpha", "beta"]);
-    assert_eq!(workspaces[1]["id"], id);
+    // Workspaces with their projects, then Home.
+    assert_eq!(names, ["alpha", "a", "b", "beta", "Home"]);
+    assert_eq!(workspaces[0]["id"], id);
+    assert_eq!(workspaces[1]["parent_id"], id);
 
     let human = t.hutan(&["ws", "ls", "--all"]).await;
     assert!(human.stdout.contains(&id), "{human:?}");
@@ -131,7 +139,7 @@ async fn ws_ls_on_a_fresh_daemon_shows_home() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_rename_and_close() {
+async fn ws_rename_and_rm() {
     let t = TestDaemon::start().await;
     let created = t.hutan(&["ws", "new", "old", "--json"]).await.json();
     let id = created["id"].as_str().unwrap();
@@ -142,9 +150,9 @@ async fn ws_rename_and_close() {
     let human = t.hutan(&["ws", "rename", id, "again"]).await;
     assert!(human.stdout.contains("again"), "{human:?}");
 
-    let closed = t.hutan(&["ws", "close", id, "--json"]).await;
-    assert_eq!(closed.code, 0, "{closed:?}");
-    assert_eq!(closed.json(), json!({"workspace_id": id, "closed": true}));
+    let deleted = t.hutan(&["ws", "rm", id, "--json"]).await;
+    assert_eq!(deleted.code, 0, "{deleted:?}");
+    assert_eq!(deleted.json(), json!({"workspace_id": id, "deleted": true}));
     let list = t.hutan(&["ws", "ls", "--json"]).await.json();
     assert_eq!(list["workspaces"].as_array().unwrap().len(), 1);
     assert_eq!(list["workspaces"][0]["name"], "Home");
@@ -155,12 +163,14 @@ async fn ws_rename_and_close() {
 async fn remote_errors_exit_1_with_the_code_on_stderr() {
     let t = TestDaemon::start().await;
     let unknown = "01J00000000000000000000000";
-    let out = t.hutan(&["ws", "close", unknown]).await;
+    let out = t.hutan(&["ws", "new", "x", "/definitely/not/here"]).await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
     assert!(out.stderr.starts_with("hutan: not_found:"), "{out:?}");
+    // Targets are resolved before anything is sent: an unknown one is a plain failure.
     let out = t.hutan(&["ws", "rename", unknown, "x"]).await;
     assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("no workspace matches"), "{out:?}");
     t.stop().await;
 }
 
@@ -187,18 +197,18 @@ async fn api_daemon_status_prints_the_result() {
 #[tokio::test(flavor = "multi_thread")]
 async fn api_passes_params_through() {
     let t = TestDaemon::start().await;
+    let folder = tempfile::tempdir().unwrap();
+    let folder = std::fs::canonicalize(folder.path()).unwrap();
+    // `roots` is what a client before protocol 0.19 calls `paths`.
+    let params = json!({"name": "via-api", "roots": [folder]}).to_string();
     let out = t
-        .hutan(&[
-            "api",
-            "workspace.create",
-            r#"{"name": "via-api", "roots": ["/x"]}"#,
-            "--json",
-        ])
+        .hutan(&["api", "workspace.create", &params, "--json"])
         .await;
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.json()["name"], "via-api");
     let list = t.hutan(&["api", "workspace.list", "{}", "--json"]).await;
-    assert_eq!(list.json()["workspaces"][1]["roots"], json!(["/x"]));
+    assert_eq!(list.json()["workspaces"][1]["name"], "via-api");
+    assert_eq!(list.json()["workspaces"][1]["roots"], json!([folder]));
     t.stop().await;
 }
 
@@ -343,8 +353,11 @@ async fn usage_errors_exit_2() {
         &["bogus"],
         &["ws"],
         &["ws", "new"],
-        &["ws", "rename", "not-an-id", "x"],
-        &["ws", "close", "not-an-id"],
+        &["ws", "rm"],
+        &["ws", "add", "only-one"],
+        &["ws", "close", "gone-since-0.19"],
+        &["project"],
+        &["project", "open"],
         &["daemon", "status", "--bogus"],
         &["api"],
     ] {

@@ -1,6 +1,6 @@
-//! `hutan ws open|ls|move|pin|unpin|recent|use` and `HUTAN_WORKSPACE` for `hutan new` (roadmap
-//! M12-A), through the real binary against a real in-process daemon. Every folder is a
-//! temporary directory.
+//! `hutan ws new|add|remove|rename|rm|ls|move|pin|unpin|use` and `HUTAN_WORKSPACE` for `hutan
+//! new` (roadmap M12-A, reshaped by M18-A: workspaces contain projects), through the real binary
+//! against a real in-process daemon. Every folder is a temporary directory.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
 
@@ -8,6 +8,7 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use common::*;
@@ -29,154 +30,197 @@ fn s(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
-async fn ws_new(t: &TestDaemon, name: &str) -> String {
-    t.hutan(&["ws", "new", name, "--json"]).await.ok().json()["id"]
+/// A repository `<base>/<name>` with one commit.
+fn repo(base: &Path, name: &str) -> PathBuf {
+    let root = mkdir(&base.join(name));
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    root
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn ws_new(t: &TestDaemon, name: &str, paths: &[&Path]) -> String {
+    let mut args = vec!["ws", "new", name, "--json"];
+    args.extend(paths.iter().map(|p| s(p)));
+    t.hutan(&args).await.ok().json()["id"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
-/// Names of `hutan ws ls --json <args>`, in listing order.
-async fn listed(t: &TestDaemon, args: &[&str]) -> Vec<String> {
+/// `hutan ws ls --json <args>`, in listing order.
+async fn rows(t: &TestDaemon, args: &[&str]) -> Vec<Value> {
     let mut full = vec!["ws", "ls", "--json"];
     full.extend_from_slice(args);
-    let out = t.hutan(&full).await.ok().json();
-    out["workspaces"]
+    t.hutan(&full).await.ok().json()["workspaces"]
         .as_array()
         .unwrap()
+        .clone()
+}
+
+/// Names of `hutan ws ls --json <args>`, in listing order.
+async fn listed(t: &TestDaemon, args: &[&str]) -> Vec<String> {
+    rows(t, args)
+        .await
         .iter()
         .map(|w| w["name"].as_str().unwrap().to_owned())
         .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_open_creates_a_workspace_once_and_finds_it_again() {
+async fn ws_new_makes_a_workspace_with_the_projects_of_some_folders() {
     let (_keep, base) = tmp();
     let t = TestDaemon::start().await;
-    let project = mkdir(&base.join("plain"));
-    let inner = mkdir(&project.join("src/deep"));
+    let api = repo(&base, "api");
+    let notes = mkdir(&base.join("notes"));
 
     let created = t
-        .hutan(&["ws", "open", s(&project), "--json"])
+        .hutan(&["ws", "new", "shop", s(&api), s(&notes), "--json"])
         .await
         .ok()
         .json();
-    assert_eq!(created["created"], true);
-    let ws = &created["workspace"];
-    assert_eq!(ws["name"], "plain");
-    assert_eq!(ws["roots"], json!([s(&project)]));
-    assert_eq!(ws["kind"], "project");
-    assert_eq!(ws["created_by"], "cli");
-    let id = ws["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["name"], "shop");
+    assert_eq!(created["kind"], "workspace");
+    assert_eq!(created["created_by"], "cli");
+    assert_eq!(created["roots"], json!([s(&api), s(&notes)]));
+    let id = created["id"].as_str().unwrap();
+    let list = rows(&t, &["--all"]).await;
+    let project = |name: &str| list.iter().find(|w| w["name"] == name).unwrap();
+    assert_eq!(project("api")["kind"], "project");
+    assert_eq!(project("api")["parent_id"], id);
+    assert_eq!(project("notes")["parent_id"], id);
+    assert_eq!(project("api")["project"]["root"], s(&api));
+    assert!(
+        project("api")["project"]["common_dir"].is_string(),
+        "a repository"
+    );
+    assert!(
+        project("notes")["project"].get("common_dir").is_none(),
+        "a folder"
+    );
 
-    // The human form says what happened.
-    let human = t.hutan(&["ws", "open", s(&inner)]).await.ok();
-    assert_eq!(human.stdout.trim(), format!("opened {id} (plain)"));
-    let again = t
-        .hutan(&["ws", "open", s(&inner), "--json"])
-        .await
-        .ok()
-        .json();
-    assert_eq!(again["created"], false);
-    assert_eq!(again["workspace"]["id"], id);
-
-    // A relative path is resolved against the caller's directory, and a folder inside a git
-    // repository opens the repository.
-    let repo = mkdir(&base.join("clone"));
-    mkdir(&repo.join(".git"));
-    mkdir(&repo.join("crates/x"));
-    let mut command = command(
+    // The human form says what was made; a relative folder is the caller's.
+    let human = t.hutan(&["ws", "new", "empty"]).await.ok();
+    assert!(
+        human.stdout.contains("(empty) with 0 project(s)"),
+        "{human:?}"
+    );
+    let mut relative = command(
         Path::new(HUTAN),
         Some(&t.paths.socket),
-        &["ws", "open", "crates/x", "--json"],
+        &["ws", "new", "rel", "./extra", "--json"],
     );
-    command.current_dir(&repo);
-    let out = finish(command).await.ok().json();
-    assert_eq!(out["created"], true);
-    assert_eq!(out["workspace"]["roots"], json!([s(&repo)]));
-    assert_eq!(out["workspace"]["name"], "clone");
+    mkdir(&base.join("extra"));
+    relative.current_dir(&base);
+    let out = finish(relative).await.ok().json();
+    assert_eq!(out["roots"], json!([s(&base.join("extra"))]));
 
-    // Failures.
-    let out = t.hutan(&["ws", "open", s(&base.join("missing"))]).await;
+    // A folder that is no directory makes nothing.
+    let before = rows(&t, &["--all"]).await.len();
+    let out = t
+        .hutan(&["ws", "new", "bad", s(&base.join("missing"))])
+        .await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stderr.starts_with("hutan: not_found:"), "{out:?}");
-    assert_eq!(t.hutan(&["ws", "open"]).await.code, 2);
+    assert_eq!(rows(&t, &["--all"]).await.len(), before);
+    assert_eq!(t.hutan(&["ws", "new"]).await.code, 2);
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_ls_hides_empty_workspaces_unless_pinned_or_home() {
+async fn ws_ls_prints_workspaces_with_their_projects_then_loose_projects_then_home() {
+    let (_keep, base) = tmp();
     let t = TestDaemon::start().await;
-    let busy = ws_new(&t, "busy").await;
-    let _empty = ws_new(&t, "empty").await;
-    let pinned = ws_new(&t, "pinned").await;
-    t.new_session(&["--ws", &busy], &["cat"]).await;
-    t.hutan(&["ws", "pin", &pinned]).await.ok();
+    let api = repo(&base, "api");
+    let web = repo(&base, "web");
+    let loose = mkdir(&base.join("loose"));
+    let idle = mkdir(&base.join("idle"));
+    let _shop = ws_new(&t, "shop", &[&api, &web]).await;
+    let _lab = ws_new(&t, "lab", &[]).await;
+    t.new_session(&["--cwd", s(&loose)], &["cat"]).await;
+    t.new_session(&["--cwd", s(&api)], &["cat"]).await;
+    t.hutan(&["project", "open", s(&idle)]).await.ok();
 
-    // Pinned first, then the manual order; Home is never hidden.
-    assert_eq!(listed(&t, &[]).await, ["pinned", "Home", "busy"]);
+    // Members under their workspace, then the loose project with sessions, then Home; the
+    // empty loose project is hidden unless asked for.
+    assert_eq!(
+        listed(&t, &[]).await,
+        ["shop", "api", "web", "lab", "loose", "Home"]
+    );
     assert_eq!(
         listed(&t, &["--all"]).await,
-        ["pinned", "Home", "busy", "empty"]
+        ["shop", "api", "web", "lab", "loose", "idle", "Home"]
     );
 
-    // The human table has the same rows; counts show live/total sessions.
     let human = t.hutan(&["ws", "ls"]).await.ok().stdout;
     let lines: Vec<_> = human.lines().collect();
-    assert_eq!(lines.len(), 4, "{human}");
+    assert_eq!(lines.len(), 7, "{human}");
     assert!(
-        lines[0].starts_with("ID") && lines[0].contains("SESSIONS"),
+        lines[0].starts_with("ID") && lines[0].contains("FOLDER"),
+        "{human}"
+    );
+    let line = |name: &str| *lines.iter().find(|l| l.contains(name)).unwrap();
+    assert!(
+        line("shop").contains("workspace") && line("shop").contains("1/1"),
         "{human}"
     );
     assert!(
-        lines[1].contains("pinned") && lines[1].contains("0/0"),
-        "{human}"
+        line("  api").contains("project") && line("  api").ends_with(s(&api)),
+        "members are indented and show their folder: {human}"
     );
-    assert!(
-        lines[2].contains("Home") && lines[2].contains("home"),
-        "{human}"
-    );
-    assert!(
-        lines[3].contains("busy") && lines[3].contains("1/1"),
-        "{human}"
-    );
-    assert!(!human.contains("empty"), "{human}");
-
-    // Everything is hidden but Home on a fresh daemon with only empty workspaces.
-    t.stop().await;
-    let t = TestDaemon::start().await;
-    ws_new(&t, "nothing").await;
-    assert_eq!(listed(&t, &[]).await, ["Home"]);
+    assert!(line("Home").contains("home"), "{human}");
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_ls_sorts_by_manual_order_recent_activity_attention_and_name() {
     let t = TestDaemon::start().await;
-    let zeta = ws_new(&t, "zeta").await;
-    let alpha = ws_new(&t, "Alpha").await;
-    let mid = ws_new(&t, "mid").await;
+    let zeta = ws_new(&t, "zeta", &[]).await;
+    let alpha = ws_new(&t, "Alpha", &[]).await;
+    let mid = ws_new(&t, "mid", &[]).await;
     for ws in [&zeta, &alpha, &mid] {
         t.new_session(&["--ws", ws], &["cat"]).await;
         sleep(Duration::from_millis(20)).await;
     }
 
-    // Manual: Home first, then creation order.
+    // Manual: creation order; Home closes the list.
     assert_eq!(
         listed(&t, &["--sort", "manual"]).await,
-        ["Home", "zeta", "Alpha", "mid"]
+        ["zeta", "Alpha", "mid", "Home"]
     );
     assert_eq!(
         listed(&t, &[]).await,
-        ["Home", "zeta", "Alpha", "mid"],
+        ["zeta", "Alpha", "mid", "Home"],
         "the default"
     );
     // Name, ignoring case.
     assert_eq!(
         listed(&t, &["--sort", "name"]).await,
-        ["Alpha", "Home", "mid", "zeta"]
+        ["Alpha", "mid", "zeta", "Home"]
     );
-    // Recent: the newest session's workspace first, Home (no sessions) last.
+    // Recent: the newest session's workspace first.
     assert_eq!(
         listed(&t, &["--sort", "recent"]).await,
         ["mid", "Alpha", "zeta", "Home"]
@@ -224,12 +268,119 @@ async fn ws_ls_sorts_by_manual_order_recent_activity_attention_and_name() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ws_add_and_remove_move_folders_and_projects_in_and_out() {
+    let (_keep, base) = tmp();
+    let t = TestDaemon::start().await;
+    let api = repo(&base, "api");
+    let web = repo(&base, "web");
+    let notes = mkdir(&base.join("notes"));
+    let shop = ws_new(&t, "shop", &[&api]).await;
+    let lab = ws_new(&t, "lab", &[]).await;
+    t.hutan(&["project", "open", s(&notes)]).await.ok();
+
+    // A path adds the project of its folder (made when new); a name adds an existing project.
+    let added = t
+        .hutan(&["ws", "add", "shop", s(&web), "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(added["roots"], json!([s(&api), s(&web)]));
+    let human = t.hutan(&["ws", "add", "shop", "notes"]).await.ok();
+    assert!(human.stdout.contains("it has 3 project(s)"), "{human:?}");
+    // Adding again changes nothing; adding to another workspace moves the project.
+    t.hutan(&["ws", "add", "shop", "notes"]).await.ok();
+    let moved = t
+        .hutan(&["ws", "add", &lab[..10], "notes", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(moved["id"], lab);
+    assert_eq!(moved["roots"], json!([s(&notes)]));
+    let list = rows(&t, &[]).await;
+    let parent_of = |name: &str| {
+        list.iter()
+            .find(|w| w["name"] == name && w["kind"] == "project")
+            .unwrap()["parent_id"]
+            .clone()
+    };
+    assert_eq!(parent_of("notes"), lab);
+    assert_eq!(parent_of("api"), shop);
+
+    // Removing takes a project out of its workspace and nothing else.
+    let out = t
+        .hutan(&["ws", "remove", "shop", "web", "--json"])
+        .await
+        .ok()
+        .json();
+    assert!(out.get("parent_id").is_none(), "{out}");
+    let human = t.hutan(&["ws", "remove", "lab", "notes"]).await.ok();
+    assert!(human.stdout.contains("it stays a project"), "{human:?}");
+    assert_eq!(
+        listed(&t, &["--all"]).await,
+        ["shop", "api", "lab", "notes", "web", "Home"]
+    );
+    // `web` is not in `shop` any more; the failure says so and changes nothing.
+    let out = t.hutan(&["ws", "remove", "shop", "web"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("is not in workspace"), "{out:?}");
+
+    // Targets of the wrong kind say what they are; a folder that does not exist is no target.
+    let out = t.hutan(&["ws", "add", "notes", "api"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(
+        out.stderr.contains("`notes` is a project, not a workspace"),
+        "{out:?}"
+    );
+    let out = t.hutan(&["ws", "add", "shop", "Home"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(
+        out.stderr.contains("the Home workspace, not a project"),
+        "{out:?}"
+    );
+    let out = t.hutan(&["ws", "add", "shop", "nope"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("no project matches `nope`"), "{out:?}");
+    assert_eq!(t.hutan(&["ws", "add", "shop"]).await.code, 2);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_rm_keeps_the_projects_and_refuses_projects_and_live_sessions() {
+    let (_keep, base) = tmp();
+    let t = TestDaemon::start().await;
+    let api = repo(&base, "api");
+    let shop = ws_new(&t, "shop", &[&api]).await;
+
+    // A workspace with a live session of its own is refused; the projects are not its own.
+    let own = t.new_session(&["--ws", &shop], &["cat"]).await;
+    let out = t.hutan(&["ws", "rm", "shop"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(out.stderr.contains("invalid_state"), "{out:?}");
+    t.hutan(&["stop", &own]).await.ok();
+    let in_project = t.new_session(&["--cwd", s(&api)], &["cat"]).await;
+
+    let out = t.hutan(&["ws", "rm", "api"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(
+        out.stderr.contains("`api` is a project, not a workspace"),
+        "{out:?}"
+    );
+    let human = t.hutan(&["ws", "rm", "shop"]).await.ok();
+    assert!(human.stdout.contains("its projects stay"), "{human:?}");
+    assert_eq!(listed(&t, &[]).await, ["api", "Home"]);
+    assert!(t.sessions().await.iter().any(|s| s["id"] == in_project));
+    assert_eq!(t.hutan(&["ws", "rm", "shop"]).await.code, 1);
+    assert_eq!(t.hutan(&["ws", "rm"]).await.code, 2);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn ws_move_reorders_by_id_or_name() {
     let t = TestDaemon::start().await;
-    let a = ws_new(&t, "a").await;
-    let _b = ws_new(&t, "b").await;
-    let _c = ws_new(&t, "c").await;
-    assert_eq!(listed(&t, &["--all"]).await, ["Home", "a", "b", "c"]);
+    let a = ws_new(&t, "a", &[]).await;
+    let _b = ws_new(&t, "b", &[]).await;
+    let _c = ws_new(&t, "c", &[]).await;
+    assert_eq!(listed(&t, &["--all"]).await, ["a", "b", "c", "Home"]);
 
     let out = t
         .hutan(&["ws", "move", "c", "--before", &a, "--json"])
@@ -245,13 +396,12 @@ async fn ws_move_reorders_by_id_or_name() {
     assert_eq!(
         order,
         ["Home", "c", "a", "b"],
-        "the result is the new order"
+        "the result is the daemon's new order"
     );
-    assert_eq!(listed(&t, &["--all"]).await, ["Home", "c", "a", "b"]);
+    assert_eq!(listed(&t, &["--all"]).await, ["c", "a", "b", "Home"]);
 
     let human = t.hutan(&["ws", "move", "Home", "--last"]).await.ok();
     assert!(human.stdout.contains("to the end"), "{human:?}");
-    assert_eq!(listed(&t, &["--all"]).await, ["c", "a", "b", "Home"]);
     let human = t.hutan(&["ws", "move", &a, "--before", "Home"]).await.ok();
     assert!(human.stdout.contains("before"), "{human:?}");
     assert_eq!(listed(&t, &["--all"]).await, ["c", "b", "a", "Home"]);
@@ -267,7 +417,10 @@ async fn ws_move_reorders_by_id_or_name() {
     // Unknown targets fail without moving anything.
     let out = t.hutan(&["ws", "move", "nope", "--last"]).await;
     assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stderr.contains("no workspace matches"), "{out:?}");
+    assert!(
+        out.stderr.contains("no workspace or project matches"),
+        "{out:?}"
+    );
     assert_eq!(
         t.hutan(&["ws", "move", "a", "--before", "nope"]).await.code,
         1
@@ -279,8 +432,8 @@ async fn ws_move_reorders_by_id_or_name() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ws_pin_and_unpin() {
     let t = TestDaemon::start().await;
-    let id = ws_new(&t, "later").await;
-    let _other = ws_new(&t, "other").await;
+    let id = ws_new(&t, "later", &[]).await;
+    let _other = ws_new(&t, "other", &[]).await;
 
     let pinned = t.hutan(&["ws", "pin", "later", "--json"]).await.ok().json();
     assert_eq!(pinned["pinned"], true);
@@ -291,13 +444,13 @@ async fn ws_pin_and_unpin() {
         format!("pinned {id} (later)"),
         "idempotent"
     );
-    assert_eq!(listed(&t, &["--all"]).await, ["later", "Home", "other"]);
+    assert_eq!(listed(&t, &["--all"]).await, ["later", "other", "Home"]);
 
     let unpinned = t.hutan(&["ws", "unpin", &id, "--json"]).await.ok().json();
     assert_eq!(unpinned["pinned"], false);
     let human = t.hutan(&["ws", "unpin", "later"]).await.ok();
     assert!(human.stdout.starts_with("unpinned "), "{human:?}");
-    assert_eq!(listed(&t, &["--all"]).await, ["Home", "later", "other"]);
+    assert_eq!(listed(&t, &["--all"]).await, ["later", "other", "Home"]);
 
     assert_eq!(t.hutan(&["ws", "pin", "nope"]).await.code, 1);
     assert_eq!(t.hutan(&["ws", "pin"]).await.code, 2);
@@ -305,71 +458,11 @@ async fn ws_pin_and_unpin() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_recent_lists_open_and_closed_projects_newest_first() {
+async fn ws_use_prints_an_export_and_new_honours_it() {
     let (_keep, base) = tmp();
     let t = TestDaemon::start().await;
-    let one = mkdir(&base.join("one"));
-    let two = mkdir(&base.join("two"));
-    let id_one = t
-        .hutan(&["ws", "open", s(&one), "--json"])
-        .await
-        .ok()
-        .json()["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    sleep(Duration::from_millis(10)).await;
-    t.hutan(&["ws", "open", s(&two)]).await.ok();
-    t.hutan(&["ws", "close", &id_one]).await.ok();
-
-    let out = t.hutan(&["ws", "recent", "--json"]).await.ok().json();
-    let projects = out["projects"].as_array().unwrap();
-    assert_eq!(projects.len(), 2, "{out}");
-    assert_eq!(projects[0]["name"], "two");
-    assert!(projects[0]["workspace_id"].is_string(), "open");
-    assert_eq!(projects[1]["name"], "one");
-    assert_eq!(projects[1]["path"], s(&one));
-    assert!(projects[1].get("workspace_id").is_none(), "closed");
-
-    let human = t.hutan(&["ws", "recent"]).await.ok().stdout;
-    let lines: Vec<_> = human.lines().collect();
-    assert_eq!(lines.len(), 3, "{human}");
-    assert!(
-        lines[0].starts_with("NAME") && lines[0].contains("PATH"),
-        "{human}"
-    );
-    assert!(
-        lines[1].starts_with("two") && lines[1].ends_with(s(&two)),
-        "{human}"
-    );
-    assert!(
-        lines[2].starts_with("one") && lines[2].contains("closed"),
-        "{human}"
-    );
-
-    let out = t
-        .hutan(&["ws", "recent", "--limit", "1", "--json"])
-        .await
-        .ok()
-        .json();
-    assert_eq!(out["projects"].as_array().unwrap().len(), 1);
-    assert_eq!(t.hutan(&["ws", "recent", "--limit", "0"]).await.code, 2);
-
-    // Nothing remembered yet on another daemon.
-    t.stop().await;
-    let t = TestDaemon::start().await;
-    assert_eq!(
-        t.hutan(&["ws", "recent"]).await.ok().stdout.trim(),
-        "no recent projects"
-    );
-    t.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ws_use_prints_an_export_and_new_honours_it() {
-    let t = TestDaemon::start().await;
-    let work = ws_new(&t, "work").await;
-    let other = ws_new(&t, "other").await;
+    let work = ws_new(&t, "work", &[]).await;
+    let other = ws_new(&t, "other", &[]).await;
 
     let line = t.hutan(&["ws", "use", "work"]).await.ok().stdout;
     assert_eq!(line.trim(), format!("export HUTAN_WORKSPACE={work}"));
@@ -385,16 +478,18 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
     assert_eq!(out.code, 1, "{out:?}");
     assert!(out.stdout.is_empty(), "nothing to eval: {out:?}");
 
+    // `new` runs in a folder of its own, which would otherwise make its project.
+    let cwd = mkdir(&base.join("folder"));
     let with_env = |extra: &[&str], value: &str| {
         let mut args = vec!["new", "--json"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&["--", "cat"]);
         let mut command = command(Path::new(HUTAN), Some(&t.paths.socket), &args);
-        command.env("HUTAN_WORKSPACE", value);
+        command.env("HUTAN_WORKSPACE", value).current_dir(&cwd);
         finish(command)
     };
     // The variable chooses the workspace (by id or name); `--ws` wins over it; without either
-    // the session goes to Home.
+    // the session goes to the project of its folder.
     let out = with_env(&[], &work).await.ok().json();
     assert_eq!(out["session"]["workspace_id"], work);
     let out = with_env(&[], "other").await.ok().json();
@@ -402,15 +497,10 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
     let out = with_env(&["--ws", "work"], "other").await.ok().json();
     assert_eq!(out["session"]["workspace_id"], work);
     let out = with_env(&[], "").await.ok().json();
-    let home = t.hutan(&["ws", "ls", "--json"]).await.ok().json()["workspaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["kind"] == "home")
-        .unwrap()["id"]
-        .clone();
+    let project = t.hutan(&["project", "ls", "--json"]).await.ok().json()["projects"][0].clone();
+    assert_eq!(project["name"], "folder");
     assert_eq!(
-        out["session"]["workspace_id"], home,
+        out["session"]["workspace_id"], project["id"],
         "an empty variable is unset"
     );
 
@@ -419,7 +509,8 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
     let out = with_env(&[], "gone").await;
     assert_eq!(out.code, 1, "{out:?}");
     assert!(
-        out.stderr.contains("no workspace matches `gone`"),
+        out.stderr
+            .contains("no workspace or project matches `gone`"),
         "{out:?}"
     );
     assert!(out.stderr.contains("$HUTAN_WORKSPACE"), "{out:?}");
@@ -430,7 +521,7 @@ async fn ws_use_prints_an_export_and_new_honours_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ls_and_new_take_workspace_names() {
     let t = TestDaemon::start().await;
-    let work = ws_new(&t, "work").await;
+    let work = ws_new(&t, "work", &[]).await;
     let id = t.new_session(&["--ws", "work"], &["cat"]).await;
     t.new_session(&[], &["cat"]).await;
     let out = t.hutan(&["ls", "--ws", "work", "--json"]).await.ok().json();
@@ -442,31 +533,29 @@ async fn ls_and_new_take_workspace_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ws_close_keeps_home_and_the_rest_of_the_workspace_commands_work_together() {
+async fn home_stays_and_renames() {
     let t = TestDaemon::start().await;
     let home = t.hutan(&["ws", "ls", "--json"]).await.ok().json()["workspaces"][0].clone();
-    let out = t
-        .hutan(&["ws", "close", home["id"].as_str().unwrap()])
-        .await;
+    let id = home["id"].as_str().unwrap();
+    // Home is no workspace to delete and no project to close.
+    let out = t.hutan(&["ws", "rm", id]).await;
     assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stderr.contains("invalid_state"), "{out:?}");
+    assert!(
+        out.stderr.contains("the Home workspace, not a workspace"),
+        "{out:?}"
+    );
+    let out = t.hutan(&["project", "close", id]).await;
+    assert_eq!(out.code, 1, "{out:?}");
     let renamed = t
-        .hutan(&[
-            "ws",
-            "rename",
-            home["id"].as_str().unwrap(),
-            "Notes",
-            "--json",
-        ])
+        .hutan(&["ws", "rename", "Home", "Notes", "--json"])
         .await
         .ok()
         .json();
     assert_eq!(renamed["name"], "Notes");
     assert_eq!(renamed["kind"], "home");
     assert_eq!(listed(&t, &[]).await, ["Notes"]);
-    // And Home resolves by its new name.
+    // And Home resolves by its new name wherever any kind is accepted.
     let line = t.hutan(&["ws", "use", "notes"]).await.ok().stdout;
-    assert!(line.contains(home["id"].as_str().unwrap()), "{line}");
-    let _: Value = home;
+    assert!(line.contains(id), "{line}");
     t.stop().await;
 }

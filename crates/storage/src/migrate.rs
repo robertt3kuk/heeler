@@ -63,6 +63,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "tasks",
         sql: include_str!("../migrations/0007_tasks.sql"),
     },
+    Migration {
+        version: 8,
+        name: "projects",
+        sql: include_str!("../migrations/0008_projects.sql"),
+    },
 ];
 
 /// Schema version recorded in the database; 0 for a database without `app_meta`.
@@ -123,20 +128,34 @@ pub fn run(conn: &mut Connection, path: &Path, migrations: &[Migration]) -> Resu
     } else {
         None
     };
-    for migration in migrations.iter().filter(|m| m.version > from) {
-        apply(conn, migration).map_err(|source| StorageError::Migration {
-            version: migration.version,
-            name: migration.name.to_owned(),
-            backup: backup.clone(),
-            source,
-        })?;
-        info!(
-            version = migration.version,
-            name = migration.name,
-            "migrated"
-        );
-    }
-    Ok(())
+    // A migration may rebuild a table other tables refer to (SQLite cannot change a check any
+    // other way); with foreign keys on, dropping the old table would cascade into its
+    // dependents. The pragma is a no-op inside a transaction, so it is set around them all.
+    let failed = |version, name: &str, source| StorageError::Migration {
+        version,
+        name: name.to_owned(),
+        backup: backup.clone(),
+        source,
+    };
+    let migrated = (|| {
+        conn.pragma_update(None, "foreign_keys", false)
+            .map_err(|source| failed(from + 1, "switching foreign keys off", source))?;
+        for migration in migrations.iter().filter(|m| m.version > from) {
+            apply(conn, migration)
+                .map_err(|source| failed(migration.version, migration.name, source))?;
+            info!(
+                version = migration.version,
+                name = migration.name,
+                "migrated"
+            );
+        }
+        Ok(())
+    })();
+    let restored = conn
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(StorageError::sqlite("switching foreign keys back on"));
+    migrated?;
+    restored
 }
 
 fn apply(conn: &mut Connection, migration: &Migration) -> rusqlite::Result<()> {

@@ -404,7 +404,7 @@ async fn a_task_runs_as_an_omp_chat() {
     let repo = e.work.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let ws =
-        e.t.hutan(&["ws", "open", repo.to_str().unwrap(), "--json"])
+        e.t.hutan(&["project", "open", repo.to_str().unwrap(), "--json"])
             .await
             .ok()
             .json()["workspace"]["id"]

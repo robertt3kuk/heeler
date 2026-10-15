@@ -38,7 +38,7 @@ use hutan_protocol::chat::ChatCreate;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::messages::{
     AgentState, Event, SessionCreate, SessionInfo, SessionListFilter, SessionSpec, TerminalSpec,
-    WorkspaceInfo,
+    WorkspaceInfo, WorkspaceKind,
 };
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskStarted, TaskUpdate,
@@ -728,14 +728,23 @@ impl TaskService {
             }
             TaskPlacementKind::Worktree => (self.worktree_for(task, workspace).await?, Vec::new()),
         };
+        // A task of a workspace (the user's container) runs in the project of its folder, which
+        // the workspace holds; a task of a project, or without automatic projects, in the
+        // workspace it names.
+        let session_workspace = (workspace.kind != WorkspaceKind::Workspace
+            || !self.registry.auto_projects())
+        .then_some(task.workspace_id);
         let session = match &task.run {
-            Some(TaskRun::Chat { agent }) => self.start_chat(task, agent, cwd).await?,
+            Some(TaskRun::Chat { agent }) => {
+                self.start_chat(task, session_workspace, agent, cwd).await?
+            }
             run => {
                 let argv = match run {
                     Some(TaskRun::Terminal { argv }) => argv.clone(),
                     _ => Vec::new(),
                 };
-                self.start_terminal(task, argv, cwd).await?
+                self.start_terminal(task, session_workspace, argv, cwd)
+                    .await?
             }
         };
         // The process may have ended before the link existed; nothing would announce it then.
@@ -746,6 +755,7 @@ impl TaskService {
     async fn start_terminal(
         &self,
         task: &Task,
+        workspace_id: Option<WorkspaceId>,
         argv: Vec<String>,
         cwd: PathBuf,
     ) -> Result<SessionInfo, ErrorBody> {
@@ -759,7 +769,7 @@ impl TaskService {
         let session = self
             .registry
             .create_session(SessionCreate {
-                workspace_id: Some(task.workspace_id),
+                workspace_id,
                 spec: SessionSpec::Terminal(spec),
             })
             .await?;
@@ -770,6 +780,7 @@ impl TaskService {
     async fn start_chat(
         &self,
         task: &Task,
+        workspace_id: Option<WorkspaceId>,
         agent: &str,
         cwd: PathBuf,
     ) -> Result<SessionInfo, ErrorBody> {
@@ -780,7 +791,7 @@ impl TaskService {
         let session = self
             .registry
             .create_chat(ChatCreate {
-                workspace_id: Some(task.workspace_id),
+                workspace_id,
                 cwd,
                 agent: agent.to_owned(),
                 model: None,

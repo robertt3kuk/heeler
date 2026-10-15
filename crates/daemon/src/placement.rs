@@ -94,23 +94,52 @@ fn read_gitdir_file(dot_git: &Path, root: &Path) -> Option<PathBuf> {
     (!target.is_empty()).then(|| root.join(target))
 }
 
-/// The main checkout of the repository the checkout at `root` belongs to: `root` itself for a
-/// main checkout, the repository's own top level for a linked worktree.
-pub fn main_checkout_of(root: &Path) -> Option<PathBuf> {
+/// The repository a checkout belongs to, read from the checkout's `.git` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repository {
+    /// The repository's common git directory (canonical): `<main>/.git` for a main checkout and
+    /// for every linked worktree of it, the module directory of a submodule. This is what
+    /// identifies a project (`git rev-parse --git-common-dir`).
+    pub common_dir: PathBuf,
+    /// The repository's own top level: the checkout itself for a main checkout and for a
+    /// submodule, the main checkout for a linked worktree. `None` when the common directory
+    /// is not a `.git` directory (a worktree of a bare repository: nothing to name).
+    pub main_root: Option<PathBuf>,
+}
+
+/// The repository of the checkout whose top level is `root`: `None` when `root` has no readable
+/// `.git` entry or its git directory is gone.
+pub fn repository_of(root: &Path) -> Option<Repository> {
     let dot_git = root.join(".git");
     if fs::metadata(&dot_git).ok()?.is_dir() {
-        return fs::canonicalize(root).ok();
+        return Some(Repository {
+            common_dir: fs::canonicalize(&dot_git).ok()?,
+            main_root: fs::canonicalize(root).ok(),
+        });
     }
     let git_dir = read_gitdir_file(&dot_git, root)?;
     let Ok(common) = fs::read_to_string(git_dir.join("commondir")) else {
         // A submodule: its own checkout is the repository.
-        return fs::canonicalize(root).ok();
+        return Some(Repository {
+            common_dir: fs::canonicalize(&git_dir).ok()?,
+            main_root: fs::canonicalize(root).ok(),
+        });
     };
     let common_dir = fs::canonicalize(git_dir.join(common.trim())).ok()?;
     // `<main>/.git`; a bare repository has no checkout to name.
-    (common_dir.file_name()? == ".git")
+    let main_root = (common_dir.file_name()? == ".git")
         .then(|| common_dir.parent().map(Path::to_path_buf))
-        .flatten()
+        .flatten();
+    Some(Repository {
+        common_dir,
+        main_root,
+    })
+}
+
+/// The main checkout of the repository the checkout at `root` belongs to: `root` itself for a
+/// main checkout, the repository's own top level for a linked worktree.
+pub fn main_checkout_of(root: &Path) -> Option<PathBuf> {
+    repository_of(root)?.main_root
 }
 
 /// Remembers the checkout of the directories sessions work in.

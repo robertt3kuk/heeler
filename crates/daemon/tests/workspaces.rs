@@ -149,7 +149,8 @@ async fn create_ws(client: &Client, name: &str, roots: Vec<PathBuf>) -> Workspac
     client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.into(),
-            roots,
+            paths: roots,
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await
@@ -379,8 +380,12 @@ async fn a_workspace_can_hold_several_repositories() {
     let web = repo(&base.join("web"));
     let web_src = mkdir(&web.join("src"));
 
-    let ws = open(&client, &api).await.workspace;
+    let ws = create_ws(&client, "shop", vec![]).await;
+    assert_eq!(ws.kind, WorkspaceKind::Workspace);
+    assert!(ws.roots.is_empty());
     // Adding resolves the repository root like open does, and is idempotent.
+    let with_api = add_root(&client, ws.id, &api).await.unwrap();
+    assert_eq!(with_api.roots, std::slice::from_ref(&api));
     let with_web = add_root(&client, ws.id, &web_src).await.unwrap();
     assert_eq!(with_web.roots, [api.clone(), web.clone()]);
     assert_eq!(add_root(&client, ws.id, &web).await.unwrap().roots.len(), 2);
@@ -396,24 +401,36 @@ async fn a_workspace_can_hold_several_repositories() {
         remote_code(add_root(&client, WorkspaceId::new(), &web).await),
         ErrorCode::NotFound
     );
+    // A project is one folder: folders are added to workspaces, not to projects.
+    let project = open(&client, &api).await.workspace;
+    assert_eq!(project.kind, WorkspaceKind::Project);
+    assert_eq!(project.parent_id, Some(ws.id));
+    assert_eq!(
+        remote_code(add_root(&client, project.id, &web).await),
+        ErrorCode::InvalidState
+    );
 
-    // A path in either repository finds the one workspace.
+    // A path in either repository finds its project, which the workspace holds.
     let found = open(&client, &web_src).await;
     assert!(!found.created);
-    assert_eq!(found.workspace.id, ws.id);
-    assert_eq!(found.workspace.roots, [api.clone(), web.clone()]);
+    assert_eq!(found.workspace.parent_id, Some(ws.id));
+    assert_eq!(found.workspace.roots, std::slice::from_ref(&web));
 
-    // Removing a root takes its folders out of the workspace.
+    // Removing a root takes the project out of the workspace; it stays a project.
     let without = remove_root(&client, ws.id, &web).await.unwrap();
     assert_eq!(without.roots, std::slice::from_ref(&api));
     assert_eq!(
         remote_code(remove_root(&client, ws.id, &web).await),
         ErrorCode::NotFound
     );
-    let fresh = open(&client, &web_src).await;
-    assert!(fresh.created);
-    assert_ne!(fresh.workspace.id, ws.id);
-    assert_eq!(fresh.workspace.roots, [web]);
+    assert_eq!(
+        remote_code(remove_root(&client, project.id, &api).await),
+        ErrorCode::InvalidState
+    );
+    let ungrouped = open(&client, &web_src).await;
+    assert!(!ungrouped.created, "the project stays");
+    assert_eq!(ungrouped.workspace.id, found.workspace.id);
+    assert_eq!(ungrouped.workspace.parent_id, None);
     t.stop().await;
 }
 
@@ -428,9 +445,11 @@ async fn the_deepest_matching_root_wins() {
     let _wide = create_ws(&client, "wide", vec![outer]).await;
     let narrow = create_ws(&client, "narrow", vec![inner]).await;
 
+    // Folders outside git belong to the deepest project folder that contains them.
     let found = open(&client, &file_dir).await;
     assert!(!found.created);
-    assert_eq!(found.workspace.id, narrow.id);
+    assert_eq!(found.workspace.name, "ui");
+    assert_eq!(found.workspace.parent_id, Some(narrow.id));
     t.stop().await;
 }
 
@@ -442,11 +461,13 @@ async fn roots_given_through_a_symlink_still_match() {
     let real = mkdir(&base.join("real"));
     let link = base.join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    // `workspace.create` stores roots as given.
+    // The project of a folder given through a symlink is the project of the place it names.
     let ws = create_ws(&client, "linked", vec![link.clone()]).await;
-    assert_eq!(ws.roots, [link]);
+    assert_eq!(ws.roots, std::slice::from_ref(&real));
     let found = open(&client, &mkdir(&real.join("sub"))).await;
-    assert_eq!(found.workspace.id, ws.id);
+    assert!(!found.created);
+    assert_eq!(found.workspace.parent_id, Some(ws.id));
+    assert_eq!(found.workspace.roots, [real]);
     t.stop().await;
 }
 
@@ -602,11 +623,12 @@ async fn workspace_create_records_who_asked() {
     let client = t.connect().await;
     let plain = create_ws(&client, "plain", vec![]).await;
     assert_eq!(plain.created_by, CreatedBy::User);
-    assert_eq!(plain.kind, WorkspaceKind::Project);
+    assert_eq!(plain.kind, WorkspaceKind::Workspace);
     let by_agent: WorkspaceInfo = client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: "by-agent".into(),
-            roots: vec![],
+            paths: vec![],
+            project_ids: Vec::new(),
             created_by: Some(CreatedBy::Agent),
         }))
         .await

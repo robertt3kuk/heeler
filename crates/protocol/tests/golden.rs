@@ -30,6 +30,7 @@ use hutan_protocol::notify::{
     ActRoute, ClientFocus, IntentAction, IntentKind, NotificationIntent, NotifyAck, NotifyAct,
     NotifyActed, NotifyList,
 };
+use hutan_protocol::project::*;
 use hutan_protocol::provider::*;
 use hutan_protocol::render::*;
 use hutan_protocol::resources::*;
@@ -72,6 +73,7 @@ fn session_info() -> SessionInfo {
         restored: false,
         chat: None,
         placement: None,
+        folder: None,
     }
 }
 
@@ -289,7 +291,7 @@ fn workspace_info() -> WorkspaceInfo {
     WorkspaceInfo {
         id: ws(),
         name: "hutan".into(),
-        roots: vec!["/repo".into(), "/other-repo".into()],
+        roots: vec!["/repo".into()],
         kind: WorkspaceKind::Project,
         pinned: true,
         position: 2,
@@ -297,6 +299,54 @@ fn workspace_info() -> WorkspaceInfo {
         last_active_ms: 1_791_894_170_000,
         live_sessions: 2,
         total_sessions: 5,
+        parent_id: Some(shop_id()),
+        project: Some(ProjectInfo {
+            common_dir: Some("/repo/.git".into()),
+            root: "/repo".into(),
+        }),
+    }
+}
+
+fn shop_id() -> WorkspaceId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3JC".parse().unwrap()
+}
+
+/// A workspace the user made: its roots are those of its projects.
+fn container_info() -> WorkspaceInfo {
+    WorkspaceInfo {
+        id: shop_id(),
+        name: "shop".into(),
+        roots: vec!["/repo".into(), "/Users/me/notes".into()],
+        kind: WorkspaceKind::Workspace,
+        pinned: true,
+        position: 1,
+        created_by: CreatedBy::User,
+        last_active_ms: 1_791_894_170_000,
+        live_sessions: 2,
+        total_sessions: 6,
+        parent_id: None,
+        project: None,
+    }
+}
+
+/// A project that is a folder outside git, in no workspace.
+fn folder_project_info() -> WorkspaceInfo {
+    WorkspaceInfo {
+        id: "01K7F3B5N2Q9W8E4R6T1Y0V3JD".parse().unwrap(),
+        name: "notes".into(),
+        roots: vec!["/Users/me/notes".into()],
+        kind: WorkspaceKind::Project,
+        pinned: false,
+        position: 3,
+        created_by: CreatedBy::User,
+        last_active_ms: 1_791_894_150_000,
+        live_sessions: 0,
+        total_sessions: 1,
+        parent_id: None,
+        project: Some(ProjectInfo {
+            common_dir: None,
+            root: "/Users/me/notes".into(),
+        }),
     }
 }
 
@@ -312,6 +362,8 @@ fn home_info() -> WorkspaceInfo {
         last_active_ms: 1_791_894_160_000,
         live_sessions: 0,
         total_sessions: 0,
+        parent_id: None,
+        project: None,
     }
 }
 
@@ -589,7 +641,8 @@ fn requests() -> Vec<(&'static str, Request)> {
             "workspace_create",
             Request::WorkspaceCreate(WorkspaceCreate {
                 name: "hutan".into(),
-                roots: vec!["/repo".into()],
+                paths: vec!["/repo".into()],
+                project_ids: vec![],
                 created_by: None,
             }),
         ),
@@ -771,7 +824,8 @@ fn requests() -> Vec<(&'static str, Request)> {
             "workspace_create_agent",
             Request::WorkspaceCreate(WorkspaceCreate {
                 name: "scratch".into(),
-                roots: vec![],
+                paths: vec![],
+                project_ids: vec![],
                 created_by: Some(CreatedBy::Agent),
             }),
         ),
@@ -1432,6 +1486,35 @@ fn requests() -> Vec<(&'static str, Request)> {
                 force: true,
             }),
         ),
+        (
+            "workspace_create_projects",
+            Request::WorkspaceCreate(WorkspaceCreate {
+                name: "shop".into(),
+                paths: vec!["/repo".into(), "/Users/me/notes".into()],
+                project_ids: vec![ws2()],
+                created_by: Some(CreatedBy::Cli),
+            }),
+        ),
+        (
+            "workspace_assign",
+            Request::WorkspaceAssign(WorkspaceAssign {
+                project_id: ws(),
+                workspace_id: Some(shop_id()),
+            }),
+        ),
+        (
+            "workspace_assign_none",
+            Request::WorkspaceAssign(WorkspaceAssign {
+                project_id: ws(),
+                workspace_id: None,
+            }),
+        ),
+        (
+            "workspace_delete",
+            Request::WorkspaceDelete(WorkspaceDelete {
+                workspace_id: shop_id(),
+            }),
+        ),
     ]
 }
 
@@ -1943,6 +2026,28 @@ fn events() -> Vec<(&'static str, Event)> {
                 sample: Box::new(resource_sample()),
             },
         ),
+        (
+            "workspace_updated_workspace",
+            Event::WorkspaceUpdated {
+                workspace: container_info(),
+            },
+        ),
+        (
+            "workspace_updated_folder_project",
+            Event::WorkspaceUpdated {
+                workspace: folder_project_info(),
+            },
+        ),
+        (
+            "session_updated_folder",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    cwd: Some("/repo".into()),
+                    folder: Some("/repo/crates/daemon".into()),
+                    ..session_info()
+                },
+            },
+        ),
     ]
 }
 
@@ -2242,7 +2347,12 @@ fn responses_match_fixtures() {
             ControlMessage::ok(
                 9,
                 &WorkspaceList {
-                    workspaces: vec![home_info(), workspace_info()],
+                    workspaces: vec![
+                        home_info(),
+                        container_info(),
+                        workspace_info(),
+                        folder_project_info(),
+                    ],
                 },
             )
             .unwrap(),
@@ -2927,6 +3037,8 @@ fn workspaces_of_an_older_daemon_decode_with_defaults() {
             last_active_ms: 0,
             live_sessions: 0,
             total_sessions: 0,
+            parent_id: None,
+            project: None,
         }
     );
 }
@@ -2951,6 +3063,15 @@ fn sessions_of_an_older_daemon_have_no_placement() {
     });
     let decoded: SessionInfo = serde_json::from_value(old).unwrap();
     assert_eq!(decoded.placement, None);
+    assert_eq!(decoded.folder, None);
+}
+
+#[test]
+fn workspace_create_still_reads_roots_from_an_older_client() {
+    let old = serde_json::json!({"name": "legacy", "roots": ["/a", "/b"]});
+    let decoded: WorkspaceCreate = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    assert!(decoded.project_ids.is_empty());
 }
 
 #[test]

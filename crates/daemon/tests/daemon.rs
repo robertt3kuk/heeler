@@ -90,7 +90,8 @@ async fn create_workspace(client: &Client, name: &str) -> WorkspaceInfo {
     client
         .call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.into(),
-            roots: vec![],
+            paths: vec![],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await
@@ -198,7 +199,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "task",
             "harness.acp",
             "accounts",
-            "resources"
+            "resources",
+            "projects.auto"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);
@@ -354,7 +356,8 @@ async fn workspace_mutations_emit_events_in_seq_order() {
     let empty = actor
         .call::<WorkspaceInfo>(Request::WorkspaceCreate(WorkspaceCreate {
             name: "  ".into(),
-            roots: vec![],
+            paths: vec![],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await;

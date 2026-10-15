@@ -294,6 +294,17 @@ impl Workspaces<'_> {
             .write(Write::SetWorkspaceActive { id, last_active_ms })
     }
 
+    /// Puts a project into a workspace, or out of every workspace.
+    pub fn set_parent(&self, id: WorkspaceId, parent_id: Option<WorkspaceId>) -> Result<()> {
+        self.0.write(Write::SetWorkspaceParent { id, parent_id })
+    }
+
+    /// Sets a project's repository identity.
+    pub fn set_common_dir(&self, id: WorkspaceId, common_dir: Option<PathBuf>) -> Result<()> {
+        self.0
+            .write(Write::SetWorkspaceCommonDir { id, common_dir })
+    }
+
     /// In display order.
     pub fn list(&self) -> Result<Vec<WorkspaceRow>> {
         self.0.read(sql::list_workspaces)

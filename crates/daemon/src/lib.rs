@@ -12,7 +12,10 @@
 //! - [`placement`]: which git checkout a session works in and which agents share one.
 //! - [`worktrees`]: git worktrees (`worktree.*`) on top of the git command line.
 //! - [`tasks`]: tasks with dependencies (`task.*`): finish detection, auto-start, restart.
-//! - [`projects`]: the Home folder, git-root detection, which workspace root contains a path.
+//! - [`projects`]: the Home folder, project identity (git common directory), which project or
+//!   Home a folder belongs to.
+//! - [`project_migration`]: the one-time conversion of earlier workspaces into projects and
+//!   groups.
 //! - [`terminals`]: live terminals, ack-paced attachments, resize, history, and input.
 //! - [`history`]: the opt-in session history index (`hutan-index`) and the `history.*` requests.
 //! - [`chat`]: chat sessions: agent adapters, direct model chats, the approval engine, the journal.
@@ -49,6 +52,7 @@ pub mod notify_native;
 pub mod partial;
 pub mod paths;
 pub mod placement;
+pub mod project_migration;
 pub mod projects;
 pub mod providers;
 pub mod registry;
@@ -62,7 +66,8 @@ pub mod worktrees;
 
 pub use bus::RingLimits;
 pub use config::{
-    AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, RestoreMode, TasksSettings,
+    AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, ProjectsSettings,
+    RestoreMode, TasksSettings,
 };
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;

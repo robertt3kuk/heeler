@@ -137,7 +137,7 @@ async fn ask_streams_the_answer_with_every_kind_of_attachment() {
     )
     .unwrap();
     fs::write(e.work.join("private.txt"), "UNATTACHED-FILE").unwrap();
-    e.hutan(&["ws", "new", "proj", "--root", &work]).await.ok();
+    e.hutan(&["ws", "new", "proj", &work]).await.ok();
 
     // A terminal with one finished block.
     let script = format!(

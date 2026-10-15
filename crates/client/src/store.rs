@@ -146,6 +146,23 @@ impl StoreState {
         }
     }
 
+    /// The projects in workspace `id`, in the daemon's order (protocol 0.19).
+    pub fn projects_in(&self, id: WorkspaceId) -> impl Iterator<Item = &WorkspaceInfo> {
+        self.workspaces
+            .iter()
+            .filter(move |w| w.parent_id == Some(id))
+    }
+
+    /// The workspace `id` is in: itself when it is no member of one. A session's workspace for
+    /// settings and layout is `workspace_of(session.workspace_id)`.
+    pub fn workspace_of(&self, id: WorkspaceId) -> WorkspaceId {
+        self.workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .and_then(|w| w.parent_id)
+            .unwrap_or(id)
+    }
+
     /// Replaces the pending approvals with what `approval.list` answered.
     pub(crate) fn install_approvals(&mut self, mut approvals: Vec<ApprovalInfo>) {
         approvals.sort_by(|a, b| {
@@ -367,6 +384,7 @@ mod tests {
             restored: false,
             chat: None,
             placement: None,
+            folder: None,
         }
     }
 
@@ -382,7 +400,37 @@ mod tests {
             last_active_ms: 0,
             live_sessions: 0,
             total_sessions: 0,
+            parent_id: None,
+            project: None,
         }
+    }
+
+    #[test]
+    fn projects_are_found_by_their_workspace() {
+        let mut state = StoreState::initial();
+        let container = WorkspaceInfo {
+            kind: WorkspaceKind::Workspace,
+            ..workspace("shop")
+        };
+        let member = WorkspaceInfo {
+            parent_id: Some(container.id),
+            ..workspace("api")
+        };
+        let loose = workspace("notes");
+        for w in [&container, &member, &loose] {
+            state.apply(Event::WorkspaceUpdated {
+                workspace: w.clone(),
+            });
+        }
+        let names: Vec<_> = state
+            .projects_in(container.id)
+            .map(|w| w.name.as_str())
+            .collect();
+        assert_eq!(names, ["api"]);
+        assert_eq!(state.workspace_of(member.id), container.id);
+        assert_eq!(state.workspace_of(loose.id), loose.id);
+        let unknown = WorkspaceId::new();
+        assert_eq!(state.workspace_of(unknown), unknown);
     }
 
     #[test]

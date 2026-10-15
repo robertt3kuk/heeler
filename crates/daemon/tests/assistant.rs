@@ -198,7 +198,8 @@ impl Env {
         fs::create_dir_all(root).unwrap();
         self.call(Request::WorkspaceCreate(WorkspaceCreate {
             name: name.to_owned(),
-            roots: vec![root.clone()],
+            paths: vec![root.clone()],
+            project_ids: Vec::new(),
             created_by: None,
         }))
         .await

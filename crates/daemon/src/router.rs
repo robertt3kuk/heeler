@@ -153,6 +153,11 @@ impl Router {
             Request::WorkspaceRecent(req) => ok(&self.registry.recent_projects(req.limit).await?),
             Request::WorkspaceMove(req) => ok(&self.registry.move_workspace(req).await?),
             Request::WorkspacePin(req) => ok(&self.registry.pin_workspace(req).await?),
+            Request::WorkspaceAssign(req) => ok(&self.registry.assign_workspace(req).await?),
+            Request::WorkspaceDelete(req) => {
+                self.registry.delete_workspace(req).await?;
+                ok(&Empty {})
+            }
             Request::SessionSnapshot(_) => ok(&self.registry.snapshot().await?),
             Request::SessionCreate(req) => ok(&SessionResult {
                 session: self.registry.create_session(req).await?,

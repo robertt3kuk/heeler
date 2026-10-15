@@ -1,7 +1,7 @@
 //! Session commands: `new`, `ls`, `send`, `stop`, `restart`, `rename`, `history`, and the
 //! target resolution they share with `attach`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -109,7 +109,18 @@ impl Ctx {
         };
         let mut list = self.session_list(&client, workspace).await?;
         list.sessions.sort_by_key(|s| s.created_at_ms);
-        self.print(&list, || session_table(&list.sessions, now_ms()))
+        // Only the table names the projects; `--json` has the ids.
+        let projects = if self.json {
+            HashMap::new()
+        } else {
+            self.workspace_list(&client)
+                .await?
+                .workspaces
+                .into_iter()
+                .map(|w| (w.id, w.name))
+                .collect()
+        };
+        self.print(&list, || session_table(&list.sessions, &projects, now_ms()))
     }
 
     pub(super) async fn send(&self, args: SendArgs) -> Result<(), CliError> {
@@ -481,28 +492,47 @@ pub(super) fn placement_text(session: &SessionInfo) -> String {
     text
 }
 
-fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
+/// The folder column of `hutan ls`: where the session is now (its shell's reported directory),
+/// else where it started; `-` while unknown.
+fn folder_text(session: &SessionInfo) -> String {
+    session
+        .folder
+        .as_ref()
+        .or(session.cwd.as_ref())
+        .map_or_else(|| "-".to_owned(), |folder| folder.display().to_string())
+}
+
+fn session_table(
+    sessions: &[SessionInfo],
+    projects: &HashMap<hutan_core::WorkspaceId, String>,
+    now_ms: u64,
+) -> String {
     if sessions.is_empty() {
         return "no sessions".to_owned();
     }
-    let rows: Vec<[String; 7]> = sessions
+    let rows: Vec<[String; 8]> = sessions
         .iter()
         .map(|s| {
             [
                 s.id.to_string(),
                 terminal_text(s),
                 listed_state_text(s),
+                projects
+                    .get(&s.workspace_id)
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_owned()),
                 placement_text(s),
                 s.title.clone(),
-                s.cwd
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), |c| c.display().to_string()),
+                folder_text(s),
                 age_text(now_ms.saturating_sub(s.created_at_ms) / 1000),
             ]
         })
         .collect();
-    let header = ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"].map(str::to_owned);
-    let mut widths = [0; 7];
+    let header = [
+        "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE",
+    ]
+    .map(str::to_owned);
+    let mut widths = [0; 8];
     for row in std::iter::once(&header).chain(&rows) {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -514,10 +544,10 @@ fn session_table(sessions: &[SessionInfo], now_ms: u64) -> String {
             table.push('\n');
         }
         let mut line = String::new();
-        for (cell, width) in row.iter().zip(widths).take(6) {
+        for (cell, width) in row.iter().zip(widths).take(7) {
             line.push_str(&format!("{cell:<width$}  "));
         }
-        line.push_str(&row[6]);
+        line.push_str(&row[7]);
         table.push_str(&line);
     }
     table
@@ -567,6 +597,7 @@ mod tests {
             restored: false,
             chat: None,
             placement: None,
+            folder: None,
         }
     }
 
@@ -650,11 +681,24 @@ mod tests {
         s.placement = Some(placement);
         assert_eq!(placement_text(&s), "wt (detached) ⚠ shared");
 
-        let table = session_table(&[s], 0);
+        s.folder = Some(PathBuf::from("/tmp/deeper"));
+        let projects = HashMap::from([(s.workspace_id, "hutan".to_owned())]);
+        let table = session_table(&[s], &projects, 0);
         let header: Vec<_> = table.lines().next().unwrap().split_whitespace().collect();
         assert_eq!(
             header,
-            ["ID", "TERMINAL", "STATE", "PLACE", "TITLE", "CWD", "AGE"]
+            [
+                "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
+            ]
+        );
+        let row = table.lines().nth(1).unwrap();
+        assert!(
+            row.contains("hutan") && row.contains("/tmp/deeper"),
+            "{table}"
+        );
+        assert!(
+            !row.contains("/tmp "),
+            "the folder, not the start directory: {table}"
         );
         assert!(table.contains("wt (detached) ⚠ shared"), "{table}");
     }

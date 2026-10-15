@@ -25,11 +25,13 @@ use hutan_protocol::chat::{
 };
 use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, ClientInfo, Empty, Event, Hello,
-    Request, ResumePoint, SessionInfo, SessionRef, SessionResult, Welcome, decode_result,
+    Request, ResumePoint, SessionInfo, SessionRef, SessionResult, Welcome, WorkspaceCreate,
+    WorkspaceInfo, decode_result,
 };
 use hutan_protocol::notify::{
     ClientFocus, NotificationIntent, NotifyAck, NotifyAct, NotifyActed, NotifyList,
 };
+use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
 use hutan_protocol::provider::{
     ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
@@ -94,6 +96,9 @@ pub(crate) const ACCOUNTS_CAPABILITY: &str = "accounts";
 /// Capability for `resources.*`, `session.kill`, `process.signal`, `agent.interrupt` and the
 /// `resources.updated` event (protocol 0.18).
 pub(crate) const RESOURCES_CAPABILITY: &str = "resources";
+/// Capability for automatic projects, `workspace.assign` / `workspace.delete`,
+/// `WorkspaceInfo.parent_id` / `project` and `SessionInfo.folder` (protocol 0.19).
+pub(crate) const PROJECTS_CAPABILITY: &str = "projects.auto";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -112,6 +117,7 @@ const CAPABILITIES: &[&str] = &[
     HARNESS_CAPABILITY,
     ACCOUNTS_CAPABILITY,
     RESOURCES_CAPABILITY,
+    PROJECTS_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -533,6 +539,44 @@ impl Client {
         req: WorktreeRemove,
     ) -> Result<WorktreeRemoved, ClientError> {
         self.call(Request::WorktreeRemove(req)).await
+    }
+
+    /// True when the daemon advertised capability `projects.auto` (protocol 0.19).
+    pub fn supports_projects(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == PROJECTS_CAPABILITY)
+    }
+
+    /// Creates a workspace with the projects of `req.paths` and `req.project_ids`
+    /// (`workspace.create`).
+    pub async fn workspace_create(
+        &self,
+        req: WorkspaceCreate,
+    ) -> Result<WorkspaceInfo, ClientError> {
+        self.call(Request::WorkspaceCreate(req)).await
+    }
+
+    /// Puts a project into a workspace, or out of its workspace (`workspace.assign`).
+    pub async fn workspace_assign(
+        &self,
+        project_id: WorkspaceId,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<WorkspaceInfo, ClientError> {
+        self.call(Request::WorkspaceAssign(WorkspaceAssign {
+            project_id,
+            workspace_id,
+        }))
+        .await
+    }
+
+    /// Removes a workspace; its projects stay (`workspace.delete`).
+    pub async fn workspace_delete(&self, workspace_id: WorkspaceId) -> Result<(), ClientError> {
+        let _: Empty = self
+            .call(Request::WorkspaceDelete(WorkspaceDelete { workspace_id }))
+            .await?;
+        Ok(())
     }
 
     /// True when the daemon advertised capability `task` (protocol 0.16).

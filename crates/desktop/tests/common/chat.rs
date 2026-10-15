@@ -133,9 +133,20 @@ pub fn method(entry: &Value) -> Option<&str> {
 
 impl TestDaemon {
     /// A chat session working in `cwd`.
+    ///
+    /// The chat goes to Home, where the desktop of this version shows it: since protocol 0.19 a
+    /// chat without a workspace would make the project of its folder, which the sidebar only
+    /// learns to show with the project sidebar (M18-B).
     pub fn create_chat(&self, cwd: &Path) -> SessionInfo {
+        let workspaces: hutan_protocol::messages::WorkspaceList =
+            self.call(Request::WorkspaceList(hutan_protocol::messages::Empty {}));
+        let home = workspaces
+            .workspaces
+            .iter()
+            .find(|w| w.kind == hutan_protocol::messages::WorkspaceKind::Home)
+            .map(|w| w.id);
         let created: SessionResult = self.call(Request::ChatCreate(ChatCreate {
-            workspace_id: None,
+            workspace_id: home,
             cwd: cwd.to_path_buf(),
             agent: "codex".to_owned(),
             model: None,

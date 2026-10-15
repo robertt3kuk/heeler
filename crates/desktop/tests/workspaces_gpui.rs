@@ -21,9 +21,8 @@ use hutan_desktop::workbench::panels::SessionsPanel;
 use hutan_desktop::workbench::{PickerKind, Region, Workbench};
 use hutan_protocol::messages::{
     AgentApplied, AgentReportRequest, AgentState, CreatedBy, Empty, RecentProjects, Request,
-    SessionCreate, SessionInfo, SessionResult, SessionSpec, TerminalSpec, WorkspaceCreate,
-    WorkspaceInfo, WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspacePin, WorkspaceRecent,
-    WorkspaceRef,
+    SessionCreate, SessionInfo, SessionResult, SessionSpec, TerminalSpec, WorkspaceInfo,
+    WorkspaceKind, WorkspaceList, WorkspaceMove, WorkspacePin, WorkspaceRecent, WorkspaceRef,
 };
 use hutan_settings::{SettingsPaths, SettingsStore};
 use tempfile::TempDir;
@@ -501,11 +500,7 @@ fn filters_hide_and_show_workspaces_and_the_box_narrows_by_name_and_path(cx: &mu
     let sleepy = project(&daemon, &mut folders, "sleepy");
     let ended = session_in(&daemon, &sleepy, "ended-one", "true");
     let scripted_root = folders.make("quokka");
-    let scripted: WorkspaceInfo = daemon.call(Request::WorkspaceCreate(WorkspaceCreate {
-        name: "scripted".into(),
-        roots: vec![scripted_root],
-        created_by: Some(CreatedBy::Cli),
-    }));
+    let scripted = daemon.create_workspace_by("scripted", &[&scripted_root], Some(CreatedBy::Cli));
     sleeper(&daemon, &scripted);
     let busy = project(&daemon, &mut folders, "busy");
     let live = sleeper(&daemon, &busy);
@@ -579,11 +574,7 @@ fn sessions_that_need_you_stay_visible_in_filtered_workspaces(cx: &mut TestAppCo
     let daemon = TestDaemon::start();
     let mut folders = Folders::default();
     let cli_root = folders.make("scripted");
-    let scripted: WorkspaceInfo = daemon.call(Request::WorkspaceCreate(WorkspaceCreate {
-        name: "scripted".into(),
-        roots: vec![cli_root],
-        created_by: Some(CreatedBy::Cli),
-    }));
+    let scripted = daemon.create_workspace_by("scripted", &[&cli_root], Some(CreatedBy::Cli));
     let session = sleeper(&daemon, &scripted);
     let _: AgentApplied = daemon.call(Request::AgentReport(AgentReportRequest {
         pid: None,
@@ -1102,11 +1093,15 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
     let daemon = TestDaemon::start();
     let mut folders = Folders::default();
     let proj = project(&daemon, &mut folders, "proj");
+    // Folders are added to (and removed from) a workspace — the user's container of projects,
+    // protocol 0.19; a project is one folder. This desktop lists both flat until M18-B.
+    let shop = daemon.create_workspace("shop", &[]);
     let extra = folders.make("extra");
+    let extra_too = folders.make("extra-too");
     let busy = project(&daemon, &mut folders, "busy");
     let live = sleeper(&daemon, &busy);
     let (view, cx) = open(cx, &daemon, None);
-    wait_synced(&view, cx, 3, 1);
+    wait_synced(&view, cx, 4, 1);
     let revealed: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = Default::default();
     view.update(cx, |wb, _| {
         let revealed = std::rc::Rc::clone(&revealed);
@@ -1135,7 +1130,7 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
     run_entry(&view, cx, "Close (");
     assert!(view.read_with(cx, |wb, _| wb.context_menu_entries().is_none()));
     assert!(!view.read_with(cx, |wb, _| wb.modal_open()));
-    assert_eq!(names_of(&view, cx).len(), 3);
+    assert_eq!(names_of(&view, cx).len(), 4);
     // The command palette's verb gives the same answer in words.
     cx.dispatch_action(actions::OpenWorkspace(busy.id.to_string()));
     cx.dispatch_action(actions::CloseActiveWorkspace);
@@ -1192,21 +1187,22 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
         names_of(&view, cx).contains(&"project".to_owned())
     });
 
-    // Add Folder… through the system panel, then remove it again.
-    show_menu(&view, cx, proj.id);
-    run_entry(&view, cx, "Add Folder");
-    assert!(cx.did_prompt_for_paths());
-    let chosen = extra.clone();
-    cx.simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    // Add Folder… through the system panel (to the workspace), twice, then remove one again.
+    for folder in [extra.clone(), extra_too.clone()] {
+        show_menu(&view, cx, shop.id);
+        run_entry(&view, cx, "Add Folder");
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(move |_| Some(vec![folder]));
+    }
     wait_until(cx, "the second folder", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.sessions()
                 .read(cx)
-                .workspace(proj.id)
+                .workspace(shop.id)
                 .is_some_and(|w| w.roots.len() == 2)
         })
     });
-    show_menu(&view, cx, proj.id);
+    show_menu(&view, cx, shop.id);
     let labels = menu_labels(&view, cx);
     assert_eq!(
         labels
@@ -1216,12 +1212,12 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
         2,
         "{labels:?}"
     );
-    run_entry(&view, cx, "Remove Folder “extra-");
+    run_entry(&view, cx, "Remove Folder “extra-too");
     wait_until(cx, "the folder to go", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.sessions()
                 .read(cx)
-                .workspace(proj.id)
+                .workspace(shop.id)
                 .is_some_and(|w| w.roots.len() == 1)
         })
     });

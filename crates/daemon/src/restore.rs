@@ -1,6 +1,7 @@
 //! Loading durable state at start and the rules for what gets stored (ADR 0006, ADR 0009).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use hutan_core::{ObservationTree, SessionId, Task};
 use hutan_protocol::messages::TerminalSpec;
@@ -33,6 +34,18 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
         providers: storage.providers().list()?,
         tasks: storage.tasks().list()?,
     })
+}
+
+/// The folder a stored session started in: the spec's `cwd` (terminals), else the directory its
+/// row remembers (what chat sessions have).
+pub fn start_cwd(row: &SessionRow) -> Option<PathBuf> {
+    serde_json::from_str::<serde_json::Value>(&row.spec_json)
+        .ok()
+        .and_then(|spec| {
+            spec.get("cwd")
+                .and_then(|cwd| cwd.as_str().map(PathBuf::from))
+        })
+        .or_else(|| row.cwd.clone())
 }
 
 /// Native resume reference of a session, as stored in `resume_ref_json`: written when a coding

@@ -846,7 +846,8 @@ fn workspace_settings_apply_while_their_session_is_focused(cx: &mut TestAppConte
     open_session(&view, cx, project.id);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
-        Some(root.path().to_path_buf())
+        Some(std::fs::canonicalize(root.path()).unwrap()),
+        "the project's folder is stored canonical"
     );
     wait_until(cx, "the workspace override", |cx| {
         view.read_with(cx, |wb, _| wb.terminal_view_settings().font_size) == 20.0
@@ -1336,9 +1337,19 @@ fn the_overview_preset_applies_at_startup_from_settings(cx: &mut TestAppContext)
 fn splits_start_a_terminal_in_the_focused_sessions_directory(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let dir = tempfile::tempdir().unwrap();
+    // In Home, as before protocol 0.19: without a workspace the daemon would make the project of
+    // `dir`, which this version's sidebar does not show (M18-B).
+    let home = daemon
+        .call::<hutan_protocol::messages::WorkspaceList>(Request::WorkspaceList(
+            hutan_protocol::messages::Empty {},
+        ))
+        .workspaces
+        .into_iter()
+        .find(|w| w.kind == hutan_protocol::messages::WorkspaceKind::Home)
+        .map(|w| w.id);
     let created: hutan_protocol::messages::SessionResult = daemon.call(Request::SessionCreate(
         hutan_protocol::messages::SessionCreate {
-            workspace_id: None,
+            workspace_id: home,
             spec: hutan_protocol::messages::SessionSpec::Terminal(
                 hutan_protocol::messages::TerminalSpec {
                     command: vec!["sleep".into(), "600".into()],

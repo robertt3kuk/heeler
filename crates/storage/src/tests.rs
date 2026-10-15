@@ -35,6 +35,8 @@ fn workspace(name: &str, position: i64) -> WorkspaceRow {
         created_at_ms: 1_000 + u64::try_from(position).unwrap(),
         last_active_ms: 2_000 + u64::try_from(position).unwrap(),
         position,
+        common_dir: None,
+        parent_id: None,
     }
 }
 
@@ -52,6 +54,67 @@ fn session(workspace: WorkspaceId, title: &str) -> SessionRow {
         ended_at_ms: None,
         resume_ref_json: None,
     }
+}
+
+/// Schemas before version 8 have no identity or parent column: the rows of those tests are
+/// written and read with the statements of the time.
+fn seed_legacy_workspace(storage: &Storage, ws: &WorkspaceRow) {
+    let ws = ws.clone();
+    storage
+        .read(move |conn| {
+            conn.execute(
+                "INSERT INTO workspaces (id, name, roots_json, kind, pinned, created_by, \
+                     created_at_ms, last_active_ms, position) \
+                 VALUES (?1, ?2, ?3, 'project', ?4, 'user', ?5, ?6, ?7)",
+                rusqlite::params![
+                    ws.id.to_string(),
+                    ws.name,
+                    serde_json::to_string(&ws.roots).unwrap(),
+                    ws.pinned,
+                    i64::try_from(ws.created_at_ms).unwrap(),
+                    i64::try_from(ws.last_active_ms).unwrap(),
+                    ws.position
+                ],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn legacy_workspaces(storage: &Storage) -> Vec<WorkspaceRow> {
+    storage
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, roots_json, pinned, created_at_ms, last_active_ms, position \
+                     FROM workspaces ORDER BY position",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let roots: String = row.get(2)?;
+                    Ok(WorkspaceRow {
+                        id: id.parse().unwrap(),
+                        name: row.get(1)?,
+                        roots: serde_json::from_str::<Vec<PathBuf>>(&roots).unwrap(),
+                        kind: WorkspaceKind::Project,
+                        pinned: row.get(3)?,
+                        created_by: CreatedBy::User,
+                        created_at_ms: row.get::<_, i64>(4)?.try_into().unwrap(),
+                        last_active_ms: row.get::<_, i64>(5)?.try_into().unwrap(),
+                        position: row.get(6)?,
+                        common_dir: None,
+                        parent_id: None,
+                    })
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            Ok(rows)
+        })
+        .unwrap()
 }
 
 const V1: Migration = migrate::MIGRATIONS[0];
@@ -100,7 +163,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -150,7 +213,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -173,7 +236,7 @@ fn a_backup_is_made_before_a_pending_migration() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     let storage = Storage::open_with_migrations(db(&dir), &[V1, V2, V3_OK]).unwrap();
@@ -191,7 +254,7 @@ fn a_backup_is_made_before_a_pending_migration() {
     // The backup is the pre-migration database: version 1, data present, no `extra` table.
     assert!(!table_exists(&files[0], "extra"));
     let old = Storage::open_with_migrations(&files[0], &[V1, V2]).unwrap();
-    assert_eq!(old.workspaces().list().unwrap(), [ws]);
+    assert_eq!(legacy_workspaces(&old), [ws]);
     old.close();
 }
 
@@ -201,7 +264,7 @@ fn a_failed_migration_keeps_the_original_and_reports_it() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
 
@@ -225,7 +288,7 @@ fn a_failed_migration_keeps_the_original_and_reports_it() {
     assert!(!table_exists(&db(&dir), "extra"));
     let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
     assert_eq!(storage.app_meta().schema_version().unwrap(), 2);
-    assert_eq!(storage.workspaces().list().unwrap(), [ws]);
+    assert_eq!(legacy_workspaces(&storage), [ws]);
     storage.close();
     integrity_ok(&db(&dir));
 }
@@ -416,7 +479,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -528,6 +591,141 @@ fn workspace_fields_are_updated_in_place() {
     assert_eq!(rows[1].last_active_ms, 77_000);
     assert_eq!(rows[1].created_by, CreatedBy::Agent);
     assert_eq!(rows[1].created_at_ms, a.created_at_ms);
+}
+
+#[test]
+fn projects_belong_to_a_workspace_until_it_is_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = db(&dir);
+    let storage = Storage::open(&path).unwrap();
+    let container = WorkspaceRow {
+        kind: WorkspaceKind::Workspace,
+        roots: Vec::new(),
+        ..workspace("shop", 0)
+    };
+    let a = WorkspaceRow {
+        common_dir: Some(PathBuf::from("/work/a/.git")),
+        parent_id: Some(container.id),
+        ..workspace("a", 1)
+    };
+    let b = workspace("b", 2);
+    for row in [&container, &a, &b] {
+        storage.workspaces().insert(row.clone()).unwrap();
+    }
+    storage.sessions().upsert(session(a.id, "in a")).unwrap();
+
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows, [container.clone(), a.clone(), b.clone()]);
+
+    storage
+        .workspaces()
+        .set_parent(b.id, Some(container.id))
+        .unwrap();
+    storage
+        .workspaces()
+        .set_common_dir(b.id, Some(PathBuf::from("/work/b/.git")))
+        .unwrap();
+    storage.workspaces().set_parent(a.id, None).unwrap();
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows[1].parent_id, None);
+    assert_eq!(rows[2].parent_id, Some(container.id));
+    assert_eq!(
+        rows[2].common_dir.as_deref(),
+        Some(Path::new("/work/b/.git"))
+    );
+
+    // Deleting the workspace leaves its projects, ungrouped, and their sessions.
+    storage.workspaces().delete(container.id).unwrap();
+    storage.close();
+    let storage = Storage::open(&path).unwrap();
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows.iter().map(|w| w.id).collect::<Vec<_>>(), [a.id, b.id]);
+    assert!(rows.iter().all(|w| w.parent_id.is_none()));
+    assert_eq!(storage.sessions().list().unwrap().len(), 1);
+}
+
+#[test]
+fn migrating_to_projects_rebuilds_the_table_without_losing_dependents() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = db(&dir);
+    let home = WorkspaceRow {
+        kind: WorkspaceKind::Home,
+        ..workspace("Home", 0)
+    };
+    let ws = workspace("old", 1);
+    {
+        let storage = Storage::open_with_migrations(&path, &migrate::MIGRATIONS[..7]).unwrap();
+        seed_legacy_workspace(&storage, &ws);
+        storage
+            .read({
+                let home = home.clone();
+                move |conn| {
+                    conn.execute(
+                        "INSERT INTO workspaces (id, name, roots_json, kind, pinned, created_by, \
+                         created_at_ms, last_active_ms, position) \
+                         VALUES (?1, 'Home', '[]', 'home', 1, 'cli', 5, 6, 0)",
+                        [home.id.to_string()],
+                    )
+                    .unwrap();
+                    Ok(())
+                }
+            })
+            .unwrap();
+        storage.sessions().upsert(session(ws.id, "kept")).unwrap();
+        storage
+            .tasks()
+            .upsert(task(ws.id, "kept too", 10, &[]))
+            .unwrap();
+        storage.close();
+    }
+
+    let storage = Storage::open(&path).unwrap();
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    // The sessions and tasks of the old table's rows were not cascaded away.
+    assert_eq!(storage.sessions().list().unwrap().len(), 1);
+    assert_eq!(storage.tasks().list().unwrap().len(), 1);
+    let rows = storage.workspaces().list().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].kind, WorkspaceKind::Home);
+    assert!(rows[0].pinned);
+    assert_eq!(rows[0].created_by, CreatedBy::Cli);
+    assert_eq!(
+        (rows[1].common_dir.clone(), rows[1].parent_id),
+        (None, None)
+    );
+    assert_eq!(rows[1].roots, ws.roots);
+    assert_eq!(backups(&dir).len(), 1);
+
+    // The new constraints and the relinked foreign keys hold, and Home stays unique.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    let kinds: Vec<String> = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE name IN ('workspaces_one_home', 'workspaces_by_parent')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(kinds.len(), 2, "{kinds:?}");
+    assert!(
+        conn.execute(
+            "UPDATE workspaces SET kind = 'workspace' WHERE kind = 'project'",
+            []
+        )
+        .is_ok()
+    );
+    let violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+    conn.execute("DELETE FROM workspaces WHERE kind = 'workspace'", [])
+        .unwrap();
+    let sessions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(sessions, 0, "sessions still cascade from their workspace");
 }
 
 #[test]
@@ -999,7 +1197,7 @@ fn migrating_v2_adds_the_chat_tables_and_keeps_the_data() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &[V1, V2]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     assert!(!table_exists(&db(&dir), "chat_items"));
@@ -1058,7 +1256,7 @@ fn migrating_v3_adds_the_agent_tree_table_and_keeps_the_data() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..3]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     assert!(!table_exists(&db(&dir), "agent_trees"));
@@ -1155,13 +1353,13 @@ fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..4]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     assert!(!table_exists(&db(&dir), "providers"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
     storage.close();
     assert!(table_exists(&db(&dir), "providers"));
     integrity_ok(&db(&dir));
@@ -1222,13 +1420,13 @@ fn migrating_v5_adds_the_worktree_table_and_keeps_the_data() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..5]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     assert!(!table_exists(&db(&dir), "worktrees"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
     storage.close();
     assert!(table_exists(&db(&dir), "worktrees"));
     integrity_ok(&db(&dir));
@@ -1328,7 +1526,7 @@ fn migrating_v6_adds_the_task_tables_and_keeps_the_data() {
     let ws = workspace("alpha", 0);
     {
         let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..6]).unwrap();
-        storage.workspaces().insert(ws.clone()).unwrap();
+        seed_legacy_workspace(&storage, &ws);
         storage.close();
     }
     for table in ["tasks", "task_deps", "task_sessions"] {
@@ -1336,7 +1534,7 @@ fn migrating_v6_adds_the_task_tables_and_keeps_the_data() {
     }
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 7);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
     assert!(storage.tasks().list().unwrap().is_empty());
     storage.close();
     for table in ["tasks", "task_deps", "task_sessions"] {

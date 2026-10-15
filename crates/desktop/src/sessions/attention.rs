@@ -377,6 +377,7 @@ mod tests {
             restored: false,
             chat: None,
             placement: None,
+            folder: None,
         }
     }
 

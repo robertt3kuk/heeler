@@ -69,6 +69,9 @@
 //!
 //! [tasks]                        # tasks with dependencies (protocol 0.16, docs/orchestration.md)
 //! max_parallel = 3               # tasks with `auto_start` start by themselves up to this many at once
+//!
+//! [projects]                     # automatic projects (protocol 0.19, docs/orchestration.md)
+//! auto = true                    # sessions go to the project of their folder; false: Home unless the request names a workspace
 //! ```
 
 use std::collections::BTreeMap;
@@ -111,6 +114,23 @@ pub struct DaemonSettings {
     pub notify: NotifySettings,
     pub terminal: TerminalSettings,
     pub tasks: TasksSettings,
+    pub projects: ProjectsSettings,
+}
+
+/// `[projects]` of `daemon.toml`: automatic projects (protocol 0.19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ProjectsSettings {
+    /// `true` (default): a session, chat or task whose request names no workspace goes to the
+    /// project of its folder, which the daemon makes when there is none. `false`: it goes to
+    /// Home, as before protocol 0.19 (clients that name a workspace still win).
+    pub auto: bool,
+}
+
+impl Default for ProjectsSettings {
+    fn default() -> Self {
+        Self { auto: true }
+    }
 }
 
 /// `[terminal]` of `daemon.toml`: how new terminal sessions get their environment.
@@ -435,6 +455,8 @@ struct File {
     terminal: TerminalSettings,
     #[serde(default)]
     tasks: TasksSettings,
+    #[serde(default)]
+    projects: ProjectsSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -522,6 +544,7 @@ impl DaemonSettings {
             notify: file.notify,
             terminal: file.terminal,
             tasks: file.tasks,
+            projects: file.projects,
         })
     }
 }
@@ -923,6 +946,16 @@ mod tests {
         assert!(DaemonSettings::parse("[tasks]\nmax_parallel = 0\n", None).is_err());
         assert!(DaemonSettings::parse("[tasks]\nmax_parallel = -1\n", None).is_err());
         assert!(DaemonSettings::parse("[tasks]\nmax_parallel = \"3\"\n", None).is_err());
+    }
+
+    #[test]
+    fn automatic_projects_are_on_unless_switched_off() {
+        assert!(DaemonSettings::parse("", None).unwrap().projects.auto);
+        assert!(DaemonSettings::default().projects.auto);
+        let off = DaemonSettings::parse("[projects]\nauto = false\n", None).unwrap();
+        assert!(!off.projects.auto);
+        assert!(DaemonSettings::parse("[projects]\nauto = \"no\"\n", None).is_err());
+        assert!(DaemonSettings::parse("[projects]\nauto = true\nmystery = 1\n", None).is_ok());
     }
 
     #[test]

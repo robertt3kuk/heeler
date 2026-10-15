@@ -321,6 +321,8 @@ scope = "active_workspace"     # active_workspace | all
 
 ## Projects and workspaces (M12-B)
 
+> **Being superseded (ADR 0014, M18).** The daemon now makes *projects* (a repository with all its worktrees, or a folder) from the folders sessions start in, next to the user's own *workspaces*, which contain projects (`docs/orchestration.md` § Projects and workspaces, protocol 0.19). The desktop below still lists every kind of container flat, as workspaces, until M18-B: the sidebar becomes workspaces → projects → sessions (or flat projects), each session row showing its title, its live folder (`SessionInfo.folder`, last two path parts) and its placement badge; a project drags onto a workspace (`workspace.assign`), and settings layer user < workspace < project. Everything below describes the M12-B desktop.
+
 The daemon owns workspaces (protocol 0.6: kind, pin, order, activity, session counts, recent projects); the desktop decides how to show them. The sidebar (`sessions` panel, titled "Workspaces") lists them with their sessions.
 
 - **Rows**: `▾ ⌂ ★ NAME  ·····  ● 2  3` — chevron folds the sessions, `⌂` marks Home, `★` a pin, `● n` sessions that need you, then the session count (`live/total` when they differ). Click shows the workspace; right-click opens its menu; the active one is tinted.

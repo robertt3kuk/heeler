@@ -73,7 +73,7 @@ async fn hutan_in(t: &TestDaemon, cwd: &Path, args: &[&str]) -> Out {
 }
 
 async fn open_workspace(t: &TestDaemon, repo: &Path) -> String {
-    t.hutan(&["ws", "open", s(repo), "--json"])
+    t.hutan(&["project", "open", s(repo), "--json"])
         .await
         .ok()
         .json()["workspace"]["id"]
@@ -191,10 +191,20 @@ async fn wt_reports_refusals_unmerged_branches_and_usage_errors() {
     let elsewhere = tempfile::tempdir().unwrap();
     let elsewhere = fs::canonicalize(elsewhere.path()).unwrap();
 
-    // No workspace contains the directory: a usage error that says what to do.
-    let out = hutan_in(&t, &elsewhere, &["wt", "new", "x"]).await;
+    // Home has no project: a usage error that says what to do.
+    let home = fs::create_dir_all(&t.paths.default_home_folder)
+        .map(|()| fs::canonicalize(&t.paths.default_home_folder).unwrap())
+        .unwrap();
+    let out = hutan_in(&t, &home, &["wt", "new", "x"]).await;
     assert_eq!(out.code, 2, "{out:?}");
-    assert!(out.stderr.contains("hutan ws open"), "{out:?}");
+    assert!(out.stderr.contains("belongs to no project"), "{out:?}");
+    // A folder outside git is a project of its own, which has no repository.
+    let out = hutan_in(&t, &elsewhere, &["wt", "new", "x"]).await;
+    assert_eq!(out.code, 1, "{out:?}");
+    assert!(
+        out.stderr.contains("not inside a git repository"),
+        "{out:?}"
+    );
     // ... but --ws names it, and the main checkout cannot be removed.
     let out = hutan_in(&t, &elsewhere, &["wt", "rm", s(&repo.root), "--ws", &ws]).await;
     assert_eq!(out.code, 1, "{out:?}");

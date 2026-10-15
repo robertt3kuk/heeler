@@ -1,1 +1,1 @@
-{"id":5,"method":"workspace.create","params":{"name":"hutan","roots":["/repo"]}}
+{"id":5,"method":"workspace.create","params":{"name":"hutan","paths":["/repo"]}}

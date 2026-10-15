@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use hutan_core::{ApprovalPolicy, SandboxMode, WorkspaceId};
+use hutan_core::{ApprovalPolicy, SandboxMode};
 
 /// Exit codes: 0 ok, 1 remote or other error, 2 usage (including an ambiguous session target),
 /// 3 hutand unreachable or lost. `attach` killed by SIGTERM/SIGHUP exits 143/129.
@@ -28,9 +28,12 @@ pub enum Command {
     /// Manage the hutand daemon
     #[command(subcommand)]
     Daemon(DaemonCommand),
-    /// Manage workspaces
+    /// Workspaces: your own collections of projects, with their own settings and layout
     #[command(subcommand)]
     Ws(WsCommand),
+    /// Projects: the repositories and folders sessions work in (made automatically)
+    #[command(subcommand)]
+    Project(ProjectCommand),
     /// Send one raw protocol request and print the result (or the error body, exit 1)
     Api(ApiArgs),
     /// Print the daemon's current state, then (with --follow) new events, as JSON lines
@@ -171,8 +174,8 @@ pub struct TaskAddArgs {
 
 #[derive(Debug, Args)]
 pub struct TaskLsArgs {
-    /// Only this workspace's tasks (default: $HUTAN_WORKSPACE, else the workspace containing
-    /// the current directory, else all workspaces)
+    /// Only this workspace's or project's tasks (default: $HUTAN_WORKSPACE, else the project
+    /// of the current directory, else all)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
 }
@@ -181,8 +184,8 @@ pub struct TaskLsArgs {
 pub struct TaskTargetArgs {
     #[arg(help = TASK_HELP)]
     pub target: String,
-    /// Which workspace's task an exact title means when several have it (default:
-    /// $HUTAN_WORKSPACE, else the workspace containing the current directory)
+    /// Which workspace's or project's task an exact title means when several have it (default:
+    /// $HUTAN_WORKSPACE, else the project of the current directory)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
 }
@@ -198,8 +201,8 @@ pub struct TaskRmArgs {
     pub cascade: bool,
 }
 
-const WT_WS_HELP: &str = "Workspace: id, unique id prefix, or exact name (default: \
-     $HUTAN_WORKSPACE, else the workspace containing the current directory)";
+const WT_WS_HELP: &str = "Workspace or project: id, unique id prefix, or exact name (default: \
+     $HUTAN_WORKSPACE, else the project of the current directory)";
 
 #[derive(Debug, Subcommand)]
 pub enum WtCommand {
@@ -226,7 +229,7 @@ pub struct WtNewArgs {
     /// the repository, `/` in the branch written as `-`)
     #[arg(long, value_name = "PATH")]
     pub path: Option<PathBuf>,
-    /// A directory in the repository (default: the current directory when the workspace is
+    /// A directory in the repository (default: the current directory when the project is
     /// found by it, else the workspace's first git root)
     #[arg(long, value_name = "PATH")]
     pub repo: Option<PathBuf>,
@@ -234,8 +237,8 @@ pub struct WtNewArgs {
 
 #[derive(Debug, Args)]
 pub struct WtLsArgs {
-    /// Only this workspace's repositories (default: $HUTAN_WORKSPACE, else the workspace
-    /// containing the current directory, else all workspaces)
+    /// Only this workspace's or project's repositories (default: $HUTAN_WORKSPACE, else the
+    /// project of the current directory, else all)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
 }
@@ -403,8 +406,8 @@ pub struct ProviderDiscoverArgs {
 
 #[derive(Debug, Args)]
 pub struct ChatNewArgs {
-    /// Workspace to create the session in: id, unique id prefix, or exact name (default:
-    /// $HUTAN_WORKSPACE, else the workspace containing the directory, else Home)
+    /// Workspace or project to create the session in: id, unique id prefix, or exact name
+    /// (default: $HUTAN_WORKSPACE, else the project of the directory, else Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Directory the agent works in (default: the current directory)
@@ -540,30 +543,51 @@ pub enum DaemonCommand {
 
 const WS_TARGET_HELP: &str =
     "Workspace id, unique id prefix (at least 4 characters), or exact name";
+const PROJECT_TARGET_HELP: &str =
+    "Project id, unique id prefix (at least 4 characters), or exact name";
 
+/// Workspaces hold projects; a project is in at most one workspace.
 #[derive(Debug, Subcommand)]
 pub enum WsCommand {
-    /// List workspaces (empty ones are hidden unless pinned or Home); pinned ones come first
+    /// List workspaces as a tree: each with its projects and session counts, then the projects
+    /// in no workspace, then Home (empty projects are hidden unless pinned)
     Ls(WsLsArgs),
-    /// Open a folder as a project: finds the workspace containing it, or creates one (named
-    /// after the folder, or its git repository root)
-    Open {
-        /// The folder; relative paths are resolved against the current directory
-        path: PathBuf,
-    },
-    /// Create a workspace
+    /// Create a workspace, optionally with the projects of some folders
     New {
         name: String,
-        /// Repository root; repeatable
-        #[arg(long = "root", value_name = "PATH")]
-        roots: Vec<PathBuf>,
+        /// Folders to add as projects (an existing project of a folder is reused)
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
+    },
+    /// Add a folder or an existing project to a workspace; a project that is in another
+    /// workspace moves
+    Add {
+        #[arg(help = WS_TARGET_HELP)]
+        workspace: String,
+        /// A folder (a path: its project is made when there is none) or a project (id, unique
+        /// id prefix, or name)
+        #[arg(value_name = "PATH|PROJECT")]
+        what: String,
+    },
+    /// Take a project out of a workspace; it stays a project
+    Remove {
+        #[arg(help = WS_TARGET_HELP)]
+        workspace: String,
+        #[arg(help = PROJECT_TARGET_HELP)]
+        project: String,
     },
     /// Rename a workspace
-    Rename { id: WorkspaceId, name: String },
-    /// Close a workspace (it stays in `ws recent`); Home and workspaces with live sessions
-    /// cannot be closed
-    Close { id: WorkspaceId },
-    /// Change the manual order: put a workspace before another one, or last
+    Rename {
+        #[arg(help = WS_TARGET_HELP)]
+        target: String,
+        name: String,
+    },
+    /// Delete a workspace; its projects stay. Refused while sessions of its own are live
+    Rm {
+        #[arg(help = WS_TARGET_HELP)]
+        target: String,
+    },
+    /// Change the manual order: put a workspace (or project) before another one, or last
     Move(WsMoveArgs),
     /// Keep a workspace at the top of listings
     Pin {
@@ -575,12 +599,6 @@ pub enum WsCommand {
         #[arg(help = WS_TARGET_HELP)]
         target: String,
     },
-    /// Open projects and closed ones remembered, newest first
-    Recent {
-        /// At most this many (the daemon caps it at 50)
-        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
-        limit: u32,
-    },
     /// Print `export HUTAN_WORKSPACE=<id>`: new sessions of `hutan new` go to that workspace
     /// (use as `eval "$(hutan ws use NAME)"`)
     Use {
@@ -589,12 +607,64 @@ pub enum WsCommand {
     },
 }
 
+/// Projects are repositories (the main checkout and all its worktrees are one project) and
+/// folders; the daemon makes them from the folders sessions start in.
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// List projects with their workspace, session counts and folder (empty ones are hidden
+    /// unless pinned or in a workspace)
+    Ls(ProjectLsArgs),
+    /// Make sure a folder has its project (a repository's project when it is inside one) and
+    /// print it; Home's folder and the home directory have none
+    Open {
+        /// The folder; relative paths are resolved against the current directory
+        path: PathBuf,
+    },
+    /// Rename a project
+    Rename {
+        #[arg(help = PROJECT_TARGET_HELP)]
+        target: String,
+        name: String,
+    },
+    /// Keep a project at the top of listings
+    Pin {
+        #[arg(help = PROJECT_TARGET_HELP)]
+        target: String,
+    },
+    /// Undo `pin`
+    Unpin {
+        #[arg(help = PROJECT_TARGET_HELP)]
+        target: String,
+    },
+    /// Close a project (it stays in `project recent`); refused while its sessions are live
+    Close {
+        #[arg(help = PROJECT_TARGET_HELP)]
+        target: String,
+    },
+    /// Open projects and closed ones remembered, newest first
+    Recent {
+        /// At most this many (the daemon caps it at 50)
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+        limit: u32,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct WsLsArgs {
     /// Order of the listing (pinned workspaces always come first)
     #[arg(long, value_enum, default_value_t = WsSort::Manual)]
     pub sort: WsSort,
-    /// Include empty workspaces that are neither pinned nor Home
+    /// Include empty projects that are neither pinned nor in a workspace
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectLsArgs {
+    /// Order of the listing (pinned projects always come first)
+    #[arg(long, value_enum, default_value_t = WsSort::Manual)]
+    pub sort: WsSort,
+    /// Include empty projects that are neither pinned nor in a workspace
     #[arg(long)]
     pub all: bool,
 }
@@ -605,7 +675,7 @@ pub enum WsSort {
     Manual,
     /// Latest session activity first
     Recent,
-    /// Workspaces with sessions waiting for you (approvals, blocked agents) first
+    /// Workspaces and projects with sessions waiting for you (approvals, blocked agents) first
     Attention,
     /// Alphabetical
     Name,
@@ -613,9 +683,11 @@ pub enum WsSort {
 
 #[derive(Debug, Args)]
 pub struct WsMoveArgs {
-    #[arg(help = WS_TARGET_HELP)]
+    #[arg(
+        help = "Workspace or project: id, unique id prefix (at least 4 characters), or exact name"
+    )]
     pub target: String,
-    /// Place it right before this workspace
+    /// Place it right before this workspace or project
     #[arg(
         long,
         value_name = "ID|NAME",
@@ -654,8 +726,8 @@ pub struct TargetArgs {
 
 #[derive(Debug, Args)]
 pub struct NewArgs {
-    /// Workspace to create the session in: id, unique id prefix, or exact name (default:
-    /// $HUTAN_WORKSPACE, else Home)
+    /// Workspace or project to create the session in: id, unique id prefix, or exact name
+    /// (default: $HUTAN_WORKSPACE, else the project of the working directory, else Home)
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Working directory (default: the current directory)
@@ -671,7 +743,7 @@ pub struct NewArgs {
     #[arg(long)]
     pub attach: bool,
     /// Work in the worktree of this branch: created when there is none (see `hutan wt new`),
-    /// then the session starts in it and goes to the workspace that contains the repository
+    /// then the session starts in it and goes to the project of the repository
     #[arg(long, value_name = "BRANCH", conflicts_with = "cwd")]
     pub worktree: Option<String>,
     /// Command to run after `--`; the login shell if omitted

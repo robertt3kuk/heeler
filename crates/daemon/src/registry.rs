@@ -29,6 +29,7 @@ use hutan_protocol::messages::{
     SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind, WorkspaceList,
     WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRename,
 };
+use hutan_protocol::project::{ProjectInfo, WorkspaceAssign, WorkspaceDelete};
 use hutan_protocol::provider::ChatSetModel;
 use hutan_protocol::tree::{AgentTree, NodeReport};
 use hutan_protocol::worktree::Placement;
@@ -37,7 +38,7 @@ use hutan_terminal::{
     EnvInherit, ExitStatus, PromptMark, RenderTracker, Terminal, TerminalConfig, TerminalMeta,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::agent;
 use crate::bus::{EventBus, PublishError};
@@ -48,7 +49,7 @@ use crate::config::RestoreMode;
 use crate::direct::MAX_SYSTEM_PROMPT_BYTES;
 use crate::harness::{Harnesses, is_harness_agent};
 use crate::placement::{Occupant, PlacementCache, shared_with};
-use crate::projects::{self, Folder};
+use crate::projects::{self, Assignment, Folder, HomeRules, Ident};
 use crate::providers::ProviderService;
 use crate::restore::{self, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
@@ -88,22 +89,26 @@ type Reply<T> = oneshot::Sender<Result<T, ErrorBody>>;
 
 #[derive(Debug)]
 enum Command {
-    CreateWorkspace(WorkspaceCreate, Reply<WorkspaceInfo>),
+    /// The folders of the request are already resolved: the projects they name.
+    CreateWorkspace(WorkspaceCreate, Vec<Ident>, Reply<WorkspaceInfo>),
     ListWorkspaces(Reply<WorkspaceList>),
     RenameWorkspace(WorkspaceRename, Reply<WorkspaceInfo>),
     CloseWorkspace(WorkspaceId, Reply<()>),
-    /// The folder is already resolved (canonical, repository root found).
-    OpenWorkspace(Folder, Option<CreatedBy>, Reply<WorkspaceOpened>),
-    AddRoot(WorkspaceId, Folder, Reply<WorkspaceInfo>),
+    /// The folder is already resolved: this is where it goes.
+    OpenWorkspace(Assignment, Option<CreatedBy>, Reply<WorkspaceOpened>),
+    AddRoot(WorkspaceId, Assignment, Reply<WorkspaceInfo>),
     RemoveRoot(WorkspaceId, PathBuf, Reply<WorkspaceInfo>),
     RecentProjects(Option<u32>, Reply<RecentProjects>),
     MoveWorkspace(WorkspaceMove, Reply<WorkspaceList>),
     PinWorkspace(WorkspacePin, Reply<WorkspaceInfo>),
+    AssignWorkspace(WorkspaceAssign, Reply<WorkspaceInfo>),
+    DeleteWorkspace(WorkspaceDelete, Reply<()>),
     /// Input or output of a terminal; from its watcher task and the input path.
     Activity(TerminalId),
     Snapshot(Reply<SessionSnapshot>),
     SessionCounts(Reply<SessionCounts>),
-    CreateSession(SessionCreate, Reply<SessionInfo>),
+    /// The assignment is present when the request names no workspace.
+    CreateSession(SessionCreate, Option<Assignment>, Reply<SessionInfo>),
     ListSessions(SessionListFilter, Reply<SessionList>),
     /// Answered once the session has actually stopped.
     StopSession(SessionId, Reply<SessionInfo>),
@@ -125,8 +130,9 @@ enum Command {
     KillSession(SessionId, Reply<SessionInfo>),
     /// The live sessions' root processes and unfinished agents (`resources.*`).
     ProcessTargets(Option<SessionId>, Reply<Vec<ProcessTarget>>),
-    /// `chat.create` with a canonical `cwd`; answered once the agent is up (or failed).
-    CreateChat(ChatCreate, Reply<SessionInfo>),
+    /// `chat.create` with a canonical `cwd` and, when it names no workspace, where the `cwd`
+    /// goes; answered once the agent is up (or failed).
+    CreateChat(ChatCreate, Option<Assignment>, Reply<SessionInfo>),
     /// From the task that started a chat agent.
     ChatStarted {
         session: SessionId,
@@ -231,6 +237,10 @@ pub struct ProcessTarget {
 pub struct RegistryHandle {
     tx: mpsc::Sender<Command>,
     chats: Arc<ChatManager>,
+    /// Which folders are Home; decided before a request reaches the actor.
+    rules: Arc<HomeRules>,
+    /// `[projects] auto`.
+    auto: bool,
 }
 
 impl RegistryHandle {
@@ -244,8 +254,33 @@ impl RegistryHandle {
         response.await.map_err(|_| unavailable())?
     }
 
+    /// A workspace with the projects of `req.paths` (found or made) and `req.project_ids`.
     pub async fn create_workspace(&self, req: WorkspaceCreate) -> Result<WorkspaceInfo, ErrorBody> {
-        self.ask(|r| Command::CreateWorkspace(req, r)).await
+        let paths = req.paths.clone();
+        let idents = blocking(move || {
+            paths
+                .iter()
+                .map(|path| projects::resolve_folder(path).map(|folder| folder.ident()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await??;
+        self.ask(|r| Command::CreateWorkspace(req, idents, r)).await
+    }
+
+    /// Where a session that starts in `dir` goes when its request names no workspace: the
+    /// project of the folder with `[projects] auto`, else Home (Home too when there is no usable
+    /// directory).
+    async fn assign(&self, dir: Option<PathBuf>) -> Result<Assignment, ErrorBody> {
+        if !self.auto {
+            return Ok(Assignment::Home);
+        }
+        let rules = Arc::clone(&self.rules);
+        blocking(move || rules.assign_path(dir.as_deref())).await
+    }
+
+    /// `[projects] auto`: whether the daemon makes projects from the folders sessions start in.
+    pub fn auto_projects(&self) -> bool {
+        self.auto
     }
 
     pub async fn list_workspaces(&self) -> Result<WorkspaceList, ErrorBody> {
@@ -260,10 +295,13 @@ impl RegistryHandle {
         self.ask(|r| Command::CloseWorkspace(id, r)).await
     }
 
-    /// The workspace containing `req.path`, or a new one for the folder (its git root).
+    /// The project of `req.path` (Home for the home directory and the Home folder), created
+    /// when the daemon does not know it yet.
     pub async fn open_workspace(&self, req: WorkspaceOpen) -> Result<WorkspaceOpened, ErrorBody> {
         let folder = resolve_folder(req.path).await?;
-        self.ask(|r| Command::OpenWorkspace(folder, req.created_by, r))
+        let rules = Arc::clone(&self.rules);
+        let assignment = blocking(move || rules.assign(&folder.path)).await?;
+        self.ask(|r| Command::OpenWorkspace(assignment, req.created_by, r))
             .await
     }
 
@@ -273,7 +311,9 @@ impl RegistryHandle {
         path: PathBuf,
     ) -> Result<WorkspaceInfo, ErrorBody> {
         let folder = resolve_folder(path).await?;
-        self.ask(|r| Command::AddRoot(workspace_id, folder, r))
+        let rules = Arc::clone(&self.rules);
+        let assignment = blocking(move || rules.assign(&folder.path)).await?;
+        self.ask(|r| Command::AddRoot(workspace_id, assignment, r))
             .await
     }
 
@@ -298,6 +338,16 @@ impl RegistryHandle {
         self.ask(|r| Command::PinWorkspace(req, r)).await
     }
 
+    /// Puts a project into a workspace, or out of its workspace.
+    pub async fn assign_workspace(&self, req: WorkspaceAssign) -> Result<WorkspaceInfo, ErrorBody> {
+        self.ask(|r| Command::AssignWorkspace(req, r)).await
+    }
+
+    /// Removes a workspace; its projects stay.
+    pub async fn delete_workspace(&self, req: WorkspaceDelete) -> Result<(), ErrorBody> {
+        self.ask(|r| Command::DeleteWorkspace(req, r)).await
+    }
+
     /// Input reached `terminal`. Never waits: a full mailbox just misses one activity note.
     pub fn note_activity(&self, terminal: TerminalId) {
         let _ = self.tx.try_send(Command::Activity(terminal));
@@ -311,8 +361,18 @@ impl RegistryHandle {
         self.ask(Command::SessionCounts).await
     }
 
+    /// Without `req.workspace_id` the session goes to the project of its `cwd`, which is
+    /// created when it is new.
     pub async fn create_session(&self, req: SessionCreate) -> Result<SessionInfo, ErrorBody> {
-        self.ask(|r| Command::CreateSession(req, r)).await
+        let assignment = match req.workspace_id {
+            Some(_) => None,
+            None => {
+                let SessionSpec::Terminal(spec) = &req.spec;
+                Some(self.assign(spec.cwd.clone()).await?)
+            }
+        };
+        self.ask(|r| Command::CreateSession(req, assignment, r))
+            .await
     }
 
     pub async fn list_sessions(&self, filter: SessionListFilter) -> Result<SessionList, ErrorBody> {
@@ -379,7 +439,11 @@ impl RegistryHandle {
     /// `idle`) or fails with `provider_error` when it could not start.
     pub async fn create_chat(&self, mut req: ChatCreate) -> Result<SessionInfo, ErrorBody> {
         req.cwd = canonical_dir(req.cwd).await?;
-        self.ask(|r| Command::CreateChat(req, r)).await
+        let assignment = match req.workspace_id {
+            Some(_) => None,
+            None => Some(self.assign(Some(req.cwd.clone())).await?),
+        };
+        self.ask(|r| Command::CreateChat(req, assignment, r)).await
     }
 
     /// Whether `id` is a chat session (else an error), and whether it is live.
@@ -524,8 +588,10 @@ struct SessionRegistry {
     hutan_bin: String,
     /// Weak so the actor stops once every [`RegistryHandle`] is gone.
     mailbox: mpsc::WeakSender<Command>,
-    /// The Home workspace: where sessions without a workspace go.
+    /// The Home workspace: where sessions that belong to no project go.
     home: WorkspaceId,
+    /// Which folders are Home (restore re-derives a stale project with it).
+    rules: Arc<HomeRules>,
     /// In `position` order.
     workspaces: Vec<WorkspaceEntry>,
     /// Closed projects, newest first.
@@ -564,6 +630,10 @@ pub struct RegistryConfig {
     pub restore: RestoreMode,
     /// The folder of the Home workspace (existing, canonical).
     pub home_folder: PathBuf,
+    /// The user's home directory: it is Home, not a project.
+    pub user_home: Option<PathBuf>,
+    /// `[projects] auto`: sessions without a workspace go to the project of their folder.
+    pub auto_projects: bool,
     /// Shortest time between two `last_active_ms` updates of one workspace.
     pub activity_interval: Duration,
     /// How to start `codex app-server` for chat sessions.
@@ -599,6 +669,7 @@ pub fn spawn(
     );
     let (workspaces, home, next_position) =
         restored_workspaces(&stored, &config.storage, &config.home_folder);
+    let rules = Arc::new(HomeRules::new(config.user_home, config.home_folder));
     let mut registry = SessionRegistry {
         bus,
         hub,
@@ -609,6 +680,7 @@ pub fn spawn(
         hutan_bin: config.hutan_bin.to_string_lossy().into_owned(),
         mailbox: tx.downgrade(),
         home,
+        rules: Arc::clone(&rules),
         workspaces,
         recent: stored.recent_projects,
         next_position,
@@ -624,7 +696,12 @@ pub fn spawn(
     };
     registry.restore_sessions(stored.sessions, config.restore, stored.agent_trees);
     tokio::spawn(registry.run(rx));
-    RegistryHandle { tx, chats }
+    RegistryHandle {
+        tx,
+        chats,
+        rules,
+        auto: config.auto_projects,
+    }
 }
 
 /// The stored workspaces, Home among them (created and stored when missing, bound to
@@ -649,9 +726,22 @@ fn restored_workspaces(
                 last_active_ms: w.last_active_ms,
                 live_sessions: 0,
                 total_sessions: 0,
+                parent_id: w.parent_id,
+                project: (w.kind == stored_rows::WorkspaceKind::Project)
+                    .then(|| project_info(&w.roots, w.common_dir.clone())),
             })
         })
         .collect();
+    // A workspace shows the folders of its projects as its roots.
+    let derived: Vec<(usize, Vec<PathBuf>)> = workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.info.kind == WorkspaceKind::Workspace)
+        .map(|(index, w)| (index, member_roots(&workspaces, w.info.id)))
+        .collect();
+    for (index, roots) in derived {
+        workspaces[index].info.roots = roots;
+    }
     let mut next_position = stored
         .workspaces
         .iter()
@@ -695,6 +785,8 @@ fn restored_workspaces(
                 last_active_ms: now,
                 live_sessions: 0,
                 total_sessions: 0,
+                parent_id: None,
+                project: None,
             };
             log_write(
                 storage.workspaces().insert(row_of(&info, now)),
@@ -713,6 +805,7 @@ fn kind_from_row(kind: stored_rows::WorkspaceKind) -> WorkspaceKind {
     match kind {
         stored_rows::WorkspaceKind::Home => WorkspaceKind::Home,
         stored_rows::WorkspaceKind::Project => WorkspaceKind::Project,
+        stored_rows::WorkspaceKind::Workspace => WorkspaceKind::Workspace,
     }
 }
 
@@ -720,6 +813,7 @@ fn kind_to_row(kind: WorkspaceKind) -> stored_rows::WorkspaceKind {
     match kind {
         WorkspaceKind::Home => stored_rows::WorkspaceKind::Home,
         WorkspaceKind::Project => stored_rows::WorkspaceKind::Project,
+        WorkspaceKind::Workspace => stored_rows::WorkspaceKind::Workspace,
     }
 }
 
@@ -744,24 +838,72 @@ fn row_of(info: &WorkspaceInfo, created_at_ms: u64) -> WorkspaceRow {
     WorkspaceRow {
         id: info.id,
         name: info.name.clone(),
-        roots: info.roots.clone(),
+        // A workspace's roots are those of its projects: they are not stored twice.
+        roots: if info.kind == WorkspaceKind::Workspace {
+            Vec::new()
+        } else {
+            info.roots.clone()
+        },
         kind: kind_to_row(info.kind),
         pinned: info.pinned,
         created_by: created_by_to_row(info.created_by),
         created_at_ms,
         last_active_ms: info.last_active_ms,
         position: info.position,
+        common_dir: info
+            .project
+            .as_ref()
+            .and_then(|project| project.common_dir.clone()),
+        parent_id: info.parent_id,
     }
+}
+
+fn not_a_project(id: WorkspaceId) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::InvalidState,
+        format!("{id} is not a project; Home and workspaces cannot be put into a workspace"),
+    )
+}
+
+/// The identity of a project whose folder is the first of `roots` (empty when it has none).
+fn project_info(roots: &[PathBuf], common_dir: Option<PathBuf>) -> ProjectInfo {
+    ProjectInfo {
+        common_dir,
+        root: roots.first().cloned().unwrap_or_default(),
+    }
+}
+
+/// The folders of the projects in workspace `id`, in list order.
+fn member_roots(workspaces: &[WorkspaceEntry], id: WorkspaceId) -> Vec<PathBuf> {
+    workspaces
+        .iter()
+        .filter(|w| w.info.parent_id == Some(id))
+        .filter_map(|w| w.info.project.as_ref().map(|project| project.root.clone()))
+        .collect()
+}
+
+/// The repository identity of a workspace.
+fn entry_common_dir(entry: &WorkspaceEntry) -> Option<&PathBuf> {
+    entry
+        .info
+        .project
+        .as_ref()
+        .and_then(|project| project.common_dir.as_ref())
+}
+
+/// Runs filesystem work on the blocking pool.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ErrorBody> {
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        error!(%error, "filesystem work failed");
+        ErrorBody::new(ErrorCode::Internal, "could not resolve the folder")
+    })
 }
 
 /// Canonicalises a folder on the blocking pool.
 async fn resolve_folder(path: PathBuf) -> Result<Folder, ErrorBody> {
-    tokio::task::spawn_blocking(move || projects::resolve_folder(&path))
-        .await
-        .map_err(|error| {
-            error!(%error, "resolving a folder failed");
-            ErrorBody::new(ErrorCode::Internal, "could not resolve the folder")
-        })?
+    blocking(move || projects::resolve_folder(&path)).await?
 }
 
 /// The canonical form of an existing directory, resolved on the blocking pool.
@@ -818,8 +960,8 @@ impl SessionRegistry {
             let Some(command) = command else { break };
             // A dropped reply means the asking connection went away; nothing to do.
             match command {
-                Command::CreateWorkspace(req, reply) => {
-                    let _ = reply.send(self.create_workspace(req));
+                Command::CreateWorkspace(req, idents, reply) => {
+                    let _ = reply.send(self.create_workspace(req, &idents));
                 }
                 Command::ListWorkspaces(reply) => {
                     let _ = reply.send(Ok(self.workspace_list()));
@@ -830,11 +972,11 @@ impl SessionRegistry {
                 Command::CloseWorkspace(id, reply) => {
                     let _ = reply.send(self.close_workspace(id));
                 }
-                Command::OpenWorkspace(folder, created_by, reply) => {
-                    let _ = reply.send(self.open_workspace(&folder, created_by));
+                Command::OpenWorkspace(assignment, created_by, reply) => {
+                    let _ = reply.send(self.open_workspace(assignment, created_by));
                 }
-                Command::AddRoot(id, folder, reply) => {
-                    let _ = reply.send(self.add_root(id, &folder));
+                Command::AddRoot(id, assignment, reply) => {
+                    let _ = reply.send(self.add_root(id, assignment));
                 }
                 Command::RemoveRoot(id, path, reply) => {
                     let _ = reply.send(self.remove_root(id, &path));
@@ -847,6 +989,12 @@ impl SessionRegistry {
                 }
                 Command::PinWorkspace(req, reply) => {
                     let _ = reply.send(self.pin_workspace(req));
+                }
+                Command::AssignWorkspace(req, reply) => {
+                    let _ = reply.send(self.assign_workspace(req));
+                }
+                Command::DeleteWorkspace(req, reply) => {
+                    let _ = reply.send(self.delete_workspace(req));
                 }
                 Command::Activity(terminal) => self.on_activity(terminal),
                 Command::Snapshot(reply) => {
@@ -864,8 +1012,8 @@ impl SessionRegistry {
                         live: self.live_count() as u32,
                     }));
                 }
-                Command::CreateSession(req, reply) => {
-                    let _ = reply.send(self.create_session(req));
+                Command::CreateSession(req, assignment, reply) => {
+                    let _ = reply.send(self.create_session(req, assignment));
                 }
                 Command::ListSessions(filter, reply) => {
                     let _ = reply.send(Ok(SessionList {
@@ -905,7 +1053,9 @@ impl SessionRegistry {
                 Command::ProcessTargets(session, reply) => {
                     let _ = reply.send(self.process_targets(session));
                 }
-                Command::CreateChat(req, reply) => self.create_chat(req, reply),
+                Command::CreateChat(req, assignment, reply) => {
+                    self.create_chat(req, assignment, reply);
+                }
                 Command::ChatStarted {
                     session,
                     outcome,
@@ -952,10 +1102,20 @@ impl SessionRegistry {
         }
     }
 
-    /// `(live, total)` sessions of a workspace.
+    /// The workspace a project is in.
+    fn parent_of(&self, id: WorkspaceId) -> Option<WorkspaceId> {
+        self.workspaces
+            .iter()
+            .find(|w| w.info.id == id)
+            .and_then(|w| w.info.parent_id)
+    }
+
+    /// `(live, total)` sessions of a workspace; a workspace counts those of its projects too.
     fn session_counts_of(&self, id: WorkspaceId) -> (u32, u32) {
         let mut counts = (0, 0);
-        for session in self.sessions.iter().filter(|s| s.info.workspace_id == id) {
+        for session in self.sessions.iter().filter(|s| {
+            s.info.workspace_id == id || self.parent_of(s.info.workspace_id) == Some(id)
+        }) {
             counts.1 += 1;
             counts.0 += u32::from(session.info.state.is_live());
         }
@@ -984,6 +1144,9 @@ impl SessionRegistry {
         let index = self.index_of(id)?;
         let mut next = self.workspaces[index].info.clone();
         change(&mut next);
+        if next.kind == WorkspaceKind::Workspace {
+            next.roots = member_roots(&self.workspaces, id);
+        }
         (next.live_sessions, next.total_sessions) = self.session_counts_of(id);
         if next != self.workspaces[index].info {
             self.publish(&Event::WorkspaceUpdated {
@@ -994,26 +1157,78 @@ impl SessionRegistry {
         Ok(next)
     }
 
-    /// Announces new session counts of a workspace (a session changed state).
+    /// Announces new session counts of a workspace (a session changed state), and of the
+    /// workspace its project is in.
     fn sync_workspace(&mut self, id: WorkspaceId) {
-        if let Err(error) = self.update_workspace(id, |_| {}) {
-            warn!(workspace = %id, message = %error.message, "could not announce a workspace change");
+        let parent = self.parent_of(id);
+        for id in std::iter::once(id).chain(parent) {
+            if let Err(error) = self.update_workspace(id, |_| {}) {
+                warn!(workspace = %id, message = %error.message, "could not announce a workspace change");
+            }
         }
     }
 
-    fn create_workspace(&mut self, req: WorkspaceCreate) -> Result<WorkspaceInfo, ErrorBody> {
+    /// A workspace (the user's container) with the projects of `idents` (found or made) and
+    /// the existing projects `req.project_ids`.
+    fn create_workspace(
+        &mut self,
+        req: WorkspaceCreate,
+        idents: &[Ident],
+    ) -> Result<WorkspaceInfo, ErrorBody> {
         let name = validated_name(req.name, "workspace")?;
-        self.add_project(name, req.roots, req.created_by.unwrap_or_default())
+        let created_by = req.created_by.unwrap_or_default();
+        for id in &req.project_ids {
+            if self.workspaces[self.index_of(*id)?].info.kind != WorkspaceKind::Project {
+                return Err(not_a_project(*id));
+            }
+        }
+        let now = now_ms();
+        let workspace = WorkspaceInfo {
+            id: WorkspaceId::new(),
+            name,
+            roots: Vec::new(),
+            kind: WorkspaceKind::Workspace,
+            pinned: false,
+            position: self.next_position,
+            created_by,
+            last_active_ms: now,
+            live_sessions: 0,
+            total_sessions: 0,
+            parent_id: None,
+            project: None,
+        };
+        self.publish(&Event::WorkspaceUpdated {
+            workspace: workspace.clone(),
+        })?;
+        self.next_position += 1;
+        log_write(
+            self.storage.workspaces().insert(row_of(&workspace, now)),
+            "a new workspace",
+        );
+        let id = workspace.id;
+        self.workspaces.push(WorkspaceEntry::new(workspace));
+        // Members: found or made, then moved in. A folder that is Home's has no project.
+        let mut members = req.project_ids;
+        for ident in idents {
+            let (project, _) = self.project_of(ident, created_by, false)?;
+            members.push(project.id);
+        }
+        for project in members {
+            self.set_parent(project, Some(id))?;
+        }
+        Ok(self.workspaces[self.index_of(id)?].info.clone())
     }
 
-    /// Creates, announces, and stores a project workspace at the end of the list.
+    /// Creates, announces, and stores a project at the end of the list.
     fn add_project(
         &mut self,
         name: String,
-        roots: Vec<PathBuf>,
+        ident: &Ident,
         created_by: CreatedBy,
     ) -> Result<WorkspaceInfo, ErrorBody> {
         let now = now_ms();
+        let roots = vec![ident.root.clone()];
+        let project = project_info(&roots, ident.common_dir.clone());
         let workspace = WorkspaceInfo {
             id: WorkspaceId::new(),
             name,
@@ -1025,6 +1240,8 @@ impl SessionRegistry {
             last_active_ms: now,
             live_sessions: 0,
             total_sessions: 0,
+            parent_id: None,
+            project: Some(project),
         };
         self.publish(&Event::WorkspaceUpdated {
             workspace: workspace.clone(),
@@ -1032,11 +1249,32 @@ impl SessionRegistry {
         self.next_position += 1;
         log_write(
             self.storage.workspaces().insert(row_of(&workspace, now)),
-            "a new workspace",
+            "a new project",
         );
         self.workspaces.push(WorkspaceEntry::new(workspace.clone()));
         self.remember_project(&workspace, now);
         Ok(workspace)
+    }
+
+    /// Puts the project into the workspace `parent` (a workspace), or out of its workspace, and
+    /// announces the project and the workspaces whose members changed. Storage included.
+    fn set_parent(
+        &mut self,
+        project: WorkspaceId,
+        parent: Option<WorkspaceId>,
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        let before = self.parent_of(project);
+        let updated = self.update_workspace(project, |w| w.parent_id = parent)?;
+        if before != parent {
+            log_write(
+                self.storage.workspaces().set_parent(project, parent),
+                "a project's workspace",
+            );
+            for container in before.into_iter().chain(parent) {
+                self.sync_workspace(container);
+            }
+        }
+        Ok(updated)
     }
 
     /// Notes a project in the recent list (by its primary root); Home is not a project.
@@ -1083,6 +1321,8 @@ impl SessionRegistry {
         Ok(workspace)
     }
 
+    /// Closes a project (it stays in the recent list) or Home's neighbours; closing a workspace
+    /// deletes it.
     fn close_workspace(&mut self, id: WorkspaceId) -> Result<(), ErrorBody> {
         let index = self.index_of(id)?;
         if id == self.home {
@@ -1091,6 +1331,29 @@ impl SessionRegistry {
                 "the Home workspace cannot be closed",
             ));
         }
+        self.remove_workspace(index)
+    }
+
+    /// `workspace.delete`: a workspace (never a project or Home) goes, its projects stay.
+    fn delete_workspace(&mut self, req: WorkspaceDelete) -> Result<(), ErrorBody> {
+        let index = self.index_of(req.workspace_id)?;
+        if self.workspaces[index].info.kind != WorkspaceKind::Workspace {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!(
+                    "{} is not a workspace; a project is closed with `workspace.close`",
+                    req.workspace_id
+                ),
+            ));
+        }
+        self.remove_workspace(index)
+    }
+
+    /// Removes the workspace at `index` (a project or a workspace) unless it has live sessions
+    /// of its own. Its ended sessions and tasks go with it; the projects of a workspace stay,
+    /// ungrouped, and the workspace of a project loses a member.
+    fn remove_workspace(&mut self, index: usize) -> Result<(), ErrorBody> {
+        let id = self.workspaces[index].info.id;
         let live = self
             .sessions
             .iter()
@@ -1102,9 +1365,19 @@ impl SessionRegistry {
                 format!("workspace has {live} live session(s); stop them first"),
             ));
         }
+        let members: Vec<WorkspaceId> = self
+            .workspaces
+            .iter()
+            .filter(|w| w.info.parent_id == Some(id))
+            .map(|w| w.info.id)
+            .collect();
+        for member in members {
+            self.set_parent(member, None)?;
+        }
+        let index = self.index_of(id)?;
         self.publish(&Event::WorkspaceClosed { workspace_id: id })?;
         let closed = self.workspaces.remove(index).info;
-        // The project stays in the recent list.
+        // A project stays in the recent list.
         self.remember_project(&closed, closed.last_active_ms);
         // The sessions' rows go with the workspace's.
         log_write(self.storage.workspaces().delete(id), "a workspace removal");
@@ -1117,111 +1390,203 @@ impl SessionRegistry {
             }
             keep
         });
+        if let Some(parent) = closed.parent_id {
+            self.sync_workspace(parent);
+        }
         Ok(())
     }
 
-    /// The workspace whose root contains `path` (canonical); the deepest root wins, the
-    /// earlier workspace on a tie.
-    fn workspace_containing(&self, path: &Path) -> Option<usize> {
-        let mut best: Option<(usize, usize)> = None;
-        for (index, workspace) in self.workspaces.iter().enumerate() {
-            for root in &workspace.info.roots {
-                if projects::root_contains(root, path) {
-                    let depth = root.components().count();
-                    if best.is_none_or(|(_, deepest)| depth > deepest) {
-                        best = Some((index, depth));
-                    }
-                }
-            }
+    /// `workspace.assign`: a project into a workspace, or out of its workspace.
+    fn assign_workspace(&mut self, req: WorkspaceAssign) -> Result<WorkspaceInfo, ErrorBody> {
+        let index = self.index_of(req.project_id)?;
+        if self.workspaces[index].info.kind != WorkspaceKind::Project {
+            return Err(not_a_project(req.project_id));
         }
-        best.map(|(index, _)| index)
+        if let Some(parent) = req.workspace_id
+            && self.workspaces[self.index_of(parent)?].info.kind != WorkspaceKind::Workspace
+        {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("{parent} is not a workspace; only a workspace holds projects"),
+            ));
+        }
+        self.set_parent(req.project_id, req.workspace_id)
+    }
+
+    /// The project `ident` names: the one with the same repository, else the one whose folder it
+    /// is, else — with `containing`, for a folder outside git — the deepest folder project
+    /// containing it. The first in list order wins a tie.
+    fn find_project(&self, ident: &Ident, containing: bool) -> Option<usize> {
+        let projects = || {
+            self.workspaces
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| w.info.kind == WorkspaceKind::Project)
+        };
+        if let Some(wanted) = &ident.common_dir
+            && let Some((index, _)) = projects().find(|(_, w)| entry_common_dir(w) == Some(wanted))
+        {
+            return Some(index);
+        }
+        let exact = projects().find(|(_, w)| {
+            (entry_common_dir(w).is_none() || ident.common_dir.is_none())
+                && w.info
+                    .roots
+                    .first()
+                    .is_some_and(|root| projects::same_place(root, &ident.root))
+        });
+        if let Some((index, _)) = exact {
+            return Some(index);
+        }
+        // A folder outside git belongs to the deepest folder project that contains it, so
+        // the folders below a project's folder do not each become a project.
+        if !containing || ident.common_dir.is_some() {
+            return None;
+        }
+        projects()
+            .filter(|(_, w)| entry_common_dir(w).is_none())
+            .filter_map(|(index, w)| {
+                let root = w.info.roots.first()?;
+                projects::contains(root, &ident.root).then(|| (index, root.components().count()))
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(index, _)| index)
+    }
+
+    /// The project of `ident`, created when there is none (a closed project comes back under the
+    /// name it had); whether it was created. A project that was found without a repository
+    /// identity learns it now (a folder that became a repository).
+    fn project_of(
+        &mut self,
+        ident: &Ident,
+        created_by: CreatedBy,
+        containing: bool,
+    ) -> Result<(WorkspaceInfo, bool), ErrorBody> {
+        if let Some(index) = self.find_project(ident, containing) {
+            let known = self.workspaces[index].info.clone();
+            let learned = ident.common_dir.clone().filter(|_| {
+                known
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.common_dir.is_none())
+            });
+            let workspace = match learned {
+                Some(common_dir) => {
+                    let workspace = self.update_workspace(known.id, |w| {
+                        if let Some(project) = &mut w.project {
+                            project.common_dir = Some(common_dir.clone());
+                        }
+                    })?;
+                    log_write(
+                        self.storage
+                            .workspaces()
+                            .set_common_dir(workspace.id, Some(common_dir)),
+                        "a project identity",
+                    );
+                    workspace
+                }
+                None => known,
+            };
+            return Ok((workspace, false));
+        }
+        let name = self
+            .recent
+            .iter()
+            .find(|r| r.path == ident.root)
+            .map_or_else(|| ident.name(), |r| r.name.clone());
+        let workspace = self.add_project(name, ident, created_by)?;
+        Ok((workspace, true))
+    }
+
+    /// The workspace a session that starts in a folder goes to.
+    fn workspace_for(&mut self, assignment: Assignment) -> Result<WorkspaceId, ErrorBody> {
+        match assignment {
+            Assignment::Home => Ok(self.home),
+            Assignment::Project(ident) => self
+                .project_of(&ident, CreatedBy::User, true)
+                .map(|(workspace, _)| workspace.id),
+        }
     }
 
     fn open_workspace(
         &mut self,
-        folder: &Folder,
+        assignment: Assignment,
         created_by: Option<CreatedBy>,
     ) -> Result<WorkspaceOpened, ErrorBody> {
-        if let Some(index) = self.workspace_containing(&folder.path) {
-            let workspace = self.workspaces[index].info.clone();
+        let (workspace, created) = match assignment {
+            Assignment::Home => (
+                self.workspaces[self.index_of(self.home)?].info.clone(),
+                false,
+            ),
+            Assignment::Project(ident) => {
+                self.project_of(&ident, created_by.unwrap_or_default(), true)?
+            }
+        };
+        if !created {
             self.remember_project(&workspace, now_ms());
-            return Ok(WorkspaceOpened {
-                workspace,
-                created: false,
-            });
         }
-        // A project that was closed comes back under the name it had.
-        let name = self
-            .recent
-            .iter()
-            .find(|r| r.path == folder.root)
-            .map_or_else(|| folder.name(), |r| r.name.clone());
-        let workspace = self.add_project(
-            name,
-            vec![folder.root.clone()],
-            created_by.unwrap_or_default(),
-        )?;
-        Ok(WorkspaceOpened {
-            workspace,
-            created: true,
-        })
+        Ok(WorkspaceOpened { workspace, created })
     }
 
-    fn project_for_roots(&self, id: WorkspaceId) -> Result<usize, ErrorBody> {
+    /// The index of workspace `id` for `add_root` and `remove_root`: only a workspace has
+    /// folders to add and remove (a project is one folder, Home is bound to its own).
+    fn workspace_for_roots(&self, id: WorkspaceId) -> Result<usize, ErrorBody> {
         let index = self.index_of(id)?;
-        if self.workspaces[index].info.kind == WorkspaceKind::Home {
-            return Err(ErrorBody::new(
+        match self.workspaces[index].info.kind {
+            WorkspaceKind::Workspace => Ok(index),
+            WorkspaceKind::Home => Err(ErrorBody::new(
                 ErrorCode::InvalidState,
                 "the Home workspace is bound to its folder; set `home_folder` in daemon.toml",
+            )),
+            WorkspaceKind::Project => Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                "a project is one folder; add folders to a workspace",
+            )),
+        }
+    }
+
+    /// Adds the project of a folder (made when it has none) to a workspace; one that is in
+    /// another workspace moves.
+    fn add_root(
+        &mut self,
+        id: WorkspaceId,
+        assignment: Assignment,
+    ) -> Result<WorkspaceInfo, ErrorBody> {
+        self.workspace_for_roots(id)?;
+        let Assignment::Project(ident) = assignment else {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                "that folder is Home, which is no project",
             ));
-        }
-        Ok(index)
+        };
+        let (project, _) = self.project_of(&ident, CreatedBy::User, false)?;
+        self.set_parent(project.id, Some(id))?;
+        self.remember_project(&project, now_ms());
+        Ok(self.workspaces[self.index_of(id)?].info.clone())
     }
 
-    fn add_root(&mut self, id: WorkspaceId, folder: &Folder) -> Result<WorkspaceInfo, ErrorBody> {
-        let index = self.project_for_roots(id)?;
-        let current = &self.workspaces[index].info;
-        if current
-            .roots
-            .iter()
-            .any(|root| projects::same_place(root, &folder.root))
-        {
-            return Ok(current.clone());
-        }
-        let workspace = self.update_workspace(id, |w| w.roots.push(folder.root.clone()))?;
-        log_write(
-            self.storage
-                .workspaces()
-                .set_roots(id, workspace.roots.clone()),
-            "workspace roots",
-        );
-        self.remember_project(&workspace, workspace.last_active_ms);
-        Ok(workspace)
-    }
-
+    /// Takes the project whose folder is `path` out of the workspace; it stays a project.
     fn remove_root(&mut self, id: WorkspaceId, path: &Path) -> Result<WorkspaceInfo, ErrorBody> {
-        let index = self.project_for_roots(id)?;
-        let at = self.workspaces[index]
-            .info
-            .roots
+        self.workspace_for_roots(id)?;
+        let member = self
+            .workspaces
             .iter()
-            .position(|root| projects::same_place(root, path))
+            .find(|w| {
+                w.info.parent_id == Some(id)
+                    && w.info
+                        .project
+                        .as_ref()
+                        .is_some_and(|project| projects::same_place(&project.root, path))
+            })
+            .map(|w| w.info.id)
             .ok_or_else(|| {
                 ErrorBody::new(
                     ErrorCode::NotFound,
                     format!("{} is not a root of workspace {id}", path.display()),
                 )
             })?;
-        let workspace = self.update_workspace(id, |w| {
-            w.roots.remove(at);
-        })?;
-        log_write(
-            self.storage
-                .workspaces()
-                .set_roots(id, workspace.roots.clone()),
-            "workspace roots",
-        );
-        Ok(workspace)
+        self.set_parent(member, None)?;
+        Ok(self.workspaces[self.index_of(id)?].info.clone())
     }
 
     /// Open projects and closed ones still remembered, newest first. An open project's time is
@@ -1363,17 +1728,21 @@ impl SessionRegistry {
         if let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == workspace) {
             entry.activity_pending = false;
         }
-        match self.update_workspace(workspace, |w| {
-            w.last_active_ms = w.last_active_ms.max(at_ms);
-        }) {
-            Ok(info) => log_write(
-                self.storage
-                    .workspaces()
-                    .set_last_active(workspace, info.last_active_ms),
-                "workspace activity",
-            ),
-            Err(error) => {
-                warn!(%workspace, message = %error.message, "could not announce workspace activity");
+        // The workspace a project is in is as active as its projects.
+        let parent = self.parent_of(workspace);
+        for id in std::iter::once(workspace).chain(parent) {
+            match self.update_workspace(id, |w| {
+                w.last_active_ms = w.last_active_ms.max(at_ms);
+            }) {
+                Ok(info) => log_write(
+                    self.storage
+                        .workspaces()
+                        .set_last_active(id, info.last_active_ms),
+                    "workspace activity",
+                ),
+                Err(error) => {
+                    warn!(workspace = %id, message = %error.message, "could not announce workspace activity");
+                }
             }
         }
     }
@@ -1442,9 +1811,14 @@ impl SessionRegistry {
             .position(|s| s.terminal.as_ref().is_some_and(|t| t.id() == terminal))
     }
 
-    fn create_session(&mut self, req: SessionCreate) -> Result<SessionInfo, ErrorBody> {
-        let workspace_id = req.workspace_id.unwrap_or(self.home);
-        self.index_of(workspace_id)?;
+    fn create_session(
+        &mut self,
+        req: SessionCreate,
+        assignment: Option<Assignment>,
+    ) -> Result<SessionInfo, ErrorBody> {
+        if let Some(id) = req.workspace_id {
+            self.index_of(id)?;
+        }
         let SessionSpec::Terminal(spec) = req.spec;
         if let Some(size) = spec.size
             && (size.cols == 0 || size.rows == 0)
@@ -1454,6 +1828,11 @@ impl SessionRegistry {
                 format!("invalid terminal size {}x{}", size.cols, size.rows),
             ));
         }
+        // An explicit workspace wins; else the project of the folder (Home without one).
+        let workspace_id = match req.workspace_id {
+            Some(id) => id,
+            None => self.workspace_for(assignment.unwrap_or(Assignment::Home))?,
+        };
 
         let default_title = default_title(&spec);
         let chosen = spec
@@ -1476,6 +1855,7 @@ impl SessionRegistry {
             restored: false,
             chat: None,
             placement: self.placement_of(spec.cwd.as_deref()),
+            folder: spec.cwd.clone(),
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -1511,18 +1891,22 @@ impl SessionRegistry {
     /// Records activity now without announcing it.
     fn touch_workspace(&mut self, id: WorkspaceId) {
         let now = now_ms();
-        let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == id) else {
-            return;
-        };
-        entry.activity_pending = false;
-        entry.info.last_active_ms = entry.info.last_active_ms.max(now);
-        let last_active_ms = entry.info.last_active_ms;
-        log_write(
-            self.storage
-                .workspaces()
-                .set_last_active(id, last_active_ms),
-            "workspace activity",
-        );
+        // The workspace a project is in was active too.
+        let parent = self.parent_of(id);
+        for id in std::iter::once(id).chain(parent) {
+            let Some(entry) = self.workspaces.iter_mut().find(|w| w.info.id == id) else {
+                continue;
+            };
+            entry.activity_pending = false;
+            entry.info.last_active_ms = entry.info.last_active_ms.max(now);
+            let last_active_ms = entry.info.last_active_ms;
+            log_write(
+                self.storage
+                    .workspaces()
+                    .set_last_active(id, last_active_ms),
+                "workspace activity",
+            );
+        }
     }
 
     /// Spawns the process for a `Starting` session and moves it to `Running` or `Failed`.
@@ -1859,6 +2243,7 @@ impl SessionRegistry {
             TerminalMeta::Cwd(cwd) => {
                 let session = &mut self.sessions[index];
                 if session.info.cwd.as_deref() != Some(cwd.as_path()) {
+                    session.info.folder = Some(cwd.clone());
                     session.info.cwd = Some(cwd);
                     self.emit_session(index);
                     self.mark_dirty(index);
@@ -2021,8 +2406,13 @@ impl SessionRegistry {
         Ok(session.info.state.is_live())
     }
 
-    fn create_chat(&mut self, req: ChatCreate, reply: Reply<SessionInfo>) {
-        match self.begin_chat(req) {
+    fn create_chat(
+        &mut self,
+        req: ChatCreate,
+        assignment: Option<Assignment>,
+        reply: Reply<SessionInfo>,
+    ) {
+        match self.begin_chat(req, assignment) {
             Ok(index) => self.spawn_chat_start(index, Some(reply)),
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -2031,7 +2421,11 @@ impl SessionRegistry {
     }
 
     /// Adds the session (state `starting`) and stores it; the agent is started by the caller.
-    fn begin_chat(&mut self, req: ChatCreate) -> Result<usize, ErrorBody> {
+    fn begin_chat(
+        &mut self,
+        req: ChatCreate,
+        assignment: Option<Assignment>,
+    ) -> Result<usize, ErrorBody> {
         let harness = is_harness_agent(&req.agent);
         if req.agent != AGENT_CODEX && !harness && !is_gateway_agent(&req.agent) {
             return Err(ErrorBody::new(
@@ -2069,9 +2463,7 @@ impl SessionRegistry {
                 self.index_of(id)?;
                 id
             }
-            None => self
-                .workspace_containing(&req.cwd)
-                .map_or(self.home, |index| self.workspaces[index].info.id),
+            None => self.workspace_for(assignment.unwrap_or(Assignment::Home))?,
         };
         let spec = match direct {
             Some((provider_id, model, system_prompt)) => ChatSpec {
@@ -2123,6 +2515,7 @@ impl SessionRegistry {
             restored: false,
             chat: Some(chat_info(&spec)),
             placement: self.placement_of(Some(&req.cwd)),
+            folder: Some(req.cwd.clone()),
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -2675,6 +3068,7 @@ impl SessionRegistry {
                 restored: false,
                 chat: Some(chat_info(&spec)),
                 placement: None,
+                folder: row.cwd.clone(),
             },
             spec: TerminalSpec {
                 command: vec![spec.agent.clone()],
@@ -2707,6 +3101,40 @@ impl SessionRegistry {
 
     // Storage ---------------------------------------------------------------------------------
 
+    /// A session keeps the project it started in. Only when that project's folder is gone (the
+    /// repository moved) and the folder the session started in still exists does the session
+    /// follow its folder to the project that is there now. Returns whether it moved.
+    fn follow_moved_project(&mut self, row: &mut SessionRow) -> bool {
+        let Some(entry) = self
+            .workspaces
+            .iter()
+            .find(|w| w.info.id == row.workspace_id)
+        else {
+            return false;
+        };
+        let stale = entry.info.kind == WorkspaceKind::Project
+            && entry.info.roots.first().is_some_and(|root| !root.exists());
+        if !stale {
+            return false;
+        }
+        let Some(start) = restore::start_cwd(row).filter(|dir| dir.is_dir()) else {
+            return false;
+        };
+        let assignment = self.rules.assign_path(Some(&start));
+        match self.workspace_for(assignment) {
+            Ok(id) if id != row.workspace_id => {
+                info!(session = %row.id, from = %row.workspace_id, to = %id, "session follows its folder to another project");
+                row.workspace_id = id;
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                warn!(session = %row.id, message = %error.message, "could not re-derive a session's project");
+                false
+            }
+        }
+    }
+
     /// Rebuilds the sessions from their rows. Live ones are spawned again (`Respawn`) or listed
     /// as stopped; ended ones stay as they were, marked `restored` because their screen is gone.
     fn restore_sessions(
@@ -2718,7 +3146,7 @@ impl SessionRegistry {
         let mut respawn = Vec::new();
         let mut rewrite = Vec::new();
         let mut chat_starts = Vec::new();
-        for row in rows {
+        for mut row in rows {
             if !self
                 .workspaces
                 .iter()
@@ -2727,11 +3155,16 @@ impl SessionRegistry {
                 warn!(session = %row.id, "stored session has no workspace; skipping it");
                 continue;
             }
+            let moved = self.follow_moved_project(&mut row);
             if row.kind == SessionKind::Harness {
                 match self.restore_chat(row, mode) {
                     ChatRestore::Start(index) => chat_starts.push(index),
                     ChatRestore::Rewrite(index) => rewrite.push(index),
                     ChatRestore::Keep => {}
+                }
+                if moved && let Some(index) = self.sessions.len().checked_sub(1) {
+                    // The new project is stored with the session.
+                    self.persist_session(index);
                 }
                 continue;
             }
@@ -2794,13 +3227,14 @@ impl SessionRegistry {
                     title: row.title,
                     state,
                     command: spec.command.clone(),
-                    cwd,
+                    cwd: cwd.clone(),
                     terminal_id: None,
                     created_at_ms: row.created_at_ms,
                     agent: None,
                     restored,
                     chat: None,
                     placement: None,
+                    folder: cwd,
                 },
                 spec,
                 default_title,
@@ -2824,6 +3258,8 @@ impl SessionRegistry {
             match action {
                 Some(true) => respawn.push(index),
                 Some(false) => rewrite.push(index),
+                // A respawned session is stored by `start_terminal`.
+                None if moved => rewrite.push(index),
                 None => {}
             }
         }

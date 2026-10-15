@@ -150,6 +150,8 @@ mod tests {
             last_active_ms: 0,
             live_sessions: 1,
             total_sessions: 1,
+            parent_id: None,
+            project: None,
         }
     }
 

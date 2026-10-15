@@ -21,8 +21,9 @@ use hutan_core::{SessionId, WorkspaceId};
 use hutan_daemon::{DaemonConfig, Paths, RunningDaemon};
 use hutan_desktop::workbench::{Workbench, WorkbenchOptions};
 use hutan_protocol::messages::{
-    ClientInfo, ClientKind, Request, SessionCreate, SessionInfo, SessionResult, SessionSpec,
-    TerminalSpec, WorkspaceCreate, WorkspaceInfo,
+    ClientInfo, ClientKind, CreatedBy, Request, SessionCreate, SessionInfo, SessionResult,
+    SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceOpen, WorkspaceOpened,
+    WorkspaceRename,
 };
 use hutan_settings::{SettingsPaths, SettingsStore};
 use serde::de::DeserializeOwned;
@@ -255,11 +256,34 @@ impl TestDaemon {
         })
     }
 
+    /// What the desktop of this version shows as one flat workspace: a project (protocol 0.19)
+    /// for the first of `roots` — or, with none, an empty workspace — named `name`. The project
+    /// sidebar and its workspaces-containing-projects model arrive with M18-B.
     pub fn create_workspace(&self, name: &str, roots: &[&Path]) -> WorkspaceInfo {
-        self.call(Request::WorkspaceCreate(WorkspaceCreate {
+        self.create_workspace_by(name, roots, None)
+    }
+
+    pub fn create_workspace_by(
+        &self,
+        name: &str,
+        roots: &[&Path],
+        created_by: Option<CreatedBy>,
+    ) -> WorkspaceInfo {
+        let Some(root) = roots.first() else {
+            return self.call(Request::WorkspaceCreate(WorkspaceCreate {
+                name: name.to_owned(),
+                paths: Vec::new(),
+                project_ids: Vec::new(),
+                created_by,
+            }));
+        };
+        let opened: WorkspaceOpened = self.call(Request::WorkspaceOpen(WorkspaceOpen {
+            path: root.to_path_buf(),
+            created_by,
+        }));
+        self.call(Request::WorkspaceRename(WorkspaceRename {
+            workspace_id: opened.workspace.id,
             name: name.to_owned(),
-            roots: roots.iter().map(|r| r.to_path_buf()).collect(),
-            created_by: None,
         }))
     }
 
