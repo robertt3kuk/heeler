@@ -51,6 +51,10 @@ pub(crate) struct Shared {
     pub(crate) chat: broadcast::Sender<ChatUpdate>,
     /// The live, synchronised connection; `None` whenever disconnected.
     client: Mutex<Option<Client>>,
+    /// Counts the connections made so far: bumped, under the `client` lock, each time a
+    /// synchronised client is installed. Lets a caller tell whether something it did on "the
+    /// connection" was done on the one that is current now.
+    generation: AtomicU64,
     commands: mpsc::Sender<Command>,
     next_handle: AtomicU64,
     /// Whether a missing daemon may be started (see [`Connection::set_autostart`]).
@@ -67,8 +71,19 @@ impl Shared {
             .clone()
     }
 
+    /// The live client together with its generation, read under one lock.
+    fn client_generation(&self) -> Option<(u64, Client)> {
+        let guard = self.client.lock().unwrap_or_else(PoisonError::into_inner);
+        let client = guard.clone()?;
+        Some((self.generation.load(Ordering::Acquire), client))
+    }
+
     pub(crate) fn set_client(&self, client: Option<Client>) {
-        *self.client.lock().unwrap_or_else(PoisonError::into_inner) = client;
+        let mut guard = self.client.lock().unwrap_or_else(PoisonError::into_inner);
+        if client.is_some() {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
+        *guard = client;
     }
 }
 
@@ -129,6 +144,7 @@ impl Connection {
             notices,
             chat,
             client: Mutex::new(None),
+            generation: AtomicU64::new(0),
             commands,
             next_handle: AtomicU64::new(1),
             autostart: AtomicBool::new(opts.autostart.is_some()),
@@ -328,11 +344,23 @@ impl Connection {
             .is_some_and(|client| client.supports_notify())
     }
 
+    /// The number of the current connection: it grows each time the connection is made again
+    /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
+    pub fn generation(&self) -> u64 {
+        self.shared.generation.load(Ordering::Acquire)
+    }
+
     /// `client.focus` ([`Client::client_focus`]): the session the user is looking at. The daemon
-    /// forgets it when the connection ends, so report again after every reconnect.
-    pub async fn client_focus(&self, session: Option<SessionId>) -> Result<(), ClientError> {
-        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
-        client.client_focus(session).await
+    /// forgets it when the connection ends. Answers the [`generation`](Self::generation) of the
+    /// connection it was reported on: a caller that finds the current one different reports
+    /// again.
+    pub async fn client_focus(&self, session: Option<SessionId>) -> Result<u64, ClientError> {
+        let (generation, client) = self
+            .shared
+            .client_generation()
+            .ok_or(ClientError::Disconnected)?;
+        client.client_focus(session).await?;
+        Ok(generation)
     }
 
     /// `chat.create`: opens an agent conversation as a new session.

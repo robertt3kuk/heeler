@@ -3,10 +3,55 @@
 
 use gpui::{Context, Window};
 
+use super::model::{DockPosition, LayoutPreset, PanelId};
+use super::panels::AssistantPanel;
 use super::view::Workbench;
 use crate::sessions::UiOpenRequested;
 
 impl Workbench {
+    /// Whether the Assistant panel is on screen: the active panel of a visible dock, or the
+    /// active tab of a pane (it can be moved there) outside the overview.
+    fn assistant_visible(&self) -> bool {
+        let id = PanelId::new("assistant");
+        let docked = [
+            DockPosition::Left,
+            DockPosition::Right,
+            DockPosition::Bottom,
+        ]
+        .into_iter()
+        .map(|pos| self.state.docks.get(pos))
+        .any(|dock| dock.visible && dock.active.as_ref() == Some(&id));
+        docked
+            || (self.state.preset != LayoutPreset::OVERVIEW
+                && self
+                    .state
+                    .panes()
+                    .into_iter()
+                    .filter_map(|pane| pane.active_item())
+                    .any(|item| item.as_panel() == Some(&id)))
+    }
+
+    /// Tells the sessions store whether the user is typing into the Assistant panel's composer
+    /// (`client.focus`): the panel is on screen, the window is active, and the composer of the
+    /// scope's session holds the keyboard. Runs every frame, so moving the panel to a pane or
+    /// closing it, changing its scope, and the window losing or gaining activation are all seen
+    /// without a hook of their own; the store only acts on a change.
+    pub(crate) fn sync_assistant_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let session = (window.is_window_active() && self.assistant_visible())
+            .then(|| self.panel::<AssistantPanel>("assistant"))
+            .flatten()
+            .and_then(|panel| {
+                let panel = panel.read(cx);
+                let session = panel.session(cx)?;
+                let view = panel.chat_view(session)?;
+                view.read(cx)
+                    .focus_handle_is_focused(window)
+                    .then_some(session)
+            });
+        self.sessions
+            .update(cx, |store, cx| store.set_assistant_focused(session, cx));
+    }
+
     /// Brings the window forward and focuses the session's tab (its workspace first), with the
     /// same item machinery as every other way of opening a session. A session that is gone or
     /// no longer live is not opened; the window says so instead.
@@ -24,7 +69,11 @@ impl Workbench {
         match live {
             Some(true) => {
                 window.activate_window();
-                self.open_session(event.session_id, window, cx);
+                // An assistant conversation lives in the Assistant panel, in its own scope; every
+                // other session in a tab.
+                if !self.show_assistant_session(event.session_id, window, cx) {
+                    self.open_session(event.session_id, window, cx);
+                }
             }
             Some(false) => {
                 window.activate_window();

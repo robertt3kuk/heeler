@@ -78,6 +78,7 @@ impl Render for Workbench {
         let titlebar = self.render_titlebar(window, cx);
         let status = self.render_status_bar(window, cx);
         self.rescue_orphaned_focus(window, cx);
+        self.sync_assistant_focus(window, cx);
         let edge_targets = self.render_hidden_dock_targets(cx);
         let palette = self.render_palette(window, cx);
         let picker = self.render_picker(window, cx);

@@ -82,9 +82,14 @@ pub struct SessionsStore {
     blocked_epoch: Option<Epoch>,
     /// The focus the daemon last acknowledged for this connection (`client.focus`); `None`
     /// when nothing was reported on the current connection.
-    focus_sent: Option<Option<SessionId>>,
+    /// With the [`Connection::generation`] it was acknowledged on.
+    focus_sent: Option<(u64, Option<SessionId>)>,
     /// The `client.focus` request in flight; at most one, so reports cannot overtake each other.
-    focus_task: Option<Task<()>>,
+    /// With the generation it was started on: a request that outlives its connection is
+    /// cancelled, not waited for.
+    focus_task: Option<(u64, Task<()>)>,
+    /// The session of the Assistant panel while the panel has the focus.
+    assistant_focused: Option<SessionId>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -160,6 +165,7 @@ impl SessionsStore {
             blocked_epoch: None,
             focus_sent: None,
             focus_task: None,
+            assistant_focused: None,
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -208,6 +214,8 @@ impl SessionsStore {
             self.report_focus(cx);
         } else {
             self.focus_sent = None;
+            // The request, if any, was for the connection that is gone.
+            self.focus_task = None;
         }
         cx.notify();
     }
@@ -506,7 +514,26 @@ impl SessionsStore {
     /// before the first acknowledgement and after the connection was lost, `Some(None)` once
     /// "nothing is looked at" was acknowledged.
     pub fn focus_reported(&self) -> Option<Option<SessionId>> {
+        let generation = self.connection.generation();
         self.focus_sent
+            .filter(|(sent_on, _)| *sent_on == generation)
+            .map(|(_, focus)| focus)
+    }
+
+    /// The session the user is looking at for `client.focus`: the focused item's session, else
+    /// the docked Assistant's while it has the focus.
+    fn looked_at(&self) -> Option<SessionId> {
+        self.focused.or(self.assistant_focused)
+    }
+
+    /// The Assistant panel has (or no longer has) the focus with `session` shown. Only the
+    /// daemon's idea of "looked at" changes; attention and the inspector follow
+    /// [`set_focused`](Self::set_focused) alone.
+    pub fn set_assistant_focused(&mut self, session: Option<SessionId>, cx: &mut Context<Self>) {
+        if self.assistant_focused != session {
+            self.assistant_focused = session;
+            self.report_focus(cx);
+        }
     }
 
     // ---- attention -------------------------------------------------------------------------
@@ -527,29 +554,39 @@ impl SessionsStore {
     /// "turn finished" notification for a session the user is looking at. One request at a
     /// time; when the focus changed while it was in flight the next one follows.
     fn report_focus(&mut self, cx: &mut Context<Self>) {
-        if self.focus_task.is_some()
-            || self.focus_sent == Some(self.focused)
-            || self.state.connection != ConnectionState::Connected
-            || !self.connection.supports_notify()
+        if self.state.connection != ConnectionState::Connected || !self.connection.supports_notify()
         {
             return;
         }
-        let focused = self.focused;
+        let generation = self.connection.generation();
+        let focused = self.looked_at();
+        match &self.focus_task {
+            // One request at a time: this one's answer decides whether another follows.
+            Some((started_on, _)) if *started_on == generation => return,
+            // It was for a connection that is gone: its answer would stamp this one with a
+            // focus the daemon never got.
+            Some(_) => self.focus_task = None,
+            None => {}
+        }
+        if self.focus_sent == Some((generation, focused)) {
+            return;
+        }
         let connection = self.connection.clone();
-        self.focus_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let sent = connection.client_focus(focused).await;
             this.update(cx, |this, cx| {
                 this.focus_task = None;
                 match sent {
-                    Ok(()) => {
-                        this.focus_sent = Some(focused);
+                    Ok(sent_on) => {
+                        this.focus_sent = Some((sent_on, focused));
                         this.report_focus(cx);
                     }
                     Err(error) => tracing::debug!(%error, "could not report the focus"),
                 }
             })
             .ok();
-        }));
+        });
+        self.focus_task = Some((generation, task));
     }
 
     /// The user looked at `session`.

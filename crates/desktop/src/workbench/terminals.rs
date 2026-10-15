@@ -685,6 +685,10 @@ impl Workbench {
         };
         self.note_focused_chat(cx);
         self.sessions.update(cx, |store, cx| {
+            if !self.window_active {
+                // The panel's composer keeps its keyboard focus in a window nobody uses.
+                store.set_assistant_focused(None, cx);
+            }
             store.set_focused(focused, cx);
             if let Some(session) = focused {
                 store.mark_read(session, cx);

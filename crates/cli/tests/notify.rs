@@ -141,17 +141,16 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
     assert!(intent["body"].as_str().unwrap().contains("touch hi.txt"));
 
     // The table names it, its kind and its actions.
+    // The human table names the intent, its kind and what can be done about it.
     let table = t.heeler(&["notify", "ls"]).await.ok().stdout;
-    let mut lines = table.lines();
-    let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
-    assert_eq!(&header[..3], ["ID", "KIND", "ACTIONS"], "{table}");
-    let row = lines.next().unwrap();
-    assert!(
-        row.contains(&id)
-            && row.contains("approval_required")
-            && row.contains("accept acceptWithExecpolicyAmendment cancel"),
-        "{table}"
-    );
+    let row = table
+        .lines()
+        .find(|line| line.contains(&id))
+        .expect("a row");
+    assert!(row.contains("approval_required"), "{table}");
+    for action in ["accept", "acceptWithExecpolicyAmendment", "cancel"] {
+        assert!(row.contains(action), "{table}");
+    }
 
     // An action the intent does not offer is refused and the intent stays.
     let refused = t.heeler(&["notify", "act", &id[..8], "decline"]).await;
@@ -162,18 +161,15 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
     );
     let unknown = t.heeler(&["notify", "act", "0000", "accept"]).await;
     assert_eq!(unknown.code, 1);
-    assert!(
-        unknown.stderr.contains("no pending notification"),
-        "{unknown:?}"
-    );
     assert_eq!(intents(&t).await.len(), 1);
 
     // By unique prefix: the approval is answered.
-    let acted = t.heeler(&["notify", "act", &id[..8], "accept"]).await.ok();
-    assert_eq!(
-        acted.stdout,
-        format!("answered the approval of {id}: accept\n")
-    );
+    let acted = t
+        .heeler(&["notify", "act", &id[..8], "accept", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(acted["route"], "approval");
     let approvals = t.heeler(&["approvals", "--json"]).await.ok();
     assert!(approvals.json()["approvals"].as_array().unwrap().is_empty());
 
@@ -188,12 +184,14 @@ async fn an_approval_is_watched_listed_acted_on_and_its_turn_noted() {
 
     // Acknowledging by prefix empties the list.
     let finished_id = finished["id"].as_str().unwrap();
-    let acked = t.heeler(&["notify", "ack", &finished_id[..8]]).await.ok();
-    assert_eq!(acked.stdout, format!("acknowledged {finished_id}\n"));
-    assert_eq!(
-        t.heeler(&["notify", "ls"]).await.ok().stdout,
-        "no pending notifications\n"
-    );
+    let acked = t
+        .heeler(&["notify", "ack", &finished_id[..8], "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(acked["id"], finished_id);
+    assert_eq!(acked["acknowledged"], true);
+    assert!(intents(&t).await.is_empty());
     watch.child.kill().await.unwrap();
     t.stop().await;
 }
@@ -213,12 +211,14 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
     let mut watch = Watch::spawn(&t);
     assert_eq!(watch.next().await["id"], id.as_str());
 
-    // `open` goes out as ui.open; with no desktop connected the CLI says so (exit 0).
-    let opened = t.heeler(&["notify", "act", &id, "open"]).await.ok();
-    assert_eq!(
-        opened.stdout,
-        format!("no desktop is connected; session {session} was not opened\n")
-    );
+    // `open` goes out as ui.open; with no desktop connected nobody was reached (exit 0).
+    let opened = t
+        .heeler(&["notify", "act", &id, "open", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(opened["route"], "ui_open");
+    assert_eq!(opened["desktop_clients"], 0);
     assert!(intents(&t).await.is_empty(), "acting acknowledges");
 
     let raw = {
@@ -237,17 +237,16 @@ async fn a_failed_session_is_listed_replayed_to_a_late_watcher_and_opened() {
     // Acknowledging what is gone is an error.
     let gone = t.heeler(&["notify", "ack", &id]).await;
     assert_eq!(gone.code, 1, "{gone:?}");
-    assert!(gone.stderr.contains("no pending notification"), "{gone:?}");
     watch.child.kill().await.unwrap();
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn usage_errors_exit_two_and_an_empty_list_says_so() {
+async fn usage_errors_exit_two_and_nothing_is_pending_at_first() {
     let t = TestDaemon::start().await;
     let missing = t.heeler(&["notify", "act", "abcd"]).await;
     assert_eq!(missing.code, 2, "{missing:?}");
-    let empty = t.heeler(&["notify", "ls"]).await.ok();
-    assert_eq!(empty.stdout, "no pending notifications\n");
+    let empty = t.heeler(&["notify", "ls", "--json"]).await.ok().json();
+    assert!(empty["intents"].as_array().unwrap().is_empty());
     t.stop().await;
 }

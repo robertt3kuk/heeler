@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `approval_required` | `approval.required`; answered by `notify.act` through `approval.respond` |
 //! | `agent_blocked` | a node of a session's agent tree becomes `blocked` |
-//! | `agent_finished` | the main agent goes `working` → `idle` (no failure outcome) after `min_turn_secs` |
+//! | `agent_finished` | the main agent goes `working` → `idle` with outcome `completed` after `min_turn_secs` |
 //! | `session_exited_with_error` | a session's process exits with a non-zero code |
 //! | `chat_turn_finished` | a chat turn completes while no client has the session focused |
 //!
@@ -59,9 +59,6 @@ pub const OBSERVER_QUEUE: usize = 1024;
 /// Per-node memory of the agent trees is dropped when it grows past this many entries (a safety
 /// net: trees are bounded and report their removals).
 const MAX_MEMOS: usize = 4096;
-/// Text taken from a message before redaction; whatever follows could not reach the 240-character
-/// body anyway.
-const SOURCE_CHARS: usize = 8192;
 
 /// What the session is called in an intent, and where it lives.
 #[derive(Debug, Clone, Default)]
@@ -247,7 +244,7 @@ impl Core {
             }
             if is_root
                 && node.state == NodeState::Idle
-                && matches!(node.outcome, None | Some(NodeOutcome::Completed))
+                && node.outcome == Some(NodeOutcome::Completed)
                 && let Some(since) = before.and_then(|b| b.working_since)
                 && now_ms.saturating_sub(since) >= min_turn_ms
             {
@@ -419,10 +416,11 @@ fn approval_candidate(approval: &ApprovalInfo) -> Candidate {
     }
 }
 
-/// `text` as one redacted line of at most `max_chars` characters; a cut ends in `…`.
+/// `text` as one redacted line of at most `max_chars` characters; a cut ends in `…`. Redaction
+/// comes first and sees the whole text: cutting first could clip a quoted secret before its
+/// closing quote, or a URL password before its `@`, and the prefix would then pass the masks.
 fn clean(text: &str, max_chars: usize) -> String {
-    let source = bound(text, SOURCE_CHARS, Keep::Start);
-    let redacted = heeler_index::redact::redact(&source.text);
+    let redacted = heeler_index::redact::redact(text);
     let line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
     let cut = bound(&line, max_chars.saturating_sub(1), Keep::Start);
     if cut.truncated {
@@ -666,6 +664,14 @@ mod tests {
         }
     }
 
+    /// A node that finished its turn as the daemon reports it: idle, outcome `completed`.
+    fn completed(id: &str, kind: NodeKind) -> AgentNode {
+        AgentNode {
+            outcome: Some(NodeOutcome::Completed),
+            ..node(id, kind, NodeState::Idle)
+        }
+    }
+
     fn tree(session: SessionId, nodes: Vec<AgentNode>) -> Event {
         Event::AgentTreeUpdated {
             session_id: session,
@@ -827,7 +833,7 @@ mod tests {
         assert!(raise(&mut core, &tree(session, vec![working.clone()]), 1_000).is_empty());
         // Still working later: nothing, and the start of the turn is kept.
         assert!(raise(&mut core, &tree(session, vec![working]), 10_000).is_empty());
-        let idle = node("root", NodeKind::Main, NodeState::Idle);
+        let idle = completed("root", NodeKind::Main);
         let raised = raise(&mut core, &tree(session, vec![idle]), 61_000);
         let [intent] = raised.as_slice() else {
             panic!("expected one intent, got {raised:?}");
@@ -835,6 +841,44 @@ mod tests {
         assert_eq!(intent.kind, IntentKind::AgentFinished);
         assert_eq!(intent.title, "api: claude finished");
         assert_eq!(intent.body, "Finished after 1m 0s.");
+    }
+
+    #[test]
+    fn an_idle_main_agent_without_an_outcome_is_not_a_finish() {
+        // An unknown outcome is not evidence that the turn completed: a plain idle report (no
+        // outcome) ends a long turn without raising, however long it was.
+        let mut core = core();
+        let session = SessionId::new();
+        raise(
+            &mut core,
+            &tree(
+                session,
+                vec![node("root", NodeKind::Main, NodeState::Working)],
+            ),
+            1_000,
+        );
+        let idle = node("root", NodeKind::Main, NodeState::Idle);
+        assert_eq!(idle.outcome, None);
+        assert!(raise(&mut core, &tree(session, vec![idle]), 600_000).is_empty());
+        // The very same turn with its outcome reported is the positive twin.
+        let mut core = self::core();
+        raise(
+            &mut core,
+            &tree(
+                session,
+                vec![node("root", NodeKind::Main, NodeState::Working)],
+            ),
+            1_000,
+        );
+        assert_eq!(
+            raise(
+                &mut core,
+                &tree(session, vec![completed("root", NodeKind::Main)]),
+                600_000,
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
@@ -850,7 +894,7 @@ mod tests {
             ),
             1_000,
         );
-        let idle = node("root", NodeKind::Main, NodeState::Idle);
+        let idle = completed("root", NodeKind::Main);
         assert!(raise(&mut core, &tree(session, vec![idle]), 20_999).is_empty());
 
         // Exactly min_turn_secs counts.
@@ -863,7 +907,7 @@ mod tests {
             ),
             1_000,
         );
-        let idle = node("root", NodeKind::Main, NodeState::Idle);
+        let idle = completed("root", NodeKind::Main);
         assert_eq!(
             raise(&mut core, &tree(session, vec![idle]), 21_000).len(),
             1
@@ -879,7 +923,7 @@ mod tests {
             ),
             1_000,
         );
-        let idle = node("sub", NodeKind::Sub, NodeState::Idle);
+        let idle = completed("sub", NodeKind::Sub);
         assert!(raise(&mut core, &tree(session, vec![idle]), 600_000).is_empty());
 
         // The main agent failing, being interrupted, or losing contact.
@@ -950,7 +994,7 @@ mod tests {
             ),
             6_000,
         );
-        let idle = node("root", NodeKind::Main, NodeState::Idle);
+        let idle = completed("root", NodeKind::Main);
         let raised = raise(&mut core, &tree(session, vec![idle]), 300_000);
         assert_eq!(raised.len(), 1, "{raised:?}");
         assert_eq!(raised[0].kind, IntentKind::AgentFinished);
@@ -1228,6 +1272,50 @@ mod tests {
         assert_eq!(secret, "key [REDACTED] end");
         let multibyte = clean(&"é".repeat(500), 10);
         assert_eq!(multibyte.chars().count(), 10);
+    }
+
+    /// What `clean` did before: cut the source first, redact the prefix.
+    fn clean_clipping_first(text: &str, max_chars: usize) -> String {
+        let source = bound(text, 8192, Keep::Start);
+        let redacted = heeler_index::redact::redact(&source.text);
+        let line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+        bound(&line, max_chars.saturating_sub(1), Keep::Start).text
+    }
+
+    #[test]
+    fn a_secret_that_ends_beyond_any_prefix_is_still_masked() {
+        // A quoted assignment whose closing quote lies past 8192 characters: the mask needs the
+        // quote, so clipping first leaves the opening of the secret in the body.
+        let secret = "abcdefghij".repeat(1000);
+        let quoted = format!("private_key=\"{secret}\" and then some text");
+        let clipped = clean_clipping_first(&quoted, BODY_MAX_CHARS);
+        assert!(
+            clipped.contains("abcdefghij"),
+            "the fixture must leak under the old order: {clipped}"
+        );
+        let body = clean(&quoted, BODY_MAX_CHARS);
+        assert!(!body.contains("abcdefghij"), "{body}");
+        assert!(body.starts_with("private_key=[REDACTED] and"), "{body}");
+        assert!(body.chars().count() <= BODY_MAX_CHARS);
+
+        // A URL password whose `@` lies beyond the prefix.
+        let password = "p4ssw0rdp4ss".repeat(800);
+        let url = format!("fetch https://deploy:{password}@example.com/repo.git now");
+        let clipped = clean_clipping_first(&url, BODY_MAX_CHARS);
+        assert!(
+            clipped.contains("p4ssw0rdp4ss"),
+            "the fixture must leak under the old order: {clipped}"
+        );
+        let body = clean(&url, BODY_MAX_CHARS);
+        assert!(!body.contains("p4ssw0rdp4ss"), "{body}");
+        assert!(
+            body.contains("https://deploy:[REDACTED]@example.com"),
+            "{body}"
+        );
+
+        // The same holds for the title, which carries the session's name.
+        let title = clean(&quoted, TITLE_MAX_CHARS);
+        assert!(!title.contains("abcdefghij"), "{title}");
     }
 
     #[test]

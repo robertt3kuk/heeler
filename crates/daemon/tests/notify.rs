@@ -584,7 +584,8 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     let released = create(&t.client, idle_session()).await;
     let failed = create(&t.client, idle_session()).await;
     let short = create(&t.client, idle_session()).await;
-    for session in [&finished, &released, &failed] {
+    let unknown = create(&t.client, idle_session()).await;
+    for session in [&finished, &released, &failed, &unknown] {
         report(&t.client, main_report(session.id, AgentState::Working, 1)).await;
     }
     sleep(Duration::from_millis(1300)).await;
@@ -592,8 +593,19 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
     report(&t.client, main_report(short.id, AgentState::Working, 1)).await;
     sleep(Duration::from_millis(400)).await;
     report(&t.client, main_report(short.id, AgentState::Idle, 2)).await;
-    // The long ones end: a plain idle, a completed release, and a failed release.
-    report(&t.client, main_report(finished.id, AgentState::Idle, 2)).await;
+    // The long ones end: a main agent reporting idle with its outcome `completed`, a completed
+    // release, a failed release, and a plain idle whose outcome nobody said (not evidence of a
+    // finish: no intent).
+    let mut done = sub_report(finished.id, AgentState::Idle, 2, None);
+    done.node = done.node.map(|node| NodeReport {
+        id: "root".into(),
+        kind: NodeKind::Main,
+        name: None,
+        outcome: Some(NodeOutcome::Completed),
+        ..node
+    });
+    report(&t.client, done).await;
+    report(&t.client, main_report(unknown.id, AgentState::Idle, 2)).await;
     release(&t.client, released.id, 2, Some(NodeOutcome::Completed)).await;
     release(&t.client, failed.id, 2, Some(NodeOutcome::Failed)).await;
 
@@ -620,7 +632,9 @@ async fn a_long_enough_turn_ending_raises_agent_finished_and_failures_do_not() {
         );
     }
     t.no_intent(Duration::from_millis(500)).await;
-    assert_eq!(t.intents().await.len(), 2);
+    let pending = t.intents().await;
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().all(|i| i.session_id != unknown.id));
     t.stop().await;
 }
 
