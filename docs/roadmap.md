@@ -91,7 +91,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 - [x] M6.1 Spike: notifications from daemon vs helper → ADR 0007 accepted: the daemon posts (`docs/spikes/2026-10-15-notifications.md`)
 - [x] M6.2 App bundle build (`just bundle`), ad-hoc signing for dev (M6-A; executable `hutan-desktop`, see `docs/packaging.md`)
 - [x] M6.3 Notification intents (M6-A, protocol 0.13) + native notifications posted by `hutand` with action routing (M6-B; no helper)
-- [ ] M6.4 SMAppService launch agent toggle; menu bar status; Dock badge; global shortcuts
+- [x] M6.4 SMAppService launch agent toggle; menu bar status; Dock badge; global shortcut; single instance (M6-C; demo with the user pending)
 
 **First vertical slice complete after M6** — run the full acceptance list from the spec.
 
