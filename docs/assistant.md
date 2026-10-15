@@ -19,6 +19,10 @@ An **assistant** is a direct chat (a provider's chat API, no tools, no approvals
 
 A session's scope follows from its workspace: the Home workspace holds the **global** assistants (they see the Home folder, nothing else), every other workspace its **workspace** assistants (they see the workspace's roots). `assistant.open { scope, workspace_id? }` returns the default assistant of the scope — the oldest assistant session of that workspace — and creates it on first use with `[assistant] provider` and `model` from `daemon.toml` (the model defaults to the provider's default model). Without a configured provider it fails with `invalid_state` and says which setting to add. A stopped default is started again. `new: true` (or `chat.create` with `agent: "assistant"` and a provider) makes one more; `assistant.list` shows them all and which is the default.
 
+Sessions created in the same millisecond keep their insertion order, including after updates
+and daemon restart. Restore must not use random ULID order as the tie breaker: otherwise
+opening the default assistant could select a different conversation.
+
 An assistant session is an ordinary chat session: `chat.send`, `chat.history`, `chat.interrupt`, `chat.set_model`, `session.stop`/`restart`, restore after a daemon restart all work as for a direct chat. Its system prompt is `assistant::SYSTEM_PROMPT`.
 
 ## Attachments

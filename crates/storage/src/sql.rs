@@ -358,11 +358,13 @@ const SESSION_COLUMNS: &str = "id, workspace_id, kind, title, title_locked, spec
 
 pub fn list_sessions(conn: &Connection, workspace: Option<WorkspaceId>) -> Result<Vec<SessionRow>> {
     let context = "listing sessions";
+    // Match the registry's insertion order at timestamp ties. ULID randomness is not a
+    // creation-order tie breaker; upsert preserves rowid (also used for provider ordering).
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {SESSION_COLUMNS} FROM sessions \
              WHERE ?1 IS NULL OR workspace_id = ?1 \
-             ORDER BY created_at_ms, id"
+             ORDER BY created_at_ms, rowid"
         ))
         .map_err(StorageError::sqlite(context))?;
     let rows = stmt

@@ -344,6 +344,31 @@ fn workspaces_and_sessions_roundtrip_in_order() {
     assert!(storage.sessions().list().unwrap().is_empty());
 }
 
+#[test]
+fn equal_timestamp_sessions_keep_creation_order_after_updates_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let ws = workspace("project", 0);
+    storage.workspaces().insert(ws.clone()).unwrap();
+    let mut first = session(ws.id, "first assistant");
+    let mut second = session(ws.id, "second assistant");
+    // ULID randomness within a millisecond may put a later session before the first one.
+    first.id = "00000000000000000000000002".parse().unwrap();
+    second.id = "00000000000000000000000001".parse().unwrap();
+    storage.sessions().upsert(first.clone()).unwrap();
+    storage.sessions().upsert(second.clone()).unwrap();
+    assert_eq!(
+        storage.sessions().list_in_workspace(ws.id).unwrap(),
+        [first.clone(), second.clone()]
+    );
+    first.title = "renamed first assistant".into();
+    storage.sessions().upsert(first.clone()).unwrap();
+    storage.close();
+    let reopened = Storage::open(db(&dir)).unwrap();
+    assert_eq!(reopened.sessions().list().unwrap(), [first, second]);
+    reopened.close();
+}
+
 /// A database as schema v1 wrote it: raw SQL, because the typed API speaks the newest schema.
 fn seed_v1(path: &Path, default: WorkspaceId, other: WorkspaceId) {
     let conn = rusqlite::Connection::open(path).unwrap();
