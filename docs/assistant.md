@@ -37,6 +37,8 @@ An assistant session is an ordinary chat session: `chat.send`, `chat.history`, `
 | `file` | `path`, `range?` `{start, end}` (1-based, inclusive) | the file, under the session's workspace roots only | the start |
 | `search` | `query`, `limit` ≤ 10 | `history.search` (needs indexing): one line per session with its id, so that it can be attached next | the best hits |
 
+Attachments also go to chats through the OMP and Claude Code harnesses (protocol 0.17, `docs/agents.md` § ACP harnesses): the agent gets each one as an ACP embedded resource, under the same permissions and bounds, and the journal's user message shows what it was given.
+
 A turn is a user message and what follows it. A relative file path is relative to the first root of the workspace. Terminal and file text is plain text; a file that is not UTF-8 is `bad_request`.
 
 **What the message becomes.** The user's text, then
@@ -83,7 +85,7 @@ files = false
 
 An attachment the settings do not allow is `forbidden`, and the message names the setting (`assistant.context.shell`, `assistant.global_context.files`, `assistant.workspaces.<key>.files`); the error's `data.setting` has it too. The file is read when the daemon starts: restart it after editing. Settings gate the daemon's own reading; they do not make an attachment out of anything that was not attached.
 
-Other refusals: `bad_request` (bounds, more than 16 attachments, a session that is not a direct or assistant chat), `not_found` (terminal, block, file, transcript), `invalid_state` (`search` or an external transcript while indexing is disabled).
+Other refusals: `bad_request` (bounds, more than 16 attachments, a session that is not a direct, assistant or harness chat — a Codex chat takes none), `not_found` (terminal, block, file, transcript), `invalid_state` (`search` or an external transcript while indexing is disabled).
 
 ## Indexing of chats
 

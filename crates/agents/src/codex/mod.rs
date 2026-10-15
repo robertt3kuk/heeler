@@ -244,6 +244,45 @@ pub async fn list_models(config: &CodexConfig) -> Result<Vec<ModelInfo>, AgentEr
     outcome
 }
 
+/// The login Codex reports: names and plan only (`account/read`; no e-mail address, no token).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAccount {
+    /// `chatgpt`, `apiKey`, `amazonBedrock`; `None` when Codex has no login.
+    pub kind: Option<String>,
+    /// The ChatGPT plan (`plus`, `pro`, ...) when Codex reports one.
+    pub plan: Option<String>,
+}
+
+/// Who Codex is logged in as, by its own account: starts an app server, asks `account/read`,
+/// ends it.
+pub async fn read_account(config: &CodexConfig) -> Result<CodexAccount, AgentError> {
+    let (transport, _incoming, _exit) = Transport::spawn(&config.launch(None))?;
+    let outcome = async {
+        handshake(&transport).await?;
+        let result: Value = call(
+            &transport,
+            "account/read",
+            &serde_json::json!({"refreshToken": false}),
+        )
+        .await?;
+        let account = result.get("account").filter(|a| !a.is_null());
+        Ok(CodexAccount {
+            kind: account
+                .and_then(|a| a.get("type"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            plan: account
+                .and_then(|a| a.get("planType"))
+                .and_then(Value::as_str)
+                .filter(|plan| *plan != "unknown")
+                .map(str::to_owned),
+        })
+    }
+    .await;
+    transport.shutdown().await;
+    outcome
+}
+
 impl CodexAppServerAdapter {
     /// Starts the process and opens (or resumes) the conversation `spec` describes.
     pub async fn start(config: &CodexConfig, spec: &StartSpec) -> Result<CodexSession, AgentError> {
@@ -407,6 +446,8 @@ async fn pump(
                     }
                 }
             }
+            // Codex's adapter makes no ordered requests.
+            Incoming::Completed { .. } => {}
             Incoming::Closed => break,
         }
     }
@@ -449,7 +490,7 @@ fn track_turn(shared: &Shared, method: &str, params: &Value) {
 }
 
 impl AgentAdapter for CodexAppServerAdapter {
-    fn agent(&self) -> &'static str {
+    fn agent(&self) -> &str {
         "codex"
     }
 

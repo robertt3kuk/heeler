@@ -125,7 +125,12 @@ pub struct ProviderDiscovery {
 /// `chat.set_model`: the next turn of a direct chat uses `model` (of `provider_id`, absent
 /// keeps the session's provider). The history stays; the journal records the switch. Answered
 /// with `SessionResult`; `invalid_state` for a session that is not running, `bad_request` for
-/// a session that is not a direct chat or an unknown provider.
+/// a session that is not a direct or harness chat or an unknown provider.
+///
+/// Protocol 0.17 (capability `harness.acp`): also switches the model of a running harness chat
+/// (`omp`, `claude`) when its agent offers model switching (`provider_id` is ignored there; the
+/// model is one of `chat.models`); `bad_request` when the agent offers none, or does not know
+/// the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSetModel {
     pub session_id: SessionId,

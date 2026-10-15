@@ -18,7 +18,7 @@ macOS-first Rust agentic development environment: `hutand` (Tokio daemon, source
 - `docs/history-index.md` — opt-in session history index and search (sources, formats, ranking, privacy, performance)
 - `docs/gateway.md` — direct model chat: providers (OpenAI-compatible, Anthropic, Ollama), Keychain credentials, direct chat sessions, `hutan provider` / `hutan chat` commands, tests
 - `docs/assistant.md` — assistant chat: scopes, context attachments (shell, agent transcripts, files, search), redaction and budgets, permissions, `hutan ask`
-- `docs/agents.md` — Codex chat sessions: adapter, `AgentEvent`, approvals, journal, how to re-record the test transcripts
+- `docs/agents.md` — agent chat sessions: the Codex adapter, ACP harnesses (OMP, Claude Code) and accounts, `AgentEvent`, approvals, journal, how to re-record the test transcripts
 - `docs/orchestration.md` — worktrees and session placement (`hutan wt`, `hutan new --worktree`, placement badges, shared-checkout warning) and tasks with dependencies (`hutan task`)
 - `docs/integrations.md` — agent reporting (state + resume command), `hutan agent`, `hutan integration` for Codex, Claude Code, OMP
 - `docs/packaging.md` — the signed app bundle (`just bundle`): layout, ad-hoc signing, how the executables find each other, what M6-B adds
@@ -31,7 +31,7 @@ macOS-first Rust agentic development environment: `hutand` (Tokio daemon, source
 - Every UI feature is a registered panel / pane item / status item with its own settings namespace; nothing in the layout is hard-wired (ADR 0010, `docs/design.md`).
 - Permissions are enforced in the daemon; UI only collects decisions.
 - Secrets only in Keychain via the daemon; never in SQLite, logs, events, or fixtures (ADR 0008).
-- Subscription logins are used only through vendor harnesses (Codex, Claude Code); never reuse their tokens.
+- Subscription logins are used only through harnesses (Codex, Claude Code, OMP): Hutan lists accounts and starts the harness's own login, and never reads, stores or forwards their tokens (ADR 0015).
 - Bounded everything: scrollback, event ring, per-client queues. No unbounded channels.
 - Protocol changes: additive = minor bump + capability; breaking = major bump + ADR (ADR 0002).
 - Hard-to-reverse decision → ADR first; missing evidence → spike outside the repo, report into `docs/spikes/`.

@@ -1,6 +1,6 @@
-# Agent chat sessions (Codex)
+# Agent chat sessions (Codex, OMP, Claude Code)
 
-Decisions: ADR 0005 (agent integration strategy), ADR 0006 (SQLite), ADR 0008 (credentials). Wire messages: `docs/protocol.md` § Agent chat and approvals. Roadmap: M4.1–M4.3, M4.5 (the chat view is M4.4).
+Decisions: ADR 0005 (agent integration strategy), ADR 0006 (SQLite), ADR 0008 (credentials), ADR 0015 (harness chat over ACP, accounts). Codex first; § ACP harnesses covers OMP and Claude Code. Wire messages: `docs/protocol.md` § Agent chat and approvals. Roadmap: M4.1–M4.3, M4.5 (the chat view is M4.4).
 
 A chat session is a conversation with a coding agent that Hutan's daemon runs: one `codex app-server` process per session, spoken to over stdio JSON-RPC, mapped to one internal event model, journaled in Hutan's own database, and shown by any client (today the CLI). The agent's login is Codex's own (`codex login`); Hutan never reads or stores its credentials (ADR 0008).
 
@@ -80,12 +80,14 @@ A GUI-launched daemon may have a shorter `PATH` than a shell: set `bin` when `hu
 ## CLI
 
 ```text
-hutan chat new [--cwd DIR] [--model M] [--approval-policy untrusted|on-request|never] [--sandbox read-only|workspace-write|danger-full-access] [--ws W] [--title T]
+hutan chat new [--agent codex|omp|claude] [--cwd DIR] [--model M] [--mode MODE] [--approval-policy untrusted|on-request|never] [--sandbox read-only|workspace-write|danger-full-access] [--ws W] [--title T]
 hutan chat send <session> "<text>" [--wait]   # --wait streams the reply; tool calls are one line each; exit 1 if the turn fails or is cancelled
 hutan chat log <session>                      # the journal as text (--json: the history)
 hutan chat attach <session>                   # recent history, then live events until the session ends
 hutan chat interrupt <session>
-hutan chat models
+hutan chat models [--agent codex|omp|claude]
+hutan chat model <session> <model>             # switch the model of a direct or harness chat (next turn)
+hutan account ls | login <omp|claude|codex> [provider] [--attach] | logout <harness>   # § ACP harnesses and accounts
 hutan approvals                               # pending requests (--json)
 hutan approve <approval-id|prefix> <option>
 ```
@@ -124,6 +126,109 @@ hutan-codex-fixture scrub /tmp/raw.jsonl crates/agents/tests/fixtures/codex-0.16
 
 The scrubber drops timestamps and rate-limit notices, renames every id to a stable counter, replaces temp directories, the Codex home, host name, account plan and installation id, and fails on home directories, e-mail addresses, API keys and tokens. A test asserts the committed fixtures are already scrubbed (scrubbing changes nothing). For a new Codex minor version, update `SUPPORTED_VERSIONS`, re-record the fixtures, and run `just check`.
 
+## ACP harnesses (OMP, Claude Code) and accounts
+
+ADR 0015, protocol 0.17 (capabilities `harness.acp`, `accounts`). An agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) v1 over stdio runs behind the same `AgentAdapter` as Codex: its messages become the same `AgentEvent`s, so the journal, `chat.history`, approvals, notifications, the history index, tasks and the chat view work unchanged.
+
+| Where | What |
+|---|---|
+| `crates/agents/src/acp/mod.rs` | `AcpAdapter`: handshake, sessions, prompt turns, cancel, permission requests, models, modes |
+| `crates/agents/src/acp/mapper.rs` | `session/update` and requests of the agent → `AgentEventDraft`s (pure) |
+| `crates/agents/src/acp/nodes.rs` | tool calls that start subagents → the agent tree (pure) |
+| `crates/agents/src/acp/udiff.rs` | a unified diff of ACP's old/new file contents |
+| `crates/agents/src/jsonrpc.rs` | the transport; `spawn_v2` adds `"jsonrpc": "2.0"`, `request_ordered` delivers a response in order behind the updates before it |
+| `crates/daemon/src/harness.rs` | the registry: where `omp` / `claude` are, their environment, `[mcp.*]` servers |
+| `crates/daemon/src/accounts.rs` | `account.list\|login\|logout` |
+| `crates/agents/src/bin/acp_fixture.rs`, `tests/fixtures/acp-omp-18.11/` | the fake agent and its transcripts |
+
+### The adapter
+
+`AcpAdapter::start(config, spec, mode, mcp_servers)` spawns the agent and:
+
+1. `initialize` with protocol version 1. Hutan offers **no file system and no terminal** (`fs.readTextFile/writeTextFile: false`, `terminal: false`): the agent uses its own tools, Hutan's approvals gate them. An agent answering another `protocolVersion` fails the start with both versions named (`UnsupportedAcp`).
+2. The session: `session/new {cwd, mcpServers}`, or — with a stored session id — `session/load` (else `session/resume` when only that is advertised; an agent with neither refuses with a message). The replay `session/load` makes is dropped: the Hutan journal is the history. MCP servers over `http`/`sse` are passed only when the agent advertises that transport.
+3. `authenticate`, **only when `session/new|load` answers "authentication required"** (`-32000`) and the agent advertised a plain method (OMP's `agent`: the credentials the harness already holds). A method that needs a terminal or an environment variable is the harness's own login flow: the start fails with `AuthRequired` and the daemon's message says `hutan account login <harness>`.
+4. The requested model must be one of the session's offered models — the `model` select option of `configOptions`, else the older `models` state — and is set with `session/set_config_option` (`session/set_model`); a requested `mode` must be one of `modes.availableModes` (or the `mode` option) and is set with `session/set_mode`. Unknown ones fail with what is offered.
+
+A turn is `session/prompt` (text, plus attached context as embedded `resource` blocks when the agent advertises `embeddedContext`, else as text), made with `request_ordered`: its response arrives behind every update of the turn, which is what ends it (`stopReason`: `end_turn`/`max_tokens`/`max_turn_requests` → `turn_completed` — the last two with a warning `notice` —, `cancelled` → `turn_cancelled`, `refusal` → `turn_failed`; an error response → `turn_failed`). `interrupt` is `session/cancel` followed by `cancelled` answers to the permission requests still waiting (ACP requires them); the process dying under the prompt is left to the daemon, which closes the turn with the stderr.
+
+### What becomes what
+
+| ACP | `AgentEvent` |
+|---|---|
+| a turn (`session/prompt`) | `turn_started`, the user's `message_start`/`message_end`; `turn_completed` / `turn_cancelled` / `turn_failed` |
+| `agent_message_chunk`, `agent_thought_chunk` (runs, split by `messageId`) | `message_start` / `message_delta` / `message_end`, `reasoning_start` / `reasoning_delta` / `reasoning_end` (a run ends when anything else happens, or with the turn) |
+| `tool_call`, `tool_call_update` (`kind`, `title`, `rawInput`, `status`, `content`, `rawOutput`) | `tool_start` (`execute` is a command, `edit`/`delete`/`move` a file change, `fetch` a web tool), `tool_update` (new text content), `tool_end` (`completed`/`failed`, output cut at 256 KiB, exit code from `rawOutput`); a tool that never ended when the turn did fails with it |
+| tool content of type `diff` (`path`, `oldText`, `newText`) | `file_diff` (an added, deleted or updated file; updates carry a unified diff made from the two texts, once per distinct diff) |
+| `session/request_permission` | `permission_requested`, `options` exactly as offered (`optionId` → `id`, `name` → `label`, `kind`); answered with `{outcome: selected, optionId}`; `permission_resolved` when the answer reaches the agent, `expired` when the turn ends first |
+| `plan` | `plan` (steps with status) |
+| `usage_update` (`used`, `size`, `cost`), the prompt result's `usage` | `usage` (context window; last-request counts) and the tree node's usage `acp.context` |
+| `current_mode_update`, `config_option_update` (model, mode) | `notice` (`mode: …`, `model: …`) |
+| `available_commands_update`, `session_info_update`, `user_message_chunk` | dropped |
+| any other update or notification | `opaque { method }` with the raw `payload` |
+| requests Hutan does not serve (`fs/*`, `terminal/*`, …) | declined (`-32601`) and noted as a `notice` |
+
+**Agent tree.** The root node is the agent (`source: acp`, node id the session id): `working` during a turn, `blocked` while a permission request waits, `idle` between turns, with the tool call's title as its activity. ACP has no subagent events, so subagents are recognised by their tool call: OMP's `task` tool (`rawInput {agent, task, name?, solutionSpace}` or `{tasks: [...]}` — one node per task) and Claude Code's `Task` (`subagent_type`, `description`); the call's `completed`/`failed` status ends them, a turn that ends first leaves them `interrupted`.
+
+### Harnesses and configuration
+
+| Agent | Starts | Models | Resume |
+|---|---|---|---|
+| `omp` (first-class) | `omp acp` | the ACP session's model option (ids `provider/model`); `chat.models` asks a throwaway session and, when that cannot be had, `omp models --json` | `session/load` of the OMP session id (`omp --resume <id>` in a terminal) |
+| `claude` | `claude-code-acp` (Claude Code's ACP adapter; Hutan points to it and does not bundle it: `npm install -g @zed-industries/claude-code-acp`) | the session's model options (`chat.models` starts a throwaway session in the system temp directory, asks, closes it; a running chat's start refreshes the cache too; cached 5 minutes. A cold OMP takes several seconds to answer `initialize` + `session/new`) | `session/load` / `session/resume` |
+
+```toml
+[harness.omp]                     # all keys optional
+bin = "/Users/me/.bun/bin/omp"    # default: `omp` on the PATH of the user's login environment
+args = ["acp"]                    # default for omp; none for claude
+env = { OMP_PROFILE = "work" }    # extra environment; not for secrets
+cli = "/Users/me/.bun/bin/omp"    # the harness's own CLI for accounts; default `bin` (omp) / `claude`
+
+[harness.claude]
+bin = "/opt/homebrew/bin/claude-code-acp"
+
+[mcp.docs]                        # handed to every harness session
+command = "npx"
+args = ["-y", "some-mcp-server"]
+[mcp.search]
+url = "https://mcp.example.com/mcp"   # `transport = "sse"` for SSE
+```
+
+Harness processes start from the user's **login environment** (as terminal sessions with an explicit command do; `[terminal] env_inherit = "daemon"` uses the daemon's own), so a GUI-launched daemon finds `~/.bun/bin/omp` and the harness finds its own configuration and logins. Hutan reads none of that. A missing program fails the chat with the name looked for, what to install and the `daemon.toml` key to set. `approval_policy` and `sandbox` do not apply: the harness decides what asks and what is sandboxed (OMP: its `tools.approvalMode`), and `chat.create` refuses them for these agents rather than show Hutan's defaults as if they did. The session mode (`--mode plan`) is the harness's own.
+
+**Restore.** The `ChatSpec` stores the ACP session id (`thread_id`, also `ChatInfo.agent_session_id`) and the mode. After a daemon restart (`restore_sessions = "respawn"`) or `hutan restart <id>` the agent starts again, continues the stored session and the journal is untouched; an agent that cannot (`session/load` fails, or neither it nor `session/resume` is advertised) fails the session with the agent's message.
+
+### Accounts
+
+`hutan account ls|login <harness> [provider]|logout <harness>` (`account.list|login|logout`). **Hutan never performs subscription OAuth and never reads, stores or forwards harness tokens** (ADR 0008, ADR 0015): it asks each harness what it is logged in as, and for logging in or out it opens the harness's own flow in an ordinary terminal session.
+
+| Harness | List | Login | Logout |
+|---|---|---|---|
+| `omp` | the providers of `omp models --json` (a provider with usable models has a login), plan from `omp usage --json` (`metadata.planType`) | `omp login [provider]` | none exists: a session running `omp`, `instructions` say to type `/logout [provider]` |
+| `claude` | `claude auth status --json` (`loggedIn`, `authMethod`, a plan field when there is one) | `claude auth login` | `claude auth logout` |
+| `codex` | the app server's `account/read` (`chatgpt`, `apiKey`, `amazonBedrock`; plan) | `codex login` | `codex logout` |
+
+Entries carry provider, a label (`ChatGPT`, `API key`, `Claude subscription`, the provider id for OMP), plan, status and, when the harness could not be asked, a `detail`. E-mail addresses, account ids and token-like strings are never read into an entry. A login/logout session ends like any session; the daemon then publishes `account.changed {harness}` and clients list again. `hutan account login omp anthropic --attach` attaches the terminal to the session at once.
+
+### Tests and fixtures
+
+`hutan-acp-fixture replay` is the fake `omp acp`: the replay engine of `hutan-codex-fixture` (transcript entries `{"dir": "out"|"in"|"hold"|"exit", …}`, requests matched by method, responses given the id of the request they answer, a directory = one transcript per spawn, `--received FILE`), with its own scrubber (`acp_scrub`: session ids become `sess_fixture_N`, temp and home directories and e-mail addresses are replaced, tokens refused; a test asserts committed fixtures are already scrubbed).
+
+`crates/agents/tests/fixtures/acp-omp-18.11/`: `handshake.jsonl` was **recorded from `omp acp` 18.11.1** (initialize, session/new, session/close; run with a throwaway `HOME`, so no login was involved and no model was called: the 17 models are OMP's built-in catalog). The others are built by hand from the ACP v1 spec and what OMP's ACP server sends (message shapes read from its source: tool kinds, permission option ids, `usage_update`, config options), reusing the recorded handshake: `plain-turn`, `tool-diff`, `permission-allow|deny|cancel|expires`, `cancel`, `unknown-update`, `subagents`, `model-switch`, `mode-plan`, `auth-required|terminal-only|rejected`, `old-protocol`, `load`, `resume-only`, `no-resume`, `load-fails`, `exit-mid-turn`, `turn-error`, `refusal`, `max-tokens`, `two-turns`. A real prompt turn was not recorded: it needs a login and paid tokens, which the default gate and this slice do not use.
+
+Tests: the adapter against the fake agent (`crates/agents/tests/acp.rs`), mapping units (`acp/{udiff,nodes}.rs`), the daemon end to end with fake harness CLIs as shell scripts (`crates/daemon/tests/harness.rs`: create/send/approve/interrupt/restore, models, attachments, tasks, accounts list/login/logout/`account.changed`), the CLI (`crates/cli/tests/harness.rs`), golden fixtures for protocol 0.17.
+
+### Re-recording (new OMP version, new scenario)
+
+Record with a throwaway `HOME` (no credentials involved) for what needs none; anything that needs a login is built by hand after a recording of the message shapes. Use a synthetic prompt and a temporary working directory, never your real `~/.omp`. A small script writes `initialize`, `session/new` and `session/close` (JSON-RPC 2.0, one object per line, `protocolVersion: 1`) to the proxy's stdin and reads its stdout:
+
+```sh
+HOME=/tmp/throwaway hutan-acp-fixture proxy /tmp/raw.jsonl -- omp acp
+hutan-acp-fixture scrub /tmp/raw.jsonl crates/agents/tests/fixtures/acp-omp-18.11/handshake.jsonl
+```
+
+Compare a new OMP's `initialize` (`protocolVersion`, `agentCapabilities`, `authMethods`) with the recorded one; Hutan accepts any agent that answers protocol version 1.
+
 ## The desktop chat view
 
 `⌘⇧T` (New agent) asks for the agent (Codex; the others are greyed until M8) and a model from `chat.models`, starts the chat in the active workspace's first folder (`chat.create`) and opens it as a **chat tab**: same tab/split/move rules as terminals, the tab icon `◆`. Code: `crates/chat_view` (GPUI-free: `Transcript` folds `AgentEvent`s into entries, the markdown subset, unified diffs) and `crates/desktop/src/workbench/{agents.rs,chat/}` (model, view, cards, composer).
@@ -140,4 +245,4 @@ Tests: `crates/chat_view` (unit), `crates/desktop/tests/chat_gpui.rs` (an in-pro
 
 ## Limits
 
-One agent (Codex; direct model chat has its own page, `docs/gateway.md`), one conversation per session, text input only (no images; terminal blocks are quoted into the text). Questions of the agent (`requestUserInput`) and MCP elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: hutan`).
+Codex and the ACP harnesses (OMP, Claude Code; direct model chat has its own page, `docs/gateway.md`), one conversation per session, text input only (no images; terminal blocks are quoted into the text). What a harness exposes over ACP is what Hutan shows: an agent without model options has no model switching, OMP's subagent progress is inferred from its `task` tool calls (ACP has no subagent events), and Hutan as an MCP server for agents is not there yet. Questions of the agent (`requestUserInput`) and MCP elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: hutan`).

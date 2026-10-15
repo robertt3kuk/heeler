@@ -321,7 +321,9 @@ impl SessionsStore {
             | Notice::WorktreesChanged { .. }
             // The tasks panel is M7-C's.
             | Notice::TaskUpdated { .. }
-            | Notice::TaskRemoved { .. } => {}
+            | Notice::TaskRemoved { .. }
+            // The accounts view follows D-1.
+            | Notice::AccountsChanged { .. } => {}
         }
     }
 

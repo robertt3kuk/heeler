@@ -1,6 +1,6 @@
 [package]
 name = "hutan-agents"
-description = "Agent adapters behind one AgentAdapter trait: Codex app-server over stdio JSON-RPC (ADR 0005), and the fixture tool that records, scrubs and replays its transcripts"
+description = "Agent adapters behind one AgentAdapter trait: Codex app-server over stdio JSON-RPC (ADR 0005), ACP agents (OMP, Claude Code; ADR 0015), and the fixture tools that record, scrub and replay their transcripts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,10 @@ name = "hutan_agents"
 [[bin]]
 name = "hutan-codex-fixture"
 path = "src/bin/codex_fixture.rs"
+
+[[bin]]
+name = "hutan-acp-fixture"
+path = "src/bin/acp_fixture.rs"
 
 [dependencies]
 futures.workspace = true

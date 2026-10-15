@@ -1033,6 +1033,7 @@ fn the_send_menu_offers_the_assistant_when_no_chat_running_is_one(cx: &mut TestA
                     approval_policy: None,
                     sandbox: None,
                     title: Some(title.to_owned()),
+                    mode: None,
                     provider_id: Some("mock".to_owned()),
                     system_prompt: None,
                 }));

@@ -55,6 +55,7 @@ use tracing::{debug, info, warn};
 use crate::bus::EventBus;
 use crate::chat::{AGENT_CODEX, is_gateway_agent};
 use crate::config::TasksSettings;
+use crate::harness::is_harness_agent;
 use crate::placement::PlacementCache;
 use crate::projects;
 use crate::registry::{RegistryHandle, log_write, now_ms};
@@ -786,6 +787,7 @@ impl TaskService {
                 approval_policy: None,
                 sandbox: None,
                 title: Some(task.title.clone()),
+                mode: None,
                 provider_id: None,
                 system_prompt: None,
             })
@@ -1211,9 +1213,9 @@ fn check_run(run: Option<&TaskRun>, prompt: Option<&str>) -> Result<(), ErrorBod
             Ok(())
         }
         Some(TaskRun::Chat { agent }) => {
-            if agent != AGENT_CODEX {
+            if agent != AGENT_CODEX && !is_harness_agent(agent) {
                 return Err(bad_request(format!(
-                    "a chat task runs the `{AGENT_CODEX}` agent, not `{agent}`"
+                    "a chat task runs the `{AGENT_CODEX}`, `omp` or `claude` agent, not `{agent}`"
                 )));
             }
             if prompt.is_none() {

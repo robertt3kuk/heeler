@@ -18,6 +18,7 @@ use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::accounts::AccountService;
 use crate::agent;
 use crate::assistant::AssistantService;
 use crate::bus::{EventBus, RingLimits};
@@ -25,6 +26,7 @@ use crate::chat;
 use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
+use crate::harness::Harnesses;
 use crate::history::HistoryService;
 use crate::notify::NotifyService;
 use crate::notify_native::NativePoster;
@@ -215,6 +217,17 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             .unwrap_or_else(hutan_gateway::discovery::default_targets),
         std::mem::take(&mut stored.providers),
     );
+    let login_shell = config
+        .login_shell
+        .as_ref()
+        .map(|shell| shell.to_string_lossy().into_owned());
+    let harnesses = Arc::new(Harnesses::new(
+        settings.harness.clone(),
+        &settings.mcp,
+        settings.terminal.env_inherit,
+        login_shell,
+    ));
+    let codex_config = config.codex.unwrap_or_else(|| settings.codex.to_config());
     let registry = registry::spawn(
         bus.clone(),
         hub.clone(),
@@ -231,7 +244,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             restore: settings.restore_sessions,
             home_folder,
             activity_interval: config.activity_interval,
-            codex: config.codex.unwrap_or_else(|| settings.codex.to_config()),
+            codex: codex_config.clone(),
+            harnesses: harnesses.clone(),
             providers,
             max_context_chars: settings.gateway.max_context_chars,
         },
@@ -274,6 +288,13 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     .await
     .map_err(|error| DaemonError::Tasks(error.message))?;
     drop(tasks.run(shutdown.clone()));
+    let accounts = AccountService::new(
+        registry.clone(),
+        harnesses,
+        codex_config,
+        bus.clone(),
+        shutdown.clone(),
+    );
     let router = Router::new(
         registry,
         hub,
@@ -283,6 +304,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             notify,
             worktrees,
             tasks,
+            accounts,
         },
         bus.clone(),
         shutdown.clone(),

@@ -1,0 +1,234 @@
+//! The parts of ACP v1 (https://agentclientprotocol.com) the client reads and writes. Structs
+//! list only the fields Hutan uses and tolerate everything else (`session/update` itself is
+//! read as JSON by the mapper, which maps what it knows and keeps the rest as opaque events).
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// The protocol version this client speaks.
+pub const PROTOCOL_VERSION: u64 = 1;
+
+/// JSON-RPC code of "authentication required" in ACP.
+pub const AUTH_REQUIRED: i64 = -32000;
+
+// Requests we send ------------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeParams {
+    pub protocol_version: u64,
+    pub client_capabilities: ClientCapabilities,
+    pub client_info: ClientInfo,
+}
+
+/// Hutan serves no file system and no terminal to the agent: the agent uses its own tools
+/// (ADR 0015), and Hutan's approvals gate them.
+#[derive(Debug, Serialize)]
+pub struct ClientCapabilities {
+    pub fs: FsCapabilities,
+    pub terminal: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsCapabilities {
+    pub read_text_file: bool,
+    pub write_text_file: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientInfo {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub version: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticateParams<'a> {
+    pub method_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSessionParams<'a> {
+    pub cwd: &'a str,
+    pub mcp_servers: &'a [Value],
+}
+
+/// `session/load` and `session/resume`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadSessionParams<'a> {
+    pub session_id: &'a str,
+    pub cwd: &'a str,
+    pub mcp_servers: &'a [Value],
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConfigOptionParams<'a> {
+    pub session_id: &'a str,
+    pub config_id: &'a str,
+    pub value: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModeParams<'a> {
+    pub session_id: &'a str,
+    pub mode_id: &'a str,
+}
+
+// Results we read -------------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResult {
+    pub protocol_version: u64,
+    #[serde(default)]
+    pub agent_info: Option<AgentInfo>,
+    #[serde(default)]
+    pub auth_methods: Vec<AuthMethod>,
+    #[serde(default)]
+    pub agent_capabilities: AgentCapabilities,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentInfo {
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthMethod {
+    pub id: String,
+    /// Absent for the plain "agent authenticates by itself" method; `terminal` and `env_var`
+    /// methods need a client Hutan does not offer.
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilities {
+    #[serde(default)]
+    pub load_session: bool,
+    #[serde(default)]
+    pub prompt_capabilities: PromptCapabilities,
+    #[serde(default)]
+    pub session_capabilities: SessionCapabilities,
+    #[serde(default)]
+    pub mcp_capabilities: McpCapabilities,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct McpCapabilities {
+    #[serde(default)]
+    pub http: bool,
+    #[serde(default)]
+    pub sse: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCapabilities {
+    #[serde(default)]
+    pub embedded_context: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SessionCapabilities {
+    #[serde(default)]
+    pub resume: Option<Value>,
+    #[serde(default)]
+    pub close: Option<Value>,
+}
+
+/// The session a `session/new`, `session/load` or `session/resume` opened.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResult {
+    /// Only `session/new` answers with it.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub config_options: Vec<ConfigOption>,
+    #[serde(default)]
+    pub modes: Option<ModeState>,
+    /// The earlier `models` state some agents still send.
+    #[serde(default)]
+    pub models: Option<ModelState>,
+}
+
+/// A session setting the agent offers (`select` type): the model, the mode, the thinking level.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigOption {
+    pub id: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub current_value: Value,
+    /// Choices, flat or in groups.
+    #[serde(default)]
+    pub options: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeState {
+    #[serde(default)]
+    pub current_mode_id: String,
+    #[serde(default)]
+    pub available_modes: Vec<Mode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Mode {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelState {
+    #[serde(default)]
+    pub current_model_id: String,
+    #[serde(default)]
+    pub available_models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub model_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptResult {
+    #[serde(default)]
+    pub stop_reason: String,
+    /// Per-turn token counts (an ACP extension some agents send).
+    #[serde(default)]
+    pub usage: Option<PromptUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptUsage {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub thought_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_read_tokens: Option<u64>,
+}

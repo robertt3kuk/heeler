@@ -15,6 +15,16 @@ pub enum AgentError {
     UnsupportedVersion { found: String, supported: String },
     #[error("cannot tell which Codex version this is (server said `{0}`)")]
     UnknownVersion(String),
+    #[error(
+        "the agent speaks ACP version {found}, Hutan speaks version {supported}; update the agent (or Hutan)"
+    )]
+    UnsupportedAcp { found: u64, supported: u64 },
+    /// The agent needs a login Hutan cannot do for it (ADR 0015): the harness's own flow does.
+    #[error("the agent is not logged in{}", suffix(.detail))]
+    AuthRequired { detail: String },
+    /// The agent lacks a capability the request needs (it did not advertise it).
+    #[error("{0}")]
+    Unsupported(String),
     /// The process is gone (or its pipes are); `detail` is what it said on stderr last.
     #[error("the agent process is not running{}", suffix(.detail))]
     Exited { detail: String },
@@ -34,6 +44,8 @@ pub enum AgentError {
     UnknownApproval,
     #[error("no turn is in progress")]
     NoTurn,
+    #[error("a turn is already in progress")]
+    TurnInProgress,
     #[error("unexpected message from the agent: {0}")]
     Protocol(String),
 }

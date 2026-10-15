@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
+use crate::account::{AccountLogin, AccountLogout};
 use crate::assistant::{AssistantListRequest, AssistantOpen};
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::chat::{
@@ -237,6 +238,18 @@ pub enum Request {
     /// Capability `task`: run a ready task; answered with `TaskStarted`.
     #[serde(rename = "task.start")]
     TaskStart(TaskRef),
+    /// Capability `accounts` (protocol 0.17): the logins of the harnesses; answered with
+    /// `AccountList`.
+    #[serde(rename = "account.list")]
+    AccountList(Empty),
+    /// Capability `accounts`: start a harness's own login in a terminal session; answered with
+    /// `AccountSession`.
+    #[serde(rename = "account.login")]
+    AccountLogin(AccountLogin),
+    /// Capability `accounts`: start a harness's own logout in a terminal session; answered with
+    /// `AccountSession`.
+    #[serde(rename = "account.logout")]
+    AccountLogout(AccountLogout),
 }
 
 impl Request {
@@ -847,6 +860,10 @@ pub enum Event {
     /// Capability `task`: a task was deleted.
     #[serde(rename = "task.removed")]
     TaskRemoved { id: TaskId },
+    /// Capability `accounts` (protocol 0.17): a login or logout session of `harness` ended, so
+    /// its accounts may have changed; clients list them again.
+    #[serde(rename = "account.changed")]
+    AccountChanged { harness: String },
 }
 
 impl Event {
@@ -883,6 +900,7 @@ impl Event {
         "worktree.changed",
         "task.updated",
         "task.removed",
+        "account.changed",
     ];
 }
 

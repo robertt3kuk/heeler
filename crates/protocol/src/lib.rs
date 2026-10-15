@@ -1,5 +1,7 @@
 //! Hutan IPC protocol (ADR 0002, ADR 0004, `docs/protocol.md`).
 //!
+//! - [`account`]: harness accounts (protocol 0.17, capability `accounts`); [`chat`] also takes
+//!   `chat.create` for the ACP harnesses `omp` and `claude` (capability `harness.acp`).
 //! - [`task`]: tasks with dependencies (protocol 0.16, capability `task`).
 //! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
 //!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
@@ -16,6 +18,7 @@
 //! - [`tree`]: agent observation tree DTOs (protocol 0.10).
 //! - [`render`]: terminal render snapshot/frame DTOs carried in binary frames.
 
+pub mod account;
 pub mod assistant;
 pub mod blocks;
 pub mod chat;
@@ -41,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 16,
+    minor: 17,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -195,7 +195,9 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "notify.intents",
             "worktree",
             "chat.provenance",
-            "task"
+            "task",
+            "harness.acp",
+            "accounts"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

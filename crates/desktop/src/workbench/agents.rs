@@ -388,6 +388,7 @@ impl Workbench {
             approval_policy: None,
             sandbox: None,
             title: None,
+            mode: None,
             provider_id: picker.provider_id.clone(),
             system_prompt: picker.system_prompt.clone(),
         };

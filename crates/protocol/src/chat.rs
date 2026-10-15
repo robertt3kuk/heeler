@@ -33,7 +33,8 @@ pub struct ChatCreate {
     pub workspace_id: Option<WorkspaceId>,
     /// An existing directory, absolute: the agent works there.
     pub cwd: PathBuf,
-    /// `codex`, or `direct` (protocol 0.11): the model gateway, no agent in between.
+    /// `codex`; `direct` (protocol 0.11): the model gateway, no agent in between; `omp` or
+    /// `claude` (protocol 0.17, capability `harness.acp`): a harness over ACP.
     pub agent: String,
     /// A model from `chat.models` (`provider.models` for `direct`); absent takes the agent
     /// catalog's default (the provider's `default_model` for `direct`).
@@ -47,6 +48,11 @@ pub struct ChatCreate {
     pub sandbox: Option<SandboxMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Protocol 0.17 (capability `harness.acp`), harness agents only: the session mode the agent
+    /// starts in (`plan`, from the agent's offered modes); absent keeps the agent's default.
+    /// `bad_request` when the agent does not offer it, or the agent is not a harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// Protocol 0.11 (capability `chat.direct`), `agent: "direct"` only: the provider to talk
     /// to (`provider.list`); required there, ignored for other agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,4 +179,9 @@ pub struct ChatInfo {
     /// Protocol 0.11: the provider of a direct chat (`agent: "direct"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    /// Protocol 0.17: the agent's own id of the conversation once it has one (Codex thread, OMP
+    /// or Claude Code session): what `omp --resume <id>` / `codex resume <id>` continue in a
+    /// terminal. Absent for direct and assistant chats and until the agent is ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
 }

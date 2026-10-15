@@ -66,13 +66,13 @@ Deliberately small (the layout and panels are ADR 0010's business):
 
 ## Tasks
 
-Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a workspace: a title, an optional prompt, the tasks it depends on, where it runs (the main checkout or a worktree) and what it runs (a terminal command or a Codex chat). Tasks are daemon state in SQLite (migration 7: `tasks`, `task_deps`, `task_sessions`); the desktop panel is M7-C. Wire details: `docs/protocol.md` § Tasks. Code: `crates/core/src/task.rs` (no I/O: states, readiness, cycles, ordering, the start queue), `crates/daemon/src/tasks.rs`, `crates/cli/src/commands/tasks.rs`.
+Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a workspace: a title, an optional prompt, the tasks it depends on, where it runs (the main checkout or a worktree) and what it runs (a terminal command, or a chat with Codex, or with OMP or Claude Code over ACP). Tasks are daemon state in SQLite (migration 7: `tasks`, `task_deps`, `task_sessions`); the desktop panel is M7-C. Wire details: `docs/protocol.md` § Tasks. Code: `crates/core/src/task.rs` (no I/O: states, readiness, cycles, ordering, the start queue), `crates/daemon/src/tasks.rs`, `crates/cli/src/commands/tasks.rs`.
 
 ### Life of a task
 
 `todo → ready → running → (blocked) → done | failed | cancelled`. Only `todo`, `running`, `done`, `failed`, `cancelled` are stored; `ready` (every dependency `done`) and `blocked` (the running task's agent waits for the user) are derived when a task is shown. A cycle in the dependencies is refused and named; deleting a task others depend on needs `--cascade`.
 
-- **Starting** (`hutan task start`, or by itself with `--auto`): the task becomes `running`, the placement is made (`main`: the workspace's git folder, with a warning when another live agent already works in that checkout; `worktree`: the existing worktree of the branch, else a new one through M7-A, branch default `task/<slug of the title>`), and a session starts there: a terminal running `argv` with `HUTAN_TASK_ID` set, a login shell when the task has no command, or a Codex chat that gets the prompt as its first message. If the setup fails the task is back to `todo` and the error says why.
+- **Starting** (`hutan task start`, or by itself with `--auto`): the task becomes `running`, the placement is made (`main`: the workspace's git folder, with a warning when another live agent already works in that checkout; `worktree`: the existing worktree of the branch, else a new one through M7-A, branch default `task/<slug of the title>`), and a session starts there: a terminal running `argv` with `HUTAN_TASK_ID` set, a login shell when the task has no command, or a chat (Codex, `omp` or `claude`: `run: chat {agent}`) that gets the prompt as its first message. If the setup fails the task is back to `todo` and the error says why.
 - **Finishing**: exit 0 → `done`, a non-zero exit or a failed session → `failed`, a stopped session → `cancelled`; an agent reporting through the integration hooks (`docs/integrations.md`) that goes idle after a working stretch → `done`, one that ends failed → `failed`; a chat turn that completes → `done`, fails or is cancelled → `failed`. `hutan task done` overrides. Dependants become `ready`.
 - **Auto start**: a ready task with `auto_start` starts when fewer than `[tasks] max_parallel` (daemon.toml, default 3) tasks run; the rest wait in the order they became ready. Starting by hand ignores the limit.
 - **Restart**: a running task whose session was restored stays running; any other becomes `failed` with outcome `interrupted`.
@@ -83,14 +83,14 @@ Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a wor
 
 ```text
 hutan task add "<title>" [--ws ID|NAME] [--after TASK]… [--worktree[=BRANCH]] [--base REF]
-                         [--prompt TEXT] [--codex | -- ARGV…] [--auto]
+                         [--prompt TEXT] [--agent codex|omp|claude | --codex | -- ARGV…] [--auto]
 hutan task ls [--ws ID|NAME] [--json]
 hutan task start|done|cancel|reset|show TASK
 hutan task rm TASK [--cascade]
 ```
 
 - `TASK` is an id, a unique id prefix of at least 4 characters, or an exact title (equal titles are told apart by the workspace). The workspace is `--ws`, else `$HUTAN_WORKSPACE`, else the workspace containing the current directory.
-- `add` prints the new id. `--worktree` alone means `task/<slug of the title>`, `--worktree=BRANCH` a branch; `--codex` needs `--prompt`.
+- `add` prints the new id. `--worktree` alone means `task/<slug of the title>`, `--worktree=BRANCH` a branch; `--agent` (and its shorthand `--codex`) needs `--prompt`.
 - `ls` prints each task once, dependencies first, under the task it waits for last (a task with several dependencies lists the others as `also after …`), with state glyphs `○ todo`, `◎ ready`, `▶ running`, `◆ blocked`, `✓ done`, `✗ failed`, `⊘ cancelled`, the shortest unique id and notes (worktree, command, `auto`, outcome). `--json` prints `{"tasks": [...]}`; `show` prints fields, dependencies, dependants and sessions (`--json`: `{task, depends_on, dependants, sessions}`).
 
 ### Tests

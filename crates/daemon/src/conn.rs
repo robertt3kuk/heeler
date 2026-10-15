@@ -44,6 +44,8 @@ pub const CAPABILITIES: &[&str] = &[
     "worktree",
     "chat.provenance",
     "task",
+    "harness.acp",
+    "accounts",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

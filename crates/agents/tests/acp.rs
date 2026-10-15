@@ -1,0 +1,1104 @@
+//! The ACP adapter against the fake agent (`hutan-acp-fixture replay`). `handshake.jsonl` was
+//! recorded from `omp acp` 18.11.1 (initialize, session/new, session/close; no login, no model
+//! call); the other transcripts are built from the ACP v1 spec and what OMP's ACP server sends
+//! (read from its source), with the same message shapes.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use hutan_agents::{
+    AcpAdapter, AcpConfig, AcpSession, AdapterMessage, AgentAdapter, AgentError, ContextBlock,
+    StartSpec,
+};
+use hutan_core::agent::{
+    FileChangeKind, MessageRole, NoticeLevel, PermissionKind, PermissionOptionKind,
+    PermissionOutcome, PlanStepStatus, ToolKind, ToolStatus,
+};
+use hutan_core::{
+    AgentEventKind, ApprovalId, ApprovalPolicy, NodeKind, NodeOutcome, NodeState, SandboxMode,
+};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tokio::sync::mpsc::Receiver;
+use tokio::time::timeout;
+
+const FIXTURE_BIN: &str = env!("CARGO_BIN_EXE_hutan-acp-fixture");
+const WAIT: Duration = Duration::from_secs(20);
+const SESSION: &str = "sess_fixture_1";
+const OPUS: &str = "gitlab-duo/duo-chat-opus-4-6";
+const HAIKU: &str = "gitlab-duo/claude-haiku-4-5-20251001";
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/acp-omp-18.11")
+        .join(format!("{name}.jsonl"))
+}
+
+struct Harness {
+    dir: TempDir,
+    received: PathBuf,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let received = dir.path().join("received.jsonl");
+        Self { dir, received }
+    }
+
+    fn config(&self, name: &str) -> AcpConfig {
+        AcpConfig {
+            agent: "omp".to_owned(),
+            program: PathBuf::from(FIXTURE_BIN),
+            args: vec![
+                "replay".to_owned(),
+                "--received".to_owned(),
+                self.received.display().to_string(),
+                fixture(name).display().to_string(),
+                "acp".to_owned(),
+            ],
+            env: Vec::new(),
+        }
+    }
+
+    fn spec(&self, model: Option<&str>, resume: Option<&str>) -> StartSpec {
+        StartSpec {
+            cwd: self.dir.path().to_owned(),
+            model: model.map(str::to_owned),
+            approval_policy: ApprovalPolicy::default(),
+            sandbox: SandboxMode::default(),
+            resume_thread_id: resume.map(str::to_owned),
+        }
+    }
+
+    async fn try_start(
+        &self,
+        name: &str,
+        model: Option<&str>,
+        mode: Option<&str>,
+        resume: Option<&str>,
+    ) -> Result<AcpSession, AgentError> {
+        timeout(
+            WAIT,
+            AcpAdapter::start(&self.config(name), &self.spec(model, resume), mode, &[]),
+        )
+        .await
+        .expect("start timed out")
+    }
+
+    async fn start(&self, name: &str) -> AcpSession {
+        self.try_start(name, None, None, None).await.unwrap()
+    }
+
+    /// What the fake agent received, as `(method or "response", message)`.
+    fn received(&self) -> Vec<(String, Value)> {
+        std::fs::read_to_string(&self.received)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let wrapper: Value = serde_json::from_str(line).unwrap();
+                let msg = wrapper["msg"].clone();
+                (msg["method"].as_str().unwrap_or("response").to_owned(), msg)
+            })
+            .collect()
+    }
+
+    fn received_of(&self, method: &str) -> Vec<Value> {
+        self.received()
+            .into_iter()
+            .filter(|(name, _)| name == method)
+            .map(|(_, msg)| msg)
+            .collect()
+    }
+}
+
+async fn collect_until(
+    events: &mut Receiver<AdapterMessage>,
+    mut stop: impl FnMut(&AdapterMessage) -> bool,
+) -> Vec<AdapterMessage> {
+    let mut seen = Vec::new();
+    loop {
+        let message = timeout(WAIT, events.recv())
+            .await
+            .expect("timed out waiting for an event")
+            .expect("event stream ended");
+        let done = stop(&message);
+        seen.push(message);
+        if done {
+            return seen;
+        }
+    }
+}
+
+fn kinds(messages: &[AdapterMessage]) -> Vec<&AgentEventKind> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            AdapterMessage::Event(draft) => Some(&draft.kind),
+            AdapterMessage::Exited(_) | AdapterMessage::Node(_) => None,
+        })
+        .collect()
+}
+
+fn names(messages: &[AdapterMessage]) -> Vec<&'static str> {
+    kinds(messages)
+        .into_iter()
+        .map(AgentEventKind::name)
+        .collect()
+}
+
+fn ends_turn(message: &AdapterMessage) -> bool {
+    matches!(message, AdapterMessage::Event(d) if d.kind.ends_turn())
+}
+
+fn is_permission_request(message: &AdapterMessage) -> bool {
+    matches!(message, AdapterMessage::Event(d) if matches!(d.kind, AgentEventKind::PermissionRequested { .. }))
+}
+
+fn approval_of(messages: &[AdapterMessage]) -> ApprovalId {
+    kinds(messages)
+        .into_iter()
+        .find_map(|k| match k {
+            AgentEventKind::PermissionRequested { approval_id, .. } => Some(*approval_id),
+            _ => None,
+        })
+        .expect("a permission request")
+}
+
+/// The start events every session begins with: the resume locator and the root node.
+async fn initial(events: &mut Receiver<AdapterMessage>) -> Vec<AdapterMessage> {
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        seen.push(timeout(WAIT, events.recv()).await.unwrap().unwrap());
+    }
+    seen
+}
+
+#[tokio::test]
+async fn the_handshake_with_a_recorded_omp_names_the_session_and_its_models() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        started,
+        mut events,
+        models,
+    } = h.start("handshake").await;
+    assert_eq!(adapter.agent(), "omp");
+    assert_eq!(started.thread_id, SESSION);
+    assert_eq!(started.model, OPUS, "the model the session starts with");
+    assert!(!started.resumed);
+    assert_eq!(models.len(), 17);
+    assert!(models.iter().any(|m| m.id == HAIKU && !m.is_default));
+    assert_eq!(models.iter().filter(|m| m.is_default).count(), 1);
+
+    let first = initial(&mut events).await;
+    assert!(matches!(
+        &first[0],
+        AdapterMessage::Event(d) if matches!(&d.kind, AgentEventKind::ResumeLocator { agent, thread_id, model }
+            if agent == "omp" && thread_id == SESSION && model.as_deref() == Some(OPUS))
+    ));
+    let AdapterMessage::Node(root) = &first[1] else {
+        panic!("{:?}", first[1])
+    };
+    assert_eq!(
+        (root.kind, root.state),
+        (NodeKind::Main, Some(NodeState::Idle))
+    );
+    assert_eq!(root.id.as_deref(), Some(SESSION));
+
+    let init = &h.received_of("initialize")[0];
+    assert_eq!(init["jsonrpc"], "2.0");
+    assert_eq!(init["params"]["protocolVersion"], 1);
+    assert_eq!(
+        init["params"]["clientCapabilities"]["fs"]["readTextFile"],
+        false
+    );
+    assert_eq!(
+        init["params"]["clientCapabilities"]["fs"]["writeTextFile"],
+        false
+    );
+    assert_eq!(init["params"]["clientCapabilities"]["terminal"], false);
+    assert_eq!(init["params"]["clientInfo"]["name"], "hutan");
+    let new = &h.received_of("session/new")[0];
+    assert_eq!(new["params"]["cwd"], h.dir.path().display().to_string());
+    assert_eq!(new["params"]["mcpServers"], json!([]));
+    adapter.shutdown().await;
+    // The agent advertises session/close: it is asked before the process ends.
+    assert_eq!(h.received_of("session/close").len(), 1);
+}
+
+#[tokio::test]
+async fn a_plain_turn_streams_thoughts_and_messages_then_completes() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("plain-turn").await;
+    initial(&mut events).await;
+    let turn = adapter.send_message("Say hello.".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    assert_eq!(
+        names(&seen),
+        [
+            "turn_started",
+            "message_start",
+            "message_end",
+            "reasoning_start",
+            "reasoning_delta",
+            "reasoning_delta",
+            "reasoning_end",
+            "message_start",
+            "message_delta",
+            "message_delta",
+            "usage",
+            "message_end",
+            "usage",
+            "turn_completed",
+        ]
+    );
+    let all = kinds(&seen);
+    assert!(matches!(
+        all[2],
+        AgentEventKind::MessageEnd { role: MessageRole::User, text, .. } if text == "Say hello."
+    ));
+    assert!(matches!(
+        all[6],
+        AgentEventKind::ReasoningEnd { summary, .. } if summary == &["Let me think. Reply with a greeting."]
+    ));
+    assert!(matches!(
+        all[11],
+        AgentEventKind::MessageEnd { role: MessageRole::Assistant, text, .. } if text == "Hello, world."
+    ));
+    let AgentEventKind::Usage {
+        total,
+        context_window,
+        ..
+    } = all[10]
+    else {
+        panic!()
+    };
+    assert_eq!(total.and_then(|t| t.total_tokens), Some(1234));
+    assert_eq!(*context_window, Some(200_000));
+    let AgentEventKind::Usage { last, .. } = all[12] else {
+        panic!()
+    };
+    let last = last.unwrap();
+    assert_eq!(
+        (
+            last.input_tokens,
+            last.output_tokens,
+            last.cached_input_tokens
+        ),
+        (Some(1200), Some(34), Some(900))
+    );
+    // Every event of the turn carries the local turn id the call returned.
+    for message in &seen {
+        if let AdapterMessage::Event(draft) = message {
+            assert_eq!(draft.turn_id, Some(turn.turn_id), "{:?}", draft.kind);
+        }
+    }
+    let prompt = &h.received_of("session/prompt")[0];
+    assert_eq!(prompt["params"]["sessionId"], SESSION);
+    assert_eq!(
+        prompt["params"]["prompt"],
+        json!([{"type": "text", "text": "Say hello."}])
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn tool_calls_map_to_commands_and_file_diffs() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("tool-diff").await;
+    initial(&mut events).await;
+    adapter
+        .send_message("run the tests and fix b".into())
+        .await
+        .unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    let all = kinds(&seen);
+
+    let start = all
+        .iter()
+        .find(|k| {
+            matches!(
+                k,
+                AgentEventKind::ToolStart {
+                    tool: ToolKind::Command,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let AgentEventKind::ToolStart { title, input, .. } = start else {
+        panic!()
+    };
+    assert_eq!(title, "$ cargo test");
+    assert_eq!(input.as_ref().unwrap()["command"], "cargo test");
+    assert!(all.iter().any(|k| matches!(k, AgentEventKind::ToolUpdate { message } if message.contains("running 1 test"))));
+    let end = all
+        .iter()
+        .find_map(|k| match k {
+            AgentEventKind::ToolEnd {
+                tool: ToolKind::Command,
+                status,
+                output,
+                exit_code,
+                ..
+            } => Some((*status, output.clone(), *exit_code)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(end.0, ToolStatus::Completed);
+    assert!(end.1.unwrap().contains("1 passed"));
+    assert_eq!(end.2, Some(0));
+
+    let diff = all
+        .iter()
+        .find_map(|k| match k {
+            AgentEventKind::FileDiff { changes, .. } => Some(changes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(diff.len(), 1);
+    assert_eq!(diff[0].kind, FileChangeKind::Update);
+    assert!(diff[0].path.ends_with("src/lib.rs"));
+    let patch = diff[0].patch.as_deref().unwrap();
+    assert!(patch.contains("-fn b() {}\n+fn b() { 1; }\n"), "{patch}");
+    assert!(
+        patch.starts_with("--- /tmp/hutan-fixture/src/lib.rs\n"),
+        "{patch}"
+    );
+
+    let plan = all
+        .iter()
+        .find_map(|k| match k {
+            AgentEventKind::Plan { steps, .. } => Some(steps),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(plan.len(), 3);
+    assert_eq!(plan[0].status, PlanStepStatus::Completed);
+    assert_eq!(plan[1].status, PlanStepStatus::InProgress);
+    assert_eq!(plan[2].text, "Ship");
+
+    // The edit tool call is a file-change tool whose end follows the diff.
+    let names = names(&seen);
+    let diff_at = names.iter().position(|n| *n == "file_diff").unwrap();
+    assert_eq!(names[diff_at + 1], "tool_end");
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_allowed_permission_request_reaches_the_agent_with_the_chosen_option() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("permission-allow").await;
+    initial(&mut events).await;
+    adapter.send_message("edit lib.rs".into()).await.unwrap();
+    let first = collect_until(&mut events, is_permission_request).await;
+    let approval = approval_of(&first);
+    let Some(AgentEventKind::PermissionRequested {
+        kind,
+        title,
+        detail,
+        options,
+        ..
+    }) = kinds(&first).into_iter().last()
+    else {
+        panic!()
+    };
+    assert_eq!(*kind, PermissionKind::FileChange);
+    assert_eq!(title, "edit: src/lib.rs");
+    assert!(detail.as_deref().unwrap().ends_with("src/lib.rs"));
+    // Exactly what the agent offered, in its order.
+    let offered: Vec<_> = options.iter().map(|o| (o.id.as_str(), o.kind)).collect();
+    assert_eq!(
+        offered,
+        [
+            ("allow_once", PermissionOptionKind::AllowOnce),
+            ("allow_always", PermissionOptionKind::AllowAlways),
+            ("reject_once", PermissionOptionKind::RejectOnce),
+            ("reject_always", PermissionOptionKind::RejectAlways),
+        ]
+    );
+
+    // An option that was not offered never reaches the agent.
+    let refused = adapter.respond(approval, "approve_everything".into()).await;
+    assert!(
+        matches!(refused, Err(AgentError::OptionNotOffered { option }) if option == "approve_everything")
+    );
+    assert!(h.received_of("response").is_empty());
+
+    adapter
+        .respond(approval, "allow_once".into())
+        .await
+        .unwrap();
+    let again = adapter.respond(approval, "allow_once".into()).await;
+    assert!(
+        matches!(again, Err(AgentError::UnknownApproval)),
+        "answered once"
+    );
+
+    let rest = collect_until(&mut events, ends_turn).await;
+    let resolved = kinds(&rest)
+        .into_iter()
+        .find_map(|k| match k {
+            AgentEventKind::PermissionResolved {
+                approval_id,
+                outcome,
+                ..
+            } => Some((*approval_id, outcome.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(resolved.0, approval);
+    assert_eq!(
+        resolved.1,
+        PermissionOutcome::Selected {
+            option_id: "allow_once".into()
+        }
+    );
+    assert!(matches!(
+        kinds(&rest).last().unwrap(),
+        AgentEventKind::TurnCompleted { .. }
+    ));
+    let response = &h.received_of("response")[0];
+    assert_eq!(response["id"], 900);
+    assert_eq!(
+        response["result"],
+        json!({"outcome": {"outcome": "selected", "optionId": "allow_once"}})
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_denied_request_goes_back_to_the_agent_and_the_tool_fails() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("permission-deny").await;
+    initial(&mut events).await;
+    adapter.send_message("edit lib.rs".into()).await.unwrap();
+    let first = collect_until(&mut events, is_permission_request).await;
+    adapter
+        .respond(approval_of(&first), "reject_once".into())
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::ToolEnd {
+            status: ToolStatus::Failed,
+            ..
+        }
+    )));
+    assert_eq!(
+        h.received_of("response")[0]["result"]["outcome"]["optionId"],
+        "reject_once"
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn interrupting_cancels_the_turn_and_the_waiting_request() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("permission-cancel").await;
+    initial(&mut events).await;
+    adapter.send_message("edit lib.rs".into()).await.unwrap();
+    let first = collect_until(&mut events, is_permission_request).await;
+    let approval = approval_of(&first);
+    adapter.interrupt().await.unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    let order: Vec<_> = kinds(&rest)
+        .into_iter()
+        .map(|k| match k {
+            AgentEventKind::PermissionResolved {
+                approval_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(*approval_id, approval);
+                assert_eq!(*outcome, PermissionOutcome::Expired);
+                "expired"
+            }
+            other => other.name(),
+        })
+        .collect();
+    assert_eq!(order, ["expired", "tool_end", "turn_cancelled"]);
+    // The agent was told (ACP: a client that cancels must answer what it holds).
+    let received = h.received();
+    let names: Vec<_> = received.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(&names[names.len() - 2..], ["session/cancel", "response"]);
+    assert_eq!(
+        received[received.len() - 1].1["result"],
+        json!({"outcome": {"outcome": "cancelled"}})
+    );
+    // Nothing can be chosen any more.
+    assert!(matches!(
+        adapter.respond(approval, "allow_once".into()).await,
+        Err(AgentError::UnknownApproval)
+    ));
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_request_the_agent_gave_up_on_expires_when_the_turn_ends() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("permission-expires").await;
+    initial(&mut events).await;
+    adapter.send_message("edit lib.rs".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    let all = kinds(&seen);
+    let expired = all.iter().position(|k| {
+        matches!(
+            k,
+            AgentEventKind::PermissionResolved {
+                outcome: PermissionOutcome::Expired,
+                ..
+            }
+        )
+    });
+    let completed = all
+        .iter()
+        .position(|k| matches!(k, AgentEventKind::TurnCompleted { .. }));
+    assert!(expired.unwrap() < completed.unwrap(), "{:?}", names(&seen));
+    // Leave time for the agent to read the answer it is owed.
+    adapter.shutdown().await;
+    let response = &h.received_of("response")[0];
+    assert_eq!(
+        response["result"],
+        json!({"outcome": {"outcome": "cancelled"}})
+    );
+}
+
+#[tokio::test]
+async fn interrupting_a_streaming_turn_keeps_the_text_so_far() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("cancel").await;
+    initial(&mut events).await;
+    adapter.send_message("long task".into()).await.unwrap();
+    // A second message while the turn runs is refused by the adapter itself.
+    assert!(matches!(
+        adapter.send_message("again".into()).await,
+        Err(AgentError::TurnInProgress)
+    ));
+    collect_until(&mut events, |m| {
+        matches!(m, AdapterMessage::Event(d) if matches!(d.kind, AgentEventKind::MessageDelta { .. }))
+    })
+    .await;
+    adapter.interrupt().await.unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert_eq!(names(&rest), ["message_end", "turn_cancelled"]);
+    assert!(matches!(
+        kinds(&rest)[0],
+        AgentEventKind::MessageEnd { text, .. } if text == "Working on it"
+    ));
+    assert!(matches!(adapter.interrupt().await, Err(AgentError::NoTurn)));
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn updates_hutan_has_no_model_for_become_opaque_events() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("unknown-update").await;
+    initial(&mut events).await;
+    adapter.send_message("go".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    let all = kinds(&seen);
+    let opaque: Vec<_> = all
+        .iter()
+        .filter_map(|k| match k {
+            AgentEventKind::Opaque { method } => Some(method.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opaque, ["session/update:novel_update", "_omp/novel"]);
+    // The raw payload is kept for the first.
+    let payload = seen.iter().find_map(|m| match m {
+        AdapterMessage::Event(d) if matches!(&d.kind, AgentEventKind::Opaque { method } if method.ends_with("novel_update")) => d.payload.clone(),
+        _ => None,
+    });
+    assert_eq!(payload.unwrap()["update"]["payload"], json!({"x": 1}));
+    // Mode and model changes of the agent are announced.
+    let notices: Vec<_> = all
+        .iter()
+        .filter_map(|k| match k {
+            AgentEventKind::Notice { level, message } => Some((*level, message.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices.contains(&(NoticeLevel::Info, "mode: plan")),
+        "{notices:?}"
+    );
+    assert!(
+        notices.contains(&(
+            NoticeLevel::Info,
+            "model: gitlab-duo/claude-opus-4-5-20251101"
+        )),
+        "{notices:?}"
+    );
+    // A request Hutan does not serve (file system) is declined, and said.
+    assert!(
+        notices
+            .iter()
+            .any(|(level, message)| *level == NoticeLevel::Warning
+                && message.contains("fs/read_text_file"))
+    );
+    let declined = h.received_of("response");
+    assert_eq!(declined[0]["error"]["code"], -32601);
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn task_tool_calls_feed_the_agent_tree_with_subagents() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("subagents").await;
+    initial(&mut events).await;
+    adapter
+        .send_message("explore and fix".into())
+        .await
+        .unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    // The node updates after the turn end (root idle) arrive right behind it.
+    let tail = collect_until(&mut events, |m| matches!(m, AdapterMessage::Node(n) if n.state == Some(NodeState::Idle) && n.kind == NodeKind::Main)).await;
+    let nodes: Vec<_> = seen
+        .iter()
+        .chain(&tail)
+        .filter_map(|m| match m {
+            AdapterMessage::Node(n) => Some(n.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let subs: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Sub).collect();
+    let started: Vec<_> = subs
+        .iter()
+        .filter(|n| n.state == Some(NodeState::Working))
+        .map(|n| {
+            (
+                n.id.clone().unwrap(),
+                n.name.clone(),
+                n.agent_type.clone(),
+                n.parent.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        started,
+        [
+            (
+                "call_task_1#0".to_owned(),
+                Some("Mapper".to_owned()),
+                Some("explore".to_owned()),
+                Some(SESSION.to_owned())
+            ),
+            (
+                "call_task_1#1".to_owned(),
+                Some("Fixer".to_owned()),
+                Some("task".to_owned()),
+                Some(SESSION.to_owned())
+            ),
+        ]
+    );
+    let finished: Vec<_> = subs.iter().filter_map(|n| n.outcome).collect();
+    assert_eq!(finished, [NodeOutcome::Completed, NodeOutcome::Completed]);
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn authentication_uses_the_agents_own_method_when_the_session_asks_for_it() {
+    let h = Harness::new();
+    let session = h.start("auth-required").await;
+    assert_eq!(session.started.thread_id, SESSION);
+    let auth = h.received_of("authenticate");
+    assert_eq!(auth.len(), 1);
+    assert_eq!(auth[0]["params"]["methodId"], "agent");
+    assert_eq!(
+        h.received_of("session/new").len(),
+        2,
+        "asked again after authenticating"
+    );
+    session.adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_login_hutan_cannot_do_for_the_agent_is_an_error_that_says_so() {
+    let h = Harness::new();
+    let error = h
+        .try_start("auth-terminal-only", None, None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, AgentError::AuthRequired { detail } if detail.contains("hutan account login")),
+        "{error}"
+    );
+    assert!(
+        h.received_of("authenticate").is_empty(),
+        "a terminal method is not Hutan's to run"
+    );
+
+    let h = Harness::new();
+    let error = h
+        .try_start("auth-rejected", None, None, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, AgentError::AuthRequired { detail } if detail.contains("no credentials")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_of_another_protocol_version_is_refused_with_both_versions() {
+    let h = Harness::new();
+    let error = h
+        .try_start("old-protocol", None, None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AgentError::UnsupportedAcp {
+            found: 2,
+            supported: 1
+        }
+    ));
+    let text = error.to_string();
+    assert!(
+        text.contains("version 2") && text.contains("version 1"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_is_continued_with_session_load_and_its_replay_is_dropped() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        started,
+        mut events,
+        ..
+    } = h
+        .try_start("load", None, None, Some(SESSION))
+        .await
+        .unwrap();
+    assert!(started.resumed);
+    assert_eq!(started.thread_id, SESSION);
+    let load = &h.received_of("session/load")[0];
+    assert_eq!(load["params"]["sessionId"], SESSION);
+    assert_eq!(load["params"]["cwd"], h.dir.path().display().to_string());
+    assert!(h.received_of("session/new").is_empty());
+
+    adapter.send_message("again".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    // The journal is the history: the agent's replay of earlier messages is not in the stream.
+    let texts: Vec<_> = kinds(&seen)
+        .into_iter()
+        .filter_map(|k| match k {
+            AgentEventKind::MessageEnd { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["again", "Welcome back."]);
+    assert!(matches!(
+        kinds(&seen)[0],
+        AgentEventKind::ResumeLocator { thread_id, .. } if thread_id == SESSION
+    ));
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_without_session_load_is_resumed_with_session_resume() {
+    let h = Harness::new();
+    let session = h
+        .try_start("resume-only", None, None, Some(SESSION))
+        .await
+        .unwrap();
+    assert!(session.started.resumed);
+    assert_eq!(
+        h.received_of("session/resume")[0]["params"]["sessionId"],
+        SESSION
+    );
+    assert!(h.received_of("session/load").is_empty());
+    session.adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_that_cannot_continue_conversations_says_so() {
+    let h = Harness::new();
+    let error = h
+        .try_start("no-resume", None, None, Some(SESSION))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, AgentError::Unsupported(m) if m.contains("session/load")),
+        "{error}"
+    );
+
+    let h = Harness::new();
+    let error = h
+        .try_start("load-fails", None, None, Some(SESSION))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, AgentError::Rpc { method, message, .. } if method == "session/load" && message.contains("not found")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn models_are_chosen_from_the_sessions_offer_and_switched_through_config_options() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        started,
+        mut events,
+        ..
+    } = h
+        .try_start("model-switch", Some(HAIKU), None, None)
+        .await
+        .unwrap();
+    assert_eq!(started.model, HAIKU);
+    let set = &h.received_of("session/set_config_option")[0];
+    assert_eq!(
+        set["params"],
+        json!({"sessionId": SESSION, "configId": "model", "value": HAIKU})
+    );
+
+    // A later switch, and the notice that records it.
+    adapter.set_model(OPUS.into()).await.unwrap();
+    let notice = collect_until(&mut events, |m| {
+        matches!(m, AdapterMessage::Event(d) if matches!(&d.kind, AgentEventKind::Notice { message, .. } if message.starts_with("model:")))
+    })
+    .await;
+    assert!(matches!(
+        kinds(&notice).last().unwrap(),
+        AgentEventKind::Notice { message, .. } if message == &format!("model: {OPUS}")
+    ));
+    assert_eq!(h.received_of("session/set_config_option").len(), 2);
+    let unknown = adapter.set_model("nobody/nothing".into()).await;
+    assert!(
+        matches!(unknown, Err(AgentError::UnknownModel { model, available }) if model == "nobody/nothing" && available.contains(HAIKU))
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_model_the_session_does_not_offer_fails_the_start_naming_the_choices() {
+    let h = Harness::new();
+    let error = h
+        .try_start("plain-turn", Some("nobody/nothing"), None, None)
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("nobody/nothing") && text.contains(HAIKU),
+        "{text}"
+    );
+    assert!(h.received_of("session/set_config_option").is_empty());
+}
+
+#[tokio::test]
+async fn a_mode_is_set_from_the_modes_the_session_offers() {
+    let h = Harness::new();
+    let session = h
+        .try_start("mode-plan", None, Some("plan"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.received_of("session/set_mode")[0]["params"],
+        json!({"sessionId": SESSION, "modeId": "plan"})
+    );
+    session.adapter.shutdown().await;
+
+    let h = Harness::new();
+    let error = h
+        .try_start("plain-turn", None, Some("yolo"), None)
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("yolo") && text.contains("default, plan"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_dying_agent_ends_the_stream_with_its_exit() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("exit-mid-turn").await;
+    initial(&mut events).await;
+    adapter.send_message("go".into()).await.unwrap();
+    let seen = collect_until(&mut events, |m| matches!(m, AdapterMessage::Exited(_))).await;
+    let AdapterMessage::Exited(info) = seen.last().unwrap() else {
+        panic!()
+    };
+    assert_eq!(info.code, Some(1));
+    // The turn was not completed by the adapter: the daemon closes it.
+    assert!(!kinds(&seen).iter().any(|k| k.ends_turn()));
+    assert!(adapter.send_message("more".into()).await.is_err());
+}
+
+#[tokio::test]
+async fn failures_of_the_prompt_are_failed_turns() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("turn-error").await;
+    initial(&mut events).await;
+    adapter.send_message("go".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    assert!(matches!(
+        kinds(&seen).last().unwrap(),
+        AgentEventKind::TurnFailed { message, .. } if message.contains("model overloaded")
+    ));
+    adapter.shutdown().await;
+
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("refusal").await;
+    initial(&mut events).await;
+    adapter.send_message("go".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    assert!(matches!(
+        kinds(&seen).last().unwrap(),
+        AgentEventKind::TurnFailed { message, .. } if message.contains("refused")
+    ));
+    adapter.shutdown().await;
+
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("max-tokens").await;
+    initial(&mut events).await;
+    adapter.send_message("go".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    let all = kinds(&seen);
+    assert!(all.iter().any(|k| matches!(k, AgentEventKind::Notice { level: NoticeLevel::Warning, message } if message.contains("output limit"))));
+    assert!(matches!(
+        all.last().unwrap(),
+        AgentEventKind::TurnCompleted { .. }
+    ));
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_second_turn_follows_the_first() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("two-turns").await;
+    initial(&mut events).await;
+    let first = adapter.send_message("one".into()).await.unwrap();
+    collect_until(&mut events, ends_turn).await;
+    let second = adapter.send_message("two".into()).await.unwrap();
+    assert_ne!(first.turn_id, second.turn_id);
+    let seen = collect_until(&mut events, ends_turn).await;
+    assert!(
+        kinds(&seen)
+            .iter()
+            .any(|k| matches!(k, AgentEventKind::MessageEnd { text, .. } if text == "two"))
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn attached_context_is_sent_as_embedded_resources() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("plain-turn").await;
+    initial(&mut events).await;
+    adapter
+        .send_message_with_context(
+            "explain".into(),
+            vec![ContextBlock {
+                label: "shell: cargo test".into(),
+                text: "[shell: cargo test · exit 1]\n1 failed".into(),
+            }],
+        )
+        .await
+        .unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    // The journal shows what the agent was given.
+    assert!(kinds(&seen).iter().any(|k| matches!(k, AgentEventKind::MessageEnd { role: MessageRole::User, text, .. } if text.contains("explain") && text.contains("1 failed"))));
+    let prompt = &h.received_of("session/prompt")[0]["params"]["prompt"];
+    assert_eq!(prompt[0], json!({"type": "text", "text": "explain"}));
+    assert_eq!(prompt[1]["type"], "resource");
+    assert_eq!(
+        prompt[1]["resource"]["uri"],
+        "hutan://context/1/shell--cargo-test"
+    );
+    assert!(
+        prompt[1]["resource"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("1 failed")
+    );
+    adapter.shutdown().await;
+}
+
+#[test]
+fn committed_fixtures_are_already_scrubbed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-omp-18.11");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "jsonl") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let scrubbed = hutan_agents::fixture::acp_scrub::scrub(&text)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(scrubbed, text, "{} is not scrubbed", path.display());
+        seen += 1;
+    }
+    assert!(seen >= 20, "{seen} fixtures");
+}

@@ -22,6 +22,20 @@
 //! bin = "/Users/me/.local/bin/codex"   # default: `codex` on the daemon's PATH
 //! args = ["app-server", "-c", 'model_reasoning_effort="low"']   # default: ["app-server"]
 //!
+//! [harness.omp]                  # chat through an agent harness over ACP (protocol 0.17, docs/agents.md)
+//! bin = "/Users/me/.bun/bin/omp"       # default: `omp` on the login environment's PATH
+//! args = ["acp"]                       # default: ["acp"]
+//! cli = "/Users/me/.bun/bin/omp"       # the harness's own CLI (account list/login), default: `bin` or `omp`
+//!
+//! [harness.claude]               # Claude Code through its ACP adapter
+//! bin = "/opt/homebrew/bin/claude-code-acp"   # default: `claude-code-acp` on the login environment's PATH
+//!
+//! [mcp.docs]                     # MCP servers handed to harness sessions (no secrets here: credentials stay in the harness)
+//! command = "npx"
+//! args = ["-y", "some-mcp-server"]
+//! [mcp.search]
+//! url = "https://mcp.example.com/mcp"  # http (default) or `transport = "sse"`
+//!
 //! [gateway]                      # direct model chat (protocol 0.11, docs/gateway.md)
 //! max_context_chars = 200000     # oldest messages are left out of a request beyond this
 //!
@@ -57,6 +71,7 @@
 //! max_parallel = 3               # tasks with `auto_start` start by themselves up to this many at once
 //! ```
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -87,6 +102,10 @@ pub struct DaemonSettings {
     pub home_folder: Option<PathBuf>,
     pub history: HistorySettings,
     pub codex: CodexSettings,
+    /// `[harness.<id>]`: how to start the ACP harnesses (`omp`, `claude`).
+    pub harness: BTreeMap<String, HarnessSettings>,
+    /// `[mcp.<name>]`: MCP servers passed to harness sessions.
+    pub mcp: BTreeMap<String, McpSettings>,
     pub gateway: GatewaySettings,
     pub assistant: AssistantSettings,
     pub notify: NotifySettings,
@@ -145,6 +164,39 @@ impl CodexSettings {
         }
         config
     }
+}
+
+/// The harnesses a `[harness.<id>]` table may name.
+pub const HARNESS_IDS: [&str; 2] = ["omp", "claude"];
+
+/// `[harness.<id>]` of `daemon.toml`: how the daemon starts an ACP harness and where its own
+/// CLI is. Nothing here is secret: logins stay in the harness (ADR 0015).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HarnessSettings {
+    /// The ACP executable; `None` looks for the harness's default on `PATH`.
+    pub bin: Option<PathBuf>,
+    /// Its arguments, replacing the default (`["acp"]` for `omp`, none for `claude`) when not
+    /// empty.
+    pub args: Vec<String>,
+    /// Extra environment of the process (not for secrets: the harness keeps its own logins).
+    pub env: BTreeMap<String, String>,
+    /// The harness's own CLI for `hutan account` (`omp`, `claude`); `None`: `bin` for `omp`,
+    /// else the default name on `PATH`.
+    pub cli: Option<PathBuf>,
+}
+
+/// `[mcp.<name>]` of `daemon.toml`: one MCP server handed to harness sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpSettings {
+    /// A stdio server: the program to run.
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    /// A remote server: its URL.
+    pub url: Option<String>,
+    /// `http` (default) or `sse`, for `url`.
+    pub transport: Option<String>,
 }
 
 /// Which source directories the history index reads; `None` = the agent's default location.
@@ -370,6 +422,10 @@ struct File {
     #[serde(default)]
     codex: CodexSettings,
     #[serde(default)]
+    harness: BTreeMap<String, HarnessSettings>,
+    #[serde(default)]
+    mcp: BTreeMap<String, McpSettings>,
+    #[serde(default)]
     gateway: GatewaySettings,
     #[serde(default)]
     assistant: AssistantSettings,
@@ -441,11 +497,26 @@ impl DaemonSettings {
                 "tasks.max_parallel must be at least 1",
             ));
         }
+        if let Some(unknown) = file
+            .harness
+            .keys()
+            .find(|id| !HARNESS_IDS.contains(&id.as_str()))
+        {
+            return Err(toml::de::Error::custom(format!(
+                "unknown harness `{unknown}` in [harness.{unknown}] (known: {})",
+                HARNESS_IDS.join(", ")
+            )));
+        }
+        for (name, server) in &file.mcp {
+            check_mcp(name, server)?;
+        }
         Ok(Self {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
             history: file.history,
             codex: file.codex,
+            harness: file.harness,
+            mcp: file.mcp,
             gateway: file.gateway,
             assistant: file.assistant,
             notify: file.notify,
@@ -453,6 +524,36 @@ impl DaemonSettings {
             tasks: file.tasks,
         })
     }
+}
+
+fn check_mcp(name: &str, server: &McpSettings) -> Result<(), toml::de::Error> {
+    let bad = |what: &str| toml::de::Error::custom(format!("[mcp.{name}]: {what}"));
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err(bad(
+            "the name may only contain letters, digits, `-` and `_`",
+        ));
+    }
+    match (&server.command, &server.url) {
+        (Some(command), None) if !command.is_empty() => {}
+        (None, Some(url)) if url.starts_with("http://") || url.starts_with("https://") => {}
+        (Some(_), Some(_)) => {
+            return Err(bad(
+                "set either `command` (stdio) or `url` (remote), not both",
+            ));
+        }
+        (None, Some(_)) => return Err(bad("`url` must start with http:// or https://")),
+        _ => return Err(bad("set `command` (stdio) or `url` (remote)")),
+    }
+    if let Some(transport) = &server.transport
+        && !matches!(transport.as_str(), "http" | "sse")
+    {
+        return Err(bad("`transport` is `http` or `sse`"));
+    }
+    Ok(())
 }
 
 /// `~` and `~/...` stand for the user's home directory; the result must be absolute.
@@ -833,5 +934,55 @@ mod tests {
             .unwrap()
             .notify;
         assert_eq!(only.kinds, [IntentKind::TaskFailed]);
+    }
+
+    #[test]
+    fn harnesses_and_mcp_servers_are_read_and_checked() {
+        let none = DaemonSettings::parse("", None).unwrap();
+        assert!(none.harness.is_empty() && none.mcp.is_empty());
+        let settings = DaemonSettings::parse(
+            r#"
+[harness.omp]
+bin = "/opt/omp"
+args = ["acp", "--profile", "work"]
+env = { OMP_PROFILE = "work" }
+cli = "/opt/omp-cli"
+
+[harness.claude]
+bin = "/opt/claude-code-acp"
+
+[mcp.docs]
+command = "npx"
+args = ["-y", "docs-server"]
+
+[mcp.search]
+url = "https://mcp.example.com/mcp"
+transport = "sse"
+"#,
+            None,
+        )
+        .unwrap();
+        let omp = &settings.harness["omp"];
+        assert_eq!(omp.bin.as_deref(), Some(Path::new("/opt/omp")));
+        assert_eq!(omp.args, ["acp", "--profile", "work"]);
+        assert_eq!(omp.env["OMP_PROFILE"], "work");
+        assert_eq!(omp.cli.as_deref(), Some(Path::new("/opt/omp-cli")));
+        assert_eq!(settings.harness["claude"].args, Vec::<String>::new());
+        assert_eq!(settings.mcp["docs"].command.as_deref(), Some("npx"));
+        assert_eq!(settings.mcp["search"].transport.as_deref(), Some("sse"));
+
+        for bad in [
+            // a harness Hutan has no adapter for, a typo in a key
+            "[harness.gemini]\nbin = \"x\"\n",
+            "[harness.omp]\nbinary = \"x\"\n",
+            // an MCP server needs exactly one of command and url
+            "[mcp.x]\n",
+            "[mcp.x]\ncommand = \"a\"\nurl = \"https://a\"\n",
+            "[mcp.x]\nurl = \"ftp://a\"\n",
+            "[mcp.x]\nurl = \"https://a\"\ntransport = \"websocket\"\n",
+            "[mcp.\"a b\"]\ncommand = \"a\"\n",
+        ] {
+            assert!(DaemonSettings::parse(bad, None).is_err(), "{bad}");
+        }
     }
 }

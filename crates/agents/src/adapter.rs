@@ -48,6 +48,14 @@ pub enum AdapterMessage {
     Exited(ExitInfo),
 }
 
+/// Read-only context attached to a message (`docs/assistant.md`): a label for the user and
+/// the resolved, redacted text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextBlock {
+    pub label: String,
+    pub text: String,
+}
+
 /// A turn the agent accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRef {
@@ -58,11 +66,42 @@ pub struct TurnRef {
 /// One running agent conversation. Methods never block the caller's event loop on the agent's
 /// event stream, but they wait for the agent's reply: call them from a spawned task.
 pub trait AgentAdapter: Send + Sync + std::fmt::Debug {
-    /// The agent's short name (`codex`).
-    fn agent(&self) -> &'static str;
+    /// The agent's short name (`codex`, `omp`, `claude`).
+    fn agent(&self) -> &str;
 
     /// Sends the user's message; the turn's events follow on the stream.
     fn send_message(&self, text: String) -> BoxFuture<'_, Result<TurnRef, AgentError>>;
+
+    /// [`send_message`](Self::send_message) with attached context. Agents that cannot take
+    /// context refuse a message that has some.
+    fn send_message_with_context(
+        &self,
+        text: String,
+        context: Vec<ContextBlock>,
+    ) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
+        Box::pin(async move {
+            if context.is_empty() {
+                self.send_message(text).await
+            } else {
+                Err(AgentError::Unsupported(format!(
+                    "{} does not take attached context",
+                    self.agent()
+                )))
+            }
+        })
+    }
+
+    /// Switches the model of the running conversation; the next turn uses it. Agents without
+    /// model switching refuse.
+    fn set_model(&self, model: String) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async move {
+            let _ = model;
+            Err(AgentError::Unsupported(format!(
+                "{} does not offer model switching",
+                self.agent()
+            )))
+        })
+    }
 
     /// Asks the agent to stop the turn in progress.
     fn interrupt(&self) -> BoxFuture<'_, Result<(), AgentError>>;

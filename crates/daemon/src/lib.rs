@@ -28,6 +28,7 @@
 //! - [`notify_native`]: posting the intents to the system's notification centre from `Hutan.app`
 //!   and routing the clicks back (ADR 0007).
 
+pub mod accounts;
 pub mod agent;
 pub mod assistant;
 pub mod bus;
@@ -39,6 +40,7 @@ pub mod context_file;
 pub mod daemon;
 pub mod direct;
 pub mod error;
+pub mod harness;
 pub mod history;
 pub mod notify;
 pub mod notify_native;

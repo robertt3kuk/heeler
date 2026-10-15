@@ -50,8 +50,17 @@ impl TestDaemon {
 
     /// [`start`](Self::start) with `tweak` applied to the daemon's config.
     pub async fn start_with(tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
+        Self::start_toml("", tweak).await
+    }
+
+    /// [`start_with`](Self::start_with) and `toml` as `daemon.toml` (written first; it may
+    /// name files of `dir`, the temporary `HUTAN_HOME`, through the closure's argument).
+    pub async fn start_toml(toml: &str, tweak: impl FnOnce(&mut DaemonConfig)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
+        if !toml.is_empty() {
+            std::fs::write(&paths.config_file, toml).unwrap();
+        }
         // Sessions find this build of the CLI through `HUTAN_BIN`, as in a real install.
         let mut config = DaemonConfig {
             hutan_bin: Some(PathBuf::from(HUTAN)),
@@ -153,6 +162,17 @@ pub fn hutand_dir() -> PathBuf {
         "hutand not built: run `cargo build -p hutan-daemon --bin hutand` (or `just test`)"
     );
     dir
+}
+
+/// The fake ACP agent, next to the `hutan` test binary; `just test` builds the workspace
+/// binaries first.
+pub fn acp_fixture_bin() -> PathBuf {
+    let bin = Path::new(HUTAN).parent().unwrap().join("hutan-acp-fixture");
+    assert!(
+        bin.is_file(),
+        "hutan-acp-fixture not built: run `cargo build -p hutan-agents --bins` (or `just test`)"
+    );
+    bin
 }
 
 /// The fake codex app server, next to the `hutan` test binary; `just test` builds the

@@ -125,6 +125,7 @@ impl Env {
                 approval_policy: policy,
                 sandbox,
                 title: None,
+                mode: None,
                 provider_id: None,
                 system_prompt: None,
             }))

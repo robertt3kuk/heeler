@@ -10,6 +10,9 @@ use futures::{SinkExt, StreamExt};
 use hutan_core::{
     ApprovalId, Epoch, Seq, SessionId, Task, TaskId, TaskState, TerminalId, WorkspaceId,
 };
+use hutan_protocol::account::{
+    AccountInfo, AccountList, AccountLogin, AccountLogout, AccountSession,
+};
 use hutan_protocol::assistant::{
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
 };
@@ -79,6 +82,11 @@ pub(crate) const NOTIFY_CAPABILITY: &str = "notify.intents";
 pub(crate) const WORKTREE_CAPABILITY: &str = "worktree";
 /// Capability for `task.*` and the `task.updated` / `task.removed` events (protocol 0.16).
 pub(crate) const TASK_CAPABILITY: &str = "task";
+/// Capability for `chat.create` with the ACP harnesses `omp` and `claude`, and `chat.set_model`
+/// on them (protocol 0.17).
+pub(crate) const HARNESS_CAPABILITY: &str = "harness.acp";
+/// Capability for `account.*` and the `account.changed` event (protocol 0.17).
+pub(crate) const ACCOUNTS_CAPABILITY: &str = "accounts";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -94,6 +102,8 @@ const CAPABILITIES: &[&str] = &[
     NOTIFY_CAPABILITY,
     WORKTREE_CAPABILITY,
     TASK_CAPABILITY,
+    HARNESS_CAPABILITY,
+    ACCOUNTS_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -292,6 +302,56 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == CHAT_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `harness.acp` (chats through the `omp` and
+    /// `claude` harnesses; protocol 0.17).
+    pub fn supports_harness_chat(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == HARNESS_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `accounts` (protocol 0.17).
+    pub fn supports_accounts(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == ACCOUNTS_CAPABILITY)
+    }
+
+    /// The logins of the harnesses (`account.list`): names and plan only.
+    pub async fn account_list(&self) -> Result<Vec<AccountInfo>, ClientError> {
+        let list: AccountList = self.call(Request::AccountList(Empty {})).await?;
+        Ok(list.accounts)
+    }
+
+    /// Starts the harness's own login in a terminal session (`account.login`); the user
+    /// completes it there, and `account.changed` follows when the session ends.
+    pub async fn account_login(
+        &self,
+        harness: impl Into<String>,
+        provider: Option<String>,
+    ) -> Result<AccountSession, ClientError> {
+        self.call(Request::AccountLogin(AccountLogin {
+            harness: harness.into(),
+            provider,
+        }))
+        .await
+    }
+
+    /// Starts the harness's own logout in a terminal session (`account.logout`).
+    pub async fn account_logout(
+        &self,
+        harness: impl Into<String>,
+        provider: Option<String>,
+    ) -> Result<AccountSession, ClientError> {
+        self.call(Request::AccountLogout(AccountLogout {
+            harness: harness.into(),
+            provider,
+        }))
+        .await
     }
 
     /// True when the daemon advertised capability `chat.direct` (model providers and direct

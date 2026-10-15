@@ -16,6 +16,7 @@ use hutan_core::{
 };
 use hutan_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
 use hutan_core::{Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState};
+use hutan_protocol::account::*;
 use hutan_protocol::assistant::*;
 use hutan_protocol::blocks::{
     Block, BlockPart, BlockState, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks,
@@ -124,6 +125,26 @@ fn chat_info() -> ChatInfo {
         turn_active: true,
         pending_approvals: 1,
         provider_id: None,
+        agent_session_id: None,
+    }
+}
+
+fn harness_chat_session_info() -> SessionInfo {
+    SessionInfo {
+        title: "omp · repo".into(),
+        state: SessionState::Running,
+        command: vec!["omp".into()],
+        chat: Some(ChatInfo {
+            agent: "omp".into(),
+            model: "anthropic/claude-sonnet-4-5".into(),
+            approval_policy: ApprovalPolicy::OnRequest,
+            sandbox: SandboxMode::WorkspaceWrite,
+            turn_active: true,
+            pending_approvals: 0,
+            provider_id: None,
+            agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
+        }),
+        ..chat_session_info()
     }
 }
 
@@ -140,6 +161,7 @@ fn direct_chat_session_info() -> SessionInfo {
             turn_active: true,
             pending_approvals: 0,
             provider_id: Some("openrouter".into()),
+            agent_session_id: None,
         }),
         ..chat_session_info()
     }
@@ -222,6 +244,7 @@ fn assistant_session_info() -> SessionInfo {
             turn_active: false,
             pending_approvals: 0,
             provider_id: Some("ollama".into()),
+            agent_session_id: None,
         }),
         ..chat_session_info()
     }
@@ -766,6 +789,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 approval_policy: Some(ApprovalPolicy::Untrusted),
                 sandbox: Some(SandboxMode::ReadOnly),
                 title: Some("fix the build".into()),
+                mode: None,
                 provider_id: None,
                 system_prompt: None,
             }),
@@ -780,6 +804,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 approval_policy: None,
                 sandbox: None,
                 title: None,
+                mode: None,
                 provider_id: None,
                 system_prompt: None,
             }),
@@ -921,6 +946,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 approval_policy: None,
                 sandbox: None,
                 title: None,
+                mode: None,
                 provider_id: Some("openrouter".into()),
                 system_prompt: Some("Answer in one sentence.".into()),
             }),
@@ -1231,6 +1257,43 @@ fn requests() -> Vec<(&'static str, Request)> {
             }),
         ),
         ("task_start", Request::TaskStart(TaskRef { id: tid() })),
+        (
+            "chat_create_harness",
+            Request::ChatCreate(ChatCreate {
+                workspace_id: None,
+                cwd: "/repo".into(),
+                agent: "omp".into(),
+                model: Some("anthropic/claude-sonnet-4-5".into()),
+                approval_policy: None,
+                sandbox: None,
+                title: None,
+                mode: Some("plan".into()),
+                provider_id: None,
+                system_prompt: None,
+            }),
+        ),
+        ("account_list", Request::AccountList(Empty {})),
+        (
+            "account_login",
+            Request::AccountLogin(AccountLogin {
+                harness: "omp".into(),
+                provider: Some("anthropic".into()),
+            }),
+        ),
+        (
+            "account_login_any",
+            Request::AccountLogin(AccountLogin {
+                harness: "claude".into(),
+                provider: None,
+            }),
+        ),
+        (
+            "account_logout",
+            Request::AccountLogout(AccountLogout {
+                harness: "codex".into(),
+                provider: None,
+            }),
+        ),
     ]
 }
 
@@ -1724,6 +1787,18 @@ fn events() -> Vec<(&'static str, Event)> {
             },
         ),
         ("task_removed", Event::TaskRemoved { id: tid() }),
+        (
+            "account_changed",
+            Event::AccountChanged {
+                harness: "omp".into(),
+            },
+        ),
+        (
+            "session_updated_chat_harness",
+            Event::SessionUpdated {
+                session: harness_chat_session_info(),
+            },
+        ),
     ]
 }
 
@@ -2532,6 +2607,65 @@ fn responses_match_fixtures() {
                         "another agent already works in /work/repo: session 01K7F3B5N2Q9W8E4R6T1Y0V3KN"
                             .into(),
                     ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "account_list",
+            ControlMessage::ok(
+                34,
+                &AccountList {
+                    accounts: vec![
+                        AccountInfo {
+                            harness: "omp".into(),
+                            provider: "anthropic".into(),
+                            label: "anthropic".into(),
+                            plan: Some("max".into()),
+                            status: AccountStatus::LoggedIn,
+                            detail: None,
+                        },
+                        AccountInfo {
+                            harness: "claude".into(),
+                            provider: "anthropic".into(),
+                            label: "Claude Code".into(),
+                            plan: None,
+                            status: AccountStatus::Unknown,
+                            detail: Some(
+                                "`claude` was not found; install Claude Code".into(),
+                            ),
+                        },
+                        AccountInfo {
+                            harness: "codex".into(),
+                            provider: "openai".into(),
+                            label: "ChatGPT".into(),
+                            plan: Some("plus".into()),
+                            status: AccountStatus::LoggedOut,
+                            detail: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "account_session",
+            ControlMessage::ok(
+                35,
+                &AccountSession {
+                    session: session_info(),
+                    instructions: None,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "account_session_instructions",
+            ControlMessage::ok(
+                36,
+                &AccountSession {
+                    session: session_info(),
+                    instructions: Some("type /logout in omp".into()),
                 },
             )
             .unwrap(),

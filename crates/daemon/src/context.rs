@@ -22,6 +22,9 @@ pub struct Attached {
     pub appendix: String,
     /// Kind, label, size and truncation per attachment, in the order they were attached.
     pub meta: Vec<AttachmentMeta>,
+    /// The attachments one by one (header and body), for agents that take them as separate
+    /// resources (ACP embedded context).
+    pub blocks: Vec<hutan_agents::ContextBlock>,
 }
 
 /// Which end of a text survives a cut.
@@ -210,6 +213,13 @@ pub fn assemble(parts: &[Part]) -> Attached {
     Attached {
         appendix,
         meta: parts.iter().map(Part::meta).collect(),
+        blocks: parts
+            .iter()
+            .map(|part| hutan_agents::ContextBlock {
+                label: part.label.clone(),
+                text: part.text(),
+            })
+            .collect(),
     }
 }
 

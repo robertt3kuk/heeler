@@ -1,5 +1,6 @@
-//! Chat sessions (protocol 0.9 agents, 0.11 direct model chat): one adapter process per Codex
-//! session or one [`DirectSession`] per direct chat, the approval engine, and the journal.
+//! Chat sessions (protocol 0.9 agents, 0.11 direct model chat, 0.17 ACP harnesses): one adapter
+//! process per Codex or harness (`omp`, `claude`) session or one [`DirectSession`] per direct
+//! chat, the approval engine, and the journal.
 //!
 //! The registry owns the sessions' records and lifecycle; [`ChatManager`] owns what runs: the
 //! adapters, a pump task per session that numbers, journals and publishes every event, and the
@@ -21,8 +22,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use hutan_agents::{
-    AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter, CodexConfig, CodexSession,
-    ExitInfo, StartSpec, Started,
+    AcpAdapter, AcpSession, AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter,
+    CodexConfig, CodexSession, ExitInfo, StartSpec, Started,
 };
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
@@ -45,6 +46,7 @@ use tracing::{debug, error, info, warn};
 use crate::bus::EventBus;
 use crate::context::Attached;
 use crate::direct::{DirectSession, Target};
+use crate::harness::{Harnesses, is_harness_agent};
 use crate::partial::{Flush, PARTIAL_INTERVAL, Partials};
 use crate::providers::ProviderService;
 use crate::registry::{self, ChatNotifier};
@@ -62,6 +64,8 @@ pub fn is_gateway_agent(agent: &str) -> bool {
 
 /// How long a fetched model catalog is reused.
 const MODEL_CACHE: Duration = Duration::from_secs(60);
+/// How long a harness's model list is reused (`omp models` is a subprocess of seconds).
+const HARNESS_MODEL_CACHE: Duration = Duration::from_secs(5 * 60);
 
 /// What a chat session is, as stored in the session row's `spec_json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +86,9 @@ pub struct ChatSpec {
     /// `direct` only: sent to the model ahead of the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Harness chats only: the session mode asked for at creation (applied again on restore).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// What runs a session: an agent process, or the model gateway.
@@ -126,11 +133,13 @@ pub struct ChatManager {
     storage: Storage,
     notifier: ChatNotifier,
     codex: CodexConfig,
+    harnesses: Arc<Harnesses>,
     providers: Arc<ProviderService>,
     max_context_chars: usize,
     live: Mutex<HashMap<SessionId, Arc<Live>>>,
     approvals: Mutex<HashMap<ApprovalId, Pending>>,
-    models: Mutex<Option<(Instant, Vec<ModelInfo>)>>,
+    /// Model catalogs by agent.
+    models: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
 }
 
 fn provider_error(error: &AgentError, program: &std::path::Path) -> ErrorBody {
@@ -142,6 +151,27 @@ fn provider_error(error: &AgentError, program: &std::path::Path) -> ErrorBody {
         _ => String::new(),
     };
     ErrorBody::new(ErrorCode::ProviderError, format!("{error}{hint}"))
+}
+
+/// What a failed harness start or call says to the client.
+fn harness_error(error: &AgentError, agent: &str, program: &std::path::Path) -> ErrorBody {
+    match error {
+        AgentError::Spawn { .. } => ErrorBody::new(
+            ErrorCode::ProviderError,
+            format!(
+                "{error}; check `bin` under `[harness.{agent}]` in daemon.toml (looked for `{}`)",
+                program.display()
+            ),
+        ),
+        AgentError::AuthRequired { .. } => ErrorBody::new(
+            ErrorCode::ProviderError,
+            format!("{error}: run `hutan account login {agent}`"),
+        ),
+        AgentError::UnknownModel { .. } | AgentError::Unsupported(_) => {
+            ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+        }
+        _ => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+    }
 }
 
 fn client_name(kind: Option<ClientKind>) -> &'static str {
@@ -167,6 +197,7 @@ impl ChatManager {
         storage: Storage,
         notifier: ChatNotifier,
         codex: CodexConfig,
+        harnesses: Arc<Harnesses>,
         providers: Arc<ProviderService>,
         max_context_chars: usize,
     ) -> Arc<Self> {
@@ -175,11 +206,12 @@ impl ChatManager {
             storage,
             notifier,
             codex,
+            harnesses,
             providers,
             max_context_chars,
             live: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
-            models: Mutex::new(None),
+            models: Mutex::new(HashMap::new()),
         })
     }
 
@@ -213,11 +245,14 @@ impl ChatManager {
         if is_gateway_agent(&spec.agent) {
             return self.start_direct(id, spec).await;
         }
+        if is_harness_agent(&spec.agent) {
+            return self.start_harness(id, cwd, spec).await;
+        }
         if spec.agent != AGENT_CODEX {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, omp, claude, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
                     spec.agent
                 ),
             ));
@@ -248,6 +283,60 @@ impl ChatManager {
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, model = %started.model, resumed = started.resumed, "chat agent started");
+        tokio::spawn(self.clone().pump(live, events));
+        Ok(started)
+    }
+
+    /// Starts (or, with `spec.thread_id`, continues with `session/load`) the ACP process of a
+    /// harness chat and begins journaling its events.
+    async fn start_harness(
+        self: &Arc<Self>,
+        id: SessionId,
+        cwd: PathBuf,
+        spec: &ChatSpec,
+    ) -> Result<Started, ErrorBody> {
+        let harnesses = self.harnesses.clone();
+        let agent = spec.agent.clone();
+        let config = tokio::task::spawn_blocking(move || harnesses.acp_config(&agent))
+            .await
+            .map_err(|e| {
+                ErrorBody::new(ErrorCode::Internal, format!("locating the agent: {e}"))
+            })??;
+        let last = self.journal_end(id).await?;
+        let start = StartSpec {
+            cwd,
+            model: spec.model.clone(),
+            approval_policy: spec.approval_policy,
+            sandbox: spec.sandbox,
+            resume_thread_id: spec.thread_id.clone(),
+        };
+        let AcpSession {
+            adapter,
+            started,
+            events,
+            models,
+        } = AcpAdapter::start(
+            &config,
+            &start,
+            spec.mode.as_deref(),
+            self.harnesses.mcp_servers(),
+        )
+        .await
+        .map_err(|e| harness_error(&e, &spec.agent, &config.program))?;
+        if !models.is_empty() {
+            lock(&self.models).insert(spec.agent.clone(), (Instant::now(), models));
+        }
+        let live = Arc::new(Live {
+            id,
+            backend: Backend::Agent(adapter),
+            next_seq: AtomicU64::new(last + 1),
+            busy: AtomicBool::new(false),
+            open_turn: Mutex::new(None),
+            stopping: AtomicBool::new(false),
+            partials: Mutex::new(Partials::default()),
+        });
+        lock(&self.live).insert(id, live.clone());
+        info!(session = %id, agent = %spec.agent, model = %started.model, resumed = started.resumed, "chat harness started");
         tokio::spawn(self.clone().pump(live, events));
         Ok(started)
     }
@@ -318,7 +407,8 @@ impl ChatManager {
         })
     }
 
-    /// Switches the model of a running direct chat; its next turn uses it.
+    /// Switches the model of a running chat; its next turn uses it. A direct chat takes a
+    /// provider too; a harness chat takes one of the models its agent offers.
     pub(crate) async fn set_model(
         &self,
         id: SessionId,
@@ -326,14 +416,20 @@ impl ChatManager {
         model: String,
     ) -> Result<(), ErrorBody> {
         let live = self.live(id)?;
-        let Backend::Direct(session) = &live.backend else {
-            return Err(ErrorBody::new(
-                ErrorCode::BadRequest,
-                "only a direct chat has a switchable model",
-            ));
-        };
-        session.set_model(provider_id, model).await;
-        Ok(())
+        match &live.backend {
+            Backend::Direct(session) => {
+                session.set_model(provider_id, model).await;
+                Ok(())
+            }
+            Backend::Agent(adapter) => {
+                adapter.set_model(model).await.map_err(|error| match error {
+                    AgentError::Unsupported(_) | AgentError::UnknownModel { .. } => {
+                        ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+                    }
+                    error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+                })
+            }
+        }
     }
 
     fn live(&self, id: SessionId) -> Result<Arc<Live>, ErrorBody> {
@@ -389,15 +485,23 @@ impl ChatManager {
             ));
         }
         let started = match &live.backend {
-            Backend::Agent(_) if attached.is_some() => Err(ErrorBody::new(
-                ErrorCode::BadRequest,
-                "attachments are only supported by direct and assistant chats",
-            )),
             Backend::Agent(adapter) => adapter
-                .send_message(text)
+                .send_message_with_context(
+                    text,
+                    attached.map(|attached| attached.blocks).unwrap_or_default(),
+                )
                 .await
                 .map(|turn| turn.turn_id)
-                .map_err(|error| ErrorBody::new(ErrorCode::ProviderError, error.to_string())),
+                .map_err(|error| match error {
+                    AgentError::Unsupported(_) => {
+                        ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+                    }
+                    AgentError::TurnInProgress => ErrorBody::new(
+                        ErrorCode::InvalidState,
+                        "a turn is already in progress; wait for it or interrupt it",
+                    ),
+                    error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+                }),
             Backend::Direct(session) => session.send(text, attached).await,
         };
         if started.is_err() {
@@ -587,28 +691,78 @@ impl ChatManager {
                 "a direct chat's models come from its provider: use `provider.models`",
             ));
         }
-        if agent != AGENT_CODEX {
+        let harness = is_harness_agent(agent);
+        if agent != AGENT_CODEX && !harness {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
-                format!("unsupported agent `{agent}` (supported: {AGENT_CODEX})"),
+                format!("unsupported agent `{agent}` (supported: {AGENT_CODEX}, omp, claude)"),
             ));
         }
-        if let Some((at, models)) = lock(&self.models).as_ref()
-            && at.elapsed() < MODEL_CACHE
+        let ttl = if harness {
+            HARNESS_MODEL_CACHE
+        } else {
+            MODEL_CACHE
+        };
+        if let Some((at, models)) = lock(&self.models).get(agent)
+            && at.elapsed() < ttl
         {
             return Ok(ChatModels {
                 agent: agent.to_owned(),
                 models: models.clone(),
             });
         }
-        let models = hutan_agents::codex::list_models(&self.codex)
-            .await
-            .map_err(|e| provider_error(&e, &self.codex.program))?;
-        *lock(&self.models) = Some((Instant::now(), models.clone()));
+        let models = if harness {
+            self.harness_models(agent).await?
+        } else {
+            hutan_agents::codex::list_models(&self.codex)
+                .await
+                .map_err(|e| provider_error(&e, &self.codex.program))?
+        };
+        lock(&self.models).insert(agent.to_owned(), (Instant::now(), models.clone()));
         Ok(ChatModels {
             agent: agent.to_owned(),
             models,
         })
+    }
+
+    /// The models a harness offers: the model options of an ACP session of its own (a throwaway
+    /// one in the system temp directory, asked and closed; sessions that run already refreshed
+    /// the cache when they started). OMP, when that fails or offers none, falls back to
+    /// `omp models --json`, which needs no session.
+    async fn harness_models(&self, agent: &str) -> Result<Vec<ModelInfo>, ErrorBody> {
+        let harnesses = self.harnesses.clone();
+        let name = agent.to_owned();
+        let located = tokio::task::spawn_blocking(move || harnesses.acp_config(&name))
+            .await
+            .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("locating the agent: {e}")))?;
+        let session_error = match located {
+            Ok(config) => {
+                match hutan_agents::acp::list_models(&config, std::env::temp_dir()).await {
+                    Ok(models) if !models.is_empty() => return Ok(models),
+                    Ok(_) => None,
+                    Err(error) => Some(harness_error(&error, agent, &config.program)),
+                }
+            }
+            Err(error) => Some(error),
+        };
+        if agent != crate::harness::AGENT_OMP {
+            return Err(session_error.unwrap_or_else(|| {
+                ErrorBody::new(
+                    ErrorCode::ProviderError,
+                    format!("{agent} offers no choice of models"),
+                )
+            }));
+        }
+        if let Some(error) = &session_error {
+            debug!(message = %error.message, "no model options from an omp session; asking `omp models`");
+        }
+        let harnesses = self.harnesses.clone();
+        let (program, env) = tokio::task::spawn_blocking(move || {
+            harnesses.cli(crate::harness::AGENT_OMP, std::path::Path::new("codex"))
+        })
+        .await
+        .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("locating omp: {e}")))??;
+        crate::accounts::omp_models(&program, &env).await
     }
 
     // Events -----------------------------------------------------------------------------------

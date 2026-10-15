@@ -18,6 +18,7 @@ use tokio::time::sleep;
 use crate::args::{ApiArgs, Cli, Command, DaemonCommand, EventsArgs};
 use crate::error::{CliError, is_unreachable};
 
+mod accounts;
 mod agent;
 mod agents;
 mod assistant;
@@ -69,6 +70,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Search(args) => ctx?.search(args).await,
         Command::Index(command) => ctx?.index(command).await,
         Command::Chat(command) => ctx?.chat(command).await,
+        Command::Account(command) => ctx?.account(command).await,
         Command::Provider(command) => ctx?.provider(command).await,
         Command::Ask(args) => ctx?.ask(args).await,
         Command::Assistant(command) => ctx?.assistant(command).await,

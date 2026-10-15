@@ -98,6 +98,11 @@ pub enum Notice {
     TaskRemoved {
         id: TaskId,
     },
+    /// A login or logout session of a harness ended (`account.changed`, protocol 0.17): list
+    /// the accounts again.
+    AccountsChanged {
+        harness: String,
+    },
 }
 
 /// Side effects of folding events into the state, for the caller to act on after publishing.
@@ -323,6 +328,9 @@ impl StoreState {
                 task: Box::new(task),
             }),
             Event::TaskRemoved { id } => effects.notices.push(Notice::TaskRemoved { id }),
+            Event::AccountChanged { harness } => {
+                effects.notices.push(Notice::AccountsChanged { harness });
+            }
         }
         effects
     }

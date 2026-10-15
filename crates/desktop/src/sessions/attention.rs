@@ -599,6 +599,7 @@ mod tests {
             turn_active,
             pending_approvals: pending,
             provider_id: None,
+            agent_session_id: None,
         });
         session
     }

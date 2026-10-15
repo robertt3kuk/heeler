@@ -18,6 +18,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::accounts::AccountService;
 use crate::assistant::AssistantService;
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
@@ -37,6 +38,7 @@ pub struct Services {
     pub notify: Arc<NotifyService>,
     pub worktrees: Arc<WorktreeService>,
     pub tasks: Arc<TaskService>,
+    pub accounts: Arc<AccountService>,
 }
 
 #[derive(Debug)]
@@ -48,6 +50,7 @@ pub struct Router {
     notify: Arc<NotifyService>,
     worktrees: Arc<WorktreeService>,
     tasks: Arc<TaskService>,
+    accounts: Arc<AccountService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -73,6 +76,7 @@ impl Router {
             notify: services.notify,
             worktrees: services.worktrees,
             tasks: services.tasks,
+            accounts: services.accounts,
             bus,
             started: Instant::now(),
             shutdown,
@@ -261,6 +265,9 @@ impl Router {
             }),
             Request::TaskDelete(req) => ok(&self.tasks.delete(req)?),
             Request::TaskStart(req) => ok(&self.tasks.start(req.id).await?),
+            Request::AccountList(_) => ok(&self.accounts.list().await),
+            Request::AccountLogin(req) => ok(&self.accounts.login(req).await?),
+            Request::AccountLogout(req) => ok(&self.accounts.logout(req).await?),
             Request::ProviderList(_) => ok(&self.providers().list().await?),
             Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
             Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),

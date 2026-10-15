@@ -214,6 +214,7 @@ impl Direct {
             approval_policy: None,
             sandbox: None,
             title: None,
+            mode: None,
             provider_id: Some(provider.to_owned()),
             system_prompt: system.map(str::to_owned),
         })
@@ -1339,6 +1340,7 @@ async fn creating_a_direct_chat_validates_the_request() {
             approval_policy: None,
             sandbox: None,
             title: None,
+            mode: None,
             provider_id: provider.map(str::to_owned),
             system_prompt: None,
         })

@@ -53,10 +53,12 @@ impl Ctx {
                 depends_on.push(found.id);
             }
         }
-        let run = if args.codex {
-            Some(TaskRun::Chat {
-                agent: "codex".to_owned(),
-            })
+        let chat_agent = args
+            .agent
+            .clone()
+            .or_else(|| args.codex.then(|| "codex".to_owned()));
+        let run = if let Some(agent) = chat_agent {
+            Some(TaskRun::Chat { agent })
         } else if args.argv.is_empty() {
             None
         } else {

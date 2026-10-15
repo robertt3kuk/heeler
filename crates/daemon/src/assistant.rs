@@ -217,6 +217,7 @@ impl AssistantService {
                 approval_policy: None,
                 sandbox: None,
                 title: Some(title),
+                mode: None,
                 provider_id: Some(provider),
                 system_prompt: Some(SYSTEM_PROMPT.to_owned()),
             })
@@ -308,10 +309,10 @@ impl AssistantService {
                 format!("session {session} is not a chat session"),
             ));
         };
-        if !is_gateway_agent(&chat.agent) {
+        if !is_gateway_agent(&chat.agent) && !crate::harness::is_harness_agent(&chat.agent) {
             return Err(error(
                 ErrorCode::BadRequest,
-                "attachments are only supported by direct and assistant chats",
+                "attachments are only supported by direct, assistant and harness (omp, claude) chats",
             ));
         }
         let workspaces = self.workspaces().await?;

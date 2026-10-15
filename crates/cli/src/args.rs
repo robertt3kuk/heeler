@@ -65,9 +65,14 @@ pub enum Command {
     /// Manage the session history index (opt-in, local)
     #[command(subcommand)]
     Index(IndexCommand),
-    /// Chat with a coding agent (Codex) or directly with a model, through the daemon
+    /// Chat with a coding agent (Codex, OMP, Claude Code) or directly with a model, through
+    /// the daemon
     #[command(subcommand)]
     Chat(ChatCommand),
+    /// The logins of the agent harnesses (OMP, Claude Code, Codex): list them, log in or out
+    /// through each harness's own flow (Hutan never handles a token)
+    #[command(subcommand)]
+    Account(AccountCommand),
     /// Model providers for direct chat: OpenAI, Anthropic, Ollama, OpenAI-compatible servers
     #[command(subcommand)]
     Provider(ProviderCommand),
@@ -143,9 +148,12 @@ pub struct TaskAddArgs {
     /// The task's prompt: the first message of a Codex chat
     #[arg(long, value_name = "TEXT")]
     pub prompt: Option<String>,
-    /// Run it as a Codex chat (needs --prompt)
-    #[arg(long, requires = "prompt", conflicts_with = "argv")]
+    /// Run it as a Codex chat (needs --prompt); same as `--agent codex`
+    #[arg(long, requires = "prompt", conflicts_with_all = ["argv", "agent"])]
     pub codex: bool,
+    /// Run it as a chat with this agent: codex, omp or claude (needs --prompt)
+    #[arg(long, requires = "prompt", conflicts_with = "argv", value_parser = ["codex", "omp", "claude"])]
+    pub agent: Option<String>,
     /// Start by itself when ready, within the daemon's `[tasks] max_parallel`
     #[arg(long)]
     pub auto: bool,
@@ -281,9 +289,40 @@ pub enum ChatCommand {
     /// Stop the turn in progress
     Interrupt(TargetArgs),
     /// List the models the agent offers
-    Models,
-    /// Switch the model of a direct chat for its next turn (the history stays)
+    Models(ChatModelsArgs),
+    /// Switch the model of a direct or harness chat for its next turn (the history stays)
     Model(ChatModelArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ChatModelsArgs {
+    /// Whose models: codex (default), omp or claude
+    #[arg(long, default_value = "codex", value_parser = ["codex", "omp", "claude"])]
+    pub agent: String,
+}
+
+/// The logins of the agent harnesses.
+#[derive(Debug, Subcommand)]
+pub enum AccountCommand {
+    /// List the harnesses' logins: provider, label, plan, status (never tokens or e-mails)
+    Ls,
+    /// Log in through the harness's own flow, in a terminal session you complete
+    Login(AccountLoginArgs),
+    /// Log out through the harness's own flow
+    Logout(AccountLoginArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AccountLoginArgs {
+    /// omp, claude or codex
+    #[arg(value_parser = ["omp", "claude", "codex"])]
+    pub harness: String,
+    /// The provider to log in to (omp: `anthropic`, `openai-codex`, ...; omit to let the
+    /// harness ask)
+    pub provider: Option<String>,
+    /// Attach this terminal to the login session now (detach with ctrl+\ then d)
+    #[arg(long)]
+    pub attach: bool,
 }
 
 #[derive(Debug, Args)]
@@ -365,10 +404,17 @@ pub struct ChatNewArgs {
     /// Directory the agent works in (default: the current directory)
     #[arg(long, value_name = "PATH")]
     pub cwd: Option<PathBuf>,
-    /// Model from `hutan chat models` (default: the agent catalog's default); with --direct a
-    /// model of the provider (default: the provider's default model)
+    /// The agent: codex (default), or omp / claude, the harnesses over ACP (`hutan account ls`
+    /// shows which are logged in)
+    #[arg(long, value_parser = ["codex", "omp", "claude"], conflicts_with = "direct")]
+    pub agent: Option<String>,
+    /// Model from `hutan chat models --agent <agent>` (default: the agent catalog's default);
+    /// with --direct a model of the provider (default: the provider's default model)
     #[arg(long)]
     pub model: Option<String>,
+    /// Session mode of an omp or claude chat, from the modes the agent offers (e.g. plan)
+    #[arg(long, value_name = "MODE", conflicts_with = "direct")]
+    pub mode: Option<String>,
     /// When the agent asks before acting: untrusted, on-request (default), never
     #[arg(long, value_name = "POLICY", value_parser = parse_policy)]
     pub approval_policy: Option<ApprovalPolicy>,

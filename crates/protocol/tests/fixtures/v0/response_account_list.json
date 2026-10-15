@@ -1,0 +1,1 @@
+{"id":34,"result":{"accounts":[{"harness":"omp","label":"anthropic","plan":"max","provider":"anthropic","status":"logged_in"},{"detail":"`claude` was not found; install Claude Code","harness":"claude","label":"Claude Code","provider":"anthropic","status":"unknown"},{"harness":"codex","label":"ChatGPT","plan":"plus","provider":"openai","status":"logged_out"}]}}

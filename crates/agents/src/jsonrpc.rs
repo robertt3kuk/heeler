@@ -1,6 +1,12 @@
-//! Newline-delimited JSON-RPC over a child process's stdio (the shape `codex app-server` speaks;
-//! no `jsonrpc` member). One reader task classifies every line: responses resolve the pending
-//! request, everything else goes to the bounded [`Incoming`] queue.
+//! Newline-delimited JSON-RPC over a child process's stdio. Codex's app server omits the
+//! `jsonrpc` member ([`Transport::spawn`]); ACP agents expect `"jsonrpc": "2.0"`
+//! ([`Transport::spawn_v2`]). One reader task classifies every line: responses resolve the
+//! pending request, everything else goes to the bounded [`Incoming`] queue.
+//!
+//! A request whose answer must be handled in the order of the process's other messages (the
+//! end of an ACP prompt turn comes after the updates of the turn) is made with
+//! [`Transport::request_ordered`]: its response arrives in the [`Incoming`] queue, behind
+//! everything the process said before it.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -64,6 +70,12 @@ pub enum Incoming {
         method: String,
         params: Value,
     },
+    /// The response of a [`Transport::request_ordered`], delivered behind every message the
+    /// process sent before it.
+    Completed {
+        tag: u64,
+        result: Result<Value, AgentError>,
+    },
     /// The output ended: the process is gone or closed stdout.
     Closed,
 }
@@ -73,7 +85,16 @@ pub enum Incoming {
 #[derive(Debug, Default)]
 struct PendingState {
     closed: bool,
-    calls: HashMap<u64, oneshot::Sender<Result<Value, RpcFailure>>>,
+    calls: HashMap<u64, Waiter>,
+}
+
+/// Who waits for a response.
+#[derive(Debug)]
+enum Waiter {
+    /// A task awaiting [`Transport::request`].
+    Call(oneshot::Sender<Result<Value, RpcFailure>>),
+    /// The consumer of the incoming queue ([`Transport::request_ordered`]).
+    Ordered { tag: u64, method: String },
 }
 
 type Pending = Arc<Mutex<PendingState>>;
@@ -93,6 +114,8 @@ enum Outgoing {
 /// The sending half of the connection; cheap to share behind an `Arc`.
 #[derive(Debug)]
 pub struct Transport {
+    /// Messages carry `"jsonrpc": "2.0"`.
+    versioned: bool,
     outgoing: mpsc::Sender<Outgoing>,
     pending: Pending,
     next_id: AtomicU64,
@@ -106,8 +129,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Transport {
-    /// Starts the process and its reader, writer and reaper tasks.
+    /// Starts the process and its reader, writer and reaper tasks; messages carry no `jsonrpc`
+    /// member (Codex's dialect).
     pub fn spawn(launch: &Launch) -> Result<Spawned, AgentError> {
+        Self::start(launch, false)
+    }
+
+    /// [`spawn`](Self::spawn) for a JSON-RPC 2.0 peer: every message carries `"jsonrpc": "2.0"`.
+    pub fn spawn_v2(launch: &Launch) -> Result<Spawned, AgentError> {
+        Self::start(launch, true)
+    }
+
+    fn start(launch: &Launch, versioned: bool) -> Result<Spawned, AgentError> {
         let mut command = Command::new(&launch.program);
         command
             .args(&launch.args)
@@ -146,6 +179,7 @@ impl Transport {
 
         Ok((
             Arc::new(Self {
+                versioned,
                 outgoing,
                 pending,
                 next_id: AtomicU64::new(1),
@@ -167,7 +201,16 @@ impl Transport {
     }
 
     async fn send_line(&self, value: &Value) -> Result<(), AgentError> {
-        let line = value.to_string();
+        let line = if self.versioned {
+            let mut stamped = serde_json::Map::new();
+            stamped.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+            if let Value::Object(fields) = value {
+                stamped.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            Value::Object(stamped).to_string()
+        } else {
+            value.to_string()
+        };
         self.outgoing
             .send(Outgoing::Line(line))
             .await
@@ -189,7 +232,7 @@ impl Transport {
             if pending.closed {
                 return Err(self.exited());
             }
-            pending.calls.insert(id, tx);
+            pending.calls.insert(id, Waiter::Call(tx));
         }
         let message = json!({"method": method, "id": id, "params": params});
         if let Err(error) = self.send_line(&message).await {
@@ -211,6 +254,37 @@ impl Transport {
                 message,
             }),
         }
+    }
+
+    /// A request without a deadline whose response is delivered in order, as
+    /// [`Incoming::Completed`] with `tag`, behind every message the process sent before it.
+    /// Returns once the request is written.
+    pub async fn request_ordered(
+        &self,
+        method: &str,
+        params: Value,
+        tag: u64,
+    ) -> Result<(), AgentError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut pending = lock(&self.pending);
+            if pending.closed {
+                return Err(self.exited());
+            }
+            pending.calls.insert(
+                id,
+                Waiter::Ordered {
+                    tag,
+                    method: method.to_owned(),
+                },
+            );
+        }
+        let message = json!({"method": method, "id": id, "params": params});
+        if let Err(error) = self.send_line(&message).await {
+            lock(&self.pending).calls.remove(&id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), AgentError> {
@@ -313,7 +387,7 @@ async fn read_loop(stdout: ChildStdout, pending: Pending, incoming: mpsc::Sender
                     break;
                 }
             }
-            (None, Some(id)) => resolve(&pending, &id, &mut message),
+            (None, Some(id)) => resolve(&pending, &incoming, &id, &mut message).await,
             (None, None) => warn!("agent sent a message without method or id"),
         }
     }
@@ -323,18 +397,37 @@ async fn read_loop(stdout: ChildStdout, pending: Pending, incoming: mpsc::Sender
         pending.closed = true;
         pending.calls.drain().collect()
     };
-    for (_, tx) in waiting {
-        let _ = tx.send(Err(RpcFailure::Closed));
+    for (_, waiter) in waiting {
+        match waiter {
+            Waiter::Call(tx) => {
+                let _ = tx.send(Err(RpcFailure::Closed));
+            }
+            Waiter::Ordered { tag, .. } => {
+                let _ = incoming
+                    .send(Incoming::Completed {
+                        tag,
+                        result: Err(AgentError::Exited {
+                            detail: String::new(),
+                        }),
+                    })
+                    .await;
+            }
+        }
     }
     let _ = incoming.send(Incoming::Closed).await;
 }
 
-fn resolve(pending: &Pending, id: &Value, message: &mut Value) {
+async fn resolve(
+    pending: &Pending,
+    incoming: &mpsc::Sender<Incoming>,
+    id: &Value,
+    message: &mut Value,
+) {
     let Some(id) = id.as_u64() else {
         warn!("agent answered with an id we never sent");
         return;
     };
-    let Some(tx) = lock(pending).calls.remove(&id) else {
+    let Some(waiter) = lock(pending).calls.remove(&id) else {
         debug!(id, "response to a request nobody waits for");
         return;
     };
@@ -352,7 +445,26 @@ fn resolve(pending: &Pending, id: &Value, message: &mut Value) {
             .map(Value::take)
             .unwrap_or_default()),
     };
-    let _ = tx.send(outcome);
+    match waiter {
+        Waiter::Call(tx) => {
+            let _ = tx.send(outcome);
+        }
+        Waiter::Ordered { tag, method } => {
+            let result = match outcome {
+                Ok(value) => Ok(value),
+                Err(RpcFailure::Remote { code, message }) => Err(AgentError::Rpc {
+                    method,
+                    code,
+                    message,
+                }),
+                Err(RpcFailure::Closed) => Err(AgentError::Exited {
+                    detail: String::new(),
+                }),
+            };
+            // The consumer going away ends the read loop at its next send.
+            let _ = incoming.send(Incoming::Completed { tag, result }).await;
+        }
+    }
 }
 
 async fn stderr_loop(stderr: ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {

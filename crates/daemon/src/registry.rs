@@ -46,6 +46,7 @@ use crate::chat::{
 };
 use crate::config::RestoreMode;
 use crate::direct::MAX_SYSTEM_PROMPT_BYTES;
+use crate::harness::{Harnesses, is_harness_agent};
 use crate::placement::{Occupant, PlacementCache, shared_with};
 use crate::projects::{self, Folder};
 use crate::providers::ProviderService;
@@ -149,6 +150,13 @@ enum Command {
     ChatTarget(SessionId, Reply<bool>),
     /// `chat.set_model`: answered once the switch is journaled.
     SetChatModel(ChatSetModel, Reply<SessionInfo>),
+    /// From the task that switched the model of a harness chat: the agent's answer.
+    ChatModelSwitched {
+        session: SessionId,
+        model: String,
+        outcome: Result<(), ErrorBody>,
+        reply: Reply<SessionInfo>,
+    },
     /// A worktree was created or removed: the remembered checkouts are stale. Answered once
     /// every session's placement is derived again.
     InvalidatePlacements(Reply<()>),
@@ -510,6 +518,8 @@ pub struct RegistryConfig {
     pub activity_interval: Duration,
     /// How to start `codex app-server` for chat sessions.
     pub codex: CodexConfig,
+    /// The ACP harnesses (`omp`, `claude`) chat sessions can run through.
+    pub harnesses: Arc<Harnesses>,
     /// The model providers of direct chats.
     pub providers: Arc<ProviderService>,
     /// `gateway.max_context_chars`.
@@ -533,6 +543,7 @@ pub fn spawn(
         config.storage.clone(),
         ChatNotifier { tx: tx.downgrade() },
         config.codex,
+        config.harnesses,
         config.providers,
         config.max_context_chars,
     );
@@ -861,6 +872,12 @@ impl SessionRegistry {
                     let _ = reply.send(self.chat_target(id));
                 }
                 Command::SetChatModel(req, reply) => self.set_chat_model(req, reply),
+                Command::ChatModelSwitched {
+                    session,
+                    model,
+                    outcome,
+                    reply,
+                } => self.on_chat_model_switched(session, model, outcome, reply),
             }
         }
         self.flush_dirty();
@@ -1903,11 +1920,29 @@ impl SessionRegistry {
 
     /// Adds the session (state `starting`) and stores it; the agent is started by the caller.
     fn begin_chat(&mut self, req: ChatCreate) -> Result<usize, ErrorBody> {
-        if req.agent != AGENT_CODEX && !is_gateway_agent(&req.agent) {
+        let harness = is_harness_agent(&req.agent);
+        if req.agent != AGENT_CODEX && !harness && !is_gateway_agent(&req.agent) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 format!(
-                    "unsupported agent `{}` (supported: {AGENT_CODEX}, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
+                    "unsupported agent `{}` (supported: {AGENT_CODEX}, omp, claude, {AGENT_DIRECT}, {AGENT_ASSISTANT})",
+                    req.agent
+                ),
+            ));
+        }
+        if req.mode.is_some() && !harness {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "`mode` is a session mode of a harness chat (omp, claude)",
+            ));
+        }
+        if harness && (req.approval_policy.is_some() || req.sandbox.is_some()) {
+            // Not faked: the harness decides what asks and what is sandboxed.
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!(
+                    "the approval policy and sandbox of a {} chat belong to the harness's own settings; \
+                     Hutan answers the requests it makes",
                     req.agent
                 ),
             ));
@@ -1935,6 +1970,7 @@ impl SessionRegistry {
                 thread_id: None,
                 provider_id: Some(provider_id),
                 system_prompt,
+                mode: None,
             },
             None => ChatSpec {
                 agent: req.agent,
@@ -1944,6 +1980,7 @@ impl SessionRegistry {
                 thread_id: None,
                 provider_id: None,
                 system_prompt: None,
+                mode: req.mode.filter(|m| !m.trim().is_empty()),
             },
         };
         let folder = req
@@ -2056,6 +2093,15 @@ impl SessionRegistry {
     /// `chat.set_model`: the session's spec and info change now; the running chat is told, and
     /// the reply waits until its journal has the notice.
     fn set_chat_model(&mut self, req: ChatSetModel, reply: Reply<SessionInfo>) {
+        let harness = self
+            .session_index(req.session_id)
+            .ok()
+            .and_then(|index| self.sessions[index].chat.as_ref())
+            .is_some_and(|spec| is_harness_agent(&spec.agent));
+        if harness {
+            self.switch_harness_model(req, reply);
+            return;
+        }
         match self.switch_chat_model(req) {
             Ok((index, switch)) => {
                 let info = self.sessions[index].info.clone();
@@ -2077,6 +2123,86 @@ impl SessionRegistry {
         }
     }
 
+    /// `chat.set_model` of a harness chat: the agent has to accept the model, so the session's
+    /// record changes only when it did (`on_chat_model_switched`).
+    fn switch_harness_model(&mut self, req: ChatSetModel, reply: Reply<SessionInfo>) {
+        let checked = (|| {
+            let index = self.session_index(req.session_id)?;
+            let session = &self.sessions[index];
+            if !session.info.state.is_live() || !self.chats.is_running(req.session_id) {
+                return Err(ErrorBody::new(
+                    ErrorCode::InvalidState,
+                    format!(
+                        "chat session {} is not running (`hutan restart` it first)",
+                        req.session_id
+                    ),
+                ));
+            }
+            let model = req.model.trim();
+            if model.is_empty() {
+                return Err(ErrorBody::new(ErrorCode::BadRequest, "the model is empty"));
+            }
+            let unchanged = session
+                .chat
+                .as_ref()
+                .is_some_and(|spec| spec.model.as_deref() == Some(model));
+            Ok((index, model.to_owned(), unchanged))
+        })();
+        let (index, model, unchanged) = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        if unchanged {
+            let _ = reply.send(Ok(self.sessions[index].info.clone()));
+            return;
+        }
+        let id = req.session_id;
+        let chats = self.chats.clone();
+        let mailbox = self.mailbox.clone();
+        tokio::spawn(async move {
+            let outcome = chats.set_model(id, String::new(), model.clone()).await;
+            let command = Command::ChatModelSwitched {
+                session: id,
+                model,
+                outcome,
+                reply,
+            };
+            if let Some(tx) = mailbox.upgrade() {
+                // A closed mailbox means the daemon is going down; the reply is dropped.
+                let _ = tx.send(command).await;
+            }
+        });
+    }
+
+    fn on_chat_model_switched(
+        &mut self,
+        id: SessionId,
+        model: String,
+        outcome: Result<(), ErrorBody>,
+        reply: Reply<SessionInfo>,
+    ) {
+        let result = match (outcome, self.session_index(id)) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(index)) => {
+                let session = &mut self.sessions[index];
+                if let Some(spec) = &mut session.chat {
+                    spec.model = Some(model.clone());
+                }
+                if let Some(chat) = &mut session.info.chat {
+                    chat.model = model;
+                }
+                self.emit_session(index);
+                self.persist_session(index);
+                Ok(self.sessions[index].info.clone())
+            }
+        };
+        let _ = reply.send(result);
+    }
+
     /// Validates and applies the switch; `None` means nothing changed.
     #[allow(clippy::type_complexity)]
     fn switch_chat_model(
@@ -2094,7 +2220,7 @@ impl SessionRegistry {
         if !is_gateway_agent(&spec.agent) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
-                "only a direct chat has a switchable model",
+                "only a direct or harness chat has a switchable model",
             ));
         }
         if !session.info.state.is_live() || !self.chats.is_running(req.session_id) {
@@ -2192,11 +2318,14 @@ impl SessionRegistry {
         match outcome {
             Ok(started) => {
                 if let Some(spec) = &mut session.chat {
-                    spec.thread_id = Some(started.thread_id);
+                    spec.thread_id = Some(started.thread_id.clone());
                     spec.model = Some(started.model.clone());
                 }
                 if let Some(chat) = &mut session.info.chat {
                     chat.model = started.model;
+                    if !is_gateway_agent(&chat.agent) {
+                        chat.agent_session_id = Some(started.thread_id);
+                    }
                 }
                 session.advance(SessionEvent::Ready);
                 if session.stopping {
@@ -2390,6 +2519,7 @@ impl SessionRegistry {
                         thread_id: None,
                         provider_id: None,
                         system_prompt: None,
+                        mode: None,
                     },
                     Some(format!("stored spec unreadable: {error}")),
                 )
@@ -3057,6 +3187,9 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
         turn_active: false,
         pending_approvals: 0,
         provider_id: spec.provider_id.clone(),
+        agent_session_id: (!is_gateway_agent(&spec.agent))
+            .then(|| spec.thread_id.clone())
+            .flatten(),
     }
 }
 

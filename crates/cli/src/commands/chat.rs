@@ -28,7 +28,7 @@ impl Ctx {
             ChatCommand::Log(TargetArgs { target }) => self.chat_log(&target).await,
             ChatCommand::Attach(TargetArgs { target }) => self.chat_attach(&target).await,
             ChatCommand::Interrupt(TargetArgs { target }) => self.chat_interrupt(&target).await,
-            ChatCommand::Models => self.chat_models().await,
+            ChatCommand::Models(args) => self.chat_models(&args.agent).await,
             ChatCommand::Model(args) => self.chat_model(args).await,
         }
     }
@@ -57,15 +57,21 @@ impl Ctx {
             None => None,
         };
         let direct = args.direct;
+        let agent = if direct {
+            AGENT_DIRECT.to_owned()
+        } else {
+            args.agent.unwrap_or_else(|| "codex".to_owned())
+        };
         let session = client
             .chat_create(ChatCreate {
                 workspace_id: workspace,
                 cwd,
-                agent: if direct { AGENT_DIRECT } else { "codex" }.to_owned(),
+                agent,
                 model: args.model,
                 approval_policy: args.approval_policy,
                 sandbox: args.sandbox,
                 title: args.title,
+                mode: args.mode,
                 provider_id: args.provider,
                 system_prompt: args.system,
             })
@@ -81,6 +87,11 @@ impl Ctx {
                     chat.provider_id.as_deref().unwrap_or("?"),
                     chat.model
                 ),
+                // The harness decides what asks and what is sandboxed; the CLI does not show
+                // Hutan's defaults as if they applied.
+                Some(chat) if matches!(chat.agent.as_str(), "omp" | "claude") => {
+                    format!("session {} {} {}", session.id, chat.agent, chat.model)
+                }
                 Some(chat) => format!(
                     "session {} {} {} (approvals: {}, sandbox: {})",
                     session.id, chat.agent, chat.model, chat.approval_policy, chat.sandbox
@@ -101,12 +112,13 @@ impl Ctx {
         self.print(&result, || {
             let session = &result.session;
             match &session.chat {
-                Some(chat) => format!(
+                Some(chat) if chat.provider_id.is_some() => format!(
                     "session {} direct {} / {}",
                     session.id,
                     chat.provider_id.as_deref().unwrap_or("?"),
                     chat.model
                 ),
+                Some(chat) => format!("session {} {} {}", session.id, chat.agent, chat.model),
                 None => format!("session {}", session.id),
             }
         })
@@ -284,12 +296,9 @@ impl Ctx {
         })
     }
 
-    async fn chat_models(&self) -> Result<(), CliError> {
+    async fn chat_models(&self, agent: &str) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let models = client
-            .chat_models("codex")
-            .await
-            .map_err(|e| self.fail(e))?;
+        let models = client.chat_models(agent).await.map_err(|e| self.fail(e))?;
         self.print(&models, || {
             let mut out = String::new();
             for model in models.models.iter().filter(|m| !m.hidden) {
