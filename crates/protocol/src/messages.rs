@@ -22,6 +22,7 @@ use crate::chat::{
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
 use crate::history::{HistorySearch, HistorySetEnabled};
+use crate::notify::{ClientFocus, NotificationIntent, NotifyAck, NotifyAct};
 use crate::provider::{
     ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
 };
@@ -193,6 +194,21 @@ pub enum Request {
     /// Capability `assistant`: the assistant sessions; answered with `AssistantList`.
     #[serde(rename = "assistant.list")]
     AssistantList(AssistantListRequest),
+    /// Capability `notify.intents` (protocol 0.13): the pending notification intents; answered
+    /// with `NotifyList`.
+    #[serde(rename = "notify.list")]
+    NotifyList(Empty),
+    /// Capability `notify.intents`: the intent was seen; answered with `Empty`.
+    #[serde(rename = "notify.ack")]
+    NotifyAck(NotifyAck),
+    /// Capability `notify.intents`: the user chose an action of an intent; answered with
+    /// `NotifyActed`.
+    #[serde(rename = "notify.act")]
+    NotifyAct(NotifyAct),
+    /// Capability `notify.intents`: the session this connection's user is looking at;
+    /// answered with `Empty`.
+    #[serde(rename = "client.focus")]
+    ClientFocus(ClientFocus),
 }
 
 impl Request {
@@ -770,6 +786,19 @@ pub enum Event {
         nodes_changed: Vec<AgentNode>,
         nodes_removed: Vec<String>,
     },
+    /// Capability `notify.intents` (protocol 0.13): something deserves the user's attention.
+    #[serde(rename = "notify.intent")]
+    NotifyIntent { intent: NotificationIntent },
+    /// Capability `notify.intents`: the user asked (a notification's "Open") to see a session;
+    /// the desktop focuses it. Not a state change: a client that was disconnected when it
+    /// went out finds it replayed with an old `at_ms` and ignores it.
+    #[serde(rename = "ui.open")]
+    UiOpen {
+        session_id: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<WorkspaceId>,
+        at_ms: u64,
+    },
 }
 
 impl Event {
@@ -801,6 +830,8 @@ impl Event {
         "approval.required",
         "approval.resolved",
         "agent.tree_updated",
+        "notify.intent",
+        "ui.open",
     ];
 }
 

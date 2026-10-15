@@ -22,6 +22,9 @@ use heeler_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, ClientInfo, Empty, Event, Hello,
     Request, ResumePoint, SessionInfo, SessionRef, SessionResult, Welcome, decode_result,
 };
+use heeler_protocol::notify::{
+    ClientFocus, NotificationIntent, NotifyAck, NotifyAct, NotifyActed, NotifyList,
+};
 use heeler_protocol::provider::{
     ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
@@ -58,6 +61,9 @@ pub(crate) const AGENT_TREE_CAPABILITY: &str = "agent.tree";
 pub(crate) const DIRECT_CAPABILITY: &str = "chat.direct";
 /// Capability for `assistant.*` and `chat.send` attachments (protocol 0.12).
 pub(crate) const ASSISTANT_CAPABILITY: &str = "assistant";
+/// Capability for `notify.*`, `client.focus` and the `notify.intent` / `ui.open` events
+/// (protocol 0.13).
+pub(crate) const NOTIFY_CAPABILITY: &str = "notify.intents";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -70,6 +76,7 @@ const CAPABILITIES: &[&str] = &[
     AGENT_TREE_CAPABILITY,
     DIRECT_CAPABILITY,
     ASSISTANT_CAPABILITY,
+    NOTIFY_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `heelerd` can take
@@ -365,6 +372,48 @@ impl Client {
     ) -> Result<Vec<AssistantEntry>, ClientError> {
         let list: AssistantList = self.call(Request::AssistantList(req)).await?;
         Ok(list.assistants)
+    }
+
+    /// True when the daemon advertised capability `notify.intents` (protocol 0.13).
+    pub fn supports_notify(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == NOTIFY_CAPABILITY)
+    }
+
+    /// The pending notification intents, oldest first.
+    pub async fn notify_list(&self) -> Result<Vec<NotificationIntent>, ClientError> {
+        let list: NotifyList = self.call(Request::NotifyList(Empty {})).await?;
+        Ok(list.intents)
+    }
+
+    /// Marks an intent as seen; `not_found` when it is no longer pending.
+    pub async fn notify_ack(&self, id: impl Into<String>) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::NotifyAck(NotifyAck { id: id.into() }))
+            .await
+            .map(|_| ())
+    }
+
+    /// Chooses an action of an intent: an approval's option answers the approval, `open` makes
+    /// the daemon tell the desktops to show the session.
+    pub async fn notify_act(
+        &self,
+        id: impl Into<String>,
+        action_id: impl Into<String>,
+    ) -> Result<NotifyActed, ClientError> {
+        self.call(Request::NotifyAct(NotifyAct {
+            id: id.into(),
+            action_id: action_id.into(),
+        }))
+        .await
+    }
+
+    /// Reports the session this connection's user is looking at (none: nothing).
+    pub async fn client_focus(&self, session_id: Option<SessionId>) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::ClientFocus(ClientFocus { session_id }))
+            .await
+            .map(|_| ())
     }
 
     /// Stops the turn in progress.

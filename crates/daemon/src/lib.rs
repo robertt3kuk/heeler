@@ -20,6 +20,7 @@
 //! - [`assistant`]: assistant sessions (direct chats with a scope) and their context providers.
 //! - [`context`]: redaction, budget, headers and assembly of attached context.
 //! - [`context_file`]: file attachments, read below the workspace roots without following symlinks.
+//! - [`notify`]: notification intents derived from the event stream, `notify.*`, `client.focus`.
 
 pub mod agent;
 pub mod assistant;
@@ -33,6 +34,7 @@ pub mod daemon;
 pub mod direct;
 pub mod error;
 pub mod history;
+pub mod notify;
 pub mod paths;
 pub mod projects;
 pub mod providers;
@@ -43,7 +45,7 @@ pub mod terminals;
 pub mod tree;
 
 pub use bus::RingLimits;
-pub use config::{AssistantSettings, DaemonSettings, HistorySettings, RestoreMode};
+pub use config::{AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, RestoreMode};
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;
 pub use paths::Paths;

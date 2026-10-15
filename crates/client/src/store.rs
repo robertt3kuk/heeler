@@ -4,10 +4,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use heeler_core::{AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, TerminalId};
+use heeler_core::{
+    AgentEvent, AgentNode, AgentObservation, Epoch, SessionId, TerminalId, WorkspaceId,
+};
 use heeler_protocol::blocks::Block;
 use heeler_protocol::chat::ApprovalInfo;
 use heeler_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
+use heeler_protocol::notify::NotificationIntent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -67,6 +70,18 @@ pub enum Notice {
     TerminalBlock {
         terminal: TerminalId,
         block: Block,
+    },
+    /// Something deserves the user's attention (`notify.intent`, protocol 0.13).
+    NotifyIntent {
+        intent: Box<NotificationIntent>,
+    },
+    /// A notification's "Open" was chosen (`ui.open`, protocol 0.13). `at_ms` is when the
+    /// daemon sent it: a client that was offline when it went out finds it replayed, and
+    /// should not act on an old one.
+    UiOpen {
+        session: SessionId,
+        workspace: Option<WorkspaceId>,
+        at_ms: u64,
     },
 }
 
@@ -272,6 +287,18 @@ impl StoreState {
                 nodes_changed,
                 nodes_removed,
             } => self.apply_tree_update(session_id, nodes_changed, nodes_removed),
+            Event::NotifyIntent { intent } => effects.notices.push(Notice::NotifyIntent {
+                intent: Box::new(intent),
+            }),
+            Event::UiOpen {
+                session_id,
+                workspace_id,
+                at_ms,
+            } => effects.notices.push(Notice::UiOpen {
+                session: session_id,
+                workspace: workspace_id,
+                at_ms,
+            }),
         }
         effects
     }
@@ -528,6 +555,50 @@ mod tests {
                 },
                 Notice::Bell {
                     terminal: TerminalId(1)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn notification_intents_and_ui_open_become_notices() {
+        use heeler_protocol::notify::{IntentAction, IntentKind};
+        let mut state = StoreState::initial();
+        let session = SessionId::new();
+        let workspace = WorkspaceId::new();
+        let intent = NotificationIntent {
+            id: "n1".into(),
+            kind: IntentKind::AgentFinished,
+            session_id: session,
+            workspace_id: Some(workspace),
+            title: "t".into(),
+            body: "b".into(),
+            actions: vec![IntentAction {
+                id: "open".into(),
+                label: "Open".into(),
+            }],
+            created_at_ms: 1,
+            expires_at_ms: None,
+        };
+        let mut effects = Effects::default();
+        effects.extend(state.apply(Event::NotifyIntent {
+            intent: intent.clone(),
+        }));
+        effects.extend(state.apply(Event::UiOpen {
+            session_id: session,
+            workspace_id: Some(workspace),
+            at_ms: 7,
+        }));
+        assert_eq!(
+            effects.notices,
+            vec![
+                Notice::NotifyIntent {
+                    intent: Box::new(intent)
+                },
+                Notice::UiOpen {
+                    session,
+                    workspace: Some(workspace),
+                    at_ms: 7
                 },
             ]
         );

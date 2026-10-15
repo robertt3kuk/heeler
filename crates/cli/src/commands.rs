@@ -25,6 +25,7 @@ mod attach;
 mod chat;
 mod history;
 mod integration;
+mod notify;
 mod providers;
 mod sessions;
 mod workspaces;
@@ -71,6 +72,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Assistant(command) => ctx?.assistant(command).await,
         Command::Approvals => ctx?.approvals().await,
         Command::Approve(args) => ctx?.approve(args).await,
+        Command::Notify(command) => ctx?.notify(command).await,
     }
 }
 
@@ -434,26 +436,97 @@ fn print_line(text: &str) -> Result<(), CliError> {
 
 /// `heelerd` next to this binary (also through symlinks), else the first one on `PATH`.
 fn find_heelerd() -> Result<PathBuf, CliError> {
-    let exe = std::env::current_exe().ok();
+    locate_heelerd(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("PATH"),
+    )
+    .ok_or_else(|| {
+        CliError::Failed("heelerd not found next to the heeler binary or on PATH".to_owned())
+    })
+}
+
+/// The executable `heelerd` beside `exe`, as invoked and with symlinks resolved (the CLI of an
+/// app bundle linked into `/usr/local/bin` finds the bundle's daemon that way), else the first
+/// one on `path`.
+fn locate_heelerd(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let beside = exe
-        .iter()
-        .flat_map(|exe| [Some(exe.clone()), exe.canonicalize().ok()])
+        .into_iter()
+        .flat_map(|exe| [Some(exe.to_owned()), exe.canonicalize().ok()])
         .flatten()
         .filter_map(|exe| exe.parent().map(|dir| dir.join("heelerd")));
-    let on_path = std::env::var_os("PATH")
+    let on_path = path
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
         .map(|dir| dir.join("heelerd"));
     beside
         .chain(on_path)
         .find(|candidate| is_executable(candidate))
-        .ok_or_else(|| {
-            CliError::Failed("heelerd not found next to the heeler binary or on PATH".to_owned())
-        })
 }
 
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn executable(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `Heeler.app/Contents/MacOS/{heeler-desktop,heelerd,heeler}`; returns the `MacOS` folder.
+    fn fake_bundle(root: &Path) -> PathBuf {
+        let macos = root.join("Heeler.app/Contents/MacOS");
+        for name in ["heeler-desktop", "heelerd", "heeler"] {
+            executable(&macos.join(name));
+        }
+        macos
+    }
+
+    #[test]
+    fn the_cli_of_an_app_bundle_starts_the_bundled_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = fake_bundle(dir.path());
+        assert_eq!(
+            locate_heelerd(Some(&macos.join("heeler")), None),
+            Some(macos.join("heelerd"))
+        );
+    }
+
+    #[test]
+    fn a_symlink_to_the_bundled_cli_finds_the_bundled_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = fake_bundle(dir.path());
+        let bin = dir.path().join("usr/local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(macos.join("heeler"), bin.join("heeler")).unwrap();
+        // The link's own folder holds no daemon; the target's does.
+        let found = locate_heelerd(Some(&bin.join("heeler")), None).unwrap();
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            macos.join("heelerd").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn without_a_daemon_beside_it_the_cli_falls_back_to_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let lonely = dir.path().join("lonely");
+        executable(&lonely.join("heeler"));
+        assert_eq!(locate_heelerd(Some(&lonely.join("heeler")), None), None);
+        let installed = dir.path().join("installed");
+        executable(&installed.join("heelerd"));
+        let path = std::env::join_paths([dir.path().join("empty"), installed.clone()]).unwrap();
+        assert_eq!(
+            locate_heelerd(Some(&lonely.join("heeler")), Some(path)),
+            Some(installed.join("heelerd"))
+        );
+    }
 }

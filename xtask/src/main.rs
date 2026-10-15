@@ -1,6 +1,8 @@
-//! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets.
+//! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets;
+//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Heeler.app` (`docs/packaging.md`).
 
 mod bench;
+mod bundle;
 mod proc;
 mod seed;
 mod stats;
@@ -35,6 +37,19 @@ enum Command {
         #[arg(long)]
         key_interval_ms: Option<u64>,
     },
+    /// Assemble Heeler.app (desktop, heelerd, heeler, LaunchAgent plist, shell integration
+    /// scripts) and sign it ad hoc. Nothing is launched or registered.
+    Bundle {
+        /// Build (and bundle) the release binaries instead of the debug ones.
+        #[arg(long)]
+        release: bool,
+        /// Folder that gets Heeler.app (default: target/bundle).
+        #[arg(long, value_name = "DIR")]
+        out: Option<std::path::PathBuf>,
+        /// Bundle the binaries already built in DIR instead of running cargo build.
+        #[arg(long, value_name = "DIR")]
+        bin_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -56,5 +71,14 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
         }
+        Command::Bundle {
+            release,
+            out,
+            bin_dir,
+        } => bundle::run(bundle::Options {
+            release,
+            out,
+            bin_dir,
+        }),
     }
 }

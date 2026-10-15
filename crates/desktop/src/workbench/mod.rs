@@ -10,6 +10,7 @@ mod history;
 mod modal;
 pub mod model;
 mod monitor;
+mod notify;
 pub mod palette;
 pub mod panels;
 pub mod persistence;

@@ -81,6 +81,37 @@ pub enum Command {
     Approvals,
     /// Answer a permission request with one of the options it offers (see `heeler approvals`)
     Approve(ApproveArgs),
+    /// Notification intents the daemon raises when something needs you: list, acknowledge, act
+    /// on, or watch them
+    #[command(subcommand)]
+    Notify(NotifyCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NotifyCommand {
+    /// List the pending intents, oldest first
+    Ls,
+    /// Mark an intent as seen
+    Ack(NotifyIdArgs),
+    /// Choose an action of an intent: an approval's option answers the approval, `open` asks the
+    /// desktop to show the session
+    Act(NotifyActArgs),
+    /// Print the pending intents, then new ones as they are raised (until interrupted)
+    Watch,
+}
+
+#[derive(Debug, Args)]
+pub struct NotifyIdArgs {
+    /// Intent id or unique id prefix (at least 4 characters; see `heeler notify ls`)
+    pub intent: String,
+}
+
+#[derive(Debug, Args)]
+pub struct NotifyActArgs {
+    /// Intent id or unique id prefix (at least 4 characters)
+    pub intent: String,
+    /// One of the intent's actions: an approval option (`accept`, `cancel`, ...) or `open`
+    pub action: String,
 }
 
 #[derive(Debug, Subcommand)]

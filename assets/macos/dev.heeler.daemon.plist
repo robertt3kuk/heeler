@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent of the bundled daemon, shipped in Contents/Library/LaunchAgents. Nothing registers
+     it yet: SMAppService registration is M6-B and needs the user present. `BundleProgram` is
+     relative to the app bundle; the agent is neither started at load nor kept alive, so
+     registering it only makes the daemon launchable on demand (docs/packaging.md). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.heeler.daemon</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/heelerd</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.heeler.Heeler</string>
+	</array>
+	<key>KeepAlive</key>
+	<false/>
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>

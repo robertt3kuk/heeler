@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::mpsc;
 
 use heeler_core::{Epoch, Seq};
-use heeler_protocol::messages::{Event, ResumeOutcome, ResumePoint};
+use heeler_protocol::messages::{ClientKind, Event, ResumeOutcome, ResumePoint};
 use heeler_protocol::{ControlMessage, Frame, MAX_PAYLOAD, ProtocolError};
 
 use crate::conn::{ConnHandle, ConnId, Outbound};
@@ -53,6 +53,8 @@ struct Inner {
     subscribers: HashMap<ConnId, ConnHandle>,
     /// Internal consumer of the events the history index cares about.
     tap: Option<mpsc::Sender<Event>>,
+    /// Internal consumer of the events notification intents are derived from.
+    observer: Option<mpsc::Sender<Event>>,
 }
 
 #[derive(Debug)]
@@ -73,6 +75,7 @@ impl EventBus {
                 ring_bytes: 0,
                 subscribers: HashMap::new(),
                 tap: None,
+                observer: None,
             }),
         }
     }
@@ -93,6 +96,13 @@ impl EventBus {
         self.lock().tap = tap;
     }
 
+    /// Sends a copy of every event notification intents are derived from (see
+    /// [`feeds_notifications`]) to `observer` from now on (`None` stops). Never blocks: when the
+    /// observer's queue is full the event is dropped for it.
+    pub fn set_observer(&self, observer: Option<mpsc::Sender<Event>>) {
+        self.lock().observer = observer;
+    }
+
     /// Seq of the most recent event (`0` before the first).
     pub fn last_seq(&self) -> Seq {
         self.lock().last
@@ -100,6 +110,15 @@ impl EventBus {
 
     pub fn subscriber_count(&self) -> usize {
         self.lock().subscribers.len()
+    }
+
+    /// Subscribed connections whose client said hello as `kind`.
+    pub fn subscriber_count_of(&self, kind: ClientKind) -> usize {
+        self.lock()
+            .subscribers
+            .values()
+            .filter(|sub| sub.client_kind() == Some(kind))
+            .count()
     }
 
     /// Assigns the next seq, retains the event in the ring, and queues it to every subscriber.
@@ -141,6 +160,17 @@ impl EventBus {
                     tracing::debug!("history tap is full; dropped an event");
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => inner.tap = None,
+            }
+        }
+        if feeds_notifications(event)
+            && let Some(observer) = &inner.observer
+        {
+            match observer.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!("notification observer is full; dropped an event");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => inner.observer = None,
             }
         }
         Ok(seq)
@@ -206,6 +236,33 @@ impl Inner {
                 .map(|e| e.frame.clone())
                 .collect(),
         )
+    }
+}
+
+/// The events notification intents are derived from: approvals, agent tree changes, session
+/// exits, and the journaled end of a chat turn or of an assistant message (never streaming
+/// deltas, never replays).
+fn feeds_notifications(event: &Event) -> bool {
+    use heeler_core::AgentEventKind;
+    use heeler_core::agent::{Delivery, MessageRole};
+    match event {
+        Event::ApprovalRequired { .. }
+        | Event::ApprovalResolved { .. }
+        | Event::AgentTreeUpdated { .. }
+        | Event::SessionExited { .. } => true,
+        Event::ChatEvent { event, .. } => {
+            event.delivery == Delivery::Live
+                && matches!(
+                    event.kind,
+                    AgentEventKind::TurnStarted
+                        | AgentEventKind::TurnCompleted { .. }
+                        | AgentEventKind::MessageEnd {
+                            role: MessageRole::Assistant,
+                            ..
+                        }
+                )
+        }
+        _ => false,
     }
 }
 

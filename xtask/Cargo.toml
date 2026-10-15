@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Developer tasks: benchmark orchestration for the performance budgets (not shipped)"
+description = "Developer tasks: app bundle assembly and signing, benchmark orchestration for the performance budgets (not shipped)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,9 @@ libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+[dev-dependencies]
+plist.workspace = true
 
 [lints]
 workspace = true

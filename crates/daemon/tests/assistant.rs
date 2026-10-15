@@ -421,7 +421,8 @@ async fn the_daemon_advertises_the_assistant() {
             .any(|c| c == "assistant")
     );
     assert!(env.client.supports_assistant());
-    assert_eq!(env.client.welcome().protocol.minor, 12);
+    // The assistant arrived with protocol 0.12; later minors keep it.
+    assert!(env.client.welcome().protocol.minor >= 12);
     env.stop().await;
 }
 

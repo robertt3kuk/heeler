@@ -7,7 +7,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use heeler_client::{Connection, ConnectionState, Notice, StoreState};
@@ -30,6 +30,30 @@ use super::terminal::TerminalSession;
 /// Notifications that arrive this soon after (re)connecting are replays of what happened before
 /// the desktop was there; they must not flag attention.
 pub const REPLAY_WINDOW: Duration = Duration::from_millis(400);
+
+/// A `ui.open` older than this many milliseconds when it reaches the desktop is a replay of
+/// something the user did a while ago, not a request to move the window now.
+pub const UI_OPEN_MAX_AGE_MS: u64 = 15_000;
+
+/// Emitted by [`SessionsStore`] when the daemon asks this window to show a session (the
+/// "Open" action of a notification intent, `ui.open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiOpenRequested {
+    pub session_id: SessionId,
+    pub workspace_id: Option<WorkspaceId>,
+}
+
+/// Whether a `ui.open` sent at `at_ms` is still current at `now_ms` (both Unix milliseconds on
+/// this machine; a stamp from the future counts as current).
+fn ui_open_is_fresh(at_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(at_ms) <= UI_OPEN_MAX_AGE_MS
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
 
 pub struct SessionsStore {
     connection: Connection,
@@ -56,10 +80,16 @@ pub struct SessionsStore {
     /// the desktop arrived is not news).
     blocked_seen: Option<HashMap<SessionId, BTreeSet<String>>>,
     blocked_epoch: Option<Epoch>,
+    /// The focus the daemon last acknowledged for this connection (`client.focus`); `None`
+    /// when nothing was reported on the current connection.
+    focus_sent: Option<Option<SessionId>>,
+    /// The `client.focus` request in flight; at most one, so reports cannot overtake each other.
+    focus_task: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
 }
 
 impl EventEmitter<AgentAttentionChanged> for SessionsStore {}
+impl EventEmitter<UiOpenRequested> for SessionsStore {}
 
 impl std::fmt::Debug for SessionsStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -128,6 +158,8 @@ impl SessionsStore {
             answered: HashMap::new(),
             blocked_seen: None,
             blocked_epoch: None,
+            focus_sent: None,
+            focus_task: None,
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -169,6 +201,13 @@ impl SessionsStore {
                     }
                 }
             }
+        }
+        // The daemon forgets a connection's focus with the connection: say it again on the new
+        // one.
+        if connected {
+            self.report_focus(cx);
+        } else {
+            self.focus_sent = None;
         }
         cx.notify();
     }
@@ -245,9 +284,25 @@ impl SessionsStore {
                     });
                 }
             }
-            // Exits are read off the session state; bells are not attention in M2.
-            Notice::SessionExited { .. } | Notice::Bell { .. } | Notice::DaemonRestarted { .. } => {
+            // A notification's "Open" (`ui.open`): this window shows the session.
+            Notice::UiOpen {
+                session,
+                workspace,
+                at_ms,
+            } => {
+                if ui_open_is_fresh(*at_ms, unix_ms()) {
+                    cx.emit(UiOpenRequested {
+                        session_id: *session,
+                        workspace_id: *workspace,
+                    });
+                }
             }
+            // Intents are for notifiers (M6-B) and `heeler notify watch`; the desktop shows
+            // approvals and agent state from its own state.
+            Notice::SessionExited { .. }
+            | Notice::Bell { .. }
+            | Notice::DaemonRestarted { .. }
+            | Notice::NotifyIntent { .. } => {}
         }
     }
 
@@ -447,6 +502,13 @@ impl SessionsStore {
         self.focused.or(self.last_focused)
     }
 
+    /// The focus the daemon acknowledged for the current connection (`client.focus`): `None`
+    /// before the first acknowledgement and after the connection was lost, `Some(None)` once
+    /// "nothing is looked at" was acknowledged.
+    pub fn focus_reported(&self) -> Option<Option<SessionId>> {
+        self.focus_sent
+    }
+
     // ---- attention -------------------------------------------------------------------------
 
     /// The session shown in the focused item changed (`None`: no session has focus).
@@ -456,8 +518,38 @@ impl SessionsStore {
             if session.is_some() {
                 self.last_focused = session;
             }
+            self.report_focus(cx);
             cx.notify();
         }
+    }
+
+    /// Tells the daemon which session this window shows (`client.focus`), so that it raises no
+    /// "turn finished" notification for a session the user is looking at. One request at a
+    /// time; when the focus changed while it was in flight the next one follows.
+    fn report_focus(&mut self, cx: &mut Context<Self>) {
+        if self.focus_task.is_some()
+            || self.focus_sent == Some(self.focused)
+            || self.state.connection != ConnectionState::Connected
+            || !self.connection.supports_notify()
+        {
+            return;
+        }
+        let focused = self.focused;
+        let connection = self.connection.clone();
+        self.focus_task = Some(cx.spawn(async move |this, cx| {
+            let sent = connection.client_focus(focused).await;
+            this.update(cx, |this, cx| {
+                this.focus_task = None;
+                match sent {
+                    Ok(()) => {
+                        this.focus_sent = Some(focused);
+                        this.report_focus(cx);
+                    }
+                    Err(error) => tracing::debug!(%error, "could not report the focus"),
+                }
+            })
+            .ok();
+        }));
     }
 
     /// The user looked at `session`.
@@ -791,5 +883,18 @@ impl SessionsStore {
             workspace_id: workspace,
         });
         self.call(request, |_: serde_json::Value| (), cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ui_open_is_current_for_fifteen_seconds() {
+        assert!(ui_open_is_fresh(1_000, 1_000));
+        assert!(ui_open_is_fresh(1_000, 16_000));
+        assert!(!ui_open_is_fresh(1_000, 16_001));
+        assert!(ui_open_is_fresh(5_000, 1_000), "a future stamp is current");
     }
 }

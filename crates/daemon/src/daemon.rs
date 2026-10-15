@@ -26,12 +26,13 @@ use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::history::HistoryService;
+use crate::notify::NotifyService;
 use crate::paths::Paths;
 use crate::projects;
 use crate::providers::{GatewayConfig, ProviderService};
 use crate::registry::{self, RegistryConfig};
 use crate::restore::{self, Stored};
-use crate::router::Router;
+use crate::router::{Router, Services};
 use crate::terminals::TerminalHub;
 
 pub const DEFAULT_OUTBOUND_QUEUE: usize = 1024;
@@ -221,11 +222,17 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         history.clone(),
         storage.clone(),
     );
+    let notify = NotifyService::new(settings.notify.clone(), bus.clone(), registry.clone());
+    // Observes the bus until shutdown; nothing needs its handle.
+    drop(notify.start(shutdown.clone()));
     let router = Router::new(
         registry,
         hub,
-        history,
-        assistant,
+        Services {
+            history,
+            assistant,
+            notify,
+        },
         bus.clone(),
         shutdown.clone(),
         clients.clone(),

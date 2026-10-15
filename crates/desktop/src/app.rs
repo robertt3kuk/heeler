@@ -288,4 +288,18 @@ mod tests {
         assert_eq!(heelerd_beside(Some(&exe)), dir.path().join("heelerd"));
         assert_eq!(heelerd_beside(None), PathBuf::from("heelerd"));
     }
+
+    #[test]
+    fn the_desktop_of_an_app_bundle_starts_the_bundled_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("Heeler.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        for name in ["heeler-desktop", "heelerd", "heeler"] {
+            std::fs::write(macos.join(name), "").unwrap();
+        }
+        assert_eq!(
+            heelerd_beside(Some(&macos.join("heeler-desktop"))),
+            macos.join("heelerd")
+        );
+    }
 }

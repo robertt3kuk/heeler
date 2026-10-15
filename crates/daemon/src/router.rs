@@ -10,6 +10,7 @@ use heeler_core::TerminalId;
 use heeler_protocol::chat::ChatSent;
 use heeler_protocol::control::{ErrorBody, ErrorCode};
 use heeler_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
+use heeler_protocol::notify::NotifyList;
 use heeler_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
 use serde::Serialize;
 use serde_json::Value;
@@ -20,9 +21,18 @@ use crate::assistant::AssistantService;
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
 use crate::history::HistoryService;
+use crate::notify::NotifyService;
 use crate::providers::ProviderService;
 use crate::registry::RegistryHandle;
 use crate::terminals::TerminalHub;
+
+/// The services a router hands requests to besides the registry and the terminal hub.
+#[derive(Debug)]
+pub struct Services {
+    pub history: Arc<HistoryService>,
+    pub assistant: Arc<AssistantService>,
+    pub notify: Arc<NotifyService>,
+}
 
 #[derive(Debug)]
 pub struct Router {
@@ -30,6 +40,7 @@ pub struct Router {
     hub: Arc<TerminalHub>,
     history: Arc<HistoryService>,
     assistant: Arc<AssistantService>,
+    notify: Arc<NotifyService>,
     bus: Arc<EventBus>,
     started: Instant,
     shutdown: CancellationToken,
@@ -42,8 +53,7 @@ impl Router {
     pub fn new(
         registry: RegistryHandle,
         hub: Arc<TerminalHub>,
-        history: Arc<HistoryService>,
-        assistant: Arc<AssistantService>,
+        services: Services,
         bus: Arc<EventBus>,
         shutdown: CancellationToken,
         clients: Arc<AtomicU32>,
@@ -51,8 +61,9 @@ impl Router {
         Self {
             registry,
             hub,
-            history,
-            assistant,
+            history: services.history,
+            assistant: services.assistant,
+            notify: services.notify,
             bus,
             started: Instant::now(),
             shutdown,
@@ -217,6 +228,18 @@ impl Router {
                 session: self.assistant.open(req).await?,
             }),
             Request::AssistantList(req) => ok(&self.assistant.list(req).await?),
+            Request::NotifyList(_) => ok(&NotifyList {
+                intents: self.notify.list(),
+            }),
+            Request::NotifyAck(req) => {
+                self.notify.ack(&req.id)?;
+                ok(&Empty {})
+            }
+            Request::NotifyAct(req) => ok(&self.notify.act(conn.client_kind(), req).await?),
+            Request::ClientFocus(req) => {
+                self.notify.set_focus(conn.id(), req.session_id);
+                ok(&Empty {})
+            }
             Request::ProviderList(_) => ok(&self.providers().list().await?),
             Request::ProviderAdd(req) => ok(&self.providers().add(req).await?),
             Request::ProviderUpdate(req) => ok(&self.providers().update(req).await?),
@@ -266,6 +289,7 @@ impl Router {
     /// Drops everything the closed connection had attached.
     pub fn connection_closed(&self, conn: ConnId) {
         self.hub.connection_closed(conn);
+        self.notify.connection_closed(conn);
     }
 
     /// Stops the history indexer, applying what it has queued; the index stays on disk.

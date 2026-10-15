@@ -70,20 +70,28 @@ pub fn resume_ref_json(
 /// The `heeler` CLI sessions get as `HEELER_BIN`: the one next to this executable, else the
 /// first on `PATH`, else the bare name for the shell to resolve.
 pub fn resolve_heeler_bin() -> PathBuf {
-    let exe = std::env::current_exe().ok();
+    locate_heeler(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("PATH"),
+    )
+    .unwrap_or_else(|| PathBuf::from("heeler"))
+}
+
+/// The executable `heeler` beside `exe` (as invoked and with symlinks resolved), else the first
+/// one on `path`. Inside an app bundle that is the bundled CLI next to `heelerd`.
+fn locate_heeler(exe: Option<&Path>, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let beside = exe
-        .iter()
-        .flat_map(|exe| [Some(exe.clone()), exe.canonicalize().ok()])
+        .into_iter()
+        .flat_map(|exe| [Some(exe.to_owned()), exe.canonicalize().ok()])
         .flatten()
         .filter_map(|exe| exe.parent().map(|dir| dir.join("heeler")));
-    let on_path = std::env::var_os("PATH")
+    let on_path = path
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
         .map(|dir| dir.join("heeler"));
     beside
         .chain(on_path)
         .find(|candidate| is_executable(candidate))
-        .unwrap_or_else(|| PathBuf::from("heeler"))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -98,6 +106,37 @@ mod tests {
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    fn executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_daemon_of_an_app_bundle_gives_sessions_the_bundled_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("Heeler.app/Contents/MacOS");
+        for name in ["heeler-desktop", "heelerd", "heeler"] {
+            executable(&macos.join(name));
+        }
+        assert_eq!(
+            locate_heeler(Some(&macos.join("heelerd")), None),
+            Some(macos.join("heeler"))
+        );
+        // Not found beside it: the PATH is next, then nothing.
+        let lonely = dir.path().join("lonely/heelerd");
+        executable(&lonely);
+        assert_eq!(locate_heeler(Some(&lonely), None), None);
+        let installed = dir.path().join("installed");
+        executable(&installed.join("heeler"));
+        let path = std::env::join_paths([installed.clone()]).unwrap();
+        assert_eq!(
+            locate_heeler(Some(&lonely), Some(path)),
+            Some(installed.join("heeler"))
+        );
     }
 
     #[test]

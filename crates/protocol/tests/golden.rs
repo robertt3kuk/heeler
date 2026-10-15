@@ -24,6 +24,10 @@ use heeler_protocol::chat::*;
 use heeler_protocol::control::ControlMessage;
 use heeler_protocol::history::*;
 use heeler_protocol::messages::*;
+use heeler_protocol::notify::{
+    ActRoute, ClientFocus, IntentAction, IntentKind, NotificationIntent, NotifyAck, NotifyAct,
+    NotifyActed, NotifyList,
+};
 use heeler_protocol::provider::*;
 use heeler_protocol::render::*;
 use heeler_protocol::tree::*;
@@ -945,6 +949,37 @@ fn requests() -> Vec<(&'static str, Request)> {
             "assistant_list_all",
             Request::AssistantList(AssistantListRequest::default()),
         ),
+        ("notify_list", Request::NotifyList(Empty {})),
+        (
+            "notify_ack",
+            Request::NotifyAck(NotifyAck {
+                id: "01K7F3B5N2Q9W8E4R6T1Y0V3NT".into(),
+            }),
+        ),
+        (
+            "notify_act_approval",
+            Request::NotifyAct(NotifyAct {
+                id: "01K7F3B5N2Q9W8E4R6T1Y0V3NT".into(),
+                action_id: "accept".into(),
+            }),
+        ),
+        (
+            "notify_act_open",
+            Request::NotifyAct(NotifyAct {
+                id: "01K7F3B5N2Q9W8E4R6T1Y0V3NU".into(),
+                action_id: heeler_protocol::notify::ACTION_OPEN.into(),
+            }),
+        ),
+        (
+            "client_focus",
+            Request::ClientFocus(ClientFocus {
+                session_id: Some(sid()),
+            }),
+        ),
+        (
+            "client_focus_none",
+            Request::ClientFocus(ClientFocus::default()),
+        ),
     ]
 }
 
@@ -1275,7 +1310,75 @@ fn events() -> Vec<(&'static str, Event)> {
                 }),
             },
         ),
+        (
+            "notify_intent_approval",
+            Event::NotifyIntent {
+                intent: approval_intent(),
+            },
+        ),
+        (
+            "notify_intent_agent_finished",
+            Event::NotifyIntent {
+                intent: open_intent(),
+            },
+        ),
+        (
+            "ui_open",
+            Event::UiOpen {
+                session_id: sid(),
+                workspace_id: Some(ws()),
+                at_ms: 1_791_894_180_000,
+            },
+        ),
+        (
+            "ui_open_without_workspace",
+            Event::UiOpen {
+                session_id: sid(),
+                workspace_id: None,
+                at_ms: 1_791_894_180_000,
+            },
+        ),
     ]
+}
+
+fn approval_intent() -> NotificationIntent {
+    NotificationIntent {
+        id: "01K7F3B5N2Q9W8E4R6T1Y0V3NT".into(),
+        kind: IntentKind::ApprovalRequired,
+        session_id: sid(),
+        workspace_id: Some(ws()),
+        title: "Run `touch hi.txt`?".into(),
+        body: "Codex wants to run a command in /repo".into(),
+        actions: vec![
+            IntentAction {
+                id: "accept".into(),
+                label: "Allow once".into(),
+            },
+            IntentAction {
+                id: "cancel".into(),
+                label: "Cancel".into(),
+            },
+        ],
+        created_at_ms: 1_791_894_170_000,
+        expires_at_ms: None,
+    }
+}
+
+fn open_intent() -> NotificationIntent {
+    NotificationIntent {
+        id: "01K7F3B5N2Q9W8E4R6T1Y0V3NU".into(),
+        kind: IntentKind::AgentFinished,
+        session_id: sid(),
+        workspace_id: None,
+        title: "omp finished".into(),
+        body: "Refactored the scheduler.".into(),
+        actions: vec![IntentAction {
+            id: heeler_protocol::notify::ACTION_OPEN.into(),
+            label: "Open".into(),
+        }],
+        created_at_ms: 1_791_894_170_000,
+        expires_at_ms: Some(1_791_897_770_000),
+    }
 }
 
 fn styled_row() -> Row {
@@ -1860,6 +1963,38 @@ fn responses_match_fixtures() {
                             provider_id: None,
                         },
                     ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "notify_list",
+            ControlMessage::ok(
+                16,
+                &NotifyList {
+                    intents: vec![approval_intent(), open_intent()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "notify_acted_approval",
+            ControlMessage::ok(
+                17,
+                &NotifyActed {
+                    route: ActRoute::Approval,
+                    desktop_clients: 0,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "notify_acted_ui_open",
+            ControlMessage::ok(
+                18,
+                &NotifyActed {
+                    route: ActRoute::UiOpen,
+                    desktop_clients: 1,
                 },
             )
             .unwrap(),

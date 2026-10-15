@@ -19,7 +19,7 @@ use super::settings_sheet::SettingsSheet;
 use super::style::{TerminalStyle, UiStyle};
 use super::terminals::TerminalItem;
 use super::workspaces::PickerState;
-use crate::sessions::{SessionsStore, TerminalSession};
+use crate::sessions::{SessionsStore, TerminalSession, UiOpenRequested};
 use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
 use crate::theme::{Density, DensityExt as _, Theme};
 use gpui::Window;
@@ -419,6 +419,13 @@ impl Workbench {
                 this.window_active = window.is_window_active();
                 this.sync_session_focus(cx);
             }),
+            cx.subscribe_in(
+                &sessions,
+                window,
+                |this, _, event: &UiOpenRequested, window, cx| {
+                    this.on_ui_open(event, window, cx);
+                },
+            ),
         ];
 
         let mut this = Self {

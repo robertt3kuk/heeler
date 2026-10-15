@@ -41,12 +41,20 @@
 //!
 //! [assistant.workspaces.heeler]  # per workspace (name or id): only what differs
 //! files = false
+//!
+//! [notify]                       # notification intents (protocol 0.13, docs/protocol.md)
+//! enabled = true
+//! min_turn_secs = 20             # a main agent's turn must take this long to count as "finished"
+//! kinds = ["approval_required", "agent_blocked", "agent_finished",
+//!          "session_exited_with_error", "chat_turn_finished"]   # which intents are raised
+//! expire_secs = 3600             # a pending intent (not an approval's) lapses after this long
 //! ```
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use heeler_protocol::assistant::AttachmentKind;
+use heeler_protocol::notify::IntentKind;
 use serde::Deserialize;
 use serde::de::Error as _;
 
@@ -73,6 +81,7 @@ pub struct DaemonSettings {
     pub codex: CodexSettings,
     pub gateway: GatewaySettings,
     pub assistant: AssistantSettings,
+    pub notify: NotifySettings,
 }
 
 /// `gateway.max_context_chars` when the setting is absent.
@@ -274,6 +283,37 @@ impl AssistantSettings {
     }
 }
 
+/// `notify.min_turn_secs` when the setting is absent.
+pub const DEFAULT_MIN_TURN_SECS: u64 = 20;
+/// `notify.expire_secs` when the setting is absent.
+pub const DEFAULT_EXPIRE_SECS: u64 = 3600;
+
+/// `[notify]` of `daemon.toml`: which notification intents the daemon raises (protocol 0.13).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct NotifySettings {
+    /// `false` raises no intent at all (`notify.list` stays empty).
+    pub enabled: bool,
+    /// A main agent's working-to-idle turn raises `agent_finished` only when it took at least
+    /// this long.
+    pub min_turn_secs: u64,
+    /// The kinds that are raised; the others are dropped.
+    pub kinds: Vec<IntentKind>,
+    /// How long an intent other than an approval's stays pending.
+    pub expire_secs: u64,
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_turn_secs: DEFAULT_MIN_TURN_SECS,
+            kinds: IntentKind::ALL.to_vec(),
+            expire_secs: DEFAULT_EXPIRE_SECS,
+        }
+    }
+}
+
 /// The `range_days` values the settings accept.
 pub const RANGE_DAYS: [u32; 3] = [0, 30, 90];
 
@@ -291,6 +331,8 @@ struct File {
     gateway: GatewaySettings,
     #[serde(default)]
     assistant: AssistantSettings,
+    #[serde(default)]
+    notify: NotifySettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -343,6 +385,11 @@ impl DaemonSettings {
                 "assistant.context_budget_chars must be at least 1",
             ));
         }
+        if file.notify.expire_secs == 0 {
+            return Err(toml::de::Error::custom(
+                "notify.expire_secs must be at least 1",
+            ));
+        }
         Ok(Self {
             restore_sessions: file.daemon.restore_sessions,
             home_folder,
@@ -350,6 +397,7 @@ impl DaemonSettings {
             codex: file.codex,
             gateway: file.gateway,
             assistant: file.assistant,
+            notify: file.notify,
         })
     }
 }
@@ -646,5 +694,36 @@ mod tests {
     fn assistant_budget_must_be_positive() {
         assert!(DaemonSettings::parse("[assistant]\ncontext_budget_chars = 0\n", None).is_err());
         assert!(DaemonSettings::parse("[assistant.context]\nshell = \"yes\"\n", None).is_err());
+    }
+
+    #[test]
+    fn notify_defaults_raise_everything_with_a_twenty_second_turn() {
+        let notify = DaemonSettings::parse("", None).unwrap().notify;
+        assert!(notify.enabled);
+        assert_eq!(notify.min_turn_secs, 20);
+        assert_eq!(notify.kinds, IntentKind::ALL.to_vec());
+        assert_eq!(notify.expire_secs, 3600);
+    }
+
+    #[test]
+    fn notify_settings_are_read_and_validated() {
+        let notify = DaemonSettings::parse(
+            "[notify]\nenabled = false\nmin_turn_secs = 0\nexpire_secs = 5\n\
+             kinds = [\"approval_required\", \"chat_turn_finished\"]\n",
+            None,
+        )
+        .unwrap()
+        .notify;
+        assert!(!notify.enabled);
+        assert_eq!(notify.min_turn_secs, 0);
+        assert_eq!(notify.expire_secs, 5);
+        assert_eq!(
+            notify.kinds,
+            [IntentKind::ApprovalRequired, IntentKind::ChatTurnFinished]
+        );
+        let unknown = DaemonSettings::parse("[notify]\nkinds = [\"gossip\"]\n", None).unwrap_err();
+        assert!(unknown.to_string().contains("gossip"), "{unknown}");
+        assert!(DaemonSettings::parse("[notify]\nexpire_secs = 0\n", None).is_err());
+        assert!(DaemonSettings::parse("[notify]\nenabled = \"yes\"\n", None).is_err());
     }
 }

@@ -320,6 +320,21 @@ impl Connection {
         client.agent_release(req).await
     }
 
+    /// True while connected to a daemon that advertised capability `notify.intents`
+    /// ([`Client::supports_notify`]); false when disconnected.
+    pub fn supports_notify(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_notify())
+    }
+
+    /// `client.focus` ([`Client::client_focus`]): the session the user is looking at. The daemon
+    /// forgets it when the connection ends, so report again after every reconnect.
+    pub async fn client_focus(&self, session: Option<SessionId>) -> Result<(), ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.client_focus(session).await
+    }
+
     /// `chat.create`: opens an agent conversation as a new session.
     pub async fn chat_create(&self, req: ChatCreate) -> Result<SessionInfo, ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
