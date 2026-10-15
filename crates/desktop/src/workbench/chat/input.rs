@@ -48,6 +48,19 @@ impl TextInput {
         self.cursor += text.len();
     }
 
+    /// Removes the bytes `range` (character boundaries inside the text; anything else is
+    /// ignored) and puts the caret where the range began.
+    pub fn remove_range(&mut self, range: std::ops::Range<usize>) {
+        if range.start <= range.end
+            && range.end <= self.text.len()
+            && self.text.is_char_boundary(range.start)
+            && self.text.is_char_boundary(range.end)
+        {
+            self.text.drain(range.clone());
+            self.cursor = range.start;
+        }
+    }
+
     pub fn backspace(&mut self) {
         if let Some(prev) = self.prev_boundary(self.cursor) {
             self.text.drain(prev..self.cursor);

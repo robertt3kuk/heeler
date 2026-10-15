@@ -17,6 +17,8 @@ use heeler_core::{ApprovalId, SessionId, SessionState};
 use heeler_protocol::messages::SessionInfo;
 use heeler_settings::SettingsStore;
 
+use super::attach::Attaching;
+use super::context::is_gateway_chat;
 use super::input::TextInput;
 use super::markdown_view::Look;
 use super::model::{ChatModel, LoadStatus};
@@ -39,7 +41,7 @@ const COMPOSER_MAX_HEIGHT: f32 = 220.0;
 const CARET: &str = "▏";
 
 pub struct ChatView {
-    session: SessionId,
+    pub(super) session: SessionId,
     pub(super) model: Entity<ChatModel>,
     pub(super) sessions: Entity<SessionsStore>,
     settings: SettingsStore,
@@ -55,6 +57,8 @@ pub struct ChatView {
     pub(super) parsed: HashMap<u64, (u64, Rc<Vec<Block>>)>,
     /// Requests waiting for an answer, oldest first (the keys 1–4 answer the first).
     pub(super) pending: Vec<ApprovalId>,
+    /// The Attach menu or form of an assistant chat.
+    pub(super) attach: Option<Attaching>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -112,6 +116,7 @@ impl ChatView {
             toggled: HashSet::new(),
             parsed: HashMap::new(),
             pending: Vec::new(),
+            attach: None,
             _subscriptions: subscriptions,
         }
     }
@@ -236,6 +241,7 @@ impl ChatView {
         }
         // Sending follows the conversation to its end again.
         self.list.set_follow_mode(FollowMode::Tail);
+        self.attach = None;
         self.model.update(cx, |model, cx| model.send(cx))
     }
 
@@ -273,6 +279,17 @@ impl ChatView {
         let mods = &keystroke.modifiers;
         let key = keystroke.key.as_str();
         let plain = !mods.platform && !mods.control && !mods.alt && !mods.shift && !mods.function;
+
+        // The attach form's field takes the typing while a form is open.
+        if self.on_attach_key(event, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        // Tab turns the mention at the caret (`@file src/lib.rs`) into what it offers.
+        if plain && key == "tab" && self.accept_mention(cx) {
+            cx.stop_propagation();
+            return;
+        }
 
         // 1–4 answer the oldest request while the composer is empty.
         if plain
@@ -402,7 +419,7 @@ impl ChatView {
         let presentation = self.sessions.read(cx).presentation(info);
         let chat = info.chat.as_ref();
         let detail = chat.map(|chat| {
-            if chat.agent == "direct" {
+            if is_gateway_chat(&chat.agent) {
                 format!(
                     "{} · {}",
                     chat.provider_id.as_deref().unwrap_or("provider"),
@@ -448,7 +465,7 @@ impl ChatView {
                     .text_size(px(tokens.section_font_size + 1.0))
                     .child(SharedString::from(text))
             }))
-            .when(chat.is_some_and(|chat| chat.agent == "direct"), |s| {
+            .when(chat.is_some_and(|chat| is_gateway_chat(&chat.agent)), |s| {
                 s.child(
                     button(
                         "chat-switch-model",
@@ -490,7 +507,10 @@ impl ChatView {
         cx: &App,
     ) -> Option<AnyElement> {
         let info = self.sessions.read(cx).session(self.session)?;
-        let chat = info.chat.as_ref().filter(|chat| chat.agent == "direct")?;
+        let chat = info
+            .chat
+            .as_ref()
+            .filter(|chat| is_gateway_chat(&chat.agent))?;
         let session = self.session;
         if message.contains("HTTP 401")
             || message.contains("HTTP 403")
@@ -588,6 +608,10 @@ impl ChatView {
         let text = match self.model.read(cx).status() {
             LoadStatus::Loading => "Loading the conversation…".to_owned(),
             LoadStatus::Failed(_) => "No conversation to show.".to_owned(),
+            LoadStatus::Ready if self.supports_context(cx) => {
+                "Ask the assistant. Nothing is shared with it unless you attach it: @shell, @omp, @agent, @file or @search, or the Attach button."
+                    .to_owned()
+            }
             LoadStatus::Ready => {
                 "Ask the agent to do something. Commands, edits and approvals appear here."
                     .to_owned()
@@ -608,7 +632,13 @@ impl ChatView {
         let theme = &look.theme;
         let input = self.model.read(cx).input();
         if input.is_empty() {
-            let placeholder = div().text_color(theme.muted).child("Message the agent…");
+            let placeholder = div()
+                .text_color(theme.muted)
+                .child(if self.supports_context(cx) {
+                    "Ask the assistant… (@shell @file @search to attach context)"
+                } else {
+                    "Message the agent…"
+                });
             return if focused {
                 div()
                     .flex()
@@ -660,10 +690,18 @@ impl ChatView {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let focused = self.focus_handle.is_focused(window);
         let send_on_enter = self.settings.get::<ChatSettings>().send_on_enter;
-        let (chips, sending, can_send) = {
+        let (chips, context, sending, can_send) = {
             let model = self.model.read(cx);
-            (model.chips().to_vec(), model.sending(), self.can_send(cx))
+            (
+                model.chips().to_vec(),
+                model.context().to_vec(),
+                model.sending(),
+                self.can_send(cx),
+            )
         };
+        let supports_context = self.supports_context(cx);
+        let mention_hint = self.render_mention_hint(look, cx);
+        let attach_button = supports_context.then(|| self.render_attach_button(look, cx));
         let hint = if gate.running {
             "⌘. interrupts the turn".to_owned()
         } else if send_on_enter {
@@ -705,6 +743,49 @@ impl ChatView {
                             .child("×"),
                     )
                     .child(probe(&self.regions, Region::ChatChip(index)))
+            }),
+        );
+        let context_row = div().flex().flex_wrap().gap(px(tokens.spacing)).children(
+            context.iter().enumerate().map(|(index, chip)| {
+                let hover = theme.hover;
+                let color = if chip.refused.is_some() {
+                    theme.error
+                } else {
+                    theme.accent
+                };
+                div()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing))
+                    .pl(px(tokens.spacing * 2.0))
+                    .pr(px(tokens.spacing))
+                    .h(px(tokens.sidebar_row - 4.0))
+                    .rounded(px(tokens.radius))
+                    .border_1()
+                    .border_color(color.opacity(0.6))
+                    .bg(color.opacity(0.12))
+                    .font_family(look.mono.clone())
+                    .text_size(px(tokens.section_font_size + 1.0))
+                    .child(SharedString::from(chip.label()))
+                    .when(chip.refused.is_some(), |s| {
+                        s.child(div().text_color(theme.error).child("· refused"))
+                    })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("chat-context-remove-{index}")))
+                            .px(px(tokens.spacing))
+                            .rounded(px(3.0))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.model
+                                    .update(cx, |model, cx| model.remove_context(index, cx));
+                            }))
+                            .child("×"),
+                    )
+                    .child(probe(&self.regions, Region::ChatContextChip(index)))
             }),
         );
         let input = div()
@@ -750,7 +831,9 @@ impl ChatView {
             .border_color(if focused { theme.accent } else { theme.border })
             .bg(theme.overlay)
             .when(!chips.is_empty(), |s| s.child(chip_row))
+            .when(!context.is_empty(), |s| s.child(context_row))
             .child(input)
+            .children(mention_hint)
             .child(
                 div()
                     .flex()
@@ -759,16 +842,25 @@ impl ChatView {
                     .gap(px(tokens.spacing * 2.0))
                     .child(
                         div()
+                            .flex()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted)
-                            .text_size(px(tokens.section_font_size + 1.0))
-                            .child(SharedString::from(
-                                gate.blocked
-                                    .as_ref()
-                                    .map_or(hint, std::string::ToString::to_string),
-                            )),
+                            .items_center()
+                            .gap(px(tokens.spacing * 2.0))
+                            .children(attach_button)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(theme.muted)
+                                    .text_size(px(tokens.section_font_size + 1.0))
+                                    .child(SharedString::from(
+                                        gate.blocked
+                                            .as_ref()
+                                            .map_or(hint, std::string::ToString::to_string),
+                                    )),
+                            ),
                     )
                     .child(
                         div()
@@ -802,6 +894,7 @@ impl Render for ChatView {
         let gate = self.gate(info.as_ref(), cx);
         let header = self.render_header(info.as_ref(), &look, cx);
         let banner = self.render_banner(&look, cx);
+        let attach = self.render_attach(&look, cx);
         let composer = self.render_composer(&gate, window, &look, cx);
         let empty = self.model.read(cx).transcript().is_empty();
         let body = if empty {
@@ -849,6 +942,7 @@ impl Render for ChatView {
             .child(header)
             .children(banner)
             .child(div().relative().flex_1().min_h_0().child(body))
+            .children(attach)
             .child(composer)
     }
 }

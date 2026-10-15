@@ -118,6 +118,16 @@ pub enum Region {
     ChatOption(usize),
     /// Context chip `index` of the composer.
     ChatChip(usize),
+    /// Structured context chip `index` of the composer (assistant chats).
+    ChatContextChip(usize),
+    /// A control of the attach form of an assistant chat, by name (`button`, `close`, `field`,
+    /// `confirm`, `mention`, `shell`, `agent`, `file`, `search`, …).
+    Attach(&'static str),
+    /// Row `index` of the attach form's list (terminals, blocks, transcripts), top to bottom.
+    AttachRow(usize),
+    /// A control of the assistant panel, by name (`global`, `workspace`, `new`, `models`,
+    /// `retry`).
+    Assistant(&'static str),
     /// The control that opens or closes part `part` of entry `index` (a command's output, a
     /// file's diff, reasoning).
     ChatPart(usize, u32),
@@ -237,6 +247,9 @@ pub struct Workbench {
     pub(crate) pruned_chats: Vec<Entity<ChatView>>,
     /// The chat the user looked at last: where "Send to agent" goes.
     pub(crate) last_chat: Option<SessionId>,
+    /// The user opened or focused the Assistant panel after the last chat tab they looked at:
+    /// "Send to agent" goes to the assistant the panel shows.
+    pub(crate) assistant_last: bool,
     /// Permission requests this window has already seen (a new one may reveal the inspector).
     pub(crate) known_approvals: std::collections::HashSet<ApprovalId>,
     /// The ⌘⇧T dialog.
@@ -435,6 +448,7 @@ impl Workbench {
             rendered_chats: std::collections::HashSet::new(),
             pruned_chats: Vec::new(),
             last_chat: None,
+            assistant_last: false,
             known_approvals: std::collections::HashSet::new(),
             agent_picker: None,
             providers: super::providers::ProvidersState::default(),

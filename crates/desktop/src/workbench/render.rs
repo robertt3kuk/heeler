@@ -400,6 +400,9 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::SearchHistory, window, cx| {
             this.search_history(window, cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::OpenAssistant, window, cx| {
+            this.open_assistant(window, cx);
+        }))
         .on_action(
             cx.listener(|this, a: &actions::ResumeHistoryHit, window, cx| {
                 this.resume_history_hit(a.0.clone(), window, cx);

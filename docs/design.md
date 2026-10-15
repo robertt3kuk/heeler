@@ -37,7 +37,7 @@ flowchart TB
   PANE --> IT[Items: Terminal, Chat, Diff, any Panel opened as a tab]
 ```
 
-- **Panel**: a registered component with an id, title, icon, default dock, and a typed settings section. Panels: `sessions`, `history`, `inspector`, `overview`, `notifications`, later `tasks`, `worktrees`, `providers`, `changes`.
+- **Panel**: a registered component with an id, title, icon, default dock, and a typed settings section. Panels: `sessions`, `history`, `inspector`, `overview`, `agents`, `assistant`, `notifications`, later `tasks`, `worktrees`, `providers`, `changes`. The `assistant` panel is described in `docs/assistant.md` § Desktop.
 - **Dock**: left, right, bottom. A dock hosts a stack of panels (tabs inside the dock). Docks resize, collapse, and can be emptied.
 - **Center**: a binary split tree of panes; each pane has its own tab strip. Items are session views (terminal/chat), diffs, or any panel opened as a tab.
 - **Status bar**: an ordered list of status items (`connection`, `sessions`, `attention`, `density`, `theme`, `palette_hint`, …) left and right; each is configurable.
@@ -363,6 +363,7 @@ flowchart TD
 | Command palette | ⌘K |
 | Settings | ⌘, |
 | New session (terminal) / new agent / new chat | ⌘T / ⌘⇧T / ⌘⌥T |
+| Open / focus the Assistant panel (OS-global registration is M6) | ⌥Space |
 | Jump to next "needs you" | ⌘⇧J |
 | Tabs 1–9 in pane | ⌘1…⌘9 |
 | Split right / down | ⌘D / ⌘⇧D |

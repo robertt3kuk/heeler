@@ -87,6 +87,7 @@ actions!(
         ShowOnlyBlockedAgents,
         ManageProviders,
         SwitchChatModel,
+        OpenAssistant,
     ]
 );
 
@@ -401,6 +402,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Agents: Show Only Blocked", ShowOnlyBlockedAgents),
         command("Models: Manage Providers…", ManageProviders),
         command("Chat: Switch Model…", SwitchChatModel),
+        command("Assistant: Open / Focus", OpenAssistant),
     ]);
     out.extend([
         command(
@@ -508,6 +510,7 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<NewTerminal>("cmd-t", None),
         bind::<NewAgent>("cmd-shift-t", None),
         bind::<NewChat>("cmd-alt-t", None),
+        bind::<OpenAssistant>("alt-space", None),
         bind::<JumpToNextAttention>("cmd-shift-j", None),
         bind::<SplitRight>("cmd-d", None),
         bind::<SplitDown>("cmd-shift-d", None),

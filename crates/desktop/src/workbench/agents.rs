@@ -16,13 +16,15 @@ use gpui::{
 };
 use heeler_core::agent::ModelInfo;
 use heeler_core::{ApprovalId, SessionId, WorkspaceId};
+use heeler_protocol::assistant::AGENT_ASSISTANT;
 use heeler_protocol::blocks::BlockPart;
 use heeler_protocol::chat::ChatCreate;
 use heeler_protocol::messages::SessionInfo;
 
 use super::actions::palette;
-use super::chat::{ButtonKind, ChatModel, ChatView, Chip, Look, button, cut_to};
+use super::chat::{ButtonKind, ChatModel, ChatView, Chip, ContextChip, Look, button, cut_to};
 use super::model::{FocusTarget, ItemRef, PaneId};
+use super::panels::AssistantPanel;
 use super::render::probe;
 use super::terminals::session_of_item;
 use super::view::{Region, Workbench};
@@ -802,7 +804,11 @@ impl Workbench {
     // ---- send to agent ---------------------------------------------------------------------
 
     /// "Send to agent" of a terminal block: its command and output become a chip in the
-    /// composer of the last chat the user looked at, or of the one they pick.
+    /// composer of the last chat the user looked at (the assistant the Assistant panel shows,
+    /// once they opened it after the last chat tab), or of the one they pick. An assistant takes
+    /// the block as a structured attachment that its daemon reads (`shell_block`), never as text
+    /// read here; the menu offers "Send to Assistant" (the assistant of the terminal's
+    /// workspace, opened on demand) when none of the running chats is one.
     pub(crate) fn send_block_to_agent(
         &mut self,
         session: SessionId,
@@ -818,14 +824,24 @@ impl Workbench {
             .filter(|s| s.chat.is_some() && s.state.is_live())
             .cloned()
             .collect();
-        let last = self
-            .last_chat
+        let shown_assistant = self
+            .assistant_last
+            .then(|| {
+                self.panel::<AssistantPanel>("assistant")
+                    .and_then(|panel| panel.read(cx).session(cx))
+            })
+            .flatten();
+        let last = shown_assistant
+            .or(self.last_chat)
             .filter(|last| candidates.iter().any(|c| c.id == *last));
         let target = match (last, candidates.as_slice()) {
             (Some(last), _) => Some(last),
             (None, [only]) => Some(only.id),
             (None, []) => {
-                self.set_notice("No agent chat is running: start one with ⌘⇧T", cx);
+                self.set_notice(
+                    "No agent chat is running: start one with ⌘⇧T, or open the Assistant with ⌥Space",
+                    cx,
+                );
                 return;
             }
             (None, _) => None,
@@ -833,7 +849,7 @@ impl Workbench {
         match target {
             Some(chat) => self.attach_block(session, block, chat, window, cx),
             None => {
-                let entries = candidates
+                let mut entries: Vec<_> = candidates
                     .iter()
                     .map(|info| {
                         let chat = info.id;
@@ -845,6 +861,19 @@ impl Workbench {
                         )
                     })
                     .collect();
+                let has_assistant = candidates.iter().any(|c| {
+                    c.chat
+                        .as_ref()
+                        .is_some_and(|chat| chat.agent == AGENT_ASSISTANT)
+                });
+                if self.sessions.read(cx).connection().supports_assistant() && !has_assistant {
+                    entries.push(Self::entry(
+                        "Send to Assistant".to_owned(),
+                        move |this, window, cx| {
+                            this.send_block_to_assistant(session, block, window, cx);
+                        },
+                    ));
+                }
                 self.open_menu(window.mouse_position(), entries, window, cx);
             }
         }
@@ -868,16 +897,17 @@ impl Workbench {
         else {
             return;
         };
-        let (command, exit_code) = self
-            .terminal_view_of(session)
-            .and_then(|view| {
-                view.read(cx)
-                    .model()
-                    .blocks()
-                    .get(block)
-                    .map(|b| (b.command.clone(), b.exit_code))
-            })
-            .unwrap_or((None, None));
+        let (command, exit_code) = self.block_facts(session, block, cx);
+        if self.is_assistant(chat, cx) {
+            let title = self
+                .sessions
+                .read(cx)
+                .session(session)
+                .map_or_else(|| "terminal".to_owned(), |info| info.title.clone());
+            let chip = ContextChip::block(&title, terminal, block, command.as_deref(), exit_code);
+            self.attach_to_assistant(chat, chip, window, cx);
+            return;
+        }
         let max = self.settings.get::<ChatSettings>().attach_max_bytes;
         let max = u32::try_from(max).unwrap_or(u32::MAX);
         let connection = self.sessions.read(cx).connection().clone();
@@ -924,6 +954,7 @@ impl Workbench {
             && self.is_chat(session, cx)
         {
             self.last_chat = Some(session);
+            self.assistant_last = false;
         }
     }
 

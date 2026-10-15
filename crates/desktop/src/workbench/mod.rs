@@ -2,6 +2,7 @@
 
 pub mod actions;
 mod agents;
+mod assistant;
 pub mod chat;
 mod daemon;
 mod daemon_popover;

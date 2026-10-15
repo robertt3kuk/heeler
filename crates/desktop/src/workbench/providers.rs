@@ -588,7 +588,7 @@ impl Workbench {
             .read(cx)
             .session(session)
             .and_then(|s| s.chat.as_ref())
-            .is_some_and(|chat| chat.agent == "direct" && !chat.turn_active);
+            .is_some_and(|chat| super::chat::is_gateway_chat(&chat.agent) && !chat.turn_active);
         if !allowed {
             self.set_notice("Models can be switched between turns of a direct chat", cx);
             return;

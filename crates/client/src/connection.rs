@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use heeler_core::{ApprovalId, SessionId, TerminalId};
+use heeler_protocol::assistant::{AssistantEntry, AssistantListRequest, AssistantOpen, Attachment};
 use heeler_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
@@ -333,6 +334,42 @@ impl Connection {
     ) -> Result<ChatSent, ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
         client.chat_send(session, text).await
+    }
+
+    /// [`chat_send`](Self::chat_send) with read-only context attached (protocol 0.12, capability
+    /// `assistant`): the daemon resolves, redacts, bounds and journals it with the message
+    /// ([`Client::chat_send_with`]).
+    pub async fn chat_send_with(
+        &self,
+        session: SessionId,
+        text: impl Into<String>,
+        attachments: Vec<Attachment>,
+    ) -> Result<ChatSent, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_send_with(session, text, attachments).await
+    }
+
+    /// True while connected to a daemon that advertised capability `assistant`
+    /// ([`Client::supports_assistant`]); false when disconnected.
+    pub fn supports_assistant(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_assistant())
+    }
+
+    /// `assistant.open`: the default assistant session of a scope, created on first use.
+    pub async fn assistant_open(&self, req: AssistantOpen) -> Result<SessionInfo, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.assistant_open(req).await
+    }
+
+    /// `assistant.list`: the assistant sessions, oldest first.
+    pub async fn assistant_list(
+        &self,
+        req: AssistantListRequest,
+    ) -> Result<Vec<AssistantEntry>, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.assistant_list(req).await
     }
 
     /// `chat.interrupt`: stops the turn in progress.

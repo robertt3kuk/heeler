@@ -349,6 +349,10 @@ impl Workbench {
             self.set_notice("That is not a session of this daemon", cx);
             return;
         };
+        // A conversation with the assistant opens in the Assistant panel, not as a tab.
+        if self.show_assistant_session(session, window, cx) {
+            return;
+        }
         let terminal = {
             let store: &SessionsStore = self.sessions.read(cx);
             match store.session(session) {

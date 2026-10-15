@@ -6,6 +6,7 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
 pub mod agents;
+pub mod assistant;
 pub mod chat;
 pub mod history;
 

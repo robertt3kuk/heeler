@@ -2,6 +2,7 @@
 //! namespace `panels.<id>`; the layout decides where it lives.
 
 mod agents;
+mod assistant;
 mod common;
 mod history;
 mod history_model;
@@ -21,6 +22,7 @@ use gpui::{
 use std::rc::Rc;
 
 pub use agents::{AgentsPanel, RowView, SectionView, TICK as AGENTS_TICK};
+pub use assistant::{AssistantPanel, Choice as AssistantChoice, Failure, Opened, ScopeKey};
 pub use common::{age_label, agent_badge, kind_icon, state_dot, tone_color};
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
@@ -76,7 +78,7 @@ impl Render for PlaceholderPanel {
     }
 }
 
-/// `sessions`, `history`, `inspector`, `overview`, `agents`, `notifications`.
+/// `sessions`, `history`, `inspector`, `overview`, `agents`, `assistant`, `notifications`.
 pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
     registry.register(PanelSpec {
@@ -127,6 +129,16 @@ pub fn builtin_panels() -> PanelRegistry {
         factory: Rc::new(|env, _window, cx| {
             let env = env.clone();
             AnyView::from(cx.new(|cx| AgentsPanel::new(env, cx)))
+        }),
+    });
+    registry.register(PanelSpec {
+        id: "assistant".into(),
+        title: "Assistant".into(),
+        icon: "✦".into(),
+        default_dock: DockPosition::Right,
+        factory: Rc::new(|env, _window, cx| {
+            let env = env.clone();
+            AnyView::from(cx.new(|cx| AssistantPanel::new(env, cx)))
         }),
     });
     registry.register(PanelSpec {

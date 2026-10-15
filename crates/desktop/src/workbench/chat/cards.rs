@@ -3,6 +3,12 @@
 
 use std::rc::Rc;
 
+use super::context::{kind_label, split_context};
+use super::markdown_view::{Ids, Look, blocks, code_block};
+use super::view::ChatView;
+use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
+use crate::workbench::render::probe;
+use crate::workbench::view::Region;
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
@@ -18,12 +24,6 @@ use heeler_core::agent::{
     FileChangeKind, NoticeLevel, PermissionKind, PermissionOptionKind, PlanStepStatus, ToolKind,
     ToolStatus,
 };
-
-use super::markdown_view::{Ids, Look, blocks, code_block};
-use super::view::ChatView;
-use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
-use crate::workbench::render::probe;
-use crate::workbench::view::Region;
 
 /// The default open/closed part of a card (a command's output, a tool's arguments, reasoning).
 pub(super) const PART_BODY: u32 = 0;
@@ -115,7 +115,7 @@ impl ChatView {
         let mut ids = Ids::new(format!("e{}", entry.id)).probing(self.regions.clone(), index);
         let tokens = look.tokens;
         let card = match &entry.body {
-            Body::User(message) => self.user_card(entry, message, &look, &mut ids),
+            Body::User(message) => self.user_card(index, entry, message, &look, &mut ids, cx),
             Body::Assistant(message) => self.assistant_card(entry, message, &look, &mut ids),
             Body::Reasoning(reasoning) => {
                 self.reasoning_card(index, entry, reasoning, &look, &mut ids, cx)
@@ -164,15 +164,49 @@ impl ChatView {
 
     // ---- messages --------------------------------------------------------------------------
 
+    /// The user's message. What the user typed is the message; the context the daemon appended
+    /// (`docs/assistant.md`) is shown as one chip per attachment — kind, label, characters kept
+    /// and whether the budget cut it — with the text itself folded away.
     fn user_card(
         &mut self,
+        index: usize,
         entry: &Entry,
         message: &Message,
         look: &Look,
         ids: &mut Ids,
+        cx: &Context<Self>,
     ) -> AnyElement {
         let (theme, tokens) = (&look.theme, &look.tokens);
-        let parsed = self.blocks_of(entry, &message.text);
+        let (typed, context) = split_context(&message.text);
+        let parsed = self.blocks_of(entry, typed);
+        let meta = message
+            .item
+            .map(|item| self.model.read(cx).attachments_of(item).to_vec())
+            .unwrap_or_default();
+        let open = self.open(entry.id, PART_BODY, false);
+        let id = entry.id;
+        let hover = theme.hover;
+        let chips = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(tokens.spacing))
+            .children(meta.iter().map(|meta| {
+                let color = if meta.truncated {
+                    theme.warning
+                } else {
+                    theme.accent
+                };
+                let mut text = format!(
+                    "{} · {} · {} chars",
+                    kind_label(meta.kind),
+                    meta.label,
+                    meta.chars
+                );
+                if meta.truncated {
+                    text.push_str(" · cut to the budget");
+                }
+                pill(text, color, look).font_family(look.mono.clone())
+            }));
         div()
             .flex()
             .flex_col()
@@ -191,6 +225,32 @@ impl ChatView {
                     .child("YOU"),
             )
             .child(blocks(&parsed, look, ids))
+            .when(!meta.is_empty(), |s| s.child(chips))
+            .when_some(context, |s, context| {
+                s.child(
+                    div()
+                        .id(ids.next("context"))
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(tokens.spacing * 1.5))
+                        .cursor_pointer()
+                        .rounded(px(3.0))
+                        .text_color(theme.muted)
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle(index, id, PART_BODY, cx);
+                        }))
+                        .child(probe(&self.regions, Region::ChatPart(index, PART_BODY)))
+                        .child(if open { "▾" } else { "▸" })
+                        .child(if open {
+                            "Attached context"
+                        } else {
+                            "Show attached context"
+                        }),
+                )
+                .when(open, |s| s.child(code_block(context, None, look, ids)))
+            })
             .into_any_element()
     }
 
