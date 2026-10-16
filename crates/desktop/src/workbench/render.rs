@@ -5,7 +5,7 @@ use super::model::{
     Axis, Direction, DockPosition, DropTarget, Edge, FocusTarget, ItemRef, ItemSource,
     LayoutPreset, Pane, PaneId, PaneTree, PanelDest,
 };
-use super::registry::{StatusContext, StatusData};
+use super::registry::{DockState, PerDock, StatusContext, StatusData};
 use super::terminals::session_of_item;
 use super::ui::{self, Mascot, StyledExt as _};
 use super::view::{
@@ -34,6 +34,11 @@ fn key_hint(window: &Window, action: &dyn Action) -> Option<SharedString> {
     let binding = window.highest_precedence_binding_for_action(action)?;
     let text: Vec<String> = binding.keystrokes().iter().map(|k| k.to_string()).collect();
     Some(text.join(" ").into())
+}
+
+/// The palette's key in the active keymap ("⌘⇧P"), for hints in prose.
+fn palette_key(window: &Window) -> SharedString {
+    key_hint(window, &actions::TogglePalette).unwrap_or_else(|| "the command palette".into())
 }
 
 /// An invisible child that records its parent's painted bounds under `region`.
@@ -165,6 +170,24 @@ impl Workbench {
         }))
         .on_action(cx.listener(|this, _: &actions::SplitDown, window, cx| {
             this.split_active(Edge::Bottom, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &actions::SplitLeft, window, cx| {
+            this.split_active(Edge::Left, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &actions::SplitUp, window, cx| {
+            this.split_active(Edge::Top, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &actions::CloseAllDocks, _, cx| {
+            this.mutate(cx, |s| s.close_all_docks());
+        }))
+        .on_action(cx.listener(|this, _: &actions::IncreaseFontSize, _, cx| {
+            this.change_font_size(1.0, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::DecreaseFontSize, _, cx| {
+            this.change_font_size(-1.0, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ResetFontSize, _, cx| {
+            this.reset_font_size(cx);
         }))
         .on_action(cx.listener(|this, _: &actions::ToggleLeftDock, _, cx| {
             this.mutate(cx, |s| s.toggle_dock(DockPosition::Left));
@@ -990,7 +1013,10 @@ impl Workbench {
                 .size_full()
                 .p(px(tokens.spacing * 3.0))
                 .text_color(theme.muted)
-                .child("Empty dock. Drag a panel here, or press ⌘K to open one.")
+                .child(format!(
+                    "Empty dock. Drag a panel here, or press {} to open one.",
+                    palette_key(window)
+                ))
                 .into_any_element(),
         };
 
@@ -1388,7 +1414,10 @@ impl Workbench {
             Some(item) => self.render_item(pane_id, item, window, cx),
             None => ui::empty_state(
                 Mascot::Empty,
-                "No open items — ⌘T for a new tab, ⌘K for commands",
+                format!(
+                    "No open items — ⌘T for a new tab, {} for commands",
+                    palette_key(window)
+                ),
                 None,
                 &theme,
                 &tokens,
@@ -1697,13 +1726,34 @@ impl Workbench {
                 )
                 .name
                 .clone(),
+                docks: {
+                    let state = |pos: DockPosition| {
+                        let dock = self.state.docks.get(pos);
+                        DockState {
+                            visible: dock.visible,
+                            has_panels: !dock.panels.is_empty(),
+                        }
+                    };
+                    PerDock {
+                        left: state(DockPosition::Left),
+                        right: state(DockPosition::Right),
+                        bottom: state(DockPosition::Bottom),
+                    }
+                },
             }
         };
+        let hint = |action: &dyn Action| key_hint(window, action).unwrap_or_default();
         let ctx = StatusContext {
             theme: &theme,
             density: self.density,
-            palette_hint: key_hint(window, &actions::TogglePalette).unwrap_or_else(|| "⌘K".into()),
-            attention_hint: key_hint(window, &actions::JumpToNextAttention).unwrap_or_default(),
+            palette_hint: key_hint(window, &actions::TogglePalette)
+                .unwrap_or_else(|| "Commands".into()),
+            attention_hint: hint(&actions::JumpToNextAttention),
+            dock_hints: PerDock {
+                left: hint(&actions::ToggleLeftDock),
+                right: hint(&actions::ToggleRightDock),
+                bottom: hint(&actions::ToggleBottomDock),
+            },
             data: &data,
         };
         let status_bar = self.status_bar();

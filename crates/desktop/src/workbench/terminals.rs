@@ -24,7 +24,7 @@ use super::style::{TerminalStyle, UiStyle};
 use super::ui::{self, Mascot};
 use super::view::{MenuEntry, Workbench};
 use crate::sessions::TerminalSession;
-use crate::settings::{AppearanceSettings, LayoutSettings, TerminalSettings};
+use crate::settings::{AppearanceSettings, KeymapSettings, LayoutSettings, TerminalSettings};
 use crate::theme::Theme;
 
 /// The view configuration of a terminal: the `terminal` namespace with its theme resolved, plus
@@ -928,9 +928,10 @@ impl Workbench {
 
     // ---- hot reload -------------------------------------------------------------------------
 
-    /// Re-reads the keymap (defaults + `keymap.toml`) and rebinds every key.
+    /// Re-reads the keymap (the `keymap.base` table + `keymap.toml`) and rebinds every key.
     pub(crate) fn rebind_keys(&mut self, cx: &mut Context<Self>) {
-        let mut load = self.settings.keymap(&actions::default_bindings());
+        let base = self.settings.get::<KeymapSettings>().base;
+        let mut load = self.settings.keymap(&actions::default_bindings(base));
         if !self.assistant_enabled() {
             // Off: a key the user bound no longer opens the assistant.
             let open = <actions::OpenAssistant as gpui::Action>::name_for_type();
@@ -938,6 +939,32 @@ impl Workbench {
         }
         actions::apply_keymap(cx, &load);
         cx.notify();
+    }
+
+    /// ⌘= / ⌘-: grows or shrinks the terminal font by `delta` points and saves it as the user's
+    /// `terminal.font_size` (the range the terminal view accepts).
+    pub(crate) fn change_font_size(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let current = self.settings.get::<TerminalSettings>().font_size;
+        let size = (current + delta).clamp(
+            TerminalSettings::MIN_FONT_SIZE,
+            TerminalSettings::MAX_FONT_SIZE,
+        );
+        self.save_font_size(size, cx);
+    }
+
+    /// ⌘0: back to the default `terminal.font_size`.
+    pub(crate) fn reset_font_size(&mut self, cx: &mut Context<Self>) {
+        self.save_font_size(TerminalSettings::default().font_size, cx);
+    }
+
+    fn save_font_size(&mut self, size: f64, cx: &mut Context<Self>) {
+        if let Err(err) = self
+            .settings
+            .write_user("terminal.font_size", toml::Value::Float(size))
+        {
+            tracing::warn!("cannot save terminal.font_size: {err}");
+            self.set_notice("Could not save the font size", cx);
+        }
     }
 
     /// The status bar of the current preset.

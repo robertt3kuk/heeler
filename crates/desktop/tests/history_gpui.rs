@@ -403,7 +403,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
 
     // ---- ⌘J: `?` searches the history inline ---------------------------------------------------
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     cx.simulate_input("?hutantest");
     pump_until(cx, "the inline hits", |cx| {
         view.read_with(cx, |wb, _| {
@@ -444,7 +444,7 @@ fn the_history_panel_searches_filters_resumes_and_manages_the_index(cx: &mut Tes
     );
 
     // A hit without a resume command: Enter shows it in the panel instead.
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     cx.simulate_input("?pangolin");
     pump_until(cx, "the pangolin hit", |cx| {
         view.read_with(cx, |wb, _| {

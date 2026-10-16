@@ -4,7 +4,7 @@ Decisions taken with the user (2026-10-14):
 
 | Topic | Decision |
 |---|---|
-| Layout | **A + B-overview + ⌘K**: sidebar + panes + inspector by default; Overview board as a preset (⌘⇧O); command palette ⌘K |
+| Layout | **A + B-overview + palette**: sidebar + panes + inspector by default; Overview board as a preset (⌘⇧O); command palette ⌘⇧P (⌘K in the `hutan` keymap base) |
 | Configurability | **Everything is a movable component.** Any panel can live in any dock or as a center tab; every component has its own settings section; layouts are saved as presets |
 | Style | **Native macOS chrome + own terminal themes**: transparent titlebar, vibrancy sidebar, SF Pro UI, system accent, light/dark follows the system; terminal and chat use Hutan themes |
 | Density | Setting: `compact` (default) / `comfortable` |
@@ -30,7 +30,7 @@ flowchart TB
   W --> BD[Bottom dock]
   W --> C[Center: pane tree]
   W --> SB[Status bar]
-  W --> OV[Overlays: ⌘K palette, toasts, settings sheet]
+  W --> OV[Overlays: command palette, toasts, settings sheet]
   LD & RD & BD --> PS[Panel stack: one or more panels as tabs]
   C --> SPL[Split horizontal / vertical, any depth]
   SPL --> PANE[Pane: tab strip + active item]
@@ -40,7 +40,7 @@ flowchart TB
 - **Panel**: a registered component with an id, title, icon, default dock, and a typed settings section. Panels: `sessions`, `history`, `inspector`, `overview`, `agents`, `assistant`, `notifications`, later `tasks`, `worktrees`, `providers`, `changes`. The `assistant` panel is described in `docs/assistant.md` § Desktop.
 - **Dock**: left, right, bottom. A dock hosts a stack of panels (tabs inside the dock). Docks resize, collapse, and can be emptied.
 - **Center**: a binary split tree of panes; each pane has its own tab strip. Items are session views (terminal/chat), diffs, or any panel opened as a tab.
-- **Status bar**: an ordered list of status items (`connection`, `sessions`, `attention`, `density`, `theme`, `palette_hint`, …) left and right; each is configurable.
+- **Status bar**: an ordered list of status items (`connection`, `sessions`, `attention`, `density`, `theme`, `palette_hint`, the dock buttons `dock_left`, `dock_bottom`, `dock_right`, …) left and right; each is configurable. The dock buttons sit at the right end, like Zed's: a small window glyph with the dock's side filled, drawn pressed (accent) while the dock shows. A click toggles the dock (the same action as its key), the tooltip names the key of the active keymap base, and a hidden dock without panels shows a dimmed, inert button. A preset that lists its own `status_bar.right` shows them only when it names them.
 - **Title bar**: transparent with traffic lights; shows the active item title, preset switcher, Overview toggle. Can be hidden into a minimal mode.
 - **Presets**: named layouts (`default`, `focus`, `overview`, user-defined). Switching a preset swaps docks/center arrangement without closing sessions.
 
@@ -49,15 +49,15 @@ flowchart TB
 | Action | Mouse | Keyboard (default) |
 |---|---|---|
 | Split right / down (new pane starts a new terminal in the focused terminal's cwd) | pane menu | ⌘D / ⌘⇧D |
-| Move tab to split | drag tab to a pane edge (drop zones) | ⌘K → "Move tab to new split…" |
-| Move panel to another dock | drag panel tab to dock, or panel menu "Move to ▸" | ⌘K → "Move panel…" |
-| Open panel as center tab | panel menu "Open as tab" | ⌘K |
+| Move tab to split | drag tab to a pane edge (drop zones) | palette → "Move tab to new split…" |
+| Move panel to another dock | drag panel tab to dock, or panel menu "Move to ▸" | palette → "Move panel…" |
+| Open panel as center tab | panel menu "Open as tab" | palette |
 | Resize | drag splitter / dock edge | ⌃⌘←→↑↓ |
 | Focus neighbour | — | ⌘⌥←→↑↓ |
-| Zoom pane | double-click tab | ⌘⇧↩ |
-| Toggle docks | — | ⌘B left, ⌘⌥B right, ⌘⌥J bottom |
+| Zoom pane | double-click tab | ⌘⇧↩ (Zed base: also ⇧⎋) |
+| Toggle docks | status bar dock buttons | Zed base ⌘B left, ⌘R / ⌘⌥B right, ⌘J / ⌃\` bottom, ⌘⌥Y close all; Hutan base ⌘B, ⌘⌥B, ⌘⌥J |
 | Switch preset / Overview | title bar menu | ⌘⇧O overview, ⌘⇧1…9 presets |
-| Save current layout as preset | title bar menu | ⌘K → "Save layout as preset…" |
+| Save current layout as preset | title bar menu | palette → "Save layout as preset…" |
 | Close tab (detach) | × on tab | ⌘W |
 | Stop session | session menu (confirm if running) | ⌘⇧W |
 
@@ -157,7 +157,7 @@ flowchart TB
 </svg>
 ```
 
-Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: two-column split; right column split again (chat over terminal). Right dock: `inspector` panel. Status bar: `connection`, `sessions`, `attention` | `density`, `theme`, `palette_hint`.
+Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: two-column split; right column split again (chat over terminal). Right dock: `inspector` panel. Status bar: `connection`, `sessions`, `attention` | `density`, `theme`, `palette_hint`, `dock_left`, `dock_bottom`, `dock_right`.
 
 ### Presets shipped
 
@@ -266,6 +266,9 @@ dock_badge = true             # number of sessions that need you on the Dock ico
 [assistant]
 global_shortcut = ""          # system-wide shortcut that opens the Assistant, e.g. "alt-space"; "" (default) is off
 
+[keymap]
+base = "zed"                  # zed | hutan: the default key table (keymap.toml is merged on top)
+
 [appearance]
 density = "compact"            # compact | comfortable
 appearance = "system"          # system | light | dark (pre-v2 files call this key `chrome`; still read)
@@ -286,7 +289,7 @@ preset = "default"
 left   = { panels = ["sessions"],  size = 240, visible = true }
 right  = { panels = ["inspector", "agents"], size = 300, visible = true }
 bottom = { panels = ["resources"], size = 200, visible = false }
-status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
+status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint", "dock_left", "dock_bottom", "dock_right"] }
 
 [sidebar]
 organize = "workspaces"        # workspaces | projects (see Projects and workspaces)
@@ -335,11 +338,11 @@ The daemon owns three kinds of container (ADR 0014, `docs/orchestration.md` § P
 - **Drag** a row onto a row of the same level to reorder (manual only): it takes that row's slot within its group (pinned or not); the desktop sends `workspace.move`. **Drag a project onto a workspace** (or onto a project of another workspace) to put it there (`workspace.assign`); **drag it onto the "No workspace" label** — or onto a project in no workspace — to take it out. Home does not move and takes no drops. When the dragged project is part of a multi-selection, the whole selection moves.
 - **Filters** (`workspaces.*`, the same header menu, ⌘K): hide empty / sleeping / CLI-created **projects** (workspaces and their members always show, as in `hutan ws ls`). Home, pinned projects and (`always_show_active`) the one you are in are never hidden, and a session that needs you stays visible in "Needs you" whatever the filters say. The filter box matches workspace and project names and folders, session titles, commands, folders and badges (any word order); a workspace or project that matches lists all its sessions. Hidden projects stay reachable through ⌘J.
 - **Managing** (every change is a protocol 0.19 request): the header's **＋** menu — *New Workspace…* (a name; **Create**, or **Choose Folders…** to start with the projects of some folders: `workspace.create {name, paths?}`), *Open Folder…* (system panel → `workspace.open`, the project is shown), *Open Folder into Workspace ▸* (the same, then `workspace.assign`). **⌘-click** toggles a project in the selection and **⇧-click** selects the range from the last one clicked (neither opens it); right-click on a selected project → *New Workspace from Selection…* (`workspace.create {project_ids}`), *Move Selection to Workspace ▸*, *Remove Selection from Workspace*. **Workspace menu**: Pin/Unpin, Rename (inline: the name becomes a field, Enter or leaving it confirms, Escape cancels), Add Folder… (`workspace.add_root`), *Delete Workspace…* (asks, says that its projects and their sessions are kept and move to "No workspace"; `workspace.delete`), Reveal in Finder. **Project menu**: Rename (inline), Pin/Unpin, *Move to Workspace ▸* (the workspaces, or a new one), *Remove from Workspace*, Reveal in Finder, Close (greyed with the reason while sessions are live; asks first; the project stays in ⌘O). **Home menu**: Pin, Rename, Reveal; Home has one folder, set in `daemon.toml`.
-- **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the project (inside its workspace when it has one). **⌘J** lists every workspace, project (hidden ones included) and session in the sidebar's order — a project shows `workspace › folder`, a session `workspace › project · folder · badge · command`; Enter shows the container or the session's tab.
+- **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the project (inside its workspace when it has one). **⌘P** (Hutan base: ⌘J) lists every workspace, project (hidden ones included) and session in the sidebar's order — a project shows `workspace › folder`, a session `workspace › project · folder · badge · command`; Enter shows the container or the session's tab.
 - **One layout per container** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the container you switch to — the workspace when the project is inside one, else the project, else Home — and every project of a workspace shares it. Switching parks the layout and brings the other one back exactly. A container seen for the first time starts with a single pane under your dock arrangement. Opening a session of another container (sidebar, ⌘J, attention, a restored tab) switches first. A project that joins a workspace hands its layout over (the workspace's own wins when it has one); one that leaves keeps the workspace's. Terminals of parked layouts are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the container of its first session (else Home); a container that vanishes hands the window to Home and its layout is dropped.
 - **Settings**: user < workspace < project. The workspace layer is `<first project root>/.hutan/settings.toml` (Home: its folder), the project layer `<project root>/.hutan/settings.toml` of the **active project** — the project of the focused session, else the one last chosen in the sidebar (a workspace keeps the project chosen in it) — and a project in no workspace layers only its own. Both are hot-reloaded while they stay active, whether or not a session has focus (`crates/settings`: `set_workspace_root`, `set_project_root`, `get_for_roots`). Only workspace-overridable namespaces are read from either file (`terminal` today); the settings UI reports the rest.
 - **New sessions** (⌘T, splits of a pane without a session) start in the active project, else the first project of the active workspace, else in Home; they get the `terminal.shell` / `terminal.env` of that project's layers.
-- **Status bar**: the `workspace` item shows the active container; click opens ⌘J.
+- **Status bar**: the `workspace` item shows the active container; click opens the jump palette.
 
 ## History panel (M17-B)
 
@@ -478,27 +481,43 @@ Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait wit
 
 ## Keyboard defaults
 
-| Action | Key |
-|---|---|
-| Command palette | ⌘K |
-| Settings | ⌘, |
-| New session (terminal) / new agent / new chat | ⌘T / ⌘⇧T / ⌘⌥T |
-| Open / focus the Assistant panel | none by default (⌘K → Assistant: Open / Focus; bind it in `keymap.toml` or set `assistant.global_shortcut`) |
-| Previous / next tab (the focused dock's panels, else the active pane's tabs; wraps) | ⌘⇧[ / ⌘⇧] (also ⌃⇧Tab / ⌃Tab) |
-| Jump to next "needs you" | ⌘⇧J |
-| Toggle the Resources panel | ⌘⌥R |
-| Tabs 1–9 in pane | ⌘1…⌘9 |
-| Split right / down | ⌘D / ⌘⇧D |
-| Close tab (detach) / stop session | ⌘W / ⌘⇧W |
-| Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘⌥J |
-| Open a folder as a project (recent projects, Open Folder…) | ⌘O |
-| Jump to any workspace, project or session, hidden ones included; `?` + words searches the session history | ⌘J |
-| Overview | ⌘⇧O |
-| Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ |
-| Select / copy the current block's output | ⌘⇧A / ⌘⇧C |
-| Approve / deny focused approval | ⌘↩ / ⎋ (only when the approval card has focus) |
+`keymap.base` (Settings → `keymap`, default `zed`) picks the table the keymap starts from; `keymap.toml` (`[[binding]]` entries, `action = "none"` unbinds) is merged on top of either. Changing the base rebinds at once. The palette rows, the status bar tooltips and the empty-state hints show the keys of the base in effect.
 
-The block keys apply while the primary screen shows (a program on the alternate screen — vim, htop — hides blocks and gets every key). Inside a focused terminal every other key goes to the PTY; Option-as-Meta follows `terminal.option_as_meta`.
+The **Zed** base follows Zed's published macOS keymap (`default-macos.json`) wherever Hutan has the matching action, and keeps Hutan-only actions on keys Zed leaves free. The **Hutan** base is the table Hutan shipped before (kept for those who learned it).
+
+| Action | Zed base | Hutan base |
+|---|---|---|
+| Command palette | ⌘⇧P (⌘K is Zed's chord prefix, not a palette key here) | ⌘K |
+| Jump to any workspace, project or session, hidden ones included; `?` + words searches the session history | ⌘P (Zed's quick open) | ⌘J |
+| Open a folder as a project (recent projects, Open Folder…) | ⌘O | ⌘O |
+| Settings | ⌘, | ⌘, |
+| New workspace | ⌘⇧N | — |
+| Search the session history | ⌘⇧F | palette |
+| New session (terminal) / new agent / new chat | ⌘T / ⌘⇧T / ⌘⌥T (Zed's ⌘⇧T reopens a closed tab, an action Hutan does not have) | same |
+| Open / focus the Assistant panel | none by default (palette → Assistant: Open / Focus; bind it in `keymap.toml` or set `assistant.global_shortcut`) | same |
+| Previous / next tab (the focused dock's panels, else the active pane's tabs; wraps) | ⌘⇧[ / ⌘⇧] (also ⌃⇧Tab / ⌃Tab) | same |
+| Tabs 1–9 in pane | ⌘1…⌘9 | same |
+| Jump to next "needs you" | ⌘⇧J | ⌘⇧J |
+| Toggle the Resources panel | ⌘⌥R (Zed's ⌘⌥R reruns a task; Hutan has no such action) | ⌘⌥R |
+| Toggle left / right / bottom dock | ⌘B / ⌘R (also ⌘⌥B) / ⌘J (also ⌃\`) | ⌘B / ⌘⌥B / ⌘⌥J |
+| Close all docks | ⌘⌥Y | palette |
+| Split right / down | ⌘D / ⌘⇧D, ⌘\\ (right) | ⌘D / ⌘⇧D |
+| Split in a direction | ⌘K ←→↑↓ | palette |
+| Focus the neighbor pane | ⌘K ⌘←→↑↓, ⌘⌥←→↑↓ | ⌘⌥←→↑↓ |
+| Resize | ⌃⌘←→↑↓ | same |
+| Zoom the pane | ⌘⇧↩, ⇧⎋ | ⌘⇧↩ |
+| Terminal font size larger / smaller / reset (writes `terminal.font_size`) | ⌘= (or ⌘+) / ⌘- / ⌘0 | palette |
+| Close tab (detach) / stop session | ⌘W / ⌘⇧W (Zed's ⌘⇧W closes the window; Hutan keeps stop) | same |
+| Overview | ⌘⇧O | ⌘⇧O |
+| Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ | same |
+| Select / copy the current block's output | ⌘⇧A / ⌘⇧C | same |
+| Approve / deny focused approval | ⌘↩ / ⎋ (only when the approval card has focus) | same |
+
+The block keys apply while the primary screen shows (a program on the alternate screen — vim, htop — hides blocks and gets every key). Inside a focused terminal every other key goes to the PTY; Option-as-Meta follows `terminal.option_as_meta`. Global keys (docks, palette, splits) work while a terminal has focus.
+
+Chords (`keys = "cmd-k right"`) are GPUI multi-stroke bindings. A `keymap.toml` binding that is the prefix of another binding in the same context (for example `cmd-k` in the Zed base) is reported as a conflict.
+
+Elsewhere in the docs "⌘K" names the command palette as the Hutan base binds it (⌘K → "…"); in the Zed base the palette is ⌘⇧P.
 
 ## Accessibility
 

@@ -91,15 +91,45 @@ pub enum StatusSide {
     Right,
 }
 
+/// One value per dock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerDock<T> {
+    pub left: T,
+    pub right: T,
+    pub bottom: T,
+}
+
+impl<T> PerDock<T> {
+    pub fn get(&self, pos: DockPosition) -> &T {
+        match pos {
+            DockPosition::Left => &self.left,
+            DockPosition::Right => &self.right,
+            DockPosition::Bottom => &self.bottom,
+        }
+    }
+}
+
+/// What the dock button of the status bar shows about its dock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DockState {
+    /// The dock is showing: the button is drawn pressed.
+    pub visible: bool,
+    /// The dock holds at least one panel. A hidden dock without panels has nothing to show, so
+    /// its button is disabled.
+    pub has_panels: bool,
+}
+
 /// Everything a status item needs to draw itself.
 #[derive(Debug)]
 pub struct StatusContext<'a> {
     pub theme: &'a Theme,
     pub density: Density,
-    /// Key hint of the palette action ("⌘K"), from the live keymap.
+    /// Key hint of the palette action ("⌘⇧P"), from the live keymap.
     pub palette_hint: SharedString,
     /// Key hint of the "jump to next that needs you" action.
     pub attention_hint: SharedString,
+    /// Key hint of each dock's toggle action, from the live keymap (empty when unbound).
+    pub dock_hints: PerDock<SharedString>,
     pub data: &'a StatusData,
 }
 
@@ -121,6 +151,8 @@ pub struct StatusData {
     pub approvals: usize,
     /// Name of the terminal theme in effect.
     pub terminal_theme: String,
+    /// Visibility and content of the three docks.
+    pub docks: PerDock<DockState>,
 }
 
 pub type StatusRender = Rc<dyn Fn(&StatusContext<'_>) -> AnyElement>;
@@ -187,9 +219,16 @@ impl Default for StatusBarLayout {
             ]
             .map(str::to_owned)
             .to_vec(),
-            right: ["density", "theme", "palette_hint"]
-                .map(str::to_owned)
-                .to_vec(),
+            right: [
+                "density",
+                "theme",
+                "palette_hint",
+                "dock_left",
+                "dock_bottom",
+                "dock_right",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
         }
     }
 }

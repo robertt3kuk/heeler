@@ -1,4 +1,4 @@
-//! Named workbench actions, the command table behind the ⌘K palette, and the default keymap.
+//! Named workbench actions, the command table behind the command palette, and the default keymaps.
 //!
 //! One list feeds three consumers (ADR 0010): the palette, the menus, and the keymap. Every
 //! action that has a key by default is parameterless so `keymap.toml` can name it
@@ -8,7 +8,7 @@
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::panels::{HistoryResume, HutanTarget};
 use super::registry::PanelRegistry;
-use crate::settings::{SidebarOrganize, WorkspaceSort};
+use crate::settings::{KeymapBase, SidebarOrganize, WorkspaceSort};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 use hutan_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
@@ -17,6 +17,12 @@ actions!(
     [
         SplitRight,
         SplitDown,
+        SplitLeft,
+        SplitUp,
+        CloseAllDocks,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
         ToggleLeftDock,
         ToggleRightDock,
         ToggleBottomDock,
@@ -411,6 +417,8 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command("Session: Jump to Next That Needs You", JumpToNextAttention),
         command("Layout: Split Right", SplitRight),
         command("Layout: Split Down", SplitDown),
+        command("Layout: Split Left", SplitLeft),
+        command("Layout: Split Up", SplitUp),
         command("Layout: Toggle Zoom Pane", ToggleZoom),
         command("Layout: Reset Layout", ResetLayout),
         command("Layout: Save Layout as Preset…", SaveLayoutAsPreset),
@@ -421,6 +429,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command("View: Toggle Left Dock", ToggleLeftDock),
         command("View: Toggle Right Dock", ToggleRightDock),
         command("View: Toggle Bottom Dock", ToggleBottomDock),
+        command("View: Close All Docks", CloseAllDocks),
+        command("View: Increase Terminal Font Size", IncreaseFontSize),
+        command("View: Decrease Terminal Font Size", DecreaseFontSize),
+        command("View: Reset Terminal Font Size", ResetFontSize),
         command("View: Toggle Overview", ToggleOverview),
         command("View: Density Compact", SetDensityCompact),
         command("View: Density Comfortable", SetDensityComfortable),
@@ -624,9 +636,22 @@ fn bind<A: Action>(keys: &str, context: Option<&str>) -> BindingSpec {
     }
 }
 
-/// The key bindings Hutan ships with; `keymap.toml` is merged on top.
-pub fn default_bindings() -> Vec<BindingSpec> {
-    let mut out = vec![
+/// The key bindings of `base`; `keymap.toml` is merged on top. Where an action has several keys
+/// the preferred one (shown in palette rows and tooltips) comes last: the keymap gives later
+/// bindings precedence.
+pub fn default_bindings(base: KeymapBase) -> Vec<BindingSpec> {
+    let mut out = match base {
+        KeymapBase::Zed => zed_global_bindings(),
+        KeymapBase::Hutan => hutan_global_bindings(),
+    };
+    out.extend(context_bindings());
+    out.extend(numbered_bindings());
+    out
+}
+
+/// Hutan's original global table (`keymap.base = "hutan"`).
+fn hutan_global_bindings() -> Vec<BindingSpec> {
+    vec![
         bind::<TogglePalette>("cmd-k", None),
         bind::<OpenSettings>("cmd-,", None),
         bind::<NewTerminal>("cmd-t", None),
@@ -661,6 +686,13 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<ResizeRight>("ctrl-cmd-right", None),
         bind::<ResizeUp>("ctrl-cmd-up", None),
         bind::<ResizeDown>("ctrl-cmd-down", None),
+    ]
+}
+
+/// Bindings inside one key context (terminal blocks, palette, dialogs, chat, setup); the same
+/// in both bases.
+fn context_bindings() -> Vec<BindingSpec> {
+    vec![
         bind::<hutan_terminal_view::Copy>("cmd-c", Some(hutan_terminal_view::KEY_CONTEXT)),
         bind::<hutan_terminal_view::Paste>("cmd-v", Some(hutan_terminal_view::KEY_CONTEXT)),
         bind::<hutan_terminal_view::JumpToPreviousPrompt>(
@@ -705,7 +737,12 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<palette::Confirm>("enter", Some("Picker")),
         bind::<palette::Dismiss>("escape", Some("Picker")),
         bind::<setup::Continue>("enter", Some("Setup")),
-    ];
+    ]
+}
+
+/// ⌘1…⌘9 select the tab, ⌘⇧1…⌘⇧9 the layout preset.
+fn numbered_bindings() -> Vec<BindingSpec> {
+    let mut out = Vec::new();
     let tabs: [&str; 9] = [
         ActivateTab1::name_for_type(),
         ActivateTab2::name_for_type(),
@@ -740,6 +777,76 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         }
     }
     out
+}
+
+/// Zed's macOS keys where Hutan has the matching action (`keymap.base = "zed"`, the default),
+/// read from Zed's published `default-macos.json`; Hutan-only actions keep keys Zed leaves
+/// free:
+///
+/// - ⌘⇧P palette (⌘K is Zed's chord prefix, so it is not bound alone here), ⌘P quick open =
+///   jump, ⌘O open, ⌘, settings, ⌘⇧N new workspace, ⌘⇧F search history.
+/// - ⌘B / ⌘⌥B / ⌘R left / right dock, ⌘J / ⌃\` bottom dock, ⌘⌥Y close all docks.
+/// - ⌘K ←→↑↓ (and ⌘\\) split in that direction, ⌘K ⌘←→↑↓ and ⌘⌥←→↑↓ focus the neighbor pane;
+///   ⌘D / ⌘⇧D stay (they are Zed's split keys in the terminal).
+/// - ⇧⎋ zoom pane, ⌘= / ⌘+ / ⌘- / ⌘0 terminal font size.
+/// - Kept from Hutan: ⌘T / ⌘⇧T / ⌘⌥T new session, ⌘⇧W stop, ⌘⇧J next attention, ⌘⇧O
+///   overview, ⌘⌥R resources, ⌘⌥← … focus a neighbor, ⌘1…⌘9 tabs.
+fn zed_global_bindings() -> Vec<BindingSpec> {
+    vec![
+        bind::<TogglePalette>("cmd-shift-p", None),
+        bind::<OpenJump>("cmd-p", None),
+        bind::<OpenProject>("cmd-o", None),
+        bind::<OpenSettings>("cmd-,", None),
+        bind::<NewWorkspace>("cmd-shift-n", None),
+        bind::<SearchHistory>("cmd-shift-f", None),
+        bind::<NewTerminal>("cmd-t", None),
+        bind::<NewAgent>("cmd-shift-t", None),
+        bind::<NewChat>("cmd-alt-t", None),
+        bind::<ActivatePreviousTab>("cmd-{", None),
+        bind::<ActivateNextTab>("cmd-}", None),
+        bind::<ActivatePreviousTab>("cmd-shift-[", None),
+        bind::<ActivateNextTab>("cmd-shift-]", None),
+        bind::<ActivatePreviousTab>("ctrl-shift-tab", None),
+        bind::<ActivateNextTab>("ctrl-tab", None),
+        bind::<JumpToNextAttention>("cmd-shift-j", None),
+        bind::<SplitRight>("cmd-k right", None),
+        bind::<SplitRight>("cmd-\\", None),
+        bind::<SplitRight>("cmd-d", None),
+        bind::<SplitDown>("cmd-k down", None),
+        bind::<SplitDown>("cmd-shift-d", None),
+        bind::<SplitLeft>("cmd-k left", None),
+        bind::<SplitUp>("cmd-k up", None),
+        bind::<ClosePaneItem>("cmd-w", None),
+        bind::<StopSession>("cmd-shift-w", None),
+        bind::<ToggleZoom>("cmd-shift-enter", None),
+        bind::<ToggleZoom>("shift-escape", None),
+        bind::<ToggleLeftDock>("cmd-b", None),
+        bind::<ToggleRightDock>("cmd-alt-b", None),
+        bind::<ToggleRightDock>("cmd-r", None),
+        bind::<ToggleBottomDock>("ctrl-`", None),
+        bind::<ToggleBottomDock>("cmd-j", None),
+        bind::<CloseAllDocks>("cmd-alt-y", None),
+        bind::<ToggleOverview>("cmd-shift-o", None),
+        bind::<ToggleResources>("cmd-alt-r", None),
+        bind::<IncreaseFontSize>("cmd-=", None),
+        bind::<IncreaseFontSize>("cmd-+", None),
+        bind::<DecreaseFontSize>("cmd--", None),
+        bind::<ResetFontSize>("cmd-0", None),
+        bind::<MinimizeWindow>("cmd-m", None),
+        bind::<Quit>("cmd-q", None),
+        bind::<FocusNeighborLeft>("cmd-alt-left", None),
+        bind::<FocusNeighborRight>("cmd-alt-right", None),
+        bind::<FocusNeighborUp>("cmd-alt-up", None),
+        bind::<FocusNeighborDown>("cmd-alt-down", None),
+        bind::<FocusNeighborLeft>("cmd-k cmd-left", None),
+        bind::<FocusNeighborRight>("cmd-k cmd-right", None),
+        bind::<FocusNeighborUp>("cmd-k cmd-up", None),
+        bind::<FocusNeighborDown>("cmd-k cmd-down", None),
+        bind::<ResizeLeft>("ctrl-cmd-left", None),
+        bind::<ResizeRight>("ctrl-cmd-right", None),
+        bind::<ResizeUp>("ctrl-cmd-up", None),
+        bind::<ResizeDown>("ctrl-cmd-down", None),
+    ]
 }
 
 /// Replace every key binding of the app with `load.bindings`. Bindings naming an unknown action
@@ -792,13 +899,209 @@ pub fn apply_keymap(cx: &mut App, load: &KeymapLoad) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn both() -> [(KeymapBase, Vec<BindingSpec>); 2] {
+        KeymapBase::ALL.map(|base| (base, default_bindings(base)))
+    }
+
+    /// `keys | action | context` of every binding, in table order.
+    fn rendered(bindings: &[BindingSpec]) -> Vec<String> {
+        bindings
+            .iter()
+            .map(|b| {
+                format!(
+                    "{} | {} | {}",
+                    format_keys(&b.keys),
+                    b.action,
+                    b.context.as_deref().unwrap_or("-")
+                )
+            })
+            .collect()
+    }
+
+    fn bound(bindings: &[BindingSpec], action: &str) -> Vec<String> {
+        bindings
+            .iter()
+            .filter(|b| b.action == action && b.context.is_none())
+            .map(|b| format_keys(&b.keys))
+            .collect()
+    }
 
     #[test]
-    fn default_bindings_parse_and_do_not_collide() {
-        let defaults = default_bindings();
-        assert!(defaults.iter().all(|b| !b.keys.is_empty()));
-        let load = hutan_settings::keymap::load_str(&defaults, "", None).unwrap();
-        assert!(load.diagnostics.is_empty(), "{:?}", load.diagnostics);
-        assert_eq!(load.bindings.len(), defaults.len());
+    fn both_bases_parse_and_have_no_key_bound_twice_in_a_context() {
+        for (base, defaults) in both() {
+            assert!(
+                defaults.iter().all(|b| !b.keys.is_empty()),
+                "{base:?}: a default key failed to parse"
+            );
+            let mut seen: BTreeMap<(String, Option<String>), &str> = BTreeMap::new();
+            for binding in &defaults {
+                let key = (format_keys(&binding.keys), binding.context.clone());
+                if let Some(first) = seen.insert(key.clone(), &binding.action) {
+                    panic!(
+                        "{base:?}: `{}` in {:?} is bound to both {first} and {}",
+                        key.0, key.1, binding.action
+                    );
+                }
+            }
+            let load = hutan_settings::keymap::load_str(&defaults, "", None).unwrap();
+            assert!(
+                load.diagnostics.is_empty(),
+                "{base:?}: {:?}",
+                load.diagnostics
+            );
+            assert_eq!(load.bindings.len(), defaults.len(), "{base:?}");
+        }
+    }
+
+    #[test]
+    fn zed_base_binds_the_zed_keys() {
+        let zed = default_bindings(KeymapBase::Zed);
+        let keys = |action: &str| bound(&zed, action);
+        let last = |action: &str| keys(action).pop().unwrap_or_default();
+        assert_eq!(last(TogglePalette::name_for_type()), "shift-cmd-p");
+        assert!(!keys(TogglePalette::name_for_type()).contains(&"cmd-k".to_owned()));
+        assert_eq!(last(OpenJump::name_for_type()), "cmd-p");
+        assert_eq!(last(ToggleLeftDock::name_for_type()), "cmd-b");
+        assert_eq!(last(ToggleRightDock::name_for_type()), "cmd-r");
+        assert_eq!(last(ToggleBottomDock::name_for_type()), "cmd-j");
+        assert_eq!(last(CloseAllDocks::name_for_type()), "alt-cmd-y");
+        assert!(keys(ToggleBottomDock::name_for_type()).contains(&"ctrl-`".to_owned()));
+        for (action, chord) in [
+            (SplitLeft::name_for_type(), "cmd-k left"),
+            (SplitRight::name_for_type(), "cmd-k right"),
+            (SplitUp::name_for_type(), "cmd-k up"),
+            (SplitDown::name_for_type(), "cmd-k down"),
+            (FocusNeighborLeft::name_for_type(), "cmd-k cmd-left"),
+            (FocusNeighborRight::name_for_type(), "cmd-k cmd-right"),
+            (FocusNeighborUp::name_for_type(), "cmd-k cmd-up"),
+            (FocusNeighborDown::name_for_type(), "cmd-k cmd-down"),
+            (FocusNeighborLeft::name_for_type(), "alt-cmd-left"),
+        ] {
+            assert!(keys(action).contains(&chord.to_owned()), "{action}");
+        }
+        assert_eq!(last(IncreaseFontSize::name_for_type()), "cmd-+");
+        assert_eq!(last(DecreaseFontSize::name_for_type()), "cmd--");
+        assert_eq!(last(ResetFontSize::name_for_type()), "cmd-0");
+        // Hutan-only actions keep their keys.
+        assert_eq!(last(NewAgent::name_for_type()), "shift-cmd-t");
+        assert_eq!(last(JumpToNextAttention::name_for_type()), "shift-cmd-j");
+        assert_eq!(last(ToggleResources::name_for_type()), "alt-cmd-r");
+    }
+
+    /// Today's table, kept for people who learned it: `keymap.base = "hutan"` must not drift.
+    #[test]
+    fn hutan_base_is_the_original_table() {
+        let mut expected: Vec<String> = [
+            "cmd-k | workbench::TogglePalette | -",
+            "cmd-, | workbench::OpenSettings | -",
+            "cmd-t | workbench::NewTerminal | -",
+            "shift-cmd-t | workbench::NewAgent | -",
+            "alt-cmd-t | workbench::NewChat | -",
+            "cmd-{ | workbench::ActivatePreviousTab | -",
+            "cmd-} | workbench::ActivateNextTab | -",
+            "shift-cmd-[ | workbench::ActivatePreviousTab | -",
+            "shift-cmd-] | workbench::ActivateNextTab | -",
+            "ctrl-shift-tab | workbench::ActivatePreviousTab | -",
+            "ctrl-tab | workbench::ActivateNextTab | -",
+            "shift-cmd-j | workbench::JumpToNextAttention | -",
+            "cmd-d | workbench::SplitRight | -",
+            "shift-cmd-d | workbench::SplitDown | -",
+            "cmd-w | workbench::ClosePaneItem | -",
+            "shift-cmd-w | workbench::StopSession | -",
+            "shift-cmd-enter | workbench::ToggleZoom | -",
+            "cmd-b | workbench::ToggleLeftDock | -",
+            "alt-cmd-b | workbench::ToggleRightDock | -",
+            "alt-cmd-j | workbench::ToggleBottomDock | -",
+            "cmd-j | workbench::OpenJump | -",
+            "cmd-o | workbench::OpenProject | -",
+            "shift-cmd-o | workbench::ToggleOverview | -",
+            "alt-cmd-r | workbench::ToggleResources | -",
+            "cmd-m | workbench::MinimizeWindow | -",
+            "cmd-q | workbench::Quit | -",
+            "alt-cmd-left | workbench::FocusNeighborLeft | -",
+            "alt-cmd-right | workbench::FocusNeighborRight | -",
+            "alt-cmd-up | workbench::FocusNeighborUp | -",
+            "alt-cmd-down | workbench::FocusNeighborDown | -",
+            "ctrl-cmd-left | workbench::ResizeLeft | -",
+            "ctrl-cmd-right | workbench::ResizeRight | -",
+            "ctrl-cmd-up | workbench::ResizeUp | -",
+            "ctrl-cmd-down | workbench::ResizeDown | -",
+            "cmd-c | hutan_terminal_view::Copy | HutanTerminal",
+            "cmd-v | hutan_terminal_view::Paste | HutanTerminal",
+            "cmd-up | hutan_terminal_view::JumpToPreviousPrompt | HutanTerminal",
+            "cmd-down | hutan_terminal_view::JumpToNextPrompt | HutanTerminal",
+            "shift-cmd-a | hutan_terminal_view::SelectBlockOutput | HutanTerminal",
+            "shift-cmd-c | hutan_terminal_view::CopyBlockOutput | HutanTerminal",
+            "down | palette::SelectNext | Palette",
+            "ctrl-n | palette::SelectNext | Palette",
+            "up | palette::SelectPrev | Palette",
+            "ctrl-p | palette::SelectPrev | Palette",
+            "enter | palette::Confirm | Palette",
+            "escape | palette::Dismiss | Palette",
+            "escape | palette::Dismiss | ContextMenu",
+            "enter | modal::Confirm | Modal",
+            "escape | modal::Cancel | Modal",
+            "escape | settings_sheet::Dismiss | SettingsSheet",
+            "escape | palette::Dismiss | DaemonPopover",
+            "cmd-enter | chat::SendMessage | HutanChat",
+            "cmd-. | chat::InterruptTurn | HutanChat",
+            "down | palette::SelectNext | AgentPicker",
+            "ctrl-n | palette::SelectNext | AgentPicker",
+            "up | palette::SelectPrev | AgentPicker",
+            "ctrl-p | palette::SelectPrev | AgentPicker",
+            "enter | palette::Confirm | AgentPicker",
+            "escape | palette::Dismiss | AgentPicker",
+            "down | palette::SelectNext | Picker",
+            "ctrl-n | palette::SelectNext | Picker",
+            "up | palette::SelectPrev | Picker",
+            "ctrl-p | palette::SelectPrev | Picker",
+            "enter | palette::Confirm | Picker",
+            "escape | palette::Dismiss | Picker",
+            "enter | setup::Continue | Setup",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        for n in 1..=9 {
+            expected.push(format!("cmd-{n} | workbench::ActivateTab{n} | -"));
+            expected.push(format!(
+                "shift-cmd-{n} | workbench::ApplyPresetNumber{n} | -"
+            ));
+        }
+        assert_eq!(rendered(&default_bindings(KeymapBase::Hutan)), expected);
+    }
+
+    #[test]
+    fn the_two_bases_share_every_context_binding() {
+        let contextual = |bindings: &[BindingSpec]| -> Vec<BindingSpec> {
+            bindings
+                .iter()
+                .filter(|b| b.context.is_some())
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            contextual(&default_bindings(KeymapBase::Zed)),
+            contextual(&default_bindings(KeymapBase::Hutan))
+        );
+    }
+
+    #[test]
+    fn every_palette_command_that_has_a_key_in_the_hutan_base_keeps_one_in_zed() {
+        // Whatever the old base bound globally is still reachable by some key in the Zed base,
+        // except the keys Zed gives to other things (moved on purpose: jump, bottom dock).
+        let zed = default_bindings(KeymapBase::Zed);
+        for binding in default_bindings(KeymapBase::Hutan)
+            .iter()
+            .filter(|b| b.context.is_none())
+        {
+            assert!(
+                zed.iter()
+                    .any(|z| z.action == binding.action && z.context.is_none()),
+                "{} lost its key in the Zed base",
+                binding.action
+            );
+        }
     }
 }

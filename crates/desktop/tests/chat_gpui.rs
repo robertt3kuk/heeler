@@ -898,7 +898,7 @@ fn review_approvals_lists_every_pending_request_across_sessions(cx: &mut TestApp
             })
         })
     });
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     cx.simulate_input("Review approvals");
     cx.simulate_keystrokes("enter");
     pump(cx, "the picker", |cx| {
@@ -933,7 +933,7 @@ fn review_approvals_lists_every_pending_request_across_sessions(cx: &mut TestApp
     pump(cx, "the store to be empty", |cx| {
         view.read_with(cx, |wb, cx| wb.sessions().read(cx).approvals().is_empty())
     });
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     cx.simulate_input("Review approvals");
     cx.simulate_keystrokes("enter");
     pump(cx, "the empty picker", |cx| {

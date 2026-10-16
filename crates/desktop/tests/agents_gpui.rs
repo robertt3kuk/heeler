@@ -836,7 +836,7 @@ fn the_palette_shows_the_monitor_and_only_blocked_agents(cx: &mut TestAppContext
         Some("inspector".into())
     );
 
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     let titles = view.read_with(cx, |wb, _| wb.palette_titles());
     for wanted in ["Agents: Show Monitor", "Agents: Show Only Blocked"] {
         assert!(
@@ -854,7 +854,7 @@ fn the_palette_shows_the_monitor_and_only_blocked_agents(cx: &mut TestAppContext
     assert!(!settings(&view, cx).get::<AgentsSettings>().only_blocked);
 
     cx.dispatch_action(actions::OpenPanel("inspector".into()));
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     cx.simulate_input("only blocked");
     cx.simulate_keystrokes("enter");
     draw(cx);

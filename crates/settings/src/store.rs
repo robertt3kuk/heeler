@@ -16,7 +16,9 @@ use crate::value::{deep_merge, join, json_to_toml, subtree, unknown_keys};
 use crate::watch::{WatchGuard, WatchState};
 use crate::{Setting, edit, keymap};
 
-/// Namespace reported in [`ChangeSet`] when the keymap file's accepted contents changed.
+/// Namespace reported in [`ChangeSet`] when the keymap file's accepted contents changed. It is
+/// also an ordinary settings namespace (`[keymap] base = …` in `settings.toml`), so a change
+/// of either source reports it and a keymap consumer re-reads both.
 pub const KEYMAP_NAMESPACE: &str = "keymap";
 
 /// Where the settings files live.
@@ -284,10 +286,7 @@ impl State {
             }
             return false;
         }
-        if namespace == KEYMAP_NAMESPACE
-            || namespace.is_empty()
-            || namespace.split('.').any(str::is_empty)
-        {
+        if namespace.is_empty() || namespace.split('.').any(str::is_empty) {
             let message = format!("`{namespace}` is not a valid settings namespace");
             tracing::error!("{message}");
             self.registration

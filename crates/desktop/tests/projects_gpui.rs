@@ -1147,7 +1147,7 @@ fn the_jump_palette_lists_workspaces_projects_and_sessions(cx: &mut TestAppConte
     let (view, cx) = w.synced(cx, None);
     let _panel = panel(&view, cx);
 
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     let entries = view
         .read_with(cx, |wb, _| wb.picker().map(|p| p.entries.clone()))
         .unwrap();
@@ -1182,12 +1182,12 @@ fn the_jump_palette_lists_workspaces_projects_and_sessions(cx: &mut TestAppConte
     view.update(cx, |wb, cx| wb.set_picker_query("lab", cx));
     cx.simulate_keystrokes("enter");
     assert_eq!(active(&view, cx), Some(w.lab.id));
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     view.update(cx, |wb, cx| wb.set_picker_query("web", cx));
     cx.simulate_keystrokes("enter");
     assert_eq!(active(&view, cx), Some(w.shop.id));
     assert_eq!(active_project(&view, cx), Some(w.web.id));
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     view.update(cx, |wb, cx| wb.set_picker_query("s-notes", cx));
     cx.simulate_keystrokes("enter");
     assert_eq!(active(&view, cx), Some(w.notes.id));

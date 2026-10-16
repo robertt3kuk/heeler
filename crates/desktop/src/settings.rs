@@ -121,6 +121,10 @@ fn rgb(c: themes::Rgb) -> Rgb {
 }
 
 impl TerminalSettings {
+    /// The font sizes (points) a terminal view accepts; larger or smaller values are clamped.
+    pub const MIN_FONT_SIZE: f64 = 4.0;
+    pub const MAX_FONT_SIZE: f64 = 72.0;
+
     /// Puts `shell` and `env` into the session `spec` a new terminal is created with: `env`, and
     /// a non-empty `shell` as `SHELL` (over `env.SHELL`). Variables `spec` already carries win
     /// over the settings; an explicit `SHELL` in `spec.env` is what the daemon then runs (its
@@ -149,7 +153,9 @@ impl TerminalSettings {
         }
         TerminalViewSettings {
             font_family: self.font_family.clone(),
-            font_size: self.font_size.clamp(4.0, 72.0) as f32,
+            font_size: self
+                .font_size
+                .clamp(Self::MIN_FONT_SIZE, Self::MAX_FONT_SIZE) as f32,
             line_height: self.line_height.clamp(0.8, 3.0) as f32,
             palette: TerminalPalette {
                 ansi,
@@ -223,7 +229,8 @@ impl DockSetting {
 }
 
 /// Status items per side, by id (`connection`, `sessions`, `attention`, `density`, `theme`,
-/// `palette_hint`); unknown ids are skipped.
+/// `palette_hint`, and the dock buttons `dock_left`, `dock_bottom`, `dock_right`); unknown ids
+/// are skipped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct StatusBarSetting {
@@ -867,7 +874,7 @@ pub struct AppSettings {
     /// read.
     pub start_at_login: bool,
     /// The first-run setup has been completed or skipped. Off shows it once; "Run setup
-    /// again" (Settings, ⌘K "Hutan: Run Setup…") opens it whatever this says.
+    /// again" (Settings, the command palette's "Hutan: Run Setup…") opens it whatever this says.
     pub setup_done: bool,
     /// When the last window closes: `quit` (Quit Hutan, like ⌘Q: asks first while sessions run
     /// and keep running is off) or `menu_bar` (keep Hutan in the menu bar, without a Dock icon;
@@ -1014,12 +1021,51 @@ impl Setting for IntegrationsSettings {
     const NAMESPACE: &'static str = "integrations";
 }
 
+/// Which default key table the app starts from; `keymap.toml` is merged on top of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KeymapBase {
+    /// Zed's macOS defaults where Hutan has the action: ⌘⇧P palette, ⌘P jump, ⌘B / ⌘R / ⌘J
+    /// docks, ⌘K ←→↑↓ for splits. Hutan-only actions keep keys Zed leaves free.
+    #[default]
+    Zed,
+    /// Hutan's original table (⌘K palette, ⌘J jump, ⌘⌥B / ⌘⌥J docks, ⌘D / ⌘⇧D splits).
+    Hutan,
+}
+
+impl KeymapBase {
+    pub const ALL: [KeymapBase; 2] = [KeymapBase::Zed, KeymapBase::Hutan];
+
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            KeymapBase::Zed => "zed",
+            KeymapBase::Hutan => "hutan",
+        }
+    }
+}
+
+/// The `keymap` namespace (the bindings you add or remove live in `keymap.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct KeymapSettings {
+    /// The default key table: `zed` (Zed's macOS keys: ⌘⇧P palette, ⌘P jump, ⌘B / ⌘R / ⌘J
+    /// docks) or `hutan` (the original Hutan keys: ⌘K palette, ⌘J jump). `keymap.toml` is
+    /// merged on top of either. Changing it rebinds at once.
+    pub base: KeymapBase,
+}
+
+impl Setting for KeymapSettings {
+    const NAMESPACE: &'static str = "keymap";
+}
+
 /// Registers every namespace the desktop owns (plus `appearance`) so the schema and diagnostics
 /// know them from the start.
 pub fn register_all(store: &SettingsStore) {
     store.register::<AppearanceSettings>();
     store.register::<AppSettings>();
     store.register::<AssistantSettings>();
+    store.register::<KeymapSettings>();
     store.register::<IntegrationsSettings>();
     store.register::<TerminalSettings>();
     store.register::<LayoutSettings>();

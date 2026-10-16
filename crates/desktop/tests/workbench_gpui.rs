@@ -91,7 +91,7 @@ fn dock_toggles_zoom_and_density(cx: &mut TestAppContext) {
     assert!(state(&view, cx).docks.left.visible);
     cx.simulate_keystrokes("cmd-alt-b");
     assert!(!state(&view, cx).docks.right.visible);
-    cx.simulate_keystrokes("cmd-alt-j");
+    cx.simulate_keystrokes("cmd-j");
     assert!(state(&view, cx).docks.bottom.visible);
 
     cx.dispatch_action(actions::SplitRight);
@@ -227,7 +227,7 @@ fn panel_actions_move_panels_between_docks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_opens_filters_navigates_and_runs(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     assert!(view.read_with(cx, |wb, _| wb.palette_open()));
     let all = view.read_with(cx, |wb, _| wb.palette_titles());
     assert!(
@@ -269,20 +269,20 @@ fn palette_opens_filters_navigates_and_runs(cx: &mut TestAppContext) {
     assert_eq!(state(&view, cx).panes().len(), 2);
 
     // Escape dismisses without running anything.
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     cx.simulate_input("zzzzqq");
     assert!(view.read_with(cx, |wb, _| wb.palette_titles().is_empty()));
     cx.simulate_keystrokes("enter");
     assert!(!view.read_with(cx, |wb, _| wb.palette_open()));
     assert_eq!(state(&view, cx).panes().len(), 2);
-    cx.simulate_keystrokes("cmd-k escape");
+    cx.simulate_keystrokes("cmd-shift-p escape");
     assert!(!view.read_with(cx, |wb, _| wb.palette_open()));
 }
 
 #[gpui::test]
 fn palette_hints_come_from_the_keymap(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     // Hints come from the live keymap (defaults + keymap.toml), shown in the palette rows.
     let hint = |cx: &mut VisualTestContext, action: &dyn gpui::Action| {
         cx.update(|window, _| {

@@ -98,7 +98,7 @@ fn indexing_off_shows_the_card_and_reads_nothing(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
 
     // ⌘J `?` says why there is nothing, and Enter does nothing.
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     cx.simulate_input("?hutantest");
     pump_until(cx, "the answer", |cx| {
         view.read_with(cx, |wb, _| {

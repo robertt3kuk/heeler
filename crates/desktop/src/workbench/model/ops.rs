@@ -531,6 +531,13 @@ impl WorkbenchState {
         self.set_dock_visible(pos, visible);
     }
 
+    /// Hides every dock (⌘⌥Y); focus moves to the active pane.
+    pub fn close_all_docks(&mut self) {
+        for pos in DockPosition::ALL {
+            self.set_dock_visible(pos, false);
+        }
+    }
+
     pub fn resize_dock(&mut self, pos: DockPosition, size: f32) {
         if size.is_finite() {
             self.docks.get_mut(pos).size = size.clamp(MIN_DOCK_SIZE, MAX_DOCK_SIZE);

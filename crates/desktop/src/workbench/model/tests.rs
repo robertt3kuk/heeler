@@ -836,6 +836,20 @@ fn toggle_dock_and_focus_fallback() {
     assert!(state.docks.left.visible);
 }
 
+#[test]
+fn close_all_docks_hides_every_dock_and_returns_focus_to_the_center() {
+    let mut state = WorkbenchState::default();
+    state.set_dock_visible(DockPosition::Bottom, true);
+    state.focus_dock(DockPosition::Bottom);
+    state.close_all_docks();
+    assert!(!state.docks.left.visible && !state.docks.right.visible && !state.docks.bottom.visible);
+    assert!(matches!(state.focus, FocusTarget::Pane(_)));
+    // Closing again changes nothing.
+    let before = state.clone();
+    state.close_all_docks();
+    assert_eq!(state, before);
+}
+
 // ---- zoom ------------------------------------------------------------------------------
 
 #[test]

@@ -9,8 +9,9 @@ use serde_json::Value as Json;
 
 use crate::settings::{
     AgentsSettings, AppSettings, AssistantSettings, ChatSettings, HistorySettings,
-    InspectorPanelSettings, IntegrationsSettings, LayoutSettings, OverviewPanelSettings,
-    ResourcesSettings, SessionsPanelSettings, TasksSettings, TerminalSettings, WorkspacesSettings,
+    InspectorPanelSettings, IntegrationsSettings, KeymapSettings, LayoutSettings,
+    OverviewPanelSettings, ResourcesSettings, SessionsPanelSettings, TasksSettings,
+    TerminalSettings, WorkspacesSettings,
 };
 
 /// How a field is edited.
@@ -238,6 +239,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
     vec![
         CatalogEntry::of::<AppearanceSettings>(),
         CatalogEntry::of::<AppSettings>(),
+        CatalogEntry::of::<KeymapSettings>(),
         CatalogEntry::of::<TerminalSettings>(),
         CatalogEntry::of::<LayoutSettings>(),
         CatalogEntry::of::<SessionsPanelSettings>(),
@@ -381,6 +383,10 @@ mod tests {
         assert_eq!(
             kind(&fields(&store, "appearance"), "density"),
             FieldKind::Enum(vec!["compact".into(), "comfortable".into()])
+        );
+        assert_eq!(
+            kind(&fields(&store, "keymap"), "base"),
+            FieldKind::Enum(vec!["zed".into(), "hutan".into()])
         );
     }
 

@@ -1035,7 +1035,7 @@ impl Workbench {
             (None, [only]) => Some(only.id),
             (None, []) => {
                 self.set_notice(
-                    "No agent chat is running: start one with ⌘⇧T, or open the Assistant from ⌘K",
+                    "No agent chat is running: start one with ⌘⇧T, or open the Assistant from the command palette",
                     cx,
                 );
                 return;

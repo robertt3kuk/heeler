@@ -21,12 +21,12 @@
 |---|---|
 | Terminals | PTY sessions owned by the daemon, compact bounded scrollback, detach/reattach, several clients attached at once, restore after a daemon restart (respawned in the last cwd) |
 | Shell blocks | zsh/bash/fish integration injected automatically (OSC 133/7): commands become blocks with exit code and duration that you can jump to, copy, collapse or send to an agent |
-| Workbench | GPUI desktop with docks, split panes, zoom, presets (default/focus/overview), ⌘K palette, settings in TOML with hot reload, keymap file |
-| Workspaces | One workspace per project, plus a permanent **Home**; ⌘O to open, ⌘J to jump; sort modes, pins and per-workspace layouts |
+| Workbench | GPUI desktop with docks (toggle buttons in the status bar), split panes, zoom, presets (default/focus/overview), ⌘⇧P palette, settings in TOML with hot reload, Zed or Hutan default keys plus a keymap file |
+| Workspaces | One workspace per project, plus a permanent **Home**; ⌘O to open, ⌘P to jump; sort modes, pins and per-workspace layouts |
 | Agent chat | Codex through `codex app-server`: streaming, tool cards, diffs, plans, approvals enforced in the daemon; the same conversation is visible from the CLI |
 | Agent monitor | Live state (working/blocked/idle) of agents and subagents from Codex, Claude Code hooks and the OMP extension |
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
-| Assistant | ⌘K → Assistant opens a quick chat (optional system-wide shortcut), global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
+| Assistant | Palette → Assistant opens a quick chat (optional system-wide shortcut), global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
 | History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume**, Reveal File and Open Block |
 | Notifications | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready). `Hutan.app` posts them as macOS notifications: **Allow once** on the banner answers the agent's approval; `hutan notify watch` prints them anywhere |
 | Worktrees | `hutan wt new/ls/rm`, `hutan new --worktree <branch>`; every session shows `main` or `wt <branch>`, with a warning when two agents work in one checkout |
@@ -100,17 +100,20 @@ cargo run -p hutan-desktop
 
 The app starts `hutand` itself, using the copy built next to it. On quit it stops the daemon if no session is running; otherwise it asks.
 
-| Keys | Action |
-|---|---|
-| ⌘T / ⌘⇧T / ⌘⌥T | New terminal / new agent chat / new model chat |
-| ⌘⇧[ / ⌘⇧] | Previous / next tab |
-| ⌘K | Command palette |
-| ⌘D / ⌘⇧D | Split right / down |
-| ⌘O / ⌘J | Open project / jump to a workspace or session |
-| ⌘⇧O | Overview of all sessions |
-| ⌘B / ⌘⌥B / ⌘⌥J | Toggle left / right / bottom dock |
-| ⌘⇧J | Jump to the next session that needs you |
-| ⌘, | Settings |
+Default keys follow Zed's macOS keymap (`keymap.base = "zed"`); set `keymap.base = "hutan"` in Settings for Hutan's original keys. Your own bindings go into `keymap.toml` and merge on top of either. The status bar has three small buttons at its right end that toggle the left, bottom and right dock (the tooltip shows the key).
+
+| Zed base | Hutan base | Action |
+|---|---|---|
+| ⌘T / ⌘⇧T / ⌘⌥T | same | New terminal / new agent chat / new model chat |
+| ⌘⇧[ / ⌘⇧] | same | Previous / next tab |
+| ⌘⇧P | ⌘K | Command palette |
+| ⌘D / ⌘⇧D, ⌘K ←→↑↓ | ⌘D / ⌘⇧D | Split right / down; split in a direction (Zed base: ⌘K ⌘←→↑↓ focuses the neighbor pane) |
+| ⌘O / ⌘P | ⌘O / ⌘J | Open project / jump to a workspace or session |
+| ⌘⇧O | same | Overview of all sessions |
+| ⌘B / ⌘R / ⌘J | ⌘B / ⌘⌥B / ⌘⌥J | Toggle left / right / bottom dock (Zed base: ⌘⌥Y closes all docks) |
+| ⌘= / ⌘- / ⌘0 | — | Terminal font size larger / smaller / reset |
+| ⌘⇧J | same | Jump to the next session that needs you |
+| ⌘, | same | Settings |
 
 ### CLI
 

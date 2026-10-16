@@ -1077,7 +1077,7 @@ impl Workbench {
                 HistoryState::Searching => "Searching…".into(),
                 HistoryState::Done => "No session matches".into(),
                 HistoryState::Disabled => {
-                    "History indexing is off. Enable it in the History panel (⌘K → Search History)"
+                    "History indexing is off. Enable it in the History panel (command palette → Search History)"
                         .into()
                 }
                 HistoryState::Unsupported => {

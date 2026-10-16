@@ -754,7 +754,7 @@ fn the_jump_palette_reaches_hidden_workspaces_and_their_sessions(cx: &mut TestAp
     // `ghost` is empty and `sleepy` sleeping: both are out of the sidebar.
     assert_eq!(listed(&panel, cx), ["busy", "Home"]);
 
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     assert_eq!(
         view.read_with(cx, |wb, _| wb.picker().map(|p| p.kind)),
         Some(PickerKind::Jump)
@@ -781,7 +781,7 @@ fn the_jump_palette_reaches_hidden_workspaces_and_their_sessions(cx: &mut TestAp
     assert_eq!(listed(&panel, cx), ["ghost", "busy", "Home"]);
 
     // A session of another hidden workspace: its workspace is shown and its tab focused.
-    cx.simulate_keystrokes("cmd-j");
+    cx.simulate_keystrokes("cmd-p");
     view.update(cx, |wb, cx| wb.set_picker_query(&ended.title, cx));
     let rows = view.read_with(cx, |wb, _| wb.picker_titles());
     assert_eq!(
@@ -794,9 +794,9 @@ fn the_jump_palette_reaches_hidden_workspaces_and_their_sessions(cx: &mut TestAp
         view.read_with(cx, |wb, _| wb.focused_session()),
         Some(ended.id)
     );
-    // ⌘J again closes the palette.
-    cx.simulate_keystrokes("cmd-j");
-    cx.simulate_keystrokes("cmd-j");
+    // ⌘P again closes the palette.
+    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes("cmd-p");
     assert!(view.read_with(cx, |wb, _| wb.picker().is_none()));
 }
 

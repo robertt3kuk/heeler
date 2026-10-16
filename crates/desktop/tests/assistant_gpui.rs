@@ -168,7 +168,7 @@ fn the_global_assistant_streams_without_a_terminal_and_each_scope_keeps_its_conv
             .get(&PanelId::new("assistant"))
             .is_some()
     }));
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     cx.simulate_input("Assistant: Open");
     assert!(view.read_with(cx, |wb, _| {
         wb.palette_titles()

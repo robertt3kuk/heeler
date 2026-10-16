@@ -272,7 +272,7 @@ fn the_panel_lives_hidden_in_the_bottom_dock_and_has_commands_and_a_key(cx: &mut
     }
 
     // ⌘K "Resources: Show Panel" reveals it.
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes("cmd-shift-p");
     let titles = view.read_with(cx, |wb, _| wb.palette_titles());
     for wanted in ["Resources: Show Panel", "Resources: Toggle Panel"] {
         assert!(titles.iter().any(|t| t.as_ref() == wanted), "{wanted}");

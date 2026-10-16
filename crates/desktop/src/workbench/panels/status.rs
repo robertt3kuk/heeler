@@ -1,9 +1,10 @@
 //! Status bar items: `connection`, `workspace`, `sessions`, `attention`, `approvals`, `density`,
-//! `theme`, `palette_hint`.
+//! `theme`, `palette_hint`, and the dock buttons `dock_left`, `dock_bottom`, `dock_right`.
 
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, AppContext as _, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, div, px,
@@ -12,9 +13,13 @@ use hutan_client::ConnectionState;
 
 use crate::theme::DensityExt as _;
 use crate::workbench::actions::{
-    JumpToNextAttention, OpenJump, ReviewApprovals, ToggleDensity, TogglePalette, daemon,
+    JumpToNextAttention, OpenJump, ReviewApprovals, ToggleBottomDock, ToggleDensity,
+    ToggleLeftDock, TogglePalette, ToggleRightDock, daemon,
 };
-use crate::workbench::registry::{StatusContext, StatusItemRegistry, StatusItemSpec, StatusSide};
+use crate::workbench::model::DockPosition;
+use crate::workbench::registry::{
+    DockState, StatusContext, StatusItemRegistry, StatusItemSpec, StatusSide,
+};
 use crate::workbench::style::TextTooltip;
 
 /// Text and tone of the connection item.
@@ -207,7 +212,105 @@ pub fn builtin_status_items() -> StatusItemRegistry {
                 .into_any_element()
         }),
     });
+    registry.register(dock_button(
+        "dock_left",
+        DockPosition::Left,
+        "left dock",
+        || Box::new(ToggleLeftDock),
+    ));
+    registry.register(dock_button(
+        "dock_bottom",
+        DockPosition::Bottom,
+        "bottom dock",
+        || Box::new(ToggleBottomDock),
+    ));
+    registry.register(dock_button(
+        "dock_right",
+        DockPosition::Right,
+        "right dock",
+        || Box::new(ToggleRightDock),
+    ));
     registry
+}
+
+/// The status item that toggles one dock: a small window glyph with the dock's side filled,
+/// pressed (accent) while the dock shows, dim and inert while it is hidden and holds no panel.
+/// Its tooltip carries the key of the active keymap.
+fn dock_button(
+    id: &'static str,
+    pos: DockPosition,
+    name: &'static str,
+    toggle: fn() -> Box<dyn gpui::Action>,
+) -> StatusItemSpec {
+    StatusItemSpec {
+        id,
+        default_side: StatusSide::Right,
+        render: Rc::new(move |ctx: &StatusContext<'_>| -> AnyElement {
+            let state = *ctx.data.docks.get(pos);
+            let enabled = state.visible || state.has_panels;
+            let hint = ctx.dock_hints.get(pos).clone();
+            let color = if state.visible {
+                ctx.theme.accent
+            } else {
+                ctx.theme.muted
+            };
+            let side = div().absolute().bg(if state.visible {
+                color
+            } else {
+                color.opacity(0.3)
+            });
+            let side = match pos {
+                DockPosition::Left => side.left_0().top_0().bottom_0().w(px(4.0)),
+                DockPosition::Right => side.right_0().top_0().bottom_0().w(px(4.0)),
+                DockPosition::Bottom => side.left_0().right_0().bottom_0().h(px(4.0)),
+            };
+            let glyph = div()
+                .relative()
+                .flex_none()
+                .w(px(14.0))
+                .h(px(11.0))
+                .rounded(px(2.0))
+                .border_1()
+                .border_color(color)
+                .overflow_hidden()
+                .child(side);
+            let tip = dock_tooltip(name, state, &hint);
+            let button = div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(22.0))
+                .h(px(18.0))
+                .rounded(px(ctx.density.ui().radius - 2.0))
+                .child(glyph);
+            if !enabled {
+                return button.opacity(0.4).tooltip(tooltip(tip)).into_any_element();
+            }
+            let hover = ctx.theme.surface_hover;
+            button
+                .cursor_pointer()
+                .when(state.visible, |s| s.bg(ctx.theme.accent_soft))
+                .hover(move |s| s.bg(hover))
+                .tooltip(tooltip(tip))
+                .on_click(move |_, window, cx| window.dispatch_action(toggle(), cx))
+                .into_any_element()
+        }),
+    }
+}
+
+/// Tooltip of a dock button: what a click does and the key of the active keymap.
+fn dock_tooltip(name: &str, state: DockState, hint: &str) -> String {
+    let action = match (state.visible, state.has_panels) {
+        (true, _) => "Hide",
+        (false, true) => "Show",
+        (false, false) => return format!("The {name} has no panels"),
+    };
+    if hint.is_empty() {
+        format!("{action} the {name}")
+    } else {
+        format!("{action} the {name} ({hint})")
+    }
 }
 
 #[cfg(test)]
@@ -224,5 +327,43 @@ mod tests {
         assert_eq!(tone, Tone::Warn);
         assert!(text.contains("reconnecting (3)"), "{text}");
         assert_eq!(connection_label(ConnectionState::Stopped).1, Tone::Error);
+    }
+
+    #[test]
+    fn dock_tooltips_name_the_action_and_the_key() {
+        let shown = DockState {
+            visible: true,
+            has_panels: true,
+        };
+        let hidden = DockState {
+            visible: false,
+            has_panels: true,
+        };
+        let empty = DockState {
+            visible: false,
+            has_panels: false,
+        };
+        assert_eq!(
+            dock_tooltip("left dock", shown, "⌘B"),
+            "Hide the left dock (⌘B)"
+        );
+        assert_eq!(
+            dock_tooltip("left dock", hidden, "⌘B"),
+            "Show the left dock (⌘B)"
+        );
+        assert_eq!(dock_tooltip("left dock", hidden, ""), "Show the left dock");
+        assert_eq!(
+            dock_tooltip("bottom dock", empty, "⌘J"),
+            "The bottom dock has no panels"
+        );
+        // A visible dock without panels can still be hidden.
+        let open_empty = DockState {
+            visible: true,
+            has_panels: false,
+        };
+        assert_eq!(
+            dock_tooltip("right dock", open_empty, ""),
+            "Hide the right dock"
+        );
     }
 }

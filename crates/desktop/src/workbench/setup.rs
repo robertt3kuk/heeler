@@ -263,7 +263,7 @@ impl Workbench {
         };
         state.suspended = true;
         self.set_notice(
-            "Setup is paused while you log in. Choose “Hutan: Run Setup…” in ⌘K to continue.",
+            "Setup is paused while you log in. Choose “Hutan: Run Setup…” in the command palette to continue.",
             cx,
         );
     }
@@ -1510,7 +1510,7 @@ impl Workbench {
         self.setup_page(
             "You're all set",
             "Open a project folder to start, or begin with a terminal. Run the setup again any \
-             time from ⌘K or Settings.",
+             time from the command palette or Settings.",
             Some(content),
         )
     }
