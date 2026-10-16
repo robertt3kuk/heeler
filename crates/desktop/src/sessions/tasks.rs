@@ -155,13 +155,16 @@ pub fn state_glyph(state: TaskState) -> (&'static str, Tone) {
 pub struct TaskFilters {
     /// List tasks that are `done` or `cancelled` (failed ones always stay: they need a look).
     pub show_done: bool,
-    /// Only tasks of this workspace; `None`: every workspace.
+    /// Only tasks of this container: a project, Home, or a user workspace together with its
+    /// member projects (ADR 0014); `None`: every one.
     pub workspace: Option<WorkspaceId>,
 }
 
 impl TaskFilters {
-    fn keeps(&self, task: &Task) -> bool {
-        self.workspace.is_none_or(|w| w == task.workspace_id)
+    /// `parent`: the user workspace a container belongs to (`WorkspaceInfo.parent_id`).
+    fn keeps(&self, task: &Task, parent: &dyn Fn(WorkspaceId) -> Option<WorkspaceId>) -> bool {
+        self.workspace
+            .is_none_or(|w| w == task.workspace_id || parent(task.workspace_id) == Some(w))
             && (self.show_done || !matches!(task.state, TaskState::Done | TaskState::Cancelled))
     }
 }
@@ -240,11 +243,16 @@ fn elapsed(task: &Task, now_ms: u64) -> Option<String> {
 /// The tasks to list as a dependency tree: every task once, under the dependency it waits for
 /// last (the others are named in `also_after`), dependencies before dependants, roots oldest
 /// first. A task whose dependencies are all filtered out is a root.
-pub fn tree_rows(book: &TaskBook, filters: TaskFilters, now_ms: u64) -> Vec<TaskRowView> {
+pub fn tree_rows(
+    book: &TaskBook,
+    filters: TaskFilters,
+    parent: &dyn Fn(WorkspaceId) -> Option<WorkspaceId>,
+    now_ms: u64,
+) -> Vec<TaskRowView> {
     let visible: Vec<&Task> = book
         .ordered()
         .into_iter()
-        .filter(|t| filters.keeps(t))
+        .filter(|t| filters.keeps(t, parent))
         .collect();
     let position: HashMap<TaskId, usize> = visible
         .iter()
@@ -502,13 +510,17 @@ mod tests {
         workspace: None,
     };
 
+    fn no_parent(_: WorkspaceId) -> Option<WorkspaceId> {
+        None
+    }
+
     #[test]
     fn the_tree_puts_each_task_under_the_dependency_it_waits_for_last() {
         let build = task("Build", 1, TaskState::Done, &[]);
         let lint = task("Lint", 2, TaskState::Ready, &[]);
         let test = task("Test", 3, TaskState::Ready, &[&build]);
         let ship = task("Ship", 4, TaskState::Todo, &[&test, &lint]);
-        let rows = tree_rows(&book(&[&ship, &test, &lint, &build]), ALL, 0);
+        let rows = tree_rows(&book(&[&ship, &test, &lint, &build]), ALL, &no_parent, 0);
         let shape: Vec<(&str, usize)> = rows.iter().map(|r| (r.title.as_str(), r.depth)).collect();
         assert_eq!(
             shape,
@@ -532,6 +544,7 @@ mod tests {
                 show_done: false,
                 workspace: None,
             },
+            &no_parent,
             0,
         );
         let shape: Vec<(&str, usize)> = rows.iter().map(|r| (r.title.as_str(), r.depth)).collect();
@@ -540,23 +553,34 @@ mod tests {
             [("Test", 0), ("Failed", 0)],
             "failed tasks always show"
         );
-        assert_eq!(tree_rows(&all, ALL, 0).len(), 4);
+        assert_eq!(tree_rows(&all, ALL, &no_parent, 0).len(), 4);
     }
 
     #[test]
-    fn the_workspace_filter_keeps_one_workspace() {
+    fn the_workspace_filter_keeps_one_container_and_the_projects_of_a_workspace() {
         let a = task("A", 1, TaskState::Todo, &[]);
         let b = task("B", 2, TaskState::Todo, &[]);
-        let rows = tree_rows(
-            &book(&[&a, &b]),
-            TaskFilters {
-                show_done: true,
-                workspace: Some(b.workspace_id),
-            },
-            0,
-        );
+        let only_b = TaskFilters {
+            show_done: true,
+            workspace: Some(b.workspace_id),
+        };
+        let rows = tree_rows(&book(&[&a, &b]), only_b, &no_parent, 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "B");
+
+        // A task of a project in a user workspace is listed when that workspace is shown.
+        let workspace = WorkspaceId::new();
+        let a_project = a.workspace_id;
+        let in_workspace = move |id: WorkspaceId| (id == a_project).then_some(workspace);
+        let shown = TaskFilters {
+            show_done: true,
+            workspace: Some(workspace),
+        };
+        let rows = tree_rows(&book(&[&a, &b]), shown, &in_workspace, 0);
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["A"]
+        );
     }
 
     #[test]
@@ -571,7 +595,7 @@ mod tests {
             argv: vec!["cargo".into(), "test".into()],
         });
         t.started_at_ms = Some(10_000);
-        let row = &tree_rows(&book(&[&t]), ALL, 75_000)[0];
+        let row = &tree_rows(&book(&[&t]), ALL, &no_parent, 75_000)[0];
         assert_eq!(row.placement, "wt task/fix-login-bug");
         assert_eq!(row.branch.as_deref(), Some("task/fix-login-bug"));
         assert_eq!(row.run, "$ cargo test");
@@ -585,7 +609,7 @@ mod tests {
         t.run = Some(TaskRun::Chat {
             agent: "omp".into(),
         });
-        let row = &tree_rows(&book(&[&t]), ALL, 75_000)[0];
+        let row = &tree_rows(&book(&[&t]), ALL, &no_parent, 75_000)[0];
         assert_eq!(
             row.elapsed.as_deref(),
             Some("30s"),
@@ -595,7 +619,7 @@ mod tests {
         assert_eq!(row.run, "omp chat");
 
         let plain = task("Plain", 2, TaskState::Todo, &[]);
-        let row = &tree_rows(&book(&[&plain]), ALL, 0)[0];
+        let row = &tree_rows(&book(&[&plain]), ALL, &no_parent, 0)[0];
         assert_eq!(
             (row.placement.as_str(), row.run.as_str()),
             ("main", "shell")

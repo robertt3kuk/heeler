@@ -197,7 +197,9 @@ impl TasksPanel {
 
     /// The listed tasks, as the tree draws them.
     pub fn rows(&self, now_ms: u64, cx: &gpui::App) -> Vec<TaskRowView> {
-        tree_rows(self.env.sessions.read(cx).tasks(), self.filters(cx), now_ms)
+        let store = self.env.sessions.read(cx);
+        let parent = |id| store.workspace(id).and_then(|w| w.parent_id);
+        tree_rows(store.tasks(), self.filters(cx), &parent, now_ms)
     }
 
     /// Whether the new-task form is open.
@@ -1105,12 +1107,14 @@ impl TasksPanel {
             let workspace = store
                 .active_workspace_id()
                 .or_else(|| store.home_workspace().map(|w| w.id));
+            let parent = |id| store.workspace(id).and_then(|w| w.parent_id);
             tree_rows(
                 store.tasks(),
                 TaskFilters {
                     show_done: true,
                     workspace,
                 },
+                &parent,
                 0,
             )
         };
