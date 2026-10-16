@@ -526,7 +526,10 @@ fn panel_moves_between_docks_and_reveals_target() {
     check(&state);
     assert_eq!(state.docks.right.panels, vec![PanelId::new("agents")]);
     assert_eq!(state.docks.right.active, Some(PanelId::new("agents")));
-    assert_eq!(state.docks.bottom.panels, vec![PanelId::new("inspector")]);
+    assert_eq!(
+        state.docks.bottom.panels,
+        vec![PanelId::new("resources"), PanelId::new("inspector")]
+    );
     assert!(state.docks.bottom.visible);
     assert_eq!(state.focus, FocusTarget::Dock(DockPosition::Bottom));
 }
@@ -686,10 +689,10 @@ fn open_and_close_panel() {
     );
     // Opening again is idempotent.
     state.open_panel(&PanelId::new("notifications"), DockPosition::Left);
-    assert_eq!(state.docks.bottom.panels.len(), 1);
+    assert_eq!(state.docks.bottom.panels.len(), 2, "next to `resources`");
     state.close_panel(&PanelId::new("notifications")).unwrap();
     check(&state);
-    assert!(state.docks.bottom.panels.is_empty());
+    assert_eq!(state.docks.bottom.panels, vec![PanelId::new("resources")]);
     assert!(state.close_panel(&PanelId::new("notifications")).is_err());
 }
 

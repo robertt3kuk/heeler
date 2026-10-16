@@ -23,20 +23,22 @@ impl Workbench {
     pub(crate) fn toggle_resources(&mut self, cx: &mut Context<Self>) {
         let id = PanelId::new(PANEL);
         match self.state.find_panel(&id) {
-            Some(ItemSource::Dock { pos, .. }) => {
-                let dock = self.state.docks.get(pos);
-                if dock.visible && dock.active.as_ref() == Some(&id) {
-                    self.mutate(cx, |s| s.toggle_dock(pos));
-                    return;
-                }
+            Some(ItemSource::Dock { pos, .. })
+                if {
+                    let dock = self.state.docks.get(pos);
+                    dock.visible && dock.active.as_ref() == Some(&id)
+                } =>
+            {
+                self.mutate(cx, |s| s.toggle_dock(pos));
+                return;
             }
-            Some(ItemSource::Pane { pane, index }) => {
-                if self.state.pane(pane).is_some_and(|p| p.active == index) {
-                    self.try_mutate(cx, |s| s.close_panel(&id));
-                    return;
-                }
+            Some(ItemSource::Pane { pane, index })
+                if self.state.pane(pane).is_some_and(|p| p.active == index) =>
+            {
+                self.try_mutate(cx, |s| s.close_panel(&id));
+                return;
             }
-            None => {}
+            _ => {}
         }
         self.open_panel(PANEL, cx);
     }

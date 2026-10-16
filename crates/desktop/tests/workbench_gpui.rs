@@ -199,7 +199,10 @@ fn panel_actions_move_panels_between_docks(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, None);
     cx.dispatch_action(actions::OpenPanel("notifications".into()));
     let s = state(&view, cx);
-    assert_eq!(s.docks.bottom.panels, vec![PanelId::new("notifications")]);
+    assert_eq!(
+        s.docks.bottom.panels,
+        vec![PanelId::new("resources"), PanelId::new("notifications")]
+    );
     assert!(s.docks.bottom.visible);
     assert_eq!(s.focus, FocusTarget::Dock(DockPosition::Bottom));
 
@@ -207,7 +210,7 @@ fn panel_actions_move_panels_between_docks(cx: &mut TestAppContext) {
         hutan_desktop::workbench::model::PanelDest::Dock(DockPosition::Left),
     ));
     let s = state(&view, cx);
-    assert!(s.docks.bottom.panels.is_empty());
+    assert_eq!(s.docks.bottom.panels, vec![PanelId::new("resources")]);
     assert!(s.docks.left.panels.contains(&PanelId::new("notifications")));
 
     cx.dispatch_action(actions::OpenActivePanelAsTab);
@@ -806,7 +809,10 @@ fn right_click_menus_list_the_documented_entries(cx: &mut TestAppContext) {
     // "Move to Bottom Dock".
     view.update_in(cx, |wb, window, cx| wb.run_menu_entry(2, window, cx));
     let s = state(&view, cx);
-    assert_eq!(s.docks.bottom.panels, vec![PanelId::new("sessions")]);
+    assert_eq!(
+        s.docks.bottom.panels,
+        vec![PanelId::new("resources"), PanelId::new("sessions")]
+    );
     assert!(
         view.read_with(cx, |wb, _| wb.context_menu_entries())
             .is_none()
