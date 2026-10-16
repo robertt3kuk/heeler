@@ -345,10 +345,7 @@ fn the_panel_subscribes_only_while_it_is_visible(cx: &mut TestAppContext) {
     wait_until(cx, "the panel to subscribe again", |cx| {
         panel.read_with(cx, |p, _| p.subscribed() && p.samples() > 0)
     });
-    assert_eq!(
-        panel.read_with(cx, |p, _| p.link().clone()),
-        ResourcesLink::Live
-    );
+    assert_eq!(panel.read_with(cx, |p, cx| p.link(cx)), ResourcesLink::Live);
     kill_session(&daemon, busy.id);
 }
 
@@ -822,10 +819,7 @@ fn nothing_running_lists_only_the_daemon_and_a_later_session_appears(cx: &mut Te
         all.iter().all(|l| matches!(l, ResourceLine::Daemon(_))),
         "only the daemon: {all:?}"
     );
-    assert_eq!(
-        panel.read_with(cx, |p, _| p.link().clone()),
-        ResourcesLink::Live
-    );
+    assert_eq!(panel.read_with(cx, |p, cx| p.link(cx)), ResourcesLink::Live);
     let id = daemon.sh_titled("late", "sleep 60").id;
     wait_lines(&panel, cx, "the new session", |l| {
         session_line(l, id).is_some()

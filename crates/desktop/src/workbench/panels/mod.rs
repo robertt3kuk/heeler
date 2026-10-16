@@ -9,7 +9,6 @@ mod history_model;
 mod inspector;
 mod overview;
 mod resources;
-mod resources_feed;
 mod resources_model;
 mod sessions;
 mod status;

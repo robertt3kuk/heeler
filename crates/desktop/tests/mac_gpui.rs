@@ -275,6 +275,15 @@ fn requires_approval_is_shown_and_opens_login_items(cx: &mut TestAppContext) {
     assert!(!login_items_menu_enabled(cx));
 }
 
+/// Closes the window under test. Dropping its view does not: the workbench lives on, still
+/// watching the shared `settings.toml` and writing back there when a late settings change makes
+/// its own fake login item refuse. A later window reads that file too, and a stale
+/// `keep_running = false` from the earlier phase made it call `unregister` a second time.
+fn close_window(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn a_registration_the_system_refuses_is_reported_and_the_setting_goes_back(
     cx: &mut TestAppContext,
@@ -296,6 +305,7 @@ fn a_registration_the_system_refuses_is_reported_and_the_setting_goes_back(
     clear_notice(&view, cx);
     let fakes2 = Fakes::new();
     fakes2.login.set_after_register(LoginItemStatus::NotFound);
+    close_window(cx);
     drop(view);
     let (view, cx) = open(cx, &daemon, &fakes2);
     dispatch(cx, daemon_actions::ToggleKeepRunning);
@@ -307,6 +317,7 @@ fn a_registration_the_system_refuses_is_reported_and_the_setting_goes_back(
     fakes3.login.set_status(LoginItemStatus::Enabled);
     fakes3.login.fail_unregister("busy");
     write_settings(&daemon, "[app]\nkeep_running = true\n");
+    close_window(cx);
     drop(view);
     let (view, cx) = open(cx, &daemon, &fakes3);
     dispatch(cx, daemon_actions::ToggleKeepRunning);

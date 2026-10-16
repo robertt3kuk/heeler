@@ -12,6 +12,7 @@ use hutan_protocol::blocks::Block;
 use hutan_protocol::chat::ApprovalInfo;
 use hutan_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
 use hutan_protocol::notify::NotificationIntent;
+use hutan_protocol::resources::ResourceSample;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -102,6 +103,13 @@ pub enum Notice {
     /// the accounts again.
     AccountsChanged {
         harness: String,
+    },
+    /// A periodic sample of the processes of the live sessions (`resources.updated`, protocol
+    /// 0.18), sent while [`Connection::resources_subscribe`](crate::Connection::resources_subscribe)
+    /// is in force; also the first sample after a reconnect re-subscribed. Outside the event
+    /// sequence: a receiver that lags just waits for the next one.
+    ResourcesUpdated {
+        sample: Box<ResourceSample>,
     },
 }
 
@@ -348,9 +356,10 @@ impl StoreState {
             Event::AccountChanged { harness } => {
                 effects.notices.push(Notice::AccountsChanged { harness });
             }
-            // A stream for one subscriber, outside the replay ring and the sequence: whoever
-            // renders it reads `Client::events` (a Resources panel subscribes for itself).
-            Event::ResourcesUpdated { .. } => {}
+            // A stream for one subscriber, outside the replay ring and the sequence.
+            Event::ResourcesUpdated { sample } => {
+                effects.notices.push(Notice::ResourcesUpdated { sample });
+            }
         }
         effects
     }

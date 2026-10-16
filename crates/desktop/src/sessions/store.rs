@@ -329,7 +329,9 @@ impl SessionsStore {
             | Notice::WorktreesChanged { .. }
             // The tasks panel is M7-C's.
             | Notice::TaskUpdated { .. }
-            | Notice::TaskRemoved { .. } => {}
+            | Notice::TaskRemoved { .. }
+            // The resources panel listens for itself.
+            | Notice::ResourcesUpdated { .. } => {}
             // A login or logout session of a harness ended: whoever lists the accounts asks
             // again.
             Notice::AccountsChanged { harness } => cx.emit(AccountsChanged {

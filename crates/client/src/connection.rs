@@ -24,6 +24,7 @@ use hutan_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, His
 use hutan_protocol::messages::{
     AgentReleaseRequest, AgentReportRequest, Empty, Request, SessionInfo, TerminalSize,
 };
+use hutan_protocol::resources::{DEFAULT_INTERVAL_MS, ResourcesSubscribed};
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -65,6 +66,9 @@ pub(crate) struct Shared {
     pub(crate) autostart: AtomicBool,
     /// Wakes a backoff wait so a reconnect happens now.
     pub(crate) kick: Notify,
+    /// The interval of the resource samples somebody asked for
+    /// ([`Connection::resources_subscribe`]); a reconnect subscribes again while it is set.
+    resources: Mutex<Option<u32>>,
 }
 
 impl Shared {
@@ -80,6 +84,20 @@ impl Shared {
         let guard = self.client.lock().unwrap_or_else(PoisonError::into_inner);
         let client = guard.clone()?;
         Some((self.generation.load(Ordering::Acquire), client))
+    }
+
+    pub(crate) fn resources_interval(&self) -> Option<u32> {
+        *self
+            .resources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn set_resources_interval(&self, interval: Option<u32>) {
+        *self
+            .resources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = interval;
     }
 
     pub(crate) fn set_client(&self, client: Option<Client>) {
@@ -167,6 +185,7 @@ impl Connection {
             next_handle: AtomicU64::new(1),
             autostart: AtomicBool::new(autostart),
             kick: Notify::new(),
+            resources: Mutex::new(None),
         });
         let cancel = CancellationToken::new();
         let supervisor = Supervisor::new(opts, shared.clone(), command_rx, cancel.clone());
@@ -340,6 +359,46 @@ impl Connection {
         self.shared
             .client()
             .is_some_and(|client| client.supports_chat())
+    }
+
+    /// True while connected to a daemon that advertised capability `resources`
+    /// ([`Client::supports_resources`]); false when disconnected.
+    pub fn supports_resources(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_resources())
+    }
+
+    /// Asks for `resources.updated` samples every `interval_ms` (default 2000, at least 1000;
+    /// [`Client::resources_subscribe`]). They arrive as [`Notice::ResourcesUpdated`]. The
+    /// subscription is remembered: after a reconnect the connection subscribes again by itself
+    /// and announces the first sample, until [`resources_unsubscribe`](Self::resources_unsubscribe).
+    /// Disconnected, this fails with [`ClientError::Disconnected`] but the wish stays, so the
+    /// first sample comes with the next connection. The daemon samples only while somebody is
+    /// subscribed.
+    pub async fn resources_subscribe(
+        &self,
+        interval_ms: Option<u32>,
+    ) -> Result<ResourcesSubscribed, ClientError> {
+        let interval = interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        self.shared.set_resources_interval(Some(interval));
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        let result = client.resources_subscribe(Some(interval)).await;
+        if matches!(result, Err(ClientError::Remote(_))) {
+            // Refused (an interval below the floor, an old daemon): do not retry on reconnects.
+            self.shared.set_resources_interval(None);
+        }
+        result
+    }
+
+    /// Ends [`resources_subscribe`](Self::resources_subscribe): forgets it for reconnects and
+    /// tells the daemon, which stops sampling with its last subscriber. Never fails; a daemon
+    /// that cannot be told drops the subscription with the connection.
+    pub async fn resources_unsubscribe(&self) {
+        self.shared.set_resources_interval(None);
+        if let Some(client) = self.shared.client() {
+            let _ = client.resources_unsubscribe().await;
+        }
     }
 
     /// `agent.report` ([`Client::agent_report`]).

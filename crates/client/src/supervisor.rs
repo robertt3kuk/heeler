@@ -576,6 +576,12 @@ impl Supervisor {
     fn fold(&mut self, batch: Vec<(Seq, Event)>) -> Effects {
         let mut effects = Effects::default();
         for (seq, event) in batch {
+            // Outside the sequence: it carries the seq of the last retained event, which is
+            // `applied` already, so the check below would drop every sample.
+            if matches!(event, Event::ResourcesUpdated { .. }) {
+                effects.extend(self.state.apply(event));
+                continue;
+            }
             if seq <= self.applied {
                 continue;
             }
@@ -640,6 +646,9 @@ impl Supervisor {
                 return Served::Lost { connected: true };
             }
         }
+        if !self.resubscribe_resources(client).await {
+            return Served::Lost { connected: true };
+        }
         loop {
             tokio::select! {
                 biased;
@@ -666,6 +675,38 @@ impl Supervisor {
             }
         }
         Served::Lost { connected: true }
+    }
+
+    /// A subscription belongs to its connection: a reconnect asks again while somebody wants
+    /// resource samples (`Connection::resources_subscribe`), and the answer's sample is
+    /// announced like the ones that follow. `false` if the connection is gone.
+    async fn resubscribe_resources(&mut self, client: &Client) -> bool {
+        let Some(interval) = self.shared.resources_interval() else {
+            return true;
+        };
+        match client.resources_subscribe(Some(interval)).await {
+            Ok(subscribed) => {
+                // Unsubscribed meanwhile: the request above must not outlive the wish.
+                if self.shared.resources_interval().is_none() {
+                    let _ = client.resources_unsubscribe().await;
+                } else {
+                    let _ = self.shared.notices.send(Notice::ResourcesUpdated {
+                        sample: Box::new(subscribed.sample),
+                    });
+                }
+                true
+            }
+            // The daemon refuses (too old, bad interval): nothing to retry on every reconnect.
+            Err(ClientError::Remote(error)) => {
+                warn!(message = %error.message, "resources.subscribe refused; not asked again");
+                self.shared.set_resources_interval(None);
+                true
+            }
+            Err(error) => {
+                debug!(%error, "resubscribing to resources failed; connection lost");
+                false
+            }
+        }
     }
 
     /// Folds `first` plus whatever else is already queued into one published state. `false`

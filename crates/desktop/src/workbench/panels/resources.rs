@@ -3,21 +3,24 @@
 //! threads and command, the agents that reported a process marked, and a row for `hutand`.
 //!
 //! The daemon samples (M13-C, `docs/resources.md`); the panel only draws, and acts through the
-//! daemon: signals, `session.kill`, `agent.interrupt`. It subscribes (`resources.subscribe`, on a
-//! connection of its own, see `resources_feed.rs`) **only while it is drawn**: every draw marks
-//! the panel as seen, a timer stops the subscription once a period passes without one, and the
-//! next draw starts it again. Hidden, it costs the daemon nothing.
+//! daemon: signals, `session.kill`, `agent.interrupt`. It subscribes (`resources.subscribe`, on
+//! the shared connection, which subscribes again after a reconnect and announces the samples as
+//! `Notice::ResourcesUpdated`) **only while it is drawn**: every draw marks the panel as seen, a
+//! timer ends the subscription once a period passes without one, and the next draw starts it
+//! again. Hidden, it costs the daemon nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+
+use tokio::sync::broadcast::error::RecvError;
 
 use gpui::{
     AnyElement, App, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, div, prelude::*, px, relative,
 };
-use hutan_client::ClientError;
+use hutan_client::{ClientError, Connection, ConnectionState, Notice};
 use hutan_core::{NodeKind, SessionId};
 use hutan_protocol::ErrorCode;
 use hutan_protocol::messages::Request;
@@ -26,7 +29,6 @@ use hutan_protocol::resources::{
 };
 
 use super::common::{panel_header_with, placement};
-use super::resources_feed::{Feed, FeedState};
 use super::resources_model::{
     self as model, AgentLine, Command, Confirmation, Fold, Item, Line, Options, ProcessLine,
     SessionLine, SessionMeta, Target,
@@ -72,15 +74,16 @@ pub enum Link {
     Live,
     /// The daemon is older than protocol 0.18.
     Unsupported,
-    /// Lost; the feed retries.
+    /// Not connected to the daemon (the connection retries), or it refused the subscription.
     Down(String),
 }
 
 pub struct ResourcesPanel {
     env: PanelEnv,
-    /// Alive while the panel is drawn.
-    feed: Option<Feed>,
-    consumer: Option<Task<()>>,
+    /// The interval of the subscription the panel wants: set while it is drawn. A task applies
+    /// the latest value to the connection, one request at a time, so a quick hide and show
+    /// cannot leave the daemon in the wrong state.
+    wanted: tokio::sync::watch::Sender<Option<u32>>,
     watcher: Option<Task<()>>,
     /// Drawn since the watcher last looked.
     drawn: bool,
@@ -104,7 +107,7 @@ pub struct ResourcesPanel {
 impl std::fmt::Debug for ResourcesPanel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourcesPanel")
-            .field("subscribed", &self.feed.is_some())
+            .field("subscribed", &self.subscribed())
             .field("link", &self.link)
             .field("samples", &self.samples)
             .finish_non_exhaustive()
@@ -129,11 +132,24 @@ fn describe(error: &ClientError) -> String {
 
 impl ResourcesPanel {
     pub fn new(env: PanelEnv, cx: &mut Context<Self>) -> Self {
-        cx.observe(&env.sessions, |_, _, cx| cx.notify()).detach();
+        cx.observe(&env.sessions, |this, store, cx| {
+            // A lost connection takes its subscription with it; the connection subscribes
+            // again after reconnecting and announces the first sample.
+            if store.read(cx).connection_state() != ConnectionState::Connected {
+                this.sample = None;
+            }
+            cx.notify();
+        })
+        .detach();
+        let (wanted, wanted_rx) = tokio::sync::watch::channel(None);
+        let connection = env.sessions.read(cx).connection().clone();
+        let tasks = vec![
+            Self::drive(connection.clone(), wanted_rx, cx),
+            Self::listen(&connection, cx),
+        ];
         Self {
             env,
-            feed: None,
-            consumer: None,
+            wanted,
             watcher: None,
             drawn: false,
             link: Link::Connecting,
@@ -148,7 +164,7 @@ impl ResourcesPanel {
             highlight: None,
             scroll_to: None,
             scroll: ScrollHandle::new(),
-            _tasks: Vec::new(),
+            _tasks: tasks,
         }
     }
 
@@ -156,16 +172,29 @@ impl ResourcesPanel {
 
     /// Whether the panel holds a `resources.subscribe` right now.
     pub fn subscribed(&self) -> bool {
-        self.feed.is_some()
+        self.wanted.borrow().is_some()
     }
 
-    /// The interval of the subscription in force.
+    /// The interval of the subscription the panel asked for.
     pub fn subscribed_interval_ms(&self) -> Option<u32> {
-        self.feed.as_ref().map(Feed::interval_ms)
+        *self.wanted.borrow()
     }
 
-    pub fn link(&self) -> &Link {
-        &self.link
+    /// How the panel stands with the daemon right now.
+    pub fn link(&self, cx: &App) -> Link {
+        let store = self.env.sessions.read(cx);
+        match store.connection_state() {
+            ConnectionState::Connected => {}
+            ConnectionState::Connecting => return Link::Connecting,
+            ConnectionState::Reconnecting { .. } => {
+                return Link::Down("not connected".to_owned());
+            }
+            ConnectionState::Stopped => return Link::Down("the connection is closed".to_owned()),
+        }
+        if !store.connection().supports_resources() {
+            return Link::Unsupported;
+        }
+        self.link.clone()
     }
 
     /// How many samples the panel took (tests wait for the next one).
@@ -284,47 +313,91 @@ impl ResourcesPanel {
             .clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS)
     }
 
-    /// Called from `render`, so it only ever runs while the panel is drawn: starts the
-    /// subscription (and the watcher that ends it again) or restarts it for a changed interval.
-    fn ensure_feed(&mut self, cx: &mut Context<Self>) {
-        self.drawn = true;
-        let interval = self.interval_ms();
-        if self
-            .feed
-            .as_ref()
-            .is_some_and(|feed| feed.interval_ms() != interval)
-        {
-            self.stop_feed();
-        }
-        if self.feed.is_some() {
-            return;
-        }
-        let Some(socket) = self
-            .env
-            .sessions
-            .read(cx)
-            .connection()
-            .socket_path()
-            .map(std::path::Path::to_path_buf)
-        else {
-            self.link = Link::Down("no daemon socket".to_owned());
-            return;
-        };
-        let feed = Feed::start(socket, interval);
-        let mut state = feed.watch();
-        self.link = Link::Connecting;
-        self.consumer = Some(cx.spawn(async move |this, cx| {
+    /// Applies the latest wish of `wanted` to the connection, one request at a time. The
+    /// connection remembers an active subscription and renews it after a reconnect.
+    fn drive(
+        connection: Connection,
+        mut wanted: tokio::sync::watch::Receiver<Option<u32>>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut current: Option<u32> = None;
             loop {
-                let current = state.borrow_and_update().clone();
-                if this.update(cx, |this, cx| this.apply(current, cx)).is_err() {
-                    break;
+                let want = *wanted.borrow_and_update();
+                if want != current {
+                    match want {
+                        Some(interval) => {
+                            let answer = connection.resources_subscribe(Some(interval)).await;
+                            let alive = this
+                                .update(cx, |this, cx| {
+                                    match answer {
+                                        Ok(subscribed) => this.accept(Arc::new(subscribed.sample)),
+                                        // Not connected yet: the connection subscribes (and
+                                        // announces the first sample) once it is.
+                                        Err(ClientError::Disconnected) => {}
+                                        Err(error) => this.link = Link::Down(describe(&error)),
+                                    }
+                                    cx.notify();
+                                })
+                                .is_ok();
+                            if !alive {
+                                break;
+                            }
+                        }
+                        None => connection.resources_unsubscribe().await,
+                    }
+                    current = want;
                 }
-                if state.changed().await.is_err() {
+                if wanted.changed().await.is_err() {
                     break;
                 }
             }
-        }));
-        self.feed = Some(feed);
+            // The panel is gone: let go of the subscription.
+            connection.resources_unsubscribe().await;
+        })
+    }
+
+    /// Takes the samples the connection announces while the panel wants them.
+    fn listen(connection: &Connection, cx: &mut Context<Self>) -> Task<()> {
+        let mut notices = connection.notices();
+        cx.spawn(async move |this, cx| {
+            loop {
+                match notices.recv().await {
+                    Ok(Notice::ResourcesUpdated { sample }) => {
+                        let alive = this
+                            .update(cx, |this, cx| {
+                                // A sample on its way when the panel was hidden is not shown.
+                                if this.subscribed() {
+                                    this.accept(Arc::new(*sample));
+                                    cx.notify();
+                                }
+                            })
+                            .is_ok();
+                        if !alive {
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        })
+    }
+
+    /// Called from `render`, so it only ever runs while the panel is drawn: wants the
+    /// subscription (renewed for a changed interval) and starts the watcher that ends it again
+    /// once the panel is no longer drawn.
+    fn ensure_feed(&mut self, cx: &mut Context<Self>) {
+        self.drawn = true;
+        let interval = self.interval_ms();
+        self.wanted.send_if_modified(|wanted| {
+            let changed = *wanted != Some(interval);
+            *wanted = Some(interval);
+            changed
+        });
+        if self.watcher.is_some() {
+            return;
+        }
         self.watcher = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(WATCH).await;
@@ -347,29 +420,12 @@ impl ResourcesPanel {
         }));
     }
 
-    /// Ends the subscription (dropping the feed unsubscribes) and forgets what it showed.
+    /// Ends the subscription and forgets what it showed.
     fn stop_feed(&mut self) {
-        self.feed = None;
-        self.consumer = None;
+        self.wanted.send_replace(None);
         self.watcher = None;
         self.sample = None;
         self.link = Link::Connecting;
-    }
-
-    fn apply(&mut self, state: FeedState, cx: &mut Context<Self>) {
-        match state {
-            FeedState::Connecting => {}
-            FeedState::Sample(sample) => self.accept(sample),
-            FeedState::Unsupported => {
-                self.sample = None;
-                self.link = Link::Unsupported;
-            }
-            FeedState::Down(reason) => {
-                self.sample = None;
-                self.link = Link::Down(reason);
-            }
-        }
-        cx.notify();
     }
 
     /// Takes a sample that is not older than the one shown; drops the errors and busy marks of
@@ -500,7 +556,7 @@ impl ResourcesPanel {
             if let Ok(sample) = fresh {
                 this.update(cx, |this, cx| {
                     // Only while subscribed: a hidden panel keeps nothing.
-                    if this.feed.is_some() {
+                    if this.subscribed() {
                         this.accept(Arc::new(sample));
                         cx.notify();
                     }
@@ -1075,6 +1131,7 @@ impl Render for ResourcesPanel {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let lines = self.lines(cx);
+        let link = self.link(cx);
         let compact = self
             .env
             .regions
@@ -1273,7 +1330,7 @@ impl Render for ResourcesPanel {
             self.scroll_to = None;
         }
         if !has_sessions {
-            let (mascot, text): (Mascot, String) = match &self.link {
+            let (mascot, text): (Mascot, String) = match &link {
                 Link::Connecting => (Mascot::Thinking, "Reading the process table…".to_owned()),
                 Link::Unsupported => (
                     Mascot::Error,

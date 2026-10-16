@@ -518,3 +518,64 @@ async fn dropping_the_handle_detaches_and_shutdown_stops_everything() {
         Err(hutan_client::ClientError::Disconnected)
     ));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resource_samples_arrive_as_notices_and_a_reconnect_subscribes_again() {
+    let env = Env::start().await;
+    let connection = connect(&env);
+    let mut state = connection.state();
+    let mut notices = connection.notices();
+    wait_connected(&mut state).await;
+    assert!(connection.supports_resources());
+
+    let first = connection.resources_subscribe(Some(1000)).await.unwrap();
+    assert_eq!(first.interval_ms, 1000);
+    // The periodic samples come as notices, although the event's seq is one the connection
+    // has applied already.
+    let sample = wait_notice(&mut notices, "a resource sample", |notice| match notice {
+        Notice::ResourcesUpdated { sample } => Some(sample.at_ms),
+        _ => None,
+    })
+    .await;
+    assert!(sample >= first.sample.at_ms);
+
+    // The link drops: the subscription died with it; the new connection asks again by itself
+    // and announces the answer's sample.
+    env.proxy.block();
+    env.proxy.sever();
+    wait_reconnecting(&mut state).await;
+    // Wishes survive a disconnect: the call fails, the wish stays.
+    assert!(matches!(
+        connection.resources_subscribe(Some(1000)).await,
+        Err(hutan_client::ClientError::Disconnected)
+    ));
+    env.proxy.unblock();
+    wait_connected(&mut state).await;
+    wait_notice(
+        &mut notices,
+        "a sample after the reconnect",
+        |notice| match notice {
+            Notice::ResourcesUpdated { sample } => Some(sample.at_ms),
+            _ => None,
+        },
+    )
+    .await;
+
+    // Unsubscribed: nothing is announced, and a reconnect does not subscribe again.
+    connection.resources_unsubscribe().await;
+    sleep(Duration::from_millis(300)).await;
+    while notices.try_recv().is_ok() {}
+    env.proxy.block();
+    env.proxy.sever();
+    wait_reconnecting(&mut state).await;
+    env.proxy.unblock();
+    wait_connected(&mut state).await;
+    sleep(Duration::from_millis(2500)).await;
+    while let Ok(notice) = notices.try_recv() {
+        assert!(
+            !matches!(notice, Notice::ResourcesUpdated { .. }),
+            "no samples after unsubscribing"
+        );
+    }
+    connection.shutdown();
+}
