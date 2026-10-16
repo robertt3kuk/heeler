@@ -98,7 +98,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 ## M7 — Orchestration
 - [x] M7-A Worktrees (create/list/remove) and session placement with a same-checkout warning (protocol 0.14, `docs/orchestration.md`)
 - [x] M7-B Tasks with dependencies, run in main or a worktree, finish detection, auto-start under `max_parallel` (protocol 0.16, daemon + CLI)
-- [ ] M7-C Tasks panel in the desktop, diff review and merge
+- [x] M7-C Tasks panel in the desktop, diff review and merge
 - Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
