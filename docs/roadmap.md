@@ -102,7 +102,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 - Task placement: main checkout or worktree (create/list/remove), with a same-checkout conflict warning; multi-repo workspaces, task list with dependencies, parallel agents, attention rollups, diff review and merge, agent state detection for TUI agents (integration hooks first, screen manifests fallback).
 
 ## M8 — ACP, MCP, more harnesses
-- [ ] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
+- [x] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
 - [ ] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
 - [ ] M8-C Agent control surface (ADR 0016): UI commands and layout through the daemon, origin + approval policy, `hutan ui …`, `hutan mcp` passed to harness sessions
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
@@ -150,7 +150,7 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - Spike first: what OMP, Claude Code, Codex, OpenCode expose today (files, RPC, hooks) — evidence into `docs/spikes/`.
 
 ## M13-C — Resource manager
-- [ ] M13-C Process trees and usage per session, stop/kill sessions and processes, interrupt agents and subagents (daemon + CLI); Resources panel after D-1
+- [x] M13-C Process trees and usage per session, stop/kill sessions and processes, interrupt agents and subagents (daemon + CLI); Resources panel after D-1
 
 ## M14 — Embedded browser
 - Browser items/panels in the workbench (WKWebView hosted in a GPUI window region), address bar, back/forward, localhost previews, open-links-from-terminal (⌘-click) setting, agents can open URLs into it; spike on GPUI native view embedding first (ADR).
@@ -160,11 +160,11 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - Rich items: Markdown preview, Mermaid and SVG rendering, images, simple charts (CSV/JSON) as workbench items; agent artifacts open as items; reused by chat (M4) and the editor (M11).
 
 ## M18 — Projects (ADR 0014)
-- [ ] M18-A Automatic projects (git common dir) alongside user workspaces that contain projects; easier workspace management (daemon + CLI, protocol 0.18)
+- [x] M18-A Automatic projects (git common dir) alongside user workspaces that contain projects; easier workspace management (daemon + CLI, protocol 0.18)
 - [ ] M18-B Sidebar workspaces → projects → sessions (or flat projects) with folder and worktree badge; drag a project into a workspace, new workspace from selection
 
 ## D — Design
-- [ ] D-1 Visual system v2: Claude-Desktop-like style, terminal-first layout (`docs/design.md` § Visual system)
+- [x] D-1 Visual system v2: Claude-Desktop-like style, terminal-first layout (`docs/design.md` § Visual system)
 
 ## Backlog (agreed, not yet scheduled)
 
