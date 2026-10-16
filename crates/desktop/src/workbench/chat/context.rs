@@ -32,6 +32,12 @@ pub fn is_gateway_chat(agent: &str) -> bool {
     agent == "direct" || agent == AGENT_ASSISTANT
 }
 
+/// Whether `agent` (`chat.agent`) is an ACP harness chat (OMP, Claude Code): the harness runs
+/// it, offers its models and may switch them between turns.
+pub fn is_harness_chat(agent: &str) -> bool {
+    agent == "omp" || agent == "claude"
+}
+
 /// One attachment of the draft: what is attached, where from, and the bounds asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextChip {

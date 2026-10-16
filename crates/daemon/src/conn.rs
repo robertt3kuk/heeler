@@ -48,6 +48,7 @@ pub const CAPABILITIES: &[&str] = &[
     "accounts",
     "resources",
     "projects.auto",
+    "assistant.backend",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

@@ -371,6 +371,12 @@ The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws t
 - **Keyboard**: ⌘↑ / ⌘↓ move the highlight to the previous / next prompt and scroll to it (past the newest block ⌘↓ returns to the live screen; typing clears the highlight); ⌘⇧A selects the current block's output, ⌘⇧C copies it. The *current* block is the highlighted one, else the newest command with output. Every action is also in ⌘K under `Block:`.
 - **Overview previews** show the gutter colors only (no chips, separators or folds). The inspector's Info tab lists the last 20 commands of the focused terminal (command, exit, duration, cwd); a click scrolls that terminal to the block.
 
+## Accounts and the assistant (M8-B)
+
+- **Accounts** (Settings sheet → `accounts`, ⌘K "Accounts…"): one card per harness (OMP, Claude Code, Codex): name, a detection pill (installed / not found with the daemon's install hint), **Log in** and **Log out** buttons, then the accounts it reports (label, provider, plan pill, status pill; OMP has a Log out per provider). The login runs in a terminal session which the window shows (the sheet closes); `instructions` (OMP logs out inside its interface) appear as a notice. No token or address is ever shown. Empty state: the mascot when no harness is installed.
+- **New Agent** (⌘⇧T): harness rows (OMP first) with detection and logins, then direct providers, then the model list (OMP grouped by provider with section labels), the folder, Start.
+- **Assistant panel**: the scope tabs, a backend row (`harness · model ▾`) opening the backend and model chooser, and — until a backend is configured — the first-run card (mascot, *Use OMP* when OMP is installed and logged in, *Add a provider…*). `assistant.enabled = false` removes the panel, its commands and ⌥Space.
+
 ## Daemon lifecycle
 
 **The daemon follows the app**, unless the user asks it to outlive it. The app starts `hutand` when none is running; it keeps it for as long as Hutan runs (a window is open, or Hutan sits in the menu bar); quitting stops it. One toggle changes that: `app.keep_running` ("Keep daemon running after Hutan quits", default off).

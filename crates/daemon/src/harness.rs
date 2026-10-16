@@ -32,6 +32,22 @@ pub fn is_harness_agent(agent: &str) -> bool {
     agent == AGENT_OMP || agent == AGENT_CLAUDE
 }
 
+/// The tools an OMP assistant keeps (`omp acp --tools`): read-only file and search tools. No
+/// `bash`, `edit`, `write`, `task` or network tools.
+pub const OMP_ASSISTANT_TOOLS: &str = "read,grep,find,glob";
+
+/// The session mode a Claude Code assistant runs in: its read-only planning mode.
+pub const CLAUDE_ASSISTANT_MODE: &str = "plan";
+
+/// Appended to the system prompt of an OMP assistant (`--append-system-prompt`).
+pub const HARNESS_ASSISTANT_PROMPT: &str = "You are Hutan's assistant, built into a developer's \
+terminal workspace. Answer concisely and concretely. A message may carry attached context: \
+read-only excerpts the user chose to share (terminal output, files, conversations with \
+coding agents, search results), each introduced by a bracketed header that says what it is \
+and whether it was cut. Rely on that context and on the conversation; if the answer needs \
+something that was not attached, say what to attach instead of guessing. You can read files \
+and search the workspace, but you cannot run commands or change anything.";
+
 /// What is fixed about a harness.
 struct Def {
     /// The ACP executable looked for on `PATH`.
@@ -155,7 +171,12 @@ impl Harnesses {
     }
 
     /// How to start `agent`'s ACP process. Blocks (see [`environment`](Self::environment)).
-    pub fn acp_config(&self, agent: &str) -> Result<AcpConfig, ErrorBody> {
+    ///
+    /// With `assistant` the process starts with its tools restricted to reading (protocol 0.20,
+    /// `docs/assistant.md` § Backends): OMP gets `--tools` and the assistant prompt appended to
+    /// its system prompt. Claude Code is restricted by its session mode (`plan`), which the
+    /// assistant service requests when it creates the session.
+    pub fn acp_config(&self, agent: &str, assistant: bool) -> Result<AcpConfig, ErrorBody> {
         let def = def(agent)
             .filter(|_| is_harness_agent(agent))
             .ok_or_else(|| {
@@ -167,11 +188,19 @@ impl Harnesses {
         let settings = self.settings_of(agent);
         let mut env = self.environment();
         let program = self.locate(agent, settings.bin.as_deref(), def.acp_bin, &env)?;
-        let args = if settings.args.is_empty() {
+        let mut args: Vec<String> = if settings.args.is_empty() {
             def.acp_args.iter().map(|a| (*a).to_owned()).collect()
         } else {
             settings.args.clone()
         };
+        if assistant && agent == AGENT_OMP {
+            args.extend([
+                "--tools".to_owned(),
+                OMP_ASSISTANT_TOOLS.to_owned(),
+                "--append-system-prompt".to_owned(),
+                HARNESS_ASSISTANT_PROMPT.to_owned(),
+            ]);
+        }
         env.extend(settings.env);
         Ok(AcpConfig {
             agent: agent.to_owned(),
@@ -297,7 +326,7 @@ mod tests {
                 ..HarnessSettings::default()
             },
         )]);
-        let error = h.acp_config("claude").unwrap_err();
+        let error = h.acp_config("claude", false).unwrap_err();
         assert_eq!(error.code, ErrorCode::ProviderError);
         assert!(error.message.contains("nope"), "{}", error.message);
         assert!(
@@ -325,7 +354,7 @@ mod tests {
                 cli: None,
             },
         )]);
-        let config = h.acp_config("omp").unwrap();
+        let config = h.acp_config("omp", false).unwrap();
         assert_eq!(config.program, bin);
         assert_eq!(config.args, ["acp", "--profile", "work"]);
         assert!(
@@ -336,6 +365,42 @@ mod tests {
         assert_eq!(config.agent, "omp");
         // OMP's own CLI is its ACP executable unless told otherwise.
         assert_eq!(h.cli("omp", Path::new("codex")).unwrap().0, bin);
+    }
+
+    #[test]
+    fn an_omp_assistant_keeps_only_read_tools_and_gets_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = executable(dir.path(), "my-omp");
+        let h = harnesses(&[(
+            "omp",
+            HarnessSettings {
+                bin: Some(bin),
+                args: vec!["acp".into(), "--profile".into(), "work".into()],
+                ..HarnessSettings::default()
+            },
+        )]);
+        let plain = h.acp_config("omp", false).unwrap();
+        assert!(!plain.args.iter().any(|a| a == "--tools"));
+        let assistant = h.acp_config("omp", true).unwrap();
+        assert_eq!(
+            assistant.args[..3],
+            ["acp", "--profile", "work"],
+            "the configured arguments stay"
+        );
+        let tools = assistant.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(assistant.args[tools + 1], OMP_ASSISTANT_TOOLS);
+        for forbidden in ["bash", "edit", "write", "task"] {
+            assert!(
+                !OMP_ASSISTANT_TOOLS.split(',').any(|t| t == forbidden),
+                "{forbidden} is not a read tool"
+            );
+        }
+        let prompt = assistant
+            .args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
+        assert_eq!(assistant.args[prompt + 1], HARNESS_ASSISTANT_PROMPT);
     }
 
     #[test]
@@ -374,7 +439,7 @@ mod tests {
         assert!(!is_harness_agent("codex") && !is_harness_agent("direct"));
         let h = harnesses(&[]);
         assert_eq!(
-            h.acp_config("codex").unwrap_err().code,
+            h.acp_config("codex", false).unwrap_err().code,
             ErrorCode::BadRequest
         );
     }

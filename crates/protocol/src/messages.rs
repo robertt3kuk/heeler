@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 
 use crate::ProtocolVersion;
 use crate::account::{AccountLogin, AccountLogout};
-use crate::assistant::{AssistantListRequest, AssistantOpen};
+use crate::assistant::{AssistantConfigure, AssistantListRequest, AssistantOpen};
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::chat::{
     ApprovalInfo, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistoryRequest, ChatInfo,
@@ -209,6 +209,11 @@ pub enum Request {
     /// Capability `assistant`: the assistant sessions; answered with `AssistantList`.
     #[serde(rename = "assistant.list")]
     AssistantList(AssistantListRequest),
+    /// Capability `assistant.backend` (protocol 0.20): the backend (OMP, Claude Code, Codex or
+    /// a provider) and model assistants of a scope are created with from now on; answered with
+    /// `AssistantConfig`.
+    #[serde(rename = "assistant.configure")]
+    AssistantConfigure(AssistantConfigure),
     /// Capability `notify.intents` (protocol 0.13): the pending notification intents; answered
     /// with `NotifyList`.
     #[serde(rename = "notify.list")]

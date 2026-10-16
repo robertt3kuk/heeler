@@ -773,6 +773,10 @@ impl Setting for AppSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AssistantSettings {
+    /// Whether Hutan has an assistant at all. Off hides the Assistant panel, removes its
+    /// commands from the palette and unregisters the shortcuts (⌥Space in the app and the
+    /// system-wide one); the daemon keeps its assistant conversations.
+    pub enabled: bool,
     /// System-wide shortcut that brings Hutan forward and opens the Assistant, for example
     /// `alt-space` or `cmd-shift-space` (modifiers `cmd`, `ctrl`, `alt`, `shift`, at least one
     /// of the first three). Empty turns it off. If another app already owns the shortcut,
@@ -783,6 +787,7 @@ pub struct AssistantSettings {
 impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             global_shortcut: "alt-space".to_owned(),
         }
     }

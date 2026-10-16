@@ -9,7 +9,6 @@
 
 use gpui::{Context, Entity, Window};
 use hutan_core::SessionId;
-use hutan_protocol::assistant::AGENT_ASSISTANT;
 
 use super::chat::ContextChip;
 use super::model::PanelId;
@@ -17,12 +16,39 @@ use super::panels::{AssistantPanel, ScopeKey};
 use super::view::Workbench;
 
 impl Workbench {
+    /// `assistant.enabled`: off hides the panel and its commands and shortcuts.
+    pub fn assistant_enabled(&self) -> bool {
+        self.settings
+            .get::<crate::settings::AssistantSettings>()
+            .enabled
+    }
+
+    /// The setting changed: closes the panel, drops the commands and the key, and lets the
+    /// global shortcut go (or brings them back).
+    pub(crate) fn apply_assistant_enabled(&mut self, cx: &mut Context<Self>) {
+        if !self.assistant_enabled() {
+            let id = PanelId::new("assistant");
+            self.try_mutate(cx, |s| s.close_panel(&id));
+            self.panel_views.remove(&id);
+        }
+        self.commands = std::rc::Rc::new(super::actions::commands(
+            &self.presets,
+            &self.panels,
+            self.assistant_enabled(),
+        ));
+        self.rebind_keys(cx);
+        self.sync_hotkey(cx);
+    }
+
     /// Reveals the Assistant panel (in its default dock when it is closed) and returns it.
     pub(crate) fn assistant_panel(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<AssistantPanel>> {
+        if !self.assistant_enabled() {
+            return None;
+        }
         self.open_panel("assistant", cx);
         let view = self.panel_view(&PanelId::new("assistant"), window, cx)?;
         view.downcast::<AssistantPanel>().ok()
@@ -32,6 +58,10 @@ impl Workbench {
     /// (the first use asks the daemon to open it) and puts the keyboard in its composer. No
     /// terminal is started and no vendor agent is run.
     pub fn open_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.assistant_enabled() {
+            self.set_notice("The assistant is off (assistant.enabled)", cx);
+            return;
+        }
         let Some(panel) = self.assistant_panel(window, cx) else {
             self.set_notice("The Assistant panel is not available", cx);
             return;
@@ -49,7 +79,7 @@ impl Workbench {
             .read(cx)
             .session(session)
             .and_then(|info| info.chat.as_ref())
-            .is_some_and(|chat| chat.agent == AGENT_ASSISTANT)
+            .is_some_and(|chat| chat.is_assistant())
     }
 
     /// Shows the assistant conversation `session` in the Assistant panel, in its own scope, with
@@ -60,7 +90,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.is_assistant(session, cx) {
+        if !self.assistant_enabled() || !self.is_assistant(session, cx) {
             return false;
         }
         let Some(panel) = self.assistant_panel(window, cx) else {

@@ -18,7 +18,7 @@ mod widgets;
 pub use chip::{Chip, cut_to};
 pub use context::{
     ContextChip, DEFAULT_HITS, DEFAULT_LINES, DEFAULT_TURNS, Mention, MentionKind, find_mention,
-    is_gateway_chat, kind_label, parse_file_arg, split_context,
+    is_gateway_chat, is_harness_chat, kind_label, parse_file_arg, split_context,
 };
 pub use input::TextInput;
 pub use markdown_view::Look;

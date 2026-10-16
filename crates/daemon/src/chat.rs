@@ -89,6 +89,10 @@ pub struct ChatSpec {
     /// Harness chats only: the session mode asked for at creation (applied again on restore).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Harness and Codex chats only (protocol 0.20): the session is an assistant, started with
+    /// its tools restricted (`Harnesses::acp_config`, `AssistantService`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assistant: bool,
 }
 
 /// What runs a session: an agent process, or the model gateway.
@@ -308,7 +312,8 @@ impl ChatManager {
     ) -> Result<Started, ErrorBody> {
         let harnesses = self.harnesses.clone();
         let agent = spec.agent.clone();
-        let config = tokio::task::spawn_blocking(move || harnesses.acp_config(&agent))
+        let assistant = spec.assistant;
+        let config = tokio::task::spawn_blocking(move || harnesses.acp_config(&agent, assistant))
             .await
             .map_err(|e| {
                 ErrorBody::new(ErrorCode::Internal, format!("locating the agent: {e}"))
@@ -522,23 +527,31 @@ impl ChatManager {
             ));
         }
         let started = match &live.backend {
-            Backend::Agent(adapter) => adapter
-                .send_message_with_context(
-                    text,
-                    attached.map(|attached| attached.blocks).unwrap_or_default(),
-                )
-                .await
-                .map(|turn| turn.turn_id)
-                .map_err(|error| match error {
-                    AgentError::Unsupported(_) => {
-                        ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+            Backend::Agent(adapter) => {
+                // ACP harnesses take each attachment as an embedded resource. Codex has no
+                // such input: its assistant gets the same text quoted after the message.
+                let (text, blocks) = match attached {
+                    Some(attached) if adapter.agent() == AGENT_CODEX => {
+                        (format!("{text}\n\n{}", attached.appendix), Vec::new())
                     }
-                    AgentError::TurnInProgress => ErrorBody::new(
-                        ErrorCode::InvalidState,
-                        "a turn is already in progress; wait for it or interrupt it",
-                    ),
-                    error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
-                }),
+                    Some(attached) => (text, attached.blocks),
+                    None => (text, Vec::new()),
+                };
+                adapter
+                    .send_message_with_context(text, blocks)
+                    .await
+                    .map(|turn| turn.turn_id)
+                    .map_err(|error| match error {
+                        AgentError::Unsupported(_) => {
+                            ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+                        }
+                        AgentError::TurnInProgress => ErrorBody::new(
+                            ErrorCode::InvalidState,
+                            "a turn is already in progress; wait for it or interrupt it",
+                        ),
+                        error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+                    })
+            }
             Backend::Direct(session) => session.send(text, attached).await,
         };
         if started.is_err() {
@@ -800,7 +813,7 @@ impl ChatManager {
     async fn harness_models(&self, agent: &str) -> Result<Vec<ModelInfo>, ErrorBody> {
         let harnesses = self.harnesses.clone();
         let name = agent.to_owned();
-        let located = tokio::task::spawn_blocking(move || harnesses.acp_config(&name))
+        let located = tokio::task::spawn_blocking(move || harnesses.acp_config(&name, false))
             .await
             .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("locating the agent: {e}")))?;
         let session_error = match located {

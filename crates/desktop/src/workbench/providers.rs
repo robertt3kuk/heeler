@@ -622,14 +622,27 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let allowed = self
+        let chat = self
             .sessions
             .read(cx)
             .session(session)
-            .and_then(|s| s.chat.as_ref())
-            .is_some_and(|chat| super::chat::is_gateway_chat(&chat.agent) && !chat.turn_active);
-        if !allowed {
-            self.set_notice("Models can be switched between turns of a direct chat", cx);
+            .and_then(|s| s.chat.clone());
+        let Some(chat) = chat else {
+            return;
+        };
+        if chat.turn_active {
+            self.set_notice("The model can be switched between turns", cx);
+            return;
+        }
+        if super::chat::is_harness_chat(&chat.agent) {
+            self.open_harness_model_switch(session, chat.agent, window, cx);
+            return;
+        }
+        if !super::chat::is_gateway_chat(&chat.agent) {
+            self.set_notice(
+                "A Codex chat keeps the model it started with: start another chat to change it",
+                cx,
+            );
             return;
         }
         self.new_direct_chat(window, cx);

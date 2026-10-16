@@ -11,12 +11,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// What panels need from the app: the live sessions, the settings, and where to record the
-/// painted bounds of their interactive rows.
+/// What panels need from the app: the live sessions, the settings, the harnesses (installed,
+/// logged in, their models) and where to record the painted bounds of their interactive rows.
 #[derive(Clone)]
 pub struct PanelEnv {
     pub sessions: Entity<SessionsStore>,
     pub settings: SettingsStore,
+    pub harnesses: Entity<super::harnesses::HarnessDirectory>,
     pub regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
 }
 

@@ -25,6 +25,21 @@ opening the default assistant could select a different conversation.
 
 An assistant session is an ordinary chat session: `chat.send`, `chat.history`, `chat.interrupt`, `chat.set_model`, `session.stop`/`restart`, restore after a daemon restart all work as for a direct chat. Its system prompt is `assistant::SYSTEM_PROMPT`.
 
+## Backends (protocol 0.20, M8-B)
+
+The assistant is **optional** (desktop `assistant.enabled`, § Desktop) and chooses what answers it per scope: `omp`, `claude`, `codex`, or a direct `provider` (M5) with a model. The choice is `daemon.toml [assistant] backend = "omp" | "claude" | "codex" | "provider"` (+ `model`, + `provider` for the provider backend; `provider` alone still means the provider backend), overridden by `assistant.configure` — globally or for one workspace — which the daemon stores in its database. A project inside a workspace (protocol 0.19) uses the workspace's choice unless it has its own, then the global one; `assistant.open` and `assistant.configure` with `scope: workspace` take a workspace or a project id, and the assistant lives in the id it was opened for (a project's assistant sees that project's folders). `assistant.open` returns the oldest assistant of the scope on the configured backend, so switching backend keeps each backend's conversation and a second `open` after switching back finds the first again.
+
+What each harness assistant may do (restricted where the harness allows it, never faked):
+
+| Backend | How it runs | Tools |
+|---|---|---|
+| `omp` | `omp acp --tools read,grep,find,glob --append-system-prompt <assistant prompt>` | read-only: no `bash`, `edit`, `write`, `task`, web |
+| `claude` | Claude Code's ACP session in its `plan` mode | read-only planning mode of Claude Code; what it lists as tools in that mode is Claude Code's own |
+| `codex` | `codex app-server` with `sandbox: read-only`, approval policy `never` | read-only sandbox, nothing asks (a refused write fails inside the sandbox) |
+| `provider` | the direct chat gateway | none |
+
+The permissions below (`[assistant.context]` …) gate attachments for every backend. A harness assistant's session is marked `ChatInfo.assistant`; it is an ordinary harness chat otherwise (journal, restore, history index). Harness assistants need the harness's login (`hutan account ls`); when the harness is missing or logged out `assistant.open` fails with the harness's own message.
+
 ## Attachments
 
 `chat.send { session_id, text, attachments }`. At most 16 per message. Only direct and assistant chats take attachments. Every attachment is validated (its own bounds, then the permission of the session's scope) before the first one is read, and the first one that cannot be resolved fails the message: nothing is journaled, nothing reaches the provider.
@@ -97,7 +112,13 @@ The **Assistant** panel (`assistant`, registered like every panel: movable betwe
 
 **Scope.** The header chooses **Global** (the Home assistant: it sees the Home folder only) or **Workspace · name** (the active workspace's assistant; disabled while Home is active). Each scope has its own session, so switching keeps both transcripts, drafts and chips; nothing moves from one to the other. A history hit that is an assistant conversation (`session_id` of a `hutan` hit) opens in the panel, in its own scope, instead of as a tab; the Sessions panel still opens any assistant as an ordinary chat tab, with the same composer.
 
-**Without a provider.** The daemon names the assistants' provider and model under `[assistant]` in `daemon.toml` and reads it at start. When `assistant.open` is refused with `invalid_state` the panel says so in the daemon's words, links to **Models settings** and offers Retry. The desktop never picks a provider or model of its own and makes no model call. A configured provider whose key is missing or rejected shows **Set key…** like any gateway chat, a missing model **Pick another model…**; the header's **Switch model…** applies to assistants too.
+**Backend and model.** A row under the header shows what the shown scope's assistant runs on (`OMP · anthropic/claude-opus-4-5 ▾`); it opens a chooser: the backends (OMP, Claude Code, Codex with their detection and logins, and each provider), then the models of the one picked, or its default. Choosing stores it with `assistant.configure` for the shown scope (Global for the Global tab, the workspace for the Workspace tab) and opens that scope's assistant on it.
+
+**Off.** `assistant.enabled = false` (settings namespace `assistant`, default true) closes and hides the Assistant panel, removes *Assistant: Open / Focus* and *Panel: Open Assistant* from ⌘K, unbinds ⌥Space (also a user binding) and unregisters the system-wide shortcut; a history hit that is an assistant conversation opens as an ordinary chat tab. The daemon keeps its assistant sessions.
+
+**First run (no backend yet).** `assistant.open` answers `invalid_state` and the panel shows a card instead of the daemon's words: **Use OMP** when OMP is installed and logged in (it stores OMP globally and opens the assistant), **Add a provider…** (Models settings) and Retry. Nothing is sent anywhere until the user chooses.
+
+**Without a provider (older daemons).** The daemon names the assistants' provider and model under `[assistant]` in `daemon.toml` and reads it at start. When `assistant.open` is refused with `invalid_state` the panel says so in the daemon's words, links to **Models settings** and offers Retry. The desktop never picks a provider or model of its own and makes no model call. A configured provider whose key is missing or rejected shows **Set key…** like any gateway chat, a missing model **Pick another model…**; the header's **Switch model…** applies to assistants too.
 
 **Context.** Context is opt-in per message and never read by the desktop. The composer's **＋ Attach** menu opens the form of each kind; typing a mention in the composer offers the same form (↹ or the hint's button accepts it and removes the mention from the draft):
 

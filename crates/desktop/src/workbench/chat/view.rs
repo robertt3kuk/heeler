@@ -18,7 +18,7 @@ use hutan_protocol::messages::SessionInfo;
 use hutan_settings::SettingsStore;
 
 use super::attach::Attaching;
-use super::context::is_gateway_chat;
+use super::context::{is_gateway_chat, is_harness_chat};
 use super::input::TextInput;
 use super::markdown_view::Look;
 use super::model::{ChatModel, LoadStatus};
@@ -26,6 +26,7 @@ use super::widgets::{ButtonKind, button, round_button};
 use crate::sessions::SessionsStore;
 use crate::settings::ChatSettings;
 use crate::workbench::actions::{self, RestartSessionById};
+use crate::workbench::harnesses::harness_name;
 use crate::workbench::panels::{kind_icon, state_dot, tone_color};
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
@@ -469,12 +470,25 @@ impl ChatView {
         let presentation = self.sessions.read(cx).presentation(info);
         let chat = info.chat.as_ref();
         let detail = chat.map(|chat| {
-            if is_gateway_chat(&chat.agent) {
+            if is_gateway_chat(&chat.agent) && chat.agent != "assistant" {
                 format!(
                     "{} · {}",
                     chat.provider_id.as_deref().unwrap_or("provider"),
                     chat.model
                 )
+            } else if chat.is_assistant() {
+                // The harness or provider the assistant runs on, and what it may do.
+                let backend = if is_gateway_chat(&chat.agent) {
+                    chat.provider_id
+                        .clone()
+                        .unwrap_or_else(|| "provider".into())
+                } else {
+                    harness_name(&chat.agent)
+                };
+                format!("{backend} · {} · assistant", chat.model)
+            } else if is_harness_chat(&chat.agent) {
+                // The harness decides what asks and what is sandboxed: no Hutan policy to show.
+                format!("{} · {}", harness_name(&chat.agent), chat.model)
             } else {
                 format!(
                     "{} · {} · approvals {} · sandbox {}",
@@ -515,26 +529,31 @@ impl ChatView {
                     .text_size(px(tokens.secondary_font_size))
                     .child(SharedString::from(text))
             }))
-            .when(chat.is_some_and(|chat| is_gateway_chat(&chat.agent)), |s| {
-                s.child(
-                    button(
-                        "chat-switch-model",
-                        "Switch model…",
-                        ButtonKind::Secondary,
-                        chat.is_some_and(|chat| !chat.turn_active),
-                        look,
-                    )
-                    .when(chat.is_some_and(|chat| !chat.turn_active), |b| {
-                        b.on_click(move |_, window, cx| {
-                            window.dispatch_action(
-                                Box::new(actions::SwitchChatModelById(session.to_string())),
-                                cx,
-                            );
+            .when(
+                chat.is_some_and(|chat| {
+                    is_gateway_chat(&chat.agent) || is_harness_chat(&chat.agent)
+                }),
+                |s| {
+                    s.child(
+                        button(
+                            "chat-switch-model",
+                            "Switch model…",
+                            ButtonKind::Secondary,
+                            chat.is_some_and(|chat| !chat.turn_active),
+                            look,
+                        )
+                        .when(chat.is_some_and(|chat| !chat.turn_active), |b| {
+                            b.on_click(move |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(actions::SwitchChatModelById(session.to_string())),
+                                    cx,
+                                );
+                            })
                         })
-                    })
-                    .child(probe(&self.regions, Region::Chat("switch-model"))),
-                )
-            })
+                        .child(probe(&self.regions, Region::Chat("switch-model"))),
+                    )
+                },
+            )
             .when(pending > 0, |s| {
                 s.child(
                     div()

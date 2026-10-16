@@ -18,11 +18,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hutan_core::agent::MessageRole;
-use hutan_core::{AgentEvent, AgentEventKind, SessionId, TerminalId, WorkspaceId};
+use hutan_core::{
+    AgentEvent, AgentEventKind, ApprovalPolicy, SandboxMode, SessionId, TerminalId, WorkspaceId,
+};
 use hutan_index::{Role, SessionTextQuery, Source};
 use hutan_protocol::assistant::{
-    AGENT_ASSISTANT, ATTACHMENTS_MAX, AssistantEntry, AssistantList, AssistantListRequest,
-    AssistantOpen, AssistantScope, Attachment, AttachmentKind, LineRange,
+    AGENT_ASSISTANT, ATTACHMENTS_MAX, AssistantBackend, AssistantConfig, AssistantConfigure,
+    AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, AssistantScope, Attachment,
+    AttachmentKind, LineRange,
 };
 use hutan_protocol::blocks::{BlockPart, BlockState, TerminalBlockText, TerminalBlocks};
 use hutan_protocol::chat::ChatCreate;
@@ -32,13 +35,14 @@ use hutan_protocol::messages::{SessionInfo, SessionListFilter, WorkspaceInfo, Wo
 use hutan_storage::Storage;
 use tokio::sync::Mutex;
 
-use crate::chat::is_gateway_agent;
+use crate::chat::{AGENT_CODEX, is_gateway_agent};
 use crate::config::{AssistantSettings, ContextPermissions, gating_setting};
 use crate::context::{
     self, Attached, Bounded, Keep, Message, Part, REDACT_SLACK, last_turns, merge_chunks, one_line,
     redact_and_bound,
 };
 use crate::context_file::{FileContext, read_file};
+use crate::harness::CLAUDE_ASSISTANT_MODE;
 use crate::history::HistoryService;
 use crate::registry::RegistryHandle;
 use crate::terminals::TerminalHub;
@@ -65,6 +69,37 @@ fn error(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
 
 fn internal(error: impl std::fmt::Display) -> ErrorBody {
     ErrorBody::new(ErrorCode::Internal, error.to_string())
+}
+
+/// What new assistants of a scope are created with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Backend {
+    kind: AssistantBackend,
+    model: Option<String>,
+    /// The provider of the `provider` backend.
+    provider: Option<String>,
+}
+
+impl Backend {
+    /// Whether `session` runs on this backend (and, for a provider, on this provider).
+    fn runs(&self, session: &SessionInfo) -> bool {
+        backend_of(session) == self.kind
+            && (self.kind != AssistantBackend::Provider
+                || session
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.provider_id == self.provider))
+    }
+}
+
+/// The backend an assistant session runs on.
+fn backend_of(session: &SessionInfo) -> AssistantBackend {
+    match session.chat.as_ref().map(|chat| chat.agent.as_str()) {
+        Some("omp") => AssistantBackend::Omp,
+        Some("claude") => AssistantBackend::Claude,
+        Some(AGENT_CODEX) => AssistantBackend::Codex,
+        _ => AssistantBackend::Provider,
+    }
 }
 
 /// Runs assistants and resolves attachments.
@@ -120,7 +155,7 @@ impl AssistantService {
             .await?
             .sessions
             .into_iter()
-            .filter(|s| s.chat.as_ref().is_some_and(|c| c.agent == AGENT_ASSISTANT))
+            .filter(|s| s.chat.as_ref().is_some_and(|c| c.is_assistant()))
             .collect();
         // Stable: sessions created in the same millisecond keep the registry's creation order
         // (ULIDs of one millisecond are random, so the id cannot break the tie).
@@ -143,13 +178,42 @@ impl AssistantService {
     pub async fn open(&self, req: AssistantOpen) -> Result<SessionInfo, ErrorBody> {
         let _one_at_a_time = self.open_lock.lock().await;
         let workspaces = self.workspaces().await?;
-        let workspace = match req.scope {
+        let workspace = Self::target(&workspaces, req.scope, req.workspace_id)?;
+        let backend = self.effective(workspace).await?;
+        let existing: Vec<SessionInfo> = self
+            .assistants()
+            .await?
+            .into_iter()
+            .filter(|s| s.workspace_id == workspace.id)
+            .collect();
+        if !req.new {
+            let default = backend
+                .as_ref()
+                .map_or(existing.first(), |b| existing.iter().find(|s| b.runs(s)));
+            if let Some(default) = default {
+                if default.state.is_live() {
+                    return Ok(default.clone());
+                }
+                return self.registry.restart_session(default.id).await;
+            }
+        }
+        let backend = backend.ok_or_else(Self::unconfigured)?;
+        self.create(workspace, existing.len(), &backend).await
+    }
+
+    /// The workspace an `assistant.open` / `assistant.configure` names.
+    fn target(
+        workspaces: &[WorkspaceInfo],
+        scope: AssistantScope,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<&WorkspaceInfo, ErrorBody> {
+        match scope {
             AssistantScope::Global => workspaces
                 .iter()
                 .find(|w| w.kind == WorkspaceKind::Home)
-                .ok_or_else(|| internal("the daemon has no Home workspace"))?,
+                .ok_or_else(|| internal("the daemon has no Home workspace")),
             AssistantScope::Workspace => {
-                let id = req.workspace_id.ok_or_else(|| {
+                let id = workspace_id.ok_or_else(|| {
                     error(
                         ErrorCode::BadRequest,
                         "scope `workspace` needs a `workspace_id`",
@@ -164,38 +228,139 @@ impl AssistantService {
                         "the Home workspace has the global assistant: use scope `global`",
                     ));
                 }
-                workspace
+                Ok(workspace)
             }
-        };
-        let existing: Vec<SessionInfo> = self
-            .assistants()
-            .await?
-            .into_iter()
-            .filter(|s| s.workspace_id == workspace.id)
-            .collect();
-        if !req.new
-            && let Some(default) = existing.first()
-        {
-            if default.state.is_live() {
-                return Ok(default.clone());
-            }
-            return self.registry.restart_session(default.id).await;
         }
-        self.create(workspace, existing.len()).await
+    }
+
+    fn unconfigured() -> ErrorBody {
+        error(
+            ErrorCode::InvalidState,
+            "no assistant backend is configured: choose one in the Assistant panel (or send \
+             `assistant.configure`), or set `backend` (`omp`, `claude`, `codex` or `provider`) \
+             or `provider` (and `model`) under `[assistant]` in daemon.toml",
+        )
+    }
+
+    // The configured backend --------------------------------------------------------------------
+
+    fn meta_key(scope: AssistantScope, workspace: WorkspaceId) -> String {
+        match scope {
+            AssistantScope::Global => "assistant.config.global".to_owned(),
+            AssistantScope::Workspace => format!("assistant.config.workspace.{workspace}"),
+        }
+    }
+
+    /// What `assistant.configure` stored for a scope, if anything.
+    async fn stored(
+        &self,
+        scope: AssistantScope,
+        workspace: WorkspaceId,
+    ) -> Result<Option<AssistantConfig>, ErrorBody> {
+        let key = Self::meta_key(scope, workspace);
+        let storage = self.storage.clone();
+        let raw = tokio::task::spawn_blocking(move || storage.app_meta().get(&key))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        Ok(raw.and_then(|raw| match serde_json::from_str(&raw) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                tracing::warn!(%error, "stored assistant configuration is unreadable; ignored");
+                None
+            }
+        }))
+    }
+
+    /// The backend a workspace's assistants are created with: its own `assistant.configure`;
+    /// for a project inside a workspace, else that workspace's; else the global one, else
+    /// `[assistant]` of `daemon.toml`; `None` when none is set.
+    async fn effective(&self, workspace: &WorkspaceInfo) -> Result<Option<Backend>, ErrorBody> {
+        let mut stored = None;
+        if Self::scope_of(workspace) == AssistantScope::Workspace {
+            stored = self.stored(AssistantScope::Workspace, workspace.id).await?;
+            if stored.is_none()
+                && let Some(parent) = workspace.parent_id
+            {
+                stored = self.stored(AssistantScope::Workspace, parent).await?;
+            }
+        }
+        let stored = match stored {
+            Some(stored) => Some(stored),
+            None => self.stored(AssistantScope::Global, workspace.id).await?,
+        };
+        if let Some(config) = stored {
+            return Ok(Some(Backend {
+                kind: config.backend,
+                model: config.model,
+                provider: config.provider,
+            }));
+        }
+        let kind = self.settings.backend.or_else(|| {
+            self.settings
+                .provider
+                .as_ref()
+                .map(|_| AssistantBackend::Provider)
+        });
+        Ok(kind.map(|kind| Backend {
+            kind,
+            model: self.settings.model.clone(),
+            provider: self.settings.provider.clone(),
+        }))
+    }
+
+    /// `assistant.configure`: stores the backend for a scope.
+    pub async fn configure(&self, req: AssistantConfigure) -> Result<AssistantConfig, ErrorBody> {
+        let workspaces = self.workspaces().await?;
+        let workspace = Self::target(&workspaces, req.scope, req.workspace_id)?;
+        let clean =
+            |value: Option<String>| value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let (model, provider) = (clean(req.model), clean(req.provider));
+        match req.backend {
+            AssistantBackend::Provider => {
+                let Some(provider) = &provider else {
+                    return Err(error(
+                        ErrorCode::BadRequest,
+                        "the `provider` backend needs a `provider` (see `hutan provider ls`)",
+                    ));
+                };
+                self.registry.chats().providers().require(provider)?;
+            }
+            harness => {
+                if provider.is_some() {
+                    return Err(error(
+                        ErrorCode::BadRequest,
+                        format!(
+                            "`provider` belongs to the `provider` backend, not `{}`",
+                            harness.as_str()
+                        ),
+                    ));
+                }
+            }
+        }
+        let config = AssistantConfig {
+            scope: req.scope,
+            workspace_id: (req.scope == AssistantScope::Workspace).then_some(workspace.id),
+            backend: req.backend,
+            model,
+            provider,
+        };
+        let key = Self::meta_key(req.scope, workspace.id);
+        let json = serde_json::to_string(&config).map_err(internal)?;
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || storage.app_meta().set(&key, &json))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        Ok(config)
     }
 
     async fn create(
         &self,
         workspace: &WorkspaceInfo,
         existing: usize,
+        backend: &Backend,
     ) -> Result<SessionInfo, ErrorBody> {
-        let provider = self.settings.provider.clone().ok_or_else(|| {
-            error(
-                ErrorCode::InvalidState,
-                "no assistant provider is configured: set `provider` (and `model`) under \
-                 `[assistant]` in daemon.toml to one of `hutan provider ls`, then restart the daemon",
-            )
-        })?;
         let cwd = workspace
             .roots
             .first()
@@ -208,23 +373,54 @@ impl AssistantService {
         if existing > 0 {
             title.push_str(&format!(" {}", existing + 1));
         }
-        self.registry
-            .create_chat(ChatCreate {
-                workspace_id: Some(workspace.id),
-                cwd,
-                agent: AGENT_ASSISTANT.to_owned(),
-                model: self.settings.model.clone(),
-                approval_policy: None,
-                sandbox: None,
-                title: Some(title),
-                mode: None,
-                provider_id: Some(provider),
-                system_prompt: Some(SYSTEM_PROMPT.to_owned()),
-            })
-            .await
+        let mut request = ChatCreate {
+            workspace_id: Some(workspace.id),
+            cwd,
+            agent: AGENT_ASSISTANT.to_owned(),
+            model: backend.model.clone(),
+            approval_policy: None,
+            sandbox: None,
+            title: Some(title),
+            mode: None,
+            provider_id: None,
+            system_prompt: None,
+        };
+        match backend.kind {
+            AssistantBackend::Provider => {
+                let provider = backend.provider.clone().ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidState,
+                        "the `provider` backend has no provider: set `provider` under \
+                         `[assistant]` in daemon.toml, or choose one in the Assistant panel",
+                    )
+                })?;
+                request.provider_id = Some(provider);
+                request.system_prompt = Some(SYSTEM_PROMPT.to_owned());
+                self.registry.create_chat(request).await
+            }
+            harness => {
+                request.agent = harness.harness().unwrap_or(AGENT_CODEX).to_owned();
+                match harness {
+                    // Claude Code's read-only mode.
+                    AssistantBackend::Claude => {
+                        request.mode = Some(CLAUDE_ASSISTANT_MODE.to_owned());
+                    }
+                    // A read-only sandbox, and nothing asks (a refused write fails inside the
+                    // sandbox instead of waiting for an answer nobody gave).
+                    AssistantBackend::Codex => {
+                        request.approval_policy = Some(ApprovalPolicy::Never);
+                        request.sandbox = Some(SandboxMode::ReadOnly);
+                    }
+                    // OMP: its tools are limited on the command line (`Harnesses::acp_config`).
+                    AssistantBackend::Omp | AssistantBackend::Provider => {}
+                }
+                self.registry.create_assistant_chat(request).await
+            }
+        }
     }
 
-    /// The assistant sessions, oldest first, with the scope of each and which is the default.
+    /// The assistant sessions, oldest first, with the scope and backend of each and which is
+    /// the default.
     pub async fn list(&self, req: AssistantListRequest) -> Result<AssistantList, ErrorBody> {
         let workspaces = self.workspaces().await?;
         let mut seen: Vec<WorkspaceId> = Vec::new();
@@ -233,8 +429,14 @@ impl AssistantService {
             let Some(workspace) = workspaces.iter().find(|w| w.id == session.workspace_id) else {
                 continue;
             };
-            let default = !seen.contains(&workspace.id);
-            seen.push(workspace.id);
+            let backend = self.effective(workspace).await?;
+            let default = !seen.contains(&workspace.id)
+                && backend
+                    .as_ref()
+                    .is_none_or(|backend| backend.runs(&session));
+            if default {
+                seen.push(workspace.id);
+            }
             let scope = Self::scope_of(workspace);
             if req.scope.is_some_and(|wanted| wanted != scope)
                 || req
@@ -247,6 +449,7 @@ impl AssistantService {
                 scope,
                 workspace_id: workspace.id,
                 default,
+                backend: backend_of(&session),
                 session,
             });
         }
@@ -309,7 +512,10 @@ impl AssistantService {
                 format!("session {session} is not a chat session"),
             ));
         };
-        if !is_gateway_agent(&chat.agent) && !crate::harness::is_harness_agent(&chat.agent) {
+        if !is_gateway_agent(&chat.agent)
+            && !crate::harness::is_harness_agent(&chat.agent)
+            && !chat.is_assistant()
+        {
             return Err(error(
                 ErrorCode::BadRequest,
                 "attachments are only supported by direct, assistant and harness (omp, claude) chats",

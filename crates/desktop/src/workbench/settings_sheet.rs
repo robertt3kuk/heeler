@@ -137,6 +137,9 @@ impl Workbench {
         if selected == "models" {
             self.refresh_providers(cx);
         }
+        if selected == "accounts" {
+            self.refresh_accounts(cx);
+        }
         cx.notify();
     }
 
@@ -175,6 +178,9 @@ impl Workbench {
         }
         if namespace == "models" {
             self.refresh_providers(cx);
+        }
+        if namespace == "accounts" {
+            self.refresh_accounts(cx);
         }
     }
 
@@ -928,6 +934,8 @@ impl Workbench {
         let has_errors = errors.iter().any(|e| e.severity == Severity::Error);
         let rows = if selected == "models" {
             vec![self.render_providers(cx)]
+        } else if selected == "accounts" {
+            vec![self.render_accounts(cx)]
         } else {
             rows
         };

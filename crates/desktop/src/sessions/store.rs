@@ -49,6 +49,13 @@ pub struct UiOpenRequested {
     pub workspace_id: Option<WorkspaceId>,
 }
 
+/// Emitted by [`SessionsStore`] when a harness's login or logout session ended
+/// (`account.changed`): its accounts may have changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountsChanged {
+    pub harness: String,
+}
+
 /// Whether a `ui.open` sent at `at_ms` is still current at `now_ms` (both Unix milliseconds on
 /// this machine; a stamp from the future counts as current).
 fn ui_open_is_fresh(at_ms: u64, now_ms: u64) -> bool {
@@ -101,6 +108,7 @@ pub struct SessionsStore {
 
 impl EventEmitter<AgentAttentionChanged> for SessionsStore {}
 impl EventEmitter<UiOpenRequested> for SessionsStore {}
+impl EventEmitter<AccountsChanged> for SessionsStore {}
 
 impl std::fmt::Debug for SessionsStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -321,9 +329,12 @@ impl SessionsStore {
             | Notice::WorktreesChanged { .. }
             // The tasks panel is M7-C's.
             | Notice::TaskUpdated { .. }
-            | Notice::TaskRemoved { .. }
-            // The accounts view follows D-1.
-            | Notice::AccountsChanged { .. } => {}
+            | Notice::TaskRemoved { .. } => {}
+            // A login or logout session of a harness ended: whoever lists the accounts asks
+            // again.
+            Notice::AccountsChanged { harness } => cx.emit(AccountsChanged {
+                harness: harness.clone(),
+            }),
         }
     }
 
@@ -756,6 +767,35 @@ impl SessionsStore {
                 .await
                 .map(|answer| answer.models)
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    /// `account.login` / `account.logout`: the harness's own flow in a terminal session. The
+    /// session is remembered until its events arrive, so the window can show it at once.
+    pub fn account_flow(
+        &mut self,
+        harness: &str,
+        provider: Option<String>,
+        login: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<hutan_protocol::account::AccountSession, String>> {
+        let connection = self.connection.clone();
+        let harness = harness.to_owned();
+        cx.spawn(async move |this, cx| {
+            let answer = if login {
+                connection.account_login(&harness, provider).await
+            } else {
+                connection.account_logout(&harness, provider).await
+            }
+            .map_err(|e| e.to_string())?;
+            let remembered = answer.session.clone();
+            this.update(cx, |this, _| {
+                if !this.state.sessions.iter().any(|s| s.id == remembered.id) {
+                    this.recent.insert(remembered.id, remembered);
+                }
+            })
+            .ok();
+            Ok(answer)
         })
     }
 

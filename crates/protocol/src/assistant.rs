@@ -44,13 +44,93 @@ impl AssistantScope {
     }
 }
 
-/// `assistant.open`: the default assistant session of a scope, created on first use with the
-/// provider and model of `[assistant]` in `daemon.toml`. A stopped default is started again.
-/// Answered with `SessionResult`.
+/// What runs an assistant (protocol 0.20, capability `assistant.backend`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantBackend {
+    /// OMP over ACP, with its tools limited to reading (`docs/assistant.md` § Backends).
+    Omp,
+    /// Claude Code over its ACP adapter, in its read-only `plan` mode.
+    Claude,
+    /// Codex (`codex app-server`) with a read-only sandbox that never asks.
+    Codex,
+    /// A direct model through a configured provider (`hutan provider ls`), no tools.
+    #[default]
+    Provider,
+}
+
+impl AssistantBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Omp => "omp",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Provider => "provider",
+        }
+    }
+
+    /// The harness (`chat.agent`) that runs this backend; `None` for a direct provider.
+    pub fn harness(self) -> Option<&'static str> {
+        match self {
+            Self::Omp => Some("omp"),
+            Self::Claude => Some("claude"),
+            Self::Codex => Some("codex"),
+            Self::Provider => None,
+        }
+    }
+}
+
+/// `assistant.configure` (protocol 0.20, capability `assistant.backend`): which backend the
+/// assistants of a scope are created with from now on. Persisted by the daemon; a workspace's
+/// choice wins over the global one, which wins over `[assistant]` in `daemon.toml`. Existing
+/// sessions are untouched: `assistant.open` returns the oldest assistant of the scope that runs
+/// on the configured backend (and, for `provider`, the configured provider), creating one when
+/// there is none. Answered with [`AssistantConfig`].
+///
+/// Errors: `bad_request` for `workspace` without `workspace_id`, for the Home workspace, for
+/// `provider` without a `provider` and for a `provider` the daemon does not know, for a
+/// `provider` given with a harness backend; `not_found` for a workspace that does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantConfigure {
+    pub scope: AssistantScope,
+    /// Required for `workspace`, ignored for `global`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
+    pub backend: AssistantBackend,
+    /// A model of the backend (`chat.models` for a harness, `provider.models` for a provider);
+    /// absent takes the backend's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The provider of the `provider` backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// The backend choice `assistant.configure` stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantConfig {
+    pub scope: AssistantScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
+    pub backend: AssistantBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// `assistant.open`: the default assistant session of a scope, created on first use. A stopped
+/// default is started again. Answered with `SessionResult`.
+///
+/// The default is the oldest assistant of the scope that runs on the configured backend
+/// (protocol 0.20: `assistant.configure`, else `[assistant] backend` of `daemon.toml`, else the
+/// provider backend when `[assistant] provider` is set); a new one is created with that backend
+/// and model. Before 0.20 the only backend was the provider.
 ///
 /// Errors: `bad_request` for `workspace` without `workspace_id` and for the Home workspace (it
 /// has the `global` scope); `not_found` for a workspace that does not exist; `invalid_state`
-/// when no provider is configured (the message names the setting).
+/// when no backend is configured (the message names the setting); `provider_error` when a
+/// harness backend cannot start (its program is missing, or it is not logged in).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantOpen {
     pub scope: AssistantScope,
@@ -77,8 +157,12 @@ pub struct AssistantListRequest {
 pub struct AssistantEntry {
     pub scope: AssistantScope,
     pub workspace_id: WorkspaceId,
-    /// The session `assistant.open` returns for its scope and workspace: the oldest one.
+    /// The session `assistant.open` returns for its scope and workspace: the oldest one on the
+    /// configured backend.
     pub default: bool,
+    /// Protocol 0.20: what runs the session; an older daemon has provider assistants only.
+    #[serde(default)]
+    pub backend: AssistantBackend,
     pub session: SessionInfo,
 }
 

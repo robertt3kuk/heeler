@@ -40,7 +40,8 @@
 //! max_context_chars = 200000     # oldest messages are left out of a request beyond this
 //!
 //! [assistant]                    # assistant chat (protocol 0.12, docs/assistant.md)
-//! provider = "openrouter"        # provider and model of new assistants
+//! backend = "omp"                # omp | claude | codex | provider (protocol 0.20)
+//! provider = "openrouter"        # provider of the `provider` backend
 //! model = "meta-llama/llama-3.3-70b-instruct"
 //! context_budget_chars = 60000   # attached context per message, split over the attachments
 //!
@@ -330,9 +331,14 @@ pub struct ContextOverride {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct AssistantSettings {
-    /// The provider (`hutan provider ls`) of assistants created from now on.
+    /// What runs new assistants: `omp`, `claude`, `codex` or `provider` (protocol 0.20). Absent
+    /// means `provider` when `provider` is set, else the assistant is not configured.
+    /// `assistant.configure` (stored by the daemon) overrides it per scope.
+    pub backend: Option<hutan_protocol::assistant::AssistantBackend>,
+    /// The provider (`hutan provider ls`) of the `provider` backend.
     pub provider: Option<String>,
-    /// Their model; absent takes the provider's default model.
+    /// Their model: a model of the backend's harness (`hutan chat models`), or of the
+    /// provider; absent takes the backend's default.
     pub model: Option<String>,
     /// Characters of attached context one message carries, split evenly over its attachments.
     pub context_budget_chars: usize,
@@ -347,6 +353,7 @@ pub struct AssistantSettings {
 impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
+            backend: None,
             provider: None,
             model: None,
             context_budget_chars: DEFAULT_CONTEXT_BUDGET_CHARS,

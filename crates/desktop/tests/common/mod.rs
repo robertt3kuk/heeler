@@ -174,9 +174,33 @@ impl TestDaemon {
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_home(dir.path());
-        if let Some(text) = daemon_toml {
-            std::fs::write(&paths.config_file, text).unwrap();
+        // No test ever runs a real harness or reads a real login: unless the test names its
+        // own, OMP and Claude Code are programs that do not exist, and Codex's account lookup
+        // meets a transcript that does not exist.
+        let mut text = daemon_toml.unwrap_or_default().to_owned();
+        if !text.contains("[harness.omp]") {
+            text.push_str(&format!(
+                "\n[harness.omp]\nbin = {0:?}\ncli = {0:?}\n",
+                dir.path().join("no-such-omp")
+            ));
         }
+        if !text.contains("[harness.claude]") {
+            text.push_str(&format!(
+                "\n[harness.claude]\nbin = {0:?}\ncli = {0:?}\n",
+                dir.path().join("no-such-claude")
+            ));
+        }
+        if login_shell.is_none() && !text.contains("[terminal]") {
+            text.push_str("\n[terminal]\nenv_inherit = \"daemon\"\n");
+        }
+        std::fs::write(&paths.config_file, text).unwrap();
+        let codex = codex.or_else(|| {
+            Some(hutan_agents::CodexConfig {
+                program: dir.path().join("no-such-codex"),
+                args: Vec::new(),
+                env: Vec::new(),
+            })
+        });
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("test-daemon")

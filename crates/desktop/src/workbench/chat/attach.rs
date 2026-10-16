@@ -15,7 +15,6 @@ use gpui::{
 use hutan_client::ClientError;
 use hutan_core::TerminalId;
 use hutan_protocol::ErrorCode;
-use hutan_protocol::assistant::AGENT_ASSISTANT;
 use hutan_protocol::blocks::{Block, BlockState};
 use hutan_protocol::history::{HistoryHit, HistorySearch, HistorySource};
 
@@ -125,7 +124,7 @@ impl ChatView {
             .read(cx)
             .session(self.session)
             .and_then(|info| info.chat.as_ref())
-            .is_some_and(|chat| chat.agent == AGENT_ASSISTANT)
+            .is_some_and(|chat| chat.is_assistant())
     }
 
     /// Whether the Attach menu or a form is open.

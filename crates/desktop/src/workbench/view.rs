@@ -150,6 +150,10 @@ pub enum Region {
     InspectorOption(usize),
     /// A control of the new-agent picker, by name (`start`, `cancel`).
     AgentPicker(&'static str),
+    /// The row of harness `id` (`omp`, `claude`, `codex`) in the new-agent picker.
+    AgentHarness(&'static str),
+    /// A control of the Accounts page: harness id (or `*`) and the control (`login`, `logout`, `card`, `refresh`).
+    Account(&'static str, &'static str),
     /// Model row `index` of the new-agent picker.
     AgentModel(usize),
     /// Node row `index` of the agent monitor, counting every session's rows top to bottom.
@@ -370,13 +374,19 @@ impl Workbench {
             store.set_terminal_colors(DefaultColors::from(&terminal_style.palette), cx);
         });
         let regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>> = Rc::default();
+        let harnesses = cx.new(|cx| super::harnesses::HarnessDirectory::new(sessions.clone(), cx));
         let env = PanelEnv {
             sessions: sessions.clone(),
             settings: settings.clone(),
+            harnesses: harnesses.clone(),
             regions: regions.clone(),
         };
 
-        let commands = Rc::new(actions::commands(&presets, &options.panels));
+        let commands = Rc::new(actions::commands(
+            &presets,
+            &options.panels,
+            settings.get::<crate::settings::AssistantSettings>().enabled,
+        ));
         let focus_handle = cx.focus_handle();
         let palette_focus = cx.focus_handle();
         let picker_focus = cx.focus_handle();
@@ -433,6 +443,7 @@ impl Workbench {
             cx.observe_in(&sessions, window, |this, _, window, cx| {
                 this.on_sessions_changed(window, cx);
             }),
+            cx.observe(&harnesses, |this, _, cx| this.on_harnesses_changed(cx)),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_active = window.is_window_active();
                 this.sync_session_focus(cx);
@@ -884,6 +895,9 @@ impl Workbench {
     }
 
     pub(crate) fn open_panel(&mut self, id: &str, cx: &mut Context<Self>) {
+        if id == "assistant" && !self.assistant_enabled() {
+            return;
+        }
         let id = PanelId::new(id);
         let dock = self
             .panels

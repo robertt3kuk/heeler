@@ -184,4 +184,17 @@ pub struct ChatInfo {
     /// terminal. Absent for direct and assistant chats and until the agent is ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
+    /// Protocol 0.20 (capability `assistant.backend`): this chat is an assistant that runs on
+    /// a harness (`agent` is then `omp`, `claude` or `codex`) with its tools restricted; the
+    /// provider-backed assistant keeps `agent: "assistant"`. See [`ChatInfo::is_assistant`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assistant: bool,
+}
+
+impl ChatInfo {
+    /// Whether this is an assistant session: the provider-backed one (`agent: "assistant"`) or
+    /// a harness assistant (protocol 0.20).
+    pub fn is_assistant(&self) -> bool {
+        self.assistant || self.agent == crate::assistant::AGENT_ASSISTANT
+    }
 }

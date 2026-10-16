@@ -86,6 +86,7 @@ actions!(
         ShowAgentMonitor,
         ShowOnlyBlockedAgents,
         ManageProviders,
+        ManageAccounts,
         SwitchChatModel,
         OpenAssistant,
         NewTerminalInWorktree,
@@ -321,7 +322,7 @@ pub fn preset_number_action(n: usize) -> Option<Box<dyn Action>> {
 }
 
 /// Every palette command. Order is the order shown for an empty query.
-pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command> {
+pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: bool) -> Vec<Command> {
     let mut out = vec![
         command("Session: New Terminal", NewTerminal),
         command("Session: New Agent…", NewAgent),
@@ -410,9 +411,12 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
         command("Agents: Show Monitor", ShowAgentMonitor),
         command("Agents: Show Only Blocked", ShowOnlyBlockedAgents),
         command("Models: Manage Providers…", ManageProviders),
+        command("Accounts…", ManageAccounts),
         command("Chat: Switch Model…", SwitchChatModel),
-        command("Assistant: Open / Focus", OpenAssistant),
     ]);
+    if assistant {
+        out.push(command("Assistant: Open / Focus", OpenAssistant));
+    }
     out.extend([
         command("Worktree: New Terminal in Worktree…", NewTerminalInWorktree),
         command("Worktree: Remove…", RemoveWorktree),
@@ -488,7 +492,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry) -> Vec<Command
             None => out.push(command(title, apply)),
         }
     }
-    for spec in panels.iter() {
+    for spec in panels
+        .iter()
+        .filter(|s| assistant || s.id.as_str() != "assistant")
+    {
         out.push(command(
             format!("Panel: Open {}", spec.title),
             OpenPanel(spec.id.to_string()),

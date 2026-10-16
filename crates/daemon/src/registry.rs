@@ -132,7 +132,7 @@ enum Command {
     ProcessTargets(Option<SessionId>, Reply<Vec<ProcessTarget>>),
     /// `chat.create` with a canonical `cwd` and, when it names no workspace, where the `cwd`
     /// goes; answered once the agent is up (or failed).
-    CreateChat(ChatCreate, Option<Assignment>, Reply<SessionInfo>),
+    CreateChat(ChatCreate, Option<Assignment>, bool, Reply<SessionInfo>),
     /// From the task that started a chat agent.
     ChatStarted {
         session: SessionId,
@@ -437,13 +437,29 @@ impl RegistryHandle {
 
     /// Opens an agent conversation as a session; returns once the agent is ready (state
     /// `idle`) or fails with `provider_error` when it could not start.
-    pub async fn create_chat(&self, mut req: ChatCreate) -> Result<SessionInfo, ErrorBody> {
+    pub async fn create_chat(&self, req: ChatCreate) -> Result<SessionInfo, ErrorBody> {
+        self.create_chat_as(req, false).await
+    }
+
+    /// [`create_chat`](Self::create_chat) for an assistant (protocol 0.20): a harness session
+    /// that is marked as one, so that it starts with its tools restricted and
+    /// `assistant.list` finds it. Only the daemon's assistant service calls this.
+    pub async fn create_assistant_chat(&self, req: ChatCreate) -> Result<SessionInfo, ErrorBody> {
+        self.create_chat_as(req, true).await
+    }
+
+    async fn create_chat_as(
+        &self,
+        mut req: ChatCreate,
+        assistant: bool,
+    ) -> Result<SessionInfo, ErrorBody> {
         req.cwd = canonical_dir(req.cwd).await?;
         let assignment = match req.workspace_id {
             Some(_) => None,
             None => Some(self.assign(Some(req.cwd.clone())).await?),
         };
-        self.ask(|r| Command::CreateChat(req, assignment, r)).await
+        self.ask(|r| Command::CreateChat(req, assignment, assistant, r))
+            .await
     }
 
     /// Whether `id` is a chat session (else an error), and whether it is live.
@@ -1053,8 +1069,8 @@ impl SessionRegistry {
                 Command::ProcessTargets(session, reply) => {
                     let _ = reply.send(self.process_targets(session));
                 }
-                Command::CreateChat(req, assignment, reply) => {
-                    self.create_chat(req, assignment, reply);
+                Command::CreateChat(req, assignment, assistant, reply) => {
+                    self.create_chat(req, assignment, assistant, reply);
                 }
                 Command::ChatStarted {
                     session,
@@ -2410,9 +2426,10 @@ impl SessionRegistry {
         &mut self,
         req: ChatCreate,
         assignment: Option<Assignment>,
+        assistant: bool,
         reply: Reply<SessionInfo>,
     ) {
-        match self.begin_chat(req, assignment) {
+        match self.begin_chat(req, assignment, assistant) {
             Ok(index) => self.spawn_chat_start(index, Some(reply)),
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -2425,6 +2442,7 @@ impl SessionRegistry {
         &mut self,
         req: ChatCreate,
         assignment: Option<Assignment>,
+        assistant: bool,
     ) -> Result<usize, ErrorBody> {
         let harness = is_harness_agent(&req.agent);
         if req.agent != AGENT_CODEX && !harness && !is_gateway_agent(&req.agent) {
@@ -2475,6 +2493,7 @@ impl SessionRegistry {
                 provider_id: Some(provider_id),
                 system_prompt,
                 mode: None,
+                assistant: false,
             },
             None => ChatSpec {
                 agent: req.agent,
@@ -2485,6 +2504,7 @@ impl SessionRegistry {
                 provider_id: None,
                 system_prompt: None,
                 mode: req.mode.filter(|m| !m.trim().is_empty()),
+                assistant,
             },
         };
         let folder = req
@@ -3025,6 +3045,7 @@ impl SessionRegistry {
                         provider_id: None,
                         system_prompt: None,
                         mode: None,
+                        assistant: false,
                     },
                     Some(format!("stored spec unreadable: {error}")),
                 )
@@ -3735,6 +3756,7 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
         turn_active: false,
         pending_approvals: 0,
         provider_id: spec.provider_id.clone(),
+        assistant: spec.assistant,
         agent_session_id: (!is_gateway_agent(&spec.agent))
             .then(|| spec.thread_id.clone())
             .flatten(),

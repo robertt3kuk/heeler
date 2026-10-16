@@ -9,7 +9,8 @@
 //! - [`task`]: tasks with dependencies (protocol 0.16, capability `task`).
 //! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
 //!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
-//! - [`assistant`]: assistant chat DTOs and context attachments (protocol 0.12).
+//! - [`assistant`]: assistant chat DTOs and context attachments (protocol 0.12); backends per
+//!   scope, `assistant.configure` (protocol 0.20, capability `assistant.backend`).
 //! - [`notify`]: notification intents, `client.focus` (protocol 0.13).
 //! - [`blocks`]: terminal block DTOs (protocol 0.5).
 //! - [`chat`]: agent chat and approval DTOs (protocol 0.9).
@@ -50,7 +51,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 19,
+    minor: 20,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

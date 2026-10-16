@@ -14,5 +14,7 @@ pub use attention::{
     ended_text, present,
 };
 pub use placement::{PlacementBadge, placement_badge};
-pub use store::{REPLAY_WINDOW, SessionsStore, UI_OPEN_MAX_AGE_MS, UiOpenRequested};
+pub use store::{
+    AccountsChanged, REPLAY_WINDOW, SessionsStore, UI_OPEN_MAX_AGE_MS, UiOpenRequested,
+};
 pub use terminal::TerminalSession;

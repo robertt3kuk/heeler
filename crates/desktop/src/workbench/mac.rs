@@ -309,12 +309,12 @@ impl Workbench {
     /// A shortcut that cannot be registered (taken by another app, or not a shortcut) is
     /// reported once in the window; the setting is left alone.
     pub(crate) fn sync_hotkey(&mut self, cx: &mut Context<Self>) {
-        let wanted = self
-            .settings
-            .get::<AssistantSettings>()
-            .global_shortcut
-            .trim()
-            .to_owned();
+        let settings = self.settings.get::<AssistantSettings>();
+        let wanted = if settings.enabled {
+            settings.global_shortcut.trim().to_owned()
+        } else {
+            String::new()
+        };
         if self.mac.shortcut_tried.as_deref() == Some(wanted.as_str()) {
             return;
         }

@@ -249,6 +249,12 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<AgentsSettings>(),
         CatalogEntry::of::<AssistantSettings>(),
         CatalogEntry {
+            namespace: "accounts",
+            workspace_overridable: false,
+            current: Rc::new(|_| Json::Null),
+            default: Json::Null,
+        },
+        CatalogEntry {
             namespace: "models",
             workspace_overridable: false,
             current: Rc::new(|_| Json::Null),

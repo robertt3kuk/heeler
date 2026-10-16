@@ -14,7 +14,8 @@ use hutan_protocol::account::{
     AccountInfo, AccountList, AccountLogin, AccountLogout, AccountSession,
 };
 use hutan_protocol::assistant::{
-    AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, Attachment,
+    AssistantConfig, AssistantConfigure, AssistantEntry, AssistantList, AssistantListRequest,
+    AssistantOpen, Attachment,
 };
 use hutan_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
@@ -80,6 +81,8 @@ pub(crate) const AGENT_TREE_CAPABILITY: &str = "agent.tree";
 pub(crate) const DIRECT_CAPABILITY: &str = "chat.direct";
 /// Capability for `assistant.*` and `chat.send` attachments (protocol 0.12).
 pub(crate) const ASSISTANT_CAPABILITY: &str = "assistant";
+/// Capability for `assistant.configure` and harness-backed assistants (protocol 0.20).
+pub(crate) const ASSISTANT_BACKEND_CAPABILITY: &str = "assistant.backend";
 /// Capability for `notify.*`, `client.focus` and the `notify.intent` / `ui.open` events
 /// (protocol 0.13).
 pub(crate) const NOTIFY_CAPABILITY: &str = "notify.intents";
@@ -118,6 +121,7 @@ const CAPABILITIES: &[&str] = &[
     ACCOUNTS_CAPABILITY,
     RESOURCES_CAPABILITY,
     PROJECTS_CAPABILITY,
+    ASSISTANT_BACKEND_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -463,6 +467,23 @@ impl Client {
     ) -> Result<Vec<AssistantEntry>, ClientError> {
         let list: AssistantList = self.call(Request::AssistantList(req)).await?;
         Ok(list.assistants)
+    }
+
+    /// True when the daemon advertised capability `assistant.backend` (protocol 0.20): an
+    /// assistant can run on a harness and `assistant.configure` chooses the backend.
+    pub fn supports_assistant_backend(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == ASSISTANT_BACKEND_CAPABILITY)
+    }
+
+    /// Chooses the backend (and model) assistants of a scope are created with from now on.
+    pub async fn assistant_configure(
+        &self,
+        req: AssistantConfigure,
+    ) -> Result<AssistantConfig, ClientError> {
+        self.call(Request::AssistantConfigure(req)).await
     }
 
     /// True when the daemon advertised capability `notify.intents` (protocol 0.13).

@@ -413,6 +413,11 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::SearchHistory, window, cx| {
             this.search_history(window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::ManageAccounts, window, cx| {
+                this.open_accounts(window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::OpenAssistant, window, cx| {
             this.open_assistant(window, cx);
         }))

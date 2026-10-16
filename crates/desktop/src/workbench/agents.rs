@@ -16,32 +16,23 @@ use gpui::{
 };
 use hutan_core::agent::ModelInfo;
 use hutan_core::{ApprovalId, SessionId, WorkspaceId};
-use hutan_protocol::assistant::AGENT_ASSISTANT;
 use hutan_protocol::blocks::BlockPart;
 use hutan_protocol::chat::ChatCreate;
 use hutan_protocol::messages::SessionInfo;
 
 use super::actions::palette;
 use super::chat::{ButtonKind, ChatModel, ChatView, Chip, ContextChip, Look, button, cut_to};
+use super::harnesses::{self, Detection, HARNESSES};
 use super::model::{FocusTarget, ItemRef, PaneId};
 use super::panels::AssistantPanel;
 use super::render::probe;
 use super::terminals::session_of_item;
-use super::ui::StyledExt as _;
+use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
 use crate::settings::ChatSettings;
 use crate::theme::DensityExt as _;
 
-/// The agent every chat starts with today.
-pub const CODEX: &str = "codex";
-
-/// Agents the picker lists: id, name, and the milestone that brings it (`None`: available).
-const AGENTS: [(&str, &str, Option<&str>); 4] = [
-    (CODEX, "Codex", None),
-    ("claude", "Claude Code", Some("M8")),
-    ("opencode", "OpenCode", Some("M8")),
-    ("omp", "OMP", Some("M8")),
-];
+pub use super::harnesses::CODEX;
 
 /// The models a picker may offer once the daemon answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +42,7 @@ pub enum Models {
     Failed(String),
 }
 
-/// The ⌘⇧T dialog: which agent and model a new chat starts with, and where.
+/// The ⌘⇧T dialog: which harness (or direct model) and model a new chat starts with, and where.
 #[derive(Debug, Clone)]
 pub struct AgentPicker {
     pub models: Models,
@@ -67,15 +58,20 @@ pub struct AgentPicker {
     pub system_prompt: Option<String>,
     pub switch_session: Option<SessionId>,
     pub direct: bool,
+    /// The harness a new chat starts with (`omp`, `claude` or `codex`); the harness of the chat
+    /// when the dialog switches a model. A direct chat has none (`provider_id` says what).
+    pub agent: String,
+    /// The user picked the harness: what the daemon finds installed no longer moves it.
+    pub agent_chosen: bool,
 }
 
 impl AgentPicker {
-    /// The models the dialog lists.
+    /// The models the dialog lists. OMP's are grouped by provider (stable within a group).
     pub fn shown(&self) -> Vec<&ModelInfo> {
         match &self.models {
             Models::Ready(models) => {
                 let query = self.model_query.to_lowercase();
-                models
+                let mut shown: Vec<&ModelInfo> = models
                     .iter()
                     .filter(|m| {
                         !m.hidden
@@ -83,7 +79,12 @@ impl AgentPicker {
                                 || m.id.to_lowercase().contains(&query)
                                 || m.display_name.to_lowercase().contains(&query))
                     })
-                    .collect()
+                    .collect();
+                if self.provider_id.is_none() {
+                    let agent = self.agent.as_str();
+                    shown.sort_by_key(|m| harnesses::model_group(agent, m));
+                }
+                shown
             }
             _ => Vec::new(),
         }
@@ -92,6 +93,14 @@ impl AgentPicker {
     /// The model a new chat would start with.
     pub fn chosen(&self) -> Option<&ModelInfo> {
         self.shown().get(self.selected).copied()
+    }
+
+    /// Whether the harness offers no model to choose from, so that a chat starts with the
+    /// harness's own default.
+    pub fn offers_no_model(&self) -> bool {
+        self.provider_id.is_none()
+            && self.switch_session.is_none()
+            && matches!(&self.models, Models::Ready(models) if models.iter().all(|m| m.hidden))
     }
 }
 
@@ -252,6 +261,16 @@ impl Workbench {
     }
 
     fn open_agent_picker(&mut self, direct: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_agent_picker_for(direct, None, window, cx);
+    }
+
+    fn open_agent_picker_for(
+        &mut self,
+        direct: bool,
+        switch: Option<(SessionId, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (connected, supported, workspace, cwd) = {
             let store = self.sessions.read(cx);
             let workspace = self.target_workspace(store);
@@ -278,6 +297,10 @@ impl Workbench {
         self.palette = None;
         self.picker = None;
         self.context_menu = None;
+        let (agent, switch_session, agent_chosen) = match switch {
+            Some((session, agent)) => (agent, Some(session), true),
+            None => (self.default_harness(cx), None, false),
+        };
         self.agent_picker = Some(AgentPicker {
             models: Models::Loading,
             selected: 0,
@@ -288,8 +311,10 @@ impl Workbench {
             provider_id: None,
             model_query: String::new(),
             system_prompt: None,
-            switch_session: None,
+            switch_session,
             direct,
+            agent,
+            agent_chosen,
         });
         window.focus(&self.agent_focus, cx);
         if direct {
@@ -297,34 +322,119 @@ impl Workbench {
             cx.notify();
             return;
         }
-        let task = self
-            .sessions
-            .update(cx, |store, cx| store.chat_models(CODEX, cx));
-        cx.spawn(async move |this, cx| {
-            let answer = task.await;
-            this.update(cx, |this, cx| {
-                let Some(picker) = &mut this.agent_picker else {
-                    return;
-                };
-                if picker.direct {
-                    return;
-                }
-                picker.models = match answer {
-                    Ok(models) => Models::Ready(models),
-                    Err(error) => Models::Failed(error),
-                };
-                picker.selected = picker
-                    .shown()
-                    .iter()
-                    .position(|model| model.is_default)
-                    .unwrap_or(0);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        // What is installed and logged in, and the models of the harness shown first.
+        if switch_session.is_none() {
+            self.refresh_accounts(cx);
+        }
+        self.load_harness_models(cx);
         cx.notify();
-        self.refresh_providers(cx);
+        if switch_session.is_none() {
+            self.refresh_providers(cx);
+        }
+    }
+
+    /// The model dialog of a running harness chat (OMP, Claude Code): the models its harness
+    /// offers; the daemon switches them between turns where the harness allows it.
+    pub(crate) fn open_harness_model_switch(
+        &mut self,
+        session: SessionId,
+        agent: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_agent_picker_for(false, Some((session, agent)), window, cx);
+    }
+
+    /// Whether the daemon can start chats with `harness`: Codex always, the ACP harnesses when
+    /// it advertises them.
+    fn harness_available(&self, harness: &str, cx: &gpui::App) -> bool {
+        harness == CODEX || self.sessions.read(cx).connection().supports_harness_chat()
+    }
+
+    /// The harness a picker preselects: the first of OMP, Claude Code, Codex that the daemon
+    /// can run and has not found missing.
+    fn default_harness(&self, cx: &gpui::App) -> String {
+        let directory = self.env.harnesses.read(cx);
+        HARNESSES
+            .iter()
+            .find(|h| self.harness_available(h.id, cx) && directory.startable(h.id))
+            .map_or(CODEX, |h| h.id)
+            .to_owned()
+    }
+
+    /// Asks the shown harness for its models (the picker follows the directory's answer).
+    fn load_harness_models(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = &mut self.agent_picker else {
+            return;
+        };
+        if picker.direct {
+            return;
+        }
+        picker.models = Models::Loading;
+        picker.selected = 0;
+        let agent = picker.agent.clone();
+        self.env
+            .harnesses
+            .update(cx, |directory, cx| directory.load_models(&agent, cx));
+    }
+
+    /// Picks the harness a new chat starts with (a click on its row). One the daemon cannot
+    /// find or run is not pickable.
+    pub fn agent_picker_choose_agent(&mut self, agent: &str, cx: &mut Context<Self>) {
+        if !self.harness_available(agent, cx) || !self.env.harnesses.read(cx).startable(agent) {
+            return;
+        }
+        let Some(picker) = &mut self.agent_picker else {
+            return;
+        };
+        if picker.creating || picker.switch_session.is_some() {
+            return;
+        }
+        picker.agent = agent.to_owned();
+        picker.agent_chosen = true;
+        picker.direct = false;
+        picker.provider_id = None;
+        picker.error = None;
+        picker.model_query.clear();
+        self.load_harness_models(cx);
+        cx.notify();
+    }
+
+    /// What the directory learned (accounts, models) reaches the open picker: the preselected
+    /// harness follows what is installed until the user picks one, and the model list is the
+    /// shown harness's.
+    pub(crate) fn on_harnesses_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = &self.agent_picker else {
+            return;
+        };
+        if picker.direct || picker.provider_id.is_some() {
+            return;
+        }
+        let preselect = (!picker.agent_chosen && picker.switch_session.is_none())
+            .then(|| self.default_harness(cx));
+        if let Some(agent) = preselect
+            && picker.agent != agent
+        {
+            if let Some(picker) = &mut self.agent_picker {
+                picker.agent = agent;
+            }
+            self.load_harness_models(cx);
+            cx.notify();
+            return;
+        }
+        let models = self.env.harnesses.read(cx).models(&picker.agent).cloned();
+        if let Some(models) = models
+            && let Some(picker) = &mut self.agent_picker
+            && picker.models != models
+        {
+            picker.models = models;
+            picker.selected = picker
+                .shown()
+                .iter()
+                .position(|model| model.is_default)
+                .unwrap_or(0);
+        }
+        cx.notify();
     }
 
     pub fn close_agent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -364,14 +474,22 @@ impl Workbench {
         if picker.creating {
             return;
         }
-        let (Some(model), Some(cwd)) = (picker.chosen().map(|m| m.id.clone()), picker.cwd.clone())
-        else {
+        let model = picker.chosen().map(|m| m.id.clone());
+        // A harness that offers no model starts with its own default.
+        if model.is_none() && !picker.offers_no_model() {
+            return;
+        }
+        let Some(cwd) = picker.cwd.clone() else {
             return;
         };
         picker.creating = true;
         picker.error = None;
         if let Some(session) = picker.switch_session {
             let provider_id = picker.provider_id.clone();
+            let Some(model) = model else {
+                picker.creating = false;
+                return;
+            };
             self.confirm_model_switch(session, provider_id, model, window, cx);
             return;
         }
@@ -379,12 +497,11 @@ impl Workbench {
             workspace_id: picker.workspace,
             cwd,
             agent: if picker.provider_id.is_some() {
-                "direct"
+                "direct".to_owned()
             } else {
-                CODEX
-            }
-            .to_owned(),
-            model: Some(model),
+                picker.agent.clone()
+            },
+            model,
             approval_policy: None,
             sandbox: None,
             title: None,
@@ -428,36 +545,70 @@ impl Workbench {
         let tokens = self.density.ui();
         let hover = theme.surface_hover;
         let look = Look::of(cx);
-        let agents = AGENTS.map(|(id, name, later)| {
-            let row = div()
-                .flex()
-                .items_center()
-                .gap(px(tokens.spacing * 2.0))
-                .h(px(tokens.sidebar_row))
-                .px(px(tokens.spacing * 2.0))
-                .rounded(px(tokens.radius))
-                .child(div().w(px(14.0)).text_color(theme.muted).child("◆"))
-                .child(div().child(name));
-            match later {
-                None => row
-                    .id("agent-codex")
-                    .when(!picker.direct, |s| s.bg(theme.accent_soft))
-                    .cursor_pointer()
-                    .when(!picker.creating, |s| {
-                        s.on_click(cx.listener(|this, _, window, cx| this.new_agent(window, cx)))
-                    })
-                    .into_any_element(),
-                Some(milestone) => row
+        let directory = self.env.harnesses.read(cx);
+        let agents: Vec<AnyElement> = HARNESSES
+            .iter()
+            .map(|harness| {
+                let id = harness.id;
+                let detection = directory.detection(id);
+                let available = self.harness_available(id, cx);
+                let pickable =
+                    available && !matches!(detection, Detection::NotFound(_)) && !picker.creating;
+                let selected = !picker.direct && picker.provider_id.is_none() && picker.agent == id;
+                let (state, state_color) = match (&detection, available) {
+                    (_, false) => ("needs a newer hutand", theme.warning),
+                    (Detection::Installed, _) => ("installed", theme.success),
+                    (Detection::NotFound(_), _) => ("not found", theme.warning),
+                    (Detection::Checking, _) => ("checking…", theme.muted),
+                    (Detection::Unknown, _) => ("unknown", theme.muted),
+                };
+                // Installed: which providers it is logged in to. Missing: how to install it.
+                let detail = match (&detection, available) {
+                    (_, false) => {
+                        "Restart hutand (Daemon → Restart) to run the version of this app."
+                            .to_owned()
+                    }
+                    (Detection::NotFound(how), _) => how.clone(),
+                    _ => harnesses::login_summary(directory, id),
+                };
+                div()
                     .id(ElementId::from(SharedString::from(format!("agent-{id}"))))
-                    .opacity(0.5)
+                    .relative()
+                    .flex()
+                    .items_start()
+                    .gap(px(tokens.spacing * 2.0))
+                    .py(px(tokens.spacing))
+                    .px(px(tokens.spacing * 2.0))
+                    .rounded(px(tokens.radius))
+                    .when(selected, |s| s.bg(theme.accent_soft))
+                    .when(pickable, |s| {
+                        s.cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.agent_picker_choose_agent(id, cx);
+                            }))
+                    })
+                    .when(!pickable && !picker.creating, |s| s.opacity(0.6))
+                    .child(div().w(px(14.0)).text_color(theme.muted).child("◆"))
                     .child(
                         div()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(format!("arrives with {milestone}"))),
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().medium().child(SharedString::from(harness.name)))
+                            .child(
+                                div()
+                                    .text_color(theme.muted)
+                                    .text_size(px(tokens.secondary_font_size))
+                                    .child(SharedString::from(detail)),
+                            ),
                     )
-                    .into_any_element(),
-            }
-        });
+                    .child(ui::pill(state, state_color, &tokens))
+                    .child(probe(&self.regions, Region::AgentHarness(id)))
+                    .into_any_element()
+            })
+            .collect();
         let providers: Vec<AnyElement> = self
             .providers
             .providers
@@ -477,12 +628,24 @@ impl Workbench {
                 .into_any_element()
             })
             .collect();
-        let models: Vec<AnyElement> = picker
-            .shown()
-            .iter()
-            .enumerate()
-            .map(|(index, model)| {
-                let selected = index == picker.selected;
+        let shown = picker.shown();
+        let mut models: Vec<AnyElement> = Vec::new();
+        let mut group: Option<Option<String>> = None;
+        for (index, model) in shown.iter().enumerate() {
+            let model_group = harnesses::model_group(&picker.agent, model)
+                .filter(|_| picker.provider_id.is_none());
+            // OMP's models come grouped by provider; a header opens each group.
+            if model_group.is_some() && group.as_ref() != Some(&model_group) {
+                models.push(
+                    ui::section_label(model_group.clone().unwrap_or_default(), &theme, &tokens)
+                        .px(px(tokens.spacing * 2.0))
+                        .pt(px(tokens.spacing))
+                        .into_any_element(),
+                );
+            }
+            group = Some(model_group);
+            let selected = index == picker.selected;
+            models.push(
                 div()
                     .id(ElementId::from(SharedString::from(format!(
                         "agent-model-{index}"
@@ -524,9 +687,9 @@ impl Workbench {
                             .child(SharedString::from(model.description.clone())),
                     )
                     .child(probe(&self.regions, Region::AgentModel(index)))
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+        }
         let note: Option<(SharedString, gpui::Hsla)> = match (&picker.models, &picker.error) {
             (_, Some(error)) => Some((format!("Could not start: {error}").into(), theme.danger)),
             (Models::Loading, _) => Some(("Loading the models…".into(), theme.muted)),
@@ -534,12 +697,18 @@ impl Workbench {
                 format!("Could not list the models: {error}").into(),
                 theme.danger,
             )),
+            (Models::Ready(_), _) if picker.offers_no_model() => Some((
+                "The harness offers no model to choose: it starts with its own default.".into(),
+                theme.muted,
+            )),
             (Models::Ready(_), _) if picker.shown().is_empty() => {
                 Some(("The agent offers no models.".into(), theme.muted))
             }
             _ => None,
         };
-        let can_start = picker.chosen().is_some() && picker.cwd.is_some() && !picker.creating;
+        let can_start = (picker.chosen().is_some() || picker.offers_no_model())
+            && picker.cwd.is_some()
+            && !picker.creating;
         let cwd = picker
             .cwd
             .as_ref()
@@ -859,11 +1028,9 @@ impl Workbench {
                         )
                     })
                     .collect();
-                let has_assistant = candidates.iter().any(|c| {
-                    c.chat
-                        .as_ref()
-                        .is_some_and(|chat| chat.agent == AGENT_ASSISTANT)
-                });
+                let has_assistant = candidates
+                    .iter()
+                    .any(|c| c.chat.as_ref().is_some_and(|chat| chat.is_assistant()));
                 if self.sessions.read(cx).connection().supports_assistant() && !has_assistant {
                     entries.push(Self::entry(
                         "Send to Assistant".to_owned(),

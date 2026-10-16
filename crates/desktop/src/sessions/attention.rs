@@ -601,6 +601,7 @@ mod tests {
             pending_approvals: pending,
             provider_id: None,
             agent_session_id: None,
+            assistant: false,
         });
         session
     }

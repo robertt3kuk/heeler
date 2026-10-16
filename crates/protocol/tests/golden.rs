@@ -129,6 +129,7 @@ fn chat_info() -> ChatInfo {
         pending_approvals: 1,
         provider_id: None,
         agent_session_id: None,
+        assistant: false,
     }
 }
 
@@ -146,6 +147,27 @@ fn harness_chat_session_info() -> SessionInfo {
             pending_approvals: 0,
             provider_id: None,
             agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
+            assistant: false,
+        }),
+        ..chat_session_info()
+    }
+}
+
+fn harness_assistant_session_info() -> SessionInfo {
+    SessionInfo {
+        title: "Assistant · hutan".into(),
+        state: SessionState::Idle,
+        command: vec!["omp".into()],
+        chat: Some(ChatInfo {
+            agent: "omp".into(),
+            model: "anthropic/claude-sonnet-4-5".into(),
+            approval_policy: ApprovalPolicy::OnRequest,
+            sandbox: SandboxMode::WorkspaceWrite,
+            turn_active: false,
+            pending_approvals: 0,
+            provider_id: None,
+            agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
+            assistant: true,
         }),
         ..chat_session_info()
     }
@@ -165,6 +187,7 @@ fn direct_chat_session_info() -> SessionInfo {
             pending_approvals: 0,
             provider_id: Some("openrouter".into()),
             agent_session_id: None,
+            assistant: false,
         }),
         ..chat_session_info()
     }
@@ -248,6 +271,7 @@ fn assistant_session_info() -> SessionInfo {
             pending_approvals: 0,
             provider_id: Some("ollama".into()),
             agent_session_id: None,
+            assistant: false,
         }),
         ..chat_session_info()
     }
@@ -1515,6 +1539,26 @@ fn requests() -> Vec<(&'static str, Request)> {
                 workspace_id: shop_id(),
             }),
         ),
+        (
+            "assistant_configure_global_omp",
+            Request::AssistantConfigure(AssistantConfigure {
+                scope: AssistantScope::Global,
+                workspace_id: None,
+                backend: AssistantBackend::Omp,
+                model: Some("anthropic/claude-sonnet-4-5".into()),
+                provider: None,
+            }),
+        ),
+        (
+            "assistant_configure_workspace_provider",
+            Request::AssistantConfigure(AssistantConfigure {
+                scope: AssistantScope::Workspace,
+                workspace_id: Some(ws()),
+                backend: AssistantBackend::Provider,
+                model: Some("llama3.3:70b".into()),
+                provider: Some("ollama".into()),
+            }),
+        ),
     ]
 }
 
@@ -2507,15 +2551,56 @@ fn responses_match_fixtures() {
                             scope: AssistantScope::Global,
                             workspace_id: ws(),
                             default: true,
+                            backend: AssistantBackend::Provider,
                             session: assistant_session_info(),
                         },
                         AssistantEntry {
                             scope: AssistantScope::Workspace,
                             workspace_id: ws(),
                             default: false,
+                            backend: AssistantBackend::Provider,
                             session: assistant_session_info(),
                         },
                     ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "assistant_list_backends",
+            ControlMessage::ok(
+                16,
+                &AssistantList {
+                    assistants: vec![
+                        AssistantEntry {
+                            scope: AssistantScope::Global,
+                            workspace_id: ws(),
+                            default: false,
+                            backend: AssistantBackend::Provider,
+                            session: assistant_session_info(),
+                        },
+                        AssistantEntry {
+                            scope: AssistantScope::Global,
+                            workspace_id: ws(),
+                            default: true,
+                            backend: AssistantBackend::Omp,
+                            session: harness_assistant_session_info(),
+                        },
+                    ],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "assistant_configured",
+            ControlMessage::ok(
+                17,
+                &AssistantConfig {
+                    scope: AssistantScope::Workspace,
+                    workspace_id: Some(ws()),
+                    backend: AssistantBackend::Omp,
+                    model: Some("anthropic/claude-sonnet-4-5".into()),
+                    provider: None,
                 },
             )
             .unwrap(),

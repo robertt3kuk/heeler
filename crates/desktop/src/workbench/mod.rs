@@ -1,11 +1,12 @@
 //! The workbench: GPUI-free layout model plus the GPUI shell around it.
 
 pub mod actions;
-mod agents;
+pub(crate) mod agents;
 mod assistant;
 pub mod chat;
 mod daemon;
 mod daemon_popover;
+pub(crate) mod harnesses;
 mod history;
 mod mac;
 mod modal;
@@ -29,6 +30,7 @@ mod worktrees;
 
 pub use agents::{AgentPicker, CODEX, Models};
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
+pub use harnesses::{Detection, HARNESSES, Harness, HarnessDirectory, Listing};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};
 pub use registry::{PanelEnv, StatusBarLayout, StatusData};

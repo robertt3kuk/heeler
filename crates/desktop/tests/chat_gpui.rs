@@ -1141,6 +1141,9 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
     let (view, cx) = open(cx, &daemon);
     cx.simulate_keystrokes("cmd-shift-t");
+    // Nothing else is installed here: the picker finds OMP and Claude Code missing and
+    // preselects Codex by itself; picking it explicitly changes nothing.
+    view.update(cx, |wb, cx| wb.agent_picker_choose_agent("codex", cx));
     pump(cx, "the models", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker()
@@ -1179,6 +1182,7 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
 
     // Enter starts the chat with the default model; its tab opens and has the focus.
     cx.simulate_keystrokes("cmd-shift-t");
+    view.update(cx, |wb, cx| wb.agent_picker_choose_agent("codex", cx));
     pump(cx, "the models again", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker()

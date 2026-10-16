@@ -11,7 +11,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use hutan_core::{ApprovalId, SessionId, TerminalId};
-use hutan_protocol::assistant::{AssistantEntry, AssistantListRequest, AssistantOpen, Attachment};
+use hutan_protocol::account::{AccountInfo, AccountSession};
+use hutan_protocol::assistant::{
+    AssistantConfig, AssistantConfigure, AssistantEntry, AssistantListRequest, AssistantOpen,
+    Attachment,
+};
 use hutan_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
@@ -435,6 +439,78 @@ impl Connection {
     ) -> Result<Vec<AssistantEntry>, ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
         client.assistant_list(req).await
+    }
+
+    /// True while connected to a daemon that advertised capability `assistant.backend`
+    /// ([`Client::supports_assistant_backend`]); false when disconnected.
+    pub fn supports_assistant_backend(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_assistant_backend())
+    }
+
+    /// `assistant.configure`: chooses the backend (and model) assistants of a scope are created
+    /// with from now on.
+    pub async fn assistant_configure(
+        &self,
+        req: AssistantConfigure,
+    ) -> Result<AssistantConfig, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.assistant_configure(req).await
+    }
+
+    /// True while connected to a daemon that advertised capability `harness.acp`
+    /// ([`Client::supports_harness_chat`]); false when disconnected.
+    pub fn supports_harness_chat(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_harness_chat())
+    }
+
+    /// True while connected to a daemon that advertised capability `accounts`
+    /// ([`Client::supports_accounts`]); false when disconnected.
+    pub fn supports_accounts(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_accounts())
+    }
+
+    /// `account.list`: the logins of the harnesses (names and plan only, never a token).
+    pub async fn account_list(&self) -> Result<Vec<AccountInfo>, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.account_list().await
+    }
+
+    /// `account.login`: the harness's own login in a terminal session.
+    pub async fn account_login(
+        &self,
+        harness: &str,
+        provider: Option<String>,
+    ) -> Result<AccountSession, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.account_login(harness, provider).await
+    }
+
+    /// `account.logout`: the harness's own logout in a terminal session.
+    pub async fn account_logout(
+        &self,
+        harness: &str,
+        provider: Option<String>,
+    ) -> Result<AccountSession, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.account_logout(harness, provider).await
+    }
+
+    /// `chat.set_model`: switches the model (and for a direct chat the provider) of a chat for
+    /// its next turn.
+    pub async fn chat_set_model(
+        &self,
+        session: SessionId,
+        provider_id: Option<String>,
+        model: &str,
+    ) -> Result<SessionInfo, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.chat_set_model(session, provider_id, model).await
     }
 
     /// `chat.interrupt`: stops the turn in progress.

@@ -18,13 +18,20 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 use hutan_client::{ClientError, ConnectionState};
+use hutan_core::agent::ModelInfo;
 use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::ErrorCode;
-use hutan_protocol::assistant::{AGENT_ASSISTANT, AssistantOpen, AssistantScope};
+use hutan_protocol::assistant::{
+    AssistantBackend, AssistantConfigure, AssistantOpen, AssistantScope,
+};
+use hutan_protocol::messages::{Empty, Request};
 use hutan_protocol::messages::{WorkspaceInfo, WorkspaceKind};
+use hutan_protocol::provider::{ProviderInfo, ProviderList, ProviderModels, ProviderRef};
 
 use crate::workbench::actions::ManageProviders;
+use crate::workbench::agents::Models;
 use crate::workbench::chat::{ButtonKind, ChatModel, ChatView, ContextChip, Look, button};
+use crate::workbench::harnesses::{self, Detection, HARNESSES, Listing};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
@@ -90,6 +97,30 @@ struct ScopeButton {
     choose: Choice,
 }
 
+/// What an assistant can run on: a harness, or a provider (`assistant.configure`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendChoice {
+    Harness(AssistantBackend),
+    Provider(String),
+}
+
+impl BackendChoice {
+    fn label(&self) -> String {
+        match self {
+            Self::Harness(backend) => harnesses::harness_name(backend.as_str()),
+            Self::Provider(id) => format!("Provider · {id}"),
+        }
+    }
+}
+
+/// The backend and model chooser of the panel header.
+#[derive(Debug, Clone)]
+pub struct Switcher {
+    /// The backend whose models are listed.
+    pub backend: Option<BackendChoice>,
+    pub models: Models,
+}
+
 struct Chat {
     model: Entity<ChatModel>,
     view: Entity<ChatView>,
@@ -104,6 +135,9 @@ pub struct AssistantPanel {
     waiting: Vec<(ScopeKey, ContextChip)>,
     /// Put the keyboard in the composer as soon as it is drawn.
     focus_wanted: bool,
+    /// The backend chooser, while it is open.
+    switcher: Option<Switcher>,
+    providers: Vec<ProviderInfo>,
     was_connected: bool,
     _subscription: Subscription,
 }
@@ -128,6 +162,8 @@ impl AssistantPanel {
             chats: HashMap::new(),
             waiting: Vec::new(),
             focus_wanted: false,
+            switcher: None,
+            providers: Vec::new(),
             was_connected: connected,
             _subscription: subscription,
         }
@@ -344,11 +380,7 @@ impl AssistantPanel {
             let store = self.env.sessions.read(cx);
             store
                 .session(session)
-                .filter(|info| {
-                    info.chat
-                        .as_ref()
-                        .is_some_and(|chat| chat.agent == AGENT_ASSISTANT)
-                })
+                .filter(|info| info.chat.as_ref().is_some_and(|chat| chat.is_assistant()))
                 .and_then(|info| store.workspace(info.workspace_id))
                 .map(|workspace| {
                     let key = ScopeKey::of(workspace);
@@ -419,6 +451,175 @@ impl AssistantPanel {
                 self.open(key, cx);
             }
         }
+        cx.notify();
+    }
+
+    // ---- backend ---------------------------------------------------------------------------
+
+    /// The chooser of the backend and model of the shown scope's assistant.
+    pub fn switcher(&self) -> Option<&Switcher> {
+        self.switcher.as_ref()
+    }
+
+    /// Opens or closes the chooser (the header's backend button).
+    pub fn toggle_switcher(&mut self, cx: &mut Context<Self>) {
+        if self.switcher.take().is_some() {
+            cx.notify();
+            return;
+        }
+        self.switcher = Some(Switcher {
+            backend: None,
+            models: Models::Loading,
+        });
+        self.env
+            .harnesses
+            .update(cx, |directory, cx| directory.refresh(cx));
+        let connection = self.env.sessions.read(cx).connection().clone();
+        cx.spawn(async move |this, cx| {
+            let list = connection
+                .call::<ProviderList>(Request::ProviderList(Empty {}))
+                .await;
+            this.update(cx, |this, cx| {
+                if let Ok(list) = list {
+                    this.providers = list.providers;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Lists the models of `backend` in the chooser.
+    pub fn choose_backend(&mut self, backend: BackendChoice, cx: &mut Context<Self>) {
+        let Some(switcher) = &mut self.switcher else {
+            return;
+        };
+        switcher.backend = Some(backend.clone());
+        switcher.models = Models::Loading;
+        match backend {
+            BackendChoice::Harness(harness) => {
+                let id = harness.as_str();
+                self.env
+                    .harnesses
+                    .update(cx, |directory, cx| directory.load_models(id, cx));
+                // The directory answers; the chooser shows what it holds when it is drawn.
+            }
+            BackendChoice::Provider(provider) => {
+                let connection = self.env.sessions.read(cx).connection().clone();
+                cx.spawn(async move |this, cx| {
+                    let answer = connection
+                        .call::<ProviderModels>(Request::ProviderModels(ProviderRef {
+                            provider_id: provider.clone(),
+                        }))
+                        .await
+                        .map(|m| m.models)
+                        .map_err(|e| e.to_string());
+                    this.update(cx, |this, cx| {
+                        if let Some(switcher) = &mut this.switcher
+                            && switcher.backend == Some(BackendChoice::Provider(provider))
+                        {
+                            switcher.models = match answer {
+                                Ok(models) => Models::Ready(models),
+                                Err(error) => Models::Failed(error),
+                            };
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    /// The models the chooser lists for its backend.
+    fn switcher_models(&self, cx: &App) -> Models {
+        let Some(switcher) = &self.switcher else {
+            return Models::Loading;
+        };
+        match &switcher.backend {
+            Some(BackendChoice::Harness(harness)) => self
+                .env
+                .harnesses
+                .read(cx)
+                .models(harness.as_str())
+                .cloned()
+                .unwrap_or(Models::Loading),
+            _ => switcher.models.clone(),
+        }
+    }
+
+    /// Makes `backend` (and `model`) what the shown scope's assistants run on: stores it
+    /// (`assistant.configure`) and opens the scope's assistant again.
+    pub fn use_backend(
+        &mut self,
+        backend: BackendChoice,
+        model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = self.key(cx);
+        let connection = self.env.sessions.read(cx).connection().clone();
+        let (kind, provider) = match backend {
+            BackendChoice::Harness(kind) => (kind, None),
+            BackendChoice::Provider(id) => (AssistantBackend::Provider, Some(id)),
+        };
+        let (scope, workspace_id) = match key {
+            ScopeKey::Global => (AssistantScope::Global, None),
+            ScopeKey::Workspace(id) => (AssistantScope::Workspace, Some(id)),
+        };
+        self.switcher = None;
+        self.scopes.insert(key, Opened::Opening);
+        cx.spawn(async move |this, cx| {
+            let stored = connection
+                .assistant_configure(AssistantConfigure {
+                    scope,
+                    workspace_id,
+                    backend: kind,
+                    model,
+                    provider,
+                })
+                .await;
+            this.update(cx, |this, cx| match stored {
+                Ok(_) => {
+                    this.scopes.remove(&key);
+                    this.open(key, cx);
+                }
+                Err(error) => this.opened(key, Err(error), cx),
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The first-run card's "Use OMP": OMP for every assistant that has no choice of its own.
+    pub fn use_omp_everywhere(&mut self, cx: &mut Context<Self>) {
+        let key = self.key(cx);
+        let connection = self.env.sessions.read(cx).connection().clone();
+        self.scopes.insert(key, Opened::Opening);
+        cx.spawn(async move |this, cx| {
+            let stored = connection
+                .assistant_configure(AssistantConfigure {
+                    scope: AssistantScope::Global,
+                    workspace_id: None,
+                    backend: AssistantBackend::Omp,
+                    model: None,
+                    provider: None,
+                })
+                .await;
+            this.update(cx, |this, cx| match stored {
+                Ok(_) => {
+                    this.scopes.remove(&key);
+                    this.open(key, cx);
+                }
+                Err(error) => this.opened(key, Err(error), cx),
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -527,6 +728,178 @@ impl AssistantPanel {
             .into_any_element()
     }
 
+    /// The header's backend and model: what the shown assistant runs on, opening the chooser.
+    fn backend_button(&self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let label = self
+            .session(cx)
+            .and_then(|session| {
+                let store = self.env.sessions.read(cx);
+                let chat = store.session(session)?.chat.clone()?;
+                let backend = if chat.agent == "assistant" {
+                    chat.provider_id.unwrap_or_else(|| "provider".to_owned())
+                } else {
+                    harnesses::harness_name(&chat.agent)
+                };
+                Some(format!("{backend} · {}", chat.model))
+            })
+            .unwrap_or_else(|| "Choose backend".to_owned());
+        button(
+            "assistant-backend",
+            format!("{label} ▾"),
+            ButtonKind::Secondary,
+            self.connected(cx),
+            look,
+        )
+        .when(self.connected(cx), |b| {
+            b.on_click(cx.listener(|this, _, _, cx| this.toggle_switcher(cx)))
+        })
+        .child(probe(&self.env.regions, Region::Assistant("backend")))
+        .into_any_element()
+    }
+
+    /// The chooser: backends first, then the models of the one picked; a model (or the
+    /// backend's default) is the choice.
+    fn render_switcher(&self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let (theme, tokens) = (look.theme, look.tokens);
+        let directory = self.env.harnesses.read(cx);
+        let backend = self.switcher.as_ref().and_then(|s| s.backend.clone());
+        let mut choices: Vec<(String, BackendChoice, String, bool, &'static str)> = Vec::new();
+        for harness in HARNESSES {
+            let kind = match harness.id {
+                harnesses::OMP => AssistantBackend::Omp,
+                harnesses::CLAUDE => AssistantBackend::Claude,
+                _ => AssistantBackend::Codex,
+            };
+            let detection = directory.detection(harness.id);
+            let detail = match &detection {
+                Detection::NotFound(how) => how.clone(),
+                _ => harnesses::login_summary(directory, harness.id),
+            };
+            let usable = !matches!(detection, Detection::NotFound(_));
+            choices.push((
+                format!("backend-{}", harness.id),
+                BackendChoice::Harness(kind),
+                detail,
+                usable,
+                match harness.id {
+                    harnesses::OMP => "backend-omp",
+                    harnesses::CLAUDE => "backend-claude",
+                    _ => "backend-codex",
+                },
+            ));
+        }
+        for provider in &self.providers {
+            choices.push((
+                format!("backend-provider-{}", provider.id),
+                BackendChoice::Provider(provider.id.clone()),
+                provider.base_url.clone(),
+                true,
+                "backend-provider",
+            ));
+        }
+        let rows: Vec<AnyElement> = choices
+            .into_iter()
+            .map(|(id, choice, detail, usable, region)| {
+                let selected = backend.as_ref() == Some(&choice);
+                let picked = choice.clone();
+                div()
+                    .id(SharedString::from(id))
+                    .flex()
+                    .flex_col()
+                    .px(px(tokens.spacing * 2.0))
+                    .py(px(tokens.spacing))
+                    .rounded(px(tokens.radius))
+                    .when(selected, |s| s.bg(theme.accent_soft))
+                    .when(usable, |s| {
+                        s.cursor_pointer()
+                            .hover(move |s| s.bg(theme.surface_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.choose_backend(picked.clone(), cx);
+                            }))
+                    })
+                    .when(!usable, |s| s.opacity(0.6))
+                    .child(div().medium().child(SharedString::from(choice.label())))
+                    .child(
+                        div()
+                            .text_color(theme.muted)
+                            .text_size(px(tokens.secondary_font_size))
+                            .child(SharedString::from(detail)),
+                    )
+                    .child(probe(&self.env.regions, Region::Assistant(region)))
+                    .into_any_element()
+            })
+            .collect();
+        let mut models: Vec<AnyElement> = Vec::new();
+        if let Some(chosen) = backend.clone() {
+            let default_choice = chosen.clone();
+            models.push(
+                button(
+                    "assistant-model-default",
+                    "Use the default model",
+                    ButtonKind::Primary,
+                    true,
+                    look,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.use_backend(default_choice.clone(), None, cx);
+                }))
+                .child(probe(&self.env.regions, Region::Assistant("use-default")))
+                .into_any_element(),
+            );
+            match self.switcher_models(cx) {
+                Models::Loading => models.push(
+                    div()
+                        .text_color(theme.muted)
+                        .child("Loading the models…")
+                        .into_any_element(),
+                ),
+                Models::Failed(error) => models.push(
+                    div()
+                        .text_color(theme.danger)
+                        .child(SharedString::from(error))
+                        .into_any_element(),
+                ),
+                Models::Ready(list) => {
+                    let list: Vec<ModelInfo> = list.into_iter().filter(|m| !m.hidden).collect();
+                    for (index, model) in list.into_iter().enumerate() {
+                        let chosen = chosen.clone();
+                        let id = model.id.clone();
+                        models.push(
+                            button(
+                                format!("assistant-model-{index}"),
+                                model.display_name.clone(),
+                                ButtonKind::Ghost,
+                                true,
+                                look,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.use_backend(chosen.clone(), Some(id.clone()), cx);
+                            }))
+                            .into_any_element(),
+                        );
+                    }
+                }
+            }
+        }
+        div()
+            .id("assistant-switcher")
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing * 2.0))
+            .p(px(tokens.spacing * 3.0))
+            .child(ui::section_label(
+                "What the assistant runs on",
+                &theme,
+                &tokens,
+            ))
+            .children(rows)
+            .child(ui::section_label("Model", &theme, &tokens))
+            .children(models)
+            .into_any_element()
+    }
+
     fn notice(
         &self,
         mascot: Mascot,
@@ -564,6 +937,13 @@ impl AssistantPanel {
 
     fn render_body(&mut self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
         let key = self.key(cx);
+        if matches!(self.state(key), Opened::Failed(Failure::Unconfigured(_)))
+            && *self.env.harnesses.read(cx).listing() == Listing::Idle
+        {
+            self.env
+                .harnesses
+                .update(cx, |directory, cx| directory.refresh(cx));
+        }
         let retry = button(
             "assistant-retry",
             "Retry",
@@ -576,7 +956,7 @@ impl AssistantPanel {
         .into_any_element();
         let models = button(
             "assistant-models",
-            "Open Models settings…",
+            "Add a provider…",
             ButtonKind::Primary,
             true,
             look,
@@ -584,6 +964,9 @@ impl AssistantPanel {
         .on_click(|_, window, cx| window.dispatch_action(Box::new(ManageProviders), cx))
         .child(probe(&self.env.regions, Region::Assistant("models")))
         .into_any_element();
+        if self.switcher.is_some() && self.connected(cx) {
+            return self.render_switcher(look, cx);
+        }
         if !self.connected(cx) {
             return self.notice(
                 Mascot::Sleep,
@@ -614,20 +997,46 @@ impl AssistantPanel {
                     look,
                 ),
             },
-            Opened::Failed(Failure::Unconfigured(message)) => self.notice(
-                Mascot::Empty,
-                "The assistant has no provider yet",
-                vec![
-                    message,
-                    "Add a provider (and its key) in Models, then name it under [assistant] \
-                     (`provider`, and `model` if it should not use the provider's default) in \
-                     the daemon's daemon.toml and restart hutand. Hutan never picks a \
-                     provider or model for you, and nothing is sent anywhere until you do."
-                        .to_owned(),
-                ],
-                vec![models, retry],
-                look,
-            ),
+            Opened::Failed(Failure::Unconfigured(_)) => {
+                let directory = self.env.harnesses.read(cx);
+                let omp_ready = directory.detection(harnesses::OMP) == Detection::Installed
+                    && !directory.logged_in(harnesses::OMP).is_empty();
+                let can_choose = self
+                    .env
+                    .sessions
+                    .read(cx)
+                    .connection()
+                    .supports_assistant_backend();
+                let mut buttons: Vec<AnyElement> = Vec::new();
+                if omp_ready && can_choose {
+                    buttons.push(
+                        button(
+                            "assistant-use-omp",
+                            "Use OMP",
+                            ButtonKind::Primary,
+                            true,
+                            look,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.use_omp_everywhere(cx)))
+                        .child(probe(&self.env.regions, Region::Assistant("use-omp")))
+                        .into_any_element(),
+                    );
+                }
+                buttons.push(models);
+                buttons.push(retry);
+                let detail = if can_choose {
+                    "Answer through OMP when you are logged in to it (Settings → Accounts), or add a model provider with your own key. Nothing is sent anywhere until you choose."
+                } else {
+                    "This hutand is older than the app: restart it (Daemon → Restart) to choose OMP, Claude Code or Codex. A model provider works as before."
+                };
+                self.notice(
+                    Mascot::Empty,
+                    "Set up the assistant",
+                    vec![detail.to_owned()],
+                    buttons,
+                    look,
+                )
+            }
             Opened::Failed(Failure::Unsupported) => self.notice(
                 Mascot::Error,
                 "This hutand has no assistant",
@@ -661,6 +1070,7 @@ impl Render for AssistantPanel {
         }
         let look = Look::of(cx);
         let header = self.render_header(&look, cx);
+        let backend = self.backend_button(&look, cx);
         let body = self.render_body(&look, cx);
         let (theme, tokens) = (look.theme, look.tokens);
         div()
@@ -672,6 +1082,17 @@ impl Render for AssistantPanel {
             .text_color(theme.fg)
             .text_size(px(tokens.font_size))
             .child(header)
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .px(px(tokens.spacing * 3.0))
+                    .py(px(tokens.spacing))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(backend),
+            )
             .child(div().relative().flex_1().min_h_0().child(body))
     }
 }

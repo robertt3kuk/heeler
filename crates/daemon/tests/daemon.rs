@@ -200,7 +200,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "harness.acp",
             "accounts",
             "resources",
-            "projects.auto"
+            "projects.auto",
+            "assistant.backend"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

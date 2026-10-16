@@ -275,6 +275,7 @@ impl Router {
                 session: self.assistant.open(req).await?,
             }),
             Request::AssistantList(req) => ok(&self.assistant.list(req).await?),
+            Request::AssistantConfigure(req) => ok(&self.assistant.configure(req).await?),
             Request::NotifyList(_) => ok(&NotifyList {
                 intents: self.notify.list(),
             }),

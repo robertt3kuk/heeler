@@ -916,7 +916,12 @@ impl Workbench {
 
     /// Re-reads the keymap (defaults + `keymap.toml`) and rebinds every key.
     pub(crate) fn rebind_keys(&mut self, cx: &mut Context<Self>) {
-        let load = self.settings.keymap(&actions::default_bindings());
+        let mut load = self.settings.keymap(&actions::default_bindings());
+        if !self.assistant_enabled() {
+            // Off: ⌥Space (or whatever the user bound) no longer opens the assistant.
+            let open = <actions::OpenAssistant as gpui::Action>::name_for_type();
+            load.bindings.retain(|b| b.action != open);
+        }
         actions::apply_keymap(cx, &load);
         cx.notify();
     }
@@ -977,6 +982,9 @@ impl Workbench {
         if changes.contains("terminal") {
             self.refresh_terminal_style(cx);
         }
+        if changes.contains("assistant") {
+            self.apply_assistant_enabled(cx);
+        }
         if changes.contains("layout") {
             self.apply_layout_settings(cx);
         }
@@ -997,7 +1005,11 @@ impl Workbench {
             .cloned();
         self.preset_defs = layout.preset_defs();
         self.presets = self.preset_defs.iter().map(|d| d.layout.clone()).collect();
-        self.commands = std::rc::Rc::new(actions::commands(&self.presets, &self.panels));
+        self.commands = std::rc::Rc::new(actions::commands(
+            &self.presets,
+            &self.panels,
+            self.assistant_enabled(),
+        ));
         if let Some(palette) = &mut self.palette {
             palette.refilter(self.commands.iter().map(|c| c.title.as_ref()));
         }
