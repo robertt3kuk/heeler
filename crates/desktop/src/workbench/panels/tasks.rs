@@ -1040,7 +1040,7 @@ impl TasksPanel {
         let mut run_pills = div().flex().flex_wrap().gap(px(tokens.spacing));
         let mut choices = vec![RunChoice::Terminal, RunChoice::Codex];
         if harness {
-            choices.push(RunChoice::Omp);
+            choices.extend([RunChoice::Omp, RunChoice::Claude]);
         }
         for choice in choices {
             run_pills = run_pills.child(
@@ -1059,6 +1059,7 @@ impl TasksPanel {
                         RunChoice::Terminal => "run-terminal",
                         RunChoice::Codex => "run-codex",
                         RunChoice::Omp => "run-omp",
+                        RunChoice::Claude => "run-claude",
                     }),
                 )),
             );

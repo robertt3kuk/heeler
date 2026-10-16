@@ -324,6 +324,8 @@ pub enum RunChoice {
     Codex,
     /// An `omp` chat (the ACP harness, daemon capability `harness.acp`).
     Omp,
+    /// A Claude Code chat (the ACP harness, daemon capability `harness.acp`).
+    Claude,
 }
 
 impl RunChoice {
@@ -332,6 +334,7 @@ impl RunChoice {
             RunChoice::Terminal => "Terminal",
             RunChoice::Codex => "Codex chat",
             RunChoice::Omp => "omp chat",
+            RunChoice::Claude => "Claude chat",
         }
     }
 
@@ -340,6 +343,7 @@ impl RunChoice {
             RunChoice::Terminal => "terminal",
             RunChoice::Codex => "codex",
             RunChoice::Omp => "omp",
+            RunChoice::Claude => "claude",
         }
     }
 
@@ -349,6 +353,7 @@ impl RunChoice {
             RunChoice::Terminal => None,
             RunChoice::Codex => Some("codex"),
             RunChoice::Omp => Some("omp"),
+            RunChoice::Claude => Some("claude"),
         }
     }
 }

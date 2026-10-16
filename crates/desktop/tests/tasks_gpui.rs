@@ -587,6 +587,7 @@ fn the_form_offers_a_chat_run_that_needs_a_prompt(cx: &mut TestAppContext) {
     });
     // omp chats are offered when the daemon runs the ACP harnesses (this one does).
     assert!(region(&view, cx, Region::Tasks("run-omp")).is_some());
+    assert!(region(&view, cx, Region::Tasks("run-claude")).is_some());
 
     panel.update(cx, |p, cx| p.set_field(TaskFormField::Title, "Review", cx));
     click(&view, cx, Region::Tasks("run-codex"));

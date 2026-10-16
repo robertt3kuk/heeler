@@ -183,7 +183,7 @@ pub enum Region {
     PlacementBadge(BadgeSite, SessionId),
     /// A control of the tasks panel, by name (`new`, `chip-done`, `chip-scope`, `form-title`,
     /// `form-prompt`, `form-command`, `form-branch`, `form-create`, `form-cancel`, `form-auto`,
-    /// `run-terminal`, `run-codex`, `run-omp`, `place-main`, `place-worktree`, `cascade-yes`,
+    /// `run-terminal`, `run-codex`, `run-omp`, `run-claude`, `place-main`, `place-worktree`, `cascade-yes`,
     /// `cascade-no`, `empty-new`).
     Tasks(&'static str),
     /// Row `index` of the tasks panel's tree, top to bottom.
