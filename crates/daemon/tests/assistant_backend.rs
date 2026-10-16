@@ -698,6 +698,7 @@ async fn attachments_reach_an_omp_assistant_as_embedded_context() {
             vec![Attachment::File {
                 path: "notes.txt".into(),
                 range: None,
+                picked: false,
             }],
         )
         .await
@@ -735,6 +736,7 @@ async fn a_settings_refusal_still_gates_what_a_harness_assistant_may_read() {
             vec![Attachment::File {
                 path: "notes.txt".into(),
                 range: None,
+                picked: false,
             }],
         )
         .await
@@ -764,6 +766,7 @@ async fn attachments_reach_a_codex_assistant_as_quoted_text() {
             vec![Attachment::File {
                 path: "notes.txt".into(),
                 range: None,
+                picked: false,
             }],
         )
         .await
@@ -778,7 +781,7 @@ async fn attachments_reach_a_codex_assistant_as_quoted_text() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plain_codex_chat_still_takes_no_attachments() {
+async fn a_plain_codex_chat_takes_files_and_images() {
     // No assistant backend at all: this is an ordinary Codex chat.
     let t = B::start(Setup::default()).await;
     let project = t.workspace("proj").await;
@@ -799,20 +802,36 @@ async fn a_plain_codex_chat_still_takes_no_attachments() {
         .await
         .unwrap();
     assert!(!plain.session.chat.as_ref().unwrap().assistant);
-    let refused = t
-        .client
+    let mut t = t;
+    t.client
         .chat_send_with(
             plain.session.id,
-            "x",
-            vec![Attachment::File {
-                path: "notes.txt".into(),
-                range: None,
-            }],
+            "what is this?",
+            vec![
+                Attachment::File {
+                    path: "notes.txt".into(),
+                    range: None,
+                    picked: false,
+                },
+                Attachment::Image {
+                    path: None,
+                    data_base64: Some("iVBORw0KGgp4eXo=".into()),
+                    media_type: "image/png".into(),
+                },
+            ],
         )
         .await
-        .unwrap_err();
-    assert_eq!(remote_code(Err::<(), _>(refused)), ErrorCode::BadRequest);
-    assert!(t.received_of("codex", "turn/start").is_empty());
+        .unwrap();
+    t.wait_turn_end().await;
+    let input = &t.received_of("codex", "turn/start")[0]["params"]["input"];
+    let text = input[0]["text"].as_str().unwrap();
+    assert!(text.contains("remember the milk"), "{text}");
+    assert!(text.contains("[image: pasted image · image/png"), "{text}");
+    // The clipboard image is a temporary file for the agent, gone when the turn ended.
+    assert_eq!(input[1]["type"], "localImage");
+    let temporary = std::path::PathBuf::from(input[1]["path"].as_str().unwrap());
+    assert_eq!(temporary.parent().unwrap().file_name().unwrap(), "tmp");
+    assert!(!temporary.exists(), "removed when the turn ended");
     t.stop().await;
 }
 

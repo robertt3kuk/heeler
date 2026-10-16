@@ -8,6 +8,7 @@
 //! and sent with the new message. The model can be switched between turns; every turn records
 //! the provider and model it used on its `turn_started` event.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -17,7 +18,8 @@ use hutan_agents::{AdapterMessage, ExitInfo};
 use hutan_core::agent::{MessageRole, NoticeLevel, TokenCounts};
 use hutan_core::{AgentEvent, AgentEventDraft, AgentEventKind, ItemId, SessionId, TurnId};
 use hutan_gateway::{
-    ChatMessage, ChatRequest, GatewayError, GatewayEvent, Provider, Role, is_length_cut,
+    ChatMessage, ChatRequest, GatewayError, GatewayEvent, ImageContent, Provider, Role,
+    is_length_cut,
 };
 use hutan_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
 use hutan_protocol::control::{ErrorBody, ErrorCode};
@@ -34,6 +36,8 @@ use crate::providers::ProviderService;
 
 /// Most journal rows read to rebuild a conversation; far more than any context limit allows.
 const HISTORY_ROWS: u32 = 4000;
+/// How long what a provider said about a model's image input is remembered.
+const VISION_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 /// Longest system prompt, in bytes.
 pub const MAX_SYSTEM_PROMPT_BYTES: usize = 32 * 1024;
 
@@ -64,6 +68,8 @@ pub(crate) struct DirectSession {
     turn: Mutex<Option<ActiveTurn>>,
     /// Cumulative token counts of the conversation (the `total` of `usage` events).
     usage: Mutex<TokenCounts>,
+    /// Whether `(provider, model)` reads images, as the provider said and when.
+    vision: Mutex<HashMap<(String, String), (Instant, bool)>>,
     shut: AtomicBool,
 }
 
@@ -103,6 +109,7 @@ impl DirectSession {
             target: Mutex::new(target),
             turn: Mutex::new(None),
             usage: Mutex::new(usage),
+            vision: Mutex::new(HashMap::new()),
             shut: AtomicBool::new(false),
         })
     }
@@ -133,23 +140,39 @@ impl DirectSession {
                 "the chat session is shutting down",
             ));
         }
-        let (text, attachments) = match attached {
+        let (text, attachments, images) = match attached {
             Some(attached) => (
                 format!("{text}\n\n{}", attached.appendix),
                 Some(attached.meta),
+                attached.images,
             ),
-            None => (text, None),
+            None => (text, None, Vec::new()),
         };
         let target = self.target.lock().clone();
         // Fails before anything is journaled when the provider is gone or lacks its key.
         let (record, provider) = self.providers.resolve(&target.provider_id).await?;
+        if !images.is_empty() {
+            self.require_vision(&record.id, &target.model, provider.as_ref())
+                .await?;
+        }
         let history = self.load_history().await?;
-        let (messages, dropped) = build_context(
+        let (mut messages, dropped) = build_context(
             &history,
             &text,
             target.system_prompt.as_deref(),
             self.max_context_chars,
         );
+        if let Some(message) = messages.last_mut() {
+            // The images ride on the new message only: the journal keeps their headers, which
+            // is all later turns send of them.
+            message.images = images
+                .into_iter()
+                .map(|image| ImageContent {
+                    media_type: image.media_type,
+                    data: image.data,
+                })
+                .collect();
+        }
         let request = ChatRequest::new(target.model.clone(), messages);
 
         let turn_id = TurnId::new();
@@ -171,6 +194,45 @@ impl DirectSession {
             task,
         });
         Ok(turn_id)
+    }
+
+    /// Refuses images for a model the provider does not say reads them (`unsupported`). The
+    /// provider's answer is remembered for a few minutes.
+    async fn require_vision(
+        &self,
+        provider_id: &str,
+        model: &str,
+        provider: &dyn Provider,
+    ) -> Result<(), ErrorBody> {
+        let key = (provider_id.to_owned(), model.to_owned());
+        let known = self
+            .vision
+            .lock()
+            .get(&key)
+            .filter(|(at, _)| at.elapsed() < VISION_TTL)
+            .map(|(_, answer)| *answer);
+        let reads_images = match known {
+            Some(answer) => answer,
+            None => {
+                let answer = provider
+                    .supports_vision(model)
+                    .await
+                    .map_err(|e| crate::providers::gateway_error(&e))?;
+                self.vision.lock().insert(key, (Instant::now(), answer));
+                answer
+            }
+        };
+        if reads_images {
+            Ok(())
+        } else {
+            Err(ErrorBody::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "the model list of provider `{provider_id}` does not say that `{model}` accepts \
+                     images: switch to a model that does, or send the message without them"
+                ),
+            ))
+        }
     }
 
     /// The conversation so far from the journal, oldest first.

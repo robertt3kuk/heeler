@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use hutan_agents::{
     AcpAdapter, AcpConfig, AcpSession, AdapterMessage, AgentAdapter, AgentError, ContextBlock,
-    StartSpec,
+    ImageBlock, MessageExtras, StartSpec,
 };
 use hutan_core::agent::{
     FileChangeKind, MessageRole, NoticeLevel, PermissionKind, PermissionOptionKind,
@@ -1057,12 +1057,15 @@ async fn attached_context_is_sent_as_embedded_resources() {
     } = h.start("plain-turn").await;
     initial(&mut events).await;
     adapter
-        .send_message_with_context(
+        .send_message_with(
             "explain".into(),
-            vec![ContextBlock {
-                label: "shell: cargo test".into(),
-                text: "[shell: cargo test · exit 1]\n1 failed".into(),
-            }],
+            MessageExtras {
+                context: vec![ContextBlock {
+                    label: "shell: cargo test".into(),
+                    text: "[shell: cargo test · exit 1]\n1 failed".into(),
+                }],
+                images: Vec::new(),
+            },
         )
         .await
         .unwrap();
@@ -1082,6 +1085,97 @@ async fn attached_context_is_sent_as_embedded_resources() {
             .unwrap()
             .contains("1 failed")
     );
+    adapter.shutdown().await;
+}
+
+fn png() -> ImageBlock {
+    ImageBlock {
+        header: "[image: shot.png · image/png · 8 B]".into(),
+        media_type: "image/png".into(),
+        data: std::sync::Arc::new(b"\x89PNG\r\n\x1a\nxyz".to_vec()),
+        path: None,
+    }
+}
+
+#[tokio::test]
+async fn images_are_sent_as_image_blocks_when_the_agent_takes_them() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        started,
+        mut events,
+        ..
+    } = h.start("plain-turn").await;
+    // The recorded handshake advertises `promptCapabilities.image`.
+    assert_eq!(started.images, Some(true));
+    initial(&mut events).await;
+    adapter
+        .send_message_with(
+            "what is this?".into(),
+            MessageExtras {
+                context: vec![ContextBlock {
+                    label: "pasted text".into(),
+                    text: "[pasted text: 1 line]\nhello".into(),
+                }],
+                images: vec![png()],
+            },
+        )
+        .await
+        .unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    // The journal names the image without its bytes.
+    assert!(kinds(&seen).iter().any(|k| matches!(k, AgentEventKind::MessageEnd { role: MessageRole::User, text, .. } if text.contains("what is this?") && text.contains("[image: shot.png · image/png · 8 B]") && !text.contains("PNG"))));
+    let prompt = &h.received_of("session/prompt")[0]["params"]["prompt"];
+    assert_eq!(prompt[0], json!({"type": "text", "text": "what is this?"}));
+    assert_eq!(prompt[1]["type"], "resource");
+    assert_eq!(
+        prompt[2],
+        json!({
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "iVBORw0KGgp4eXo=",
+        })
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn images_are_refused_when_the_agent_does_not_take_them() {
+    let h = Harness::new();
+    let text = std::fs::read_to_string(fixture("plain-turn")).unwrap();
+    assert!(text.contains("\"image\":true"));
+    let without = h.dir.path().join("no-images");
+    std::fs::write(
+        without.with_extension("jsonl"),
+        text.replace("\"image\":true", "\"image\":false"),
+    )
+    .unwrap();
+    let AcpSession {
+        adapter,
+        started,
+        mut events,
+        ..
+    } = h.start(&without.display().to_string()).await;
+    assert_eq!(started.images, Some(false));
+    initial(&mut events).await;
+    let refused = adapter
+        .send_message_with(
+            "look".into(),
+            MessageExtras {
+                context: Vec::new(),
+                images: vec![png()],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, AgentError::Unsupported(message) if message.contains("does not accept images")),
+        "{refused:?}"
+    );
+    // Nothing was sent, no turn began, and the agent is still usable.
+    assert!(h.received_of("session/prompt").is_empty());
+    adapter.send_message("plain".into()).await.unwrap();
+    collect_until(&mut events, ends_turn).await;
     adapter.shutdown().await;
 }
 

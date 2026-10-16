@@ -396,6 +396,7 @@ fn user_event(events: &[AgentEvent]) -> &AgentEvent {
 fn file(path: &str) -> Attachment {
     Attachment::File {
         path: path.to_owned(),
+        picked: false,
         range: None,
     }
 }
@@ -614,6 +615,7 @@ async fn attachments_are_resolved_journaled_and_sent_and_nothing_else_is() {
         Attachment::File {
             path: "src/lib.rs".into(),
             range: Some(LineRange { start: 1, end: 2 }),
+            picked: false,
         },
         Attachment::Search {
             query: "flibbertigibbet".into(),
@@ -897,7 +899,8 @@ async fn refused_attachments_name_their_setting_and_nothing_is_read_or_sent() {
     assert_eq!(
         bad(Attachment::File {
             path: "notes.txt".into(),
-            range: Some(LineRange { start: 5, end: 2 })
+            range: Some(LineRange { start: 5, end: 2 }),
+            picked: false
         })
         .await,
         ErrorCode::BadRequest
@@ -1086,5 +1089,73 @@ async fn a_terminal_or_unknown_session_takes_no_chat_message() {
     ));
     let (code, _) = error_of(env.send(SessionId::new(), "x", vec![file("a")]).await).await;
     assert!(matches!(code, ErrorCode::NotFound | ErrorCode::BadRequest));
+    env.stop().await;
+}
+
+// Images (protocol 0.23) ------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn images_reach_a_provider_that_says_the_model_reads_them_and_are_refused_otherwise() {
+    let mut env = Env::start("", false, true).await;
+    let png = b"\x89PNG\r\n\x1a\nxyz";
+    let data = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(png)
+    };
+    let image = || Attachment::Image {
+        path: None,
+        data_base64: Some(data.clone()),
+        media_type: "image/png".into(),
+    };
+    let models = |modalities: &[&str]| {
+        Reply::json(
+            200,
+            &serde_json::json!({"data": [
+                {"id": "m-1", "architecture": {"input_modalities": modalities}}
+            ]})
+            .to_string(),
+        )
+    };
+
+    // The model list says `m-1` reads images: the message carries an `image_url` data URL.
+    env.mock
+        .route("GET", "/v1/models", models(&["text", "image"]));
+    env.mock.route("POST", PATH, reply("a tiny image"));
+    let assistant = env.open(AssistantScope::Global, None, false).await;
+    let events = env.ask(assistant.id, "what is this?", vec![image()]).await;
+    let content = env.mock.requests_to(PATH)[0].json()["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .clone();
+    assert_eq!(content[0]["type"], "text");
+    assert!(
+        content[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("what is this?")
+    );
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        format!("data:image/png;base64,{data}")
+    );
+    // The journal has the header and the meta, not the bytes.
+    let text = user_text(&events);
+    assert!(text.contains("[image: pasted image · image/png"), "{text}");
+    assert!(!text.contains(&data));
+    let meta = attachments_meta(user_event(&events));
+    assert_eq!(meta[0].kind, AttachmentKind::Image);
+    assert_eq!(meta[0].size, Some(png.len() as u64));
+    assert_eq!(meta[0].path, None);
+
+    // A model the list says is text only: `unsupported`, and nothing reaches the provider.
+    env.mock.set_route("GET", "/v1/models", models(&["text"]));
+    let text_only = env.open(AssistantScope::Global, None, true).await;
+    let before = env.mock.requests_to(PATH).len();
+    let refused = env.send(text_only.id, "and this?", vec![image()]).await;
+    assert_eq!(remote_code(refused), ErrorCode::Unsupported);
+    assert_eq!(env.mock.requests_to(PATH).len(), before);
     env.stop().await;
 }

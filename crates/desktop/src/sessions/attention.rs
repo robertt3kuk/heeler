@@ -632,6 +632,7 @@ mod tests {
             provider_id: None,
             agent_session_id: None,
             assistant: false,
+            images: None,
         });
         session
     }

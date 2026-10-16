@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::accounts::AccountService;
-use crate::assistant::AssistantService;
+use crate::assistant::{AssistantService, Origin};
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
 use crate::control::{Access, ControlService};
@@ -264,9 +264,15 @@ impl Router {
                 self.live_chat(req.session_id).await?;
                 // Resolved before anything is journaled or sent: a refused attachment fails
                 // the whole message.
+                let origin =
+                    if !req.attachments.is_empty() && self.agent_origin(conn).await.is_some() {
+                        Origin::Agent
+                    } else {
+                        Origin::User
+                    };
                 let attached = self
                     .assistant
-                    .prepare(req.session_id, &req.attachments)
+                    .prepare(req.session_id, &req.attachments, origin)
                     .await?;
                 let turn_id = self
                     .registry

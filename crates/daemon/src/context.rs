@@ -6,6 +6,7 @@
 //! straddling the cut is gone as a whole, and the headers (which carry a command line or a
 //! path) are redacted as well.
 
+use hutan_agents::ImageBlock;
 use hutan_index::redact::redact;
 use hutan_protocol::assistant::{Attachment, AttachmentKind, AttachmentMeta};
 
@@ -22,9 +23,12 @@ pub struct Attached {
     pub appendix: String,
     /// Kind, label, size and truncation per attachment, in the order they were attached.
     pub meta: Vec<AttachmentMeta>,
-    /// The attachments one by one (header and body), for agents that take them as separate
+    /// The text attachments one by one (header and body), for agents that take them as separate
     /// resources (ACP embedded context).
     pub blocks: Vec<hutan_agents::ContextBlock>,
+    /// The images (protocol 0.23): their headers are part of the appendix, their bytes go to
+    /// the backend as image content.
+    pub images: Vec<ImageBlock>,
 }
 
 /// Which end of a text survives a cut.
@@ -112,6 +116,18 @@ pub struct Part {
     /// Redacted and cut; ends without a newline.
     pub body: String,
     pub truncated: bool,
+    /// An image (protocol 0.23): its bytes are never part of the text.
+    pub image: Option<ImagePart>,
+}
+
+/// What a resolved image adds to a [`Part`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePart {
+    pub block: ImageBlock,
+    /// The file the image was read from; `None` for inline data.
+    pub path: Option<String>,
+    /// Hex SHA-256 of the bytes.
+    pub sha256: String,
 }
 
 /// The word in front of a header's description.
@@ -121,6 +137,8 @@ fn tag(kind: AttachmentKind) -> &'static str {
         AttachmentKind::ShellRecent => "shell",
         AttachmentKind::AgentTranscript => "agent",
         AttachmentKind::File => "file",
+        AttachmentKind::Image => "image",
+        AttachmentKind::PastedText => "pasted text",
         AttachmentKind::Search => "search",
     }
 }
@@ -169,12 +187,27 @@ impl Part {
             header,
             body: body.text.trim_end_matches(['\n', '\r']).to_owned(),
             truncated: body.truncated || extra_truncated,
+            image: None,
+        }
+    }
+
+    /// An image: the header says what it is, the bytes ride along unredacted.
+    pub fn image(label: &str, description: &str, image: ImagePart) -> Self {
+        Self {
+            kind: AttachmentKind::Image,
+            label: one_line(label),
+            header: format!("[image: {}]", collapse(description)),
+            body: String::new(),
+            truncated: false,
+            image: Some(image),
         }
     }
 
     /// The part as it is written into the message.
     pub fn text(&self) -> String {
-        if self.body.is_empty() {
+        if self.image.is_some() {
+            self.header.clone()
+        } else if self.body.is_empty() {
             format!("{}\n(nothing)", self.header)
         } else {
             format!("{}\n{}", self.header, self.body)
@@ -182,12 +215,19 @@ impl Part {
     }
 
     pub fn meta(&self) -> AttachmentMeta {
-        AttachmentMeta {
-            kind: self.kind,
-            label: self.label.clone(),
-            chars: u64::try_from(self.body.chars().count()).unwrap_or(u64::MAX),
-            truncated: self.truncated,
+        let mut meta = AttachmentMeta::text(
+            self.kind,
+            self.label.clone(),
+            u64::try_from(self.body.chars().count()).unwrap_or(u64::MAX),
+            self.truncated,
+        );
+        if let Some(image) = &self.image {
+            meta.size = Some(u64::try_from(image.block.data.len()).unwrap_or(u64::MAX));
+            meta.media_type = Some(image.block.media_type.clone());
+            meta.path.clone_from(&image.path);
+            meta.sha256 = Some(image.sha256.clone());
         }
+        meta
     }
 }
 
@@ -215,11 +255,44 @@ pub fn assemble(parts: &[Part]) -> Attached {
         meta: parts.iter().map(Part::meta).collect(),
         blocks: parts
             .iter()
+            .filter(|part| part.image.is_none())
             .map(|part| hutan_agents::ContextBlock {
                 label: part.label.clone(),
                 text: part.text(),
             })
             .collect(),
+        images: parts
+            .iter()
+            .filter_map(|part| part.image.as_ref().map(|image| image.block.clone()))
+            .collect(),
+    }
+}
+
+/// The media type of `bytes` when they start like a PNG, JPEG, GIF or WebP file.
+pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// `1.5 MiB`, `120 KiB`, `800 B`.
+pub fn human_size(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * 1024;
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes.div_ceil(KIB))
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -331,7 +404,7 @@ pub fn check_bounds(attachment: &Attachment) -> Result<(), String> {
                 Ok(())
             }
         }
-        Attachment::File { path, range } => {
+        Attachment::File { path, range, .. } => {
             if path.trim().is_empty() {
                 Err("`file` needs a path".to_owned())
             } else if range.is_some_and(|r| r.start == 0 || r.end < r.start) {
@@ -339,6 +412,47 @@ pub fn check_bounds(attachment: &Attachment) -> Result<(), String> {
                     "`file` range lines are 1-based and `end` must not be before `start`"
                         .to_owned(),
                 )
+            } else {
+                Ok(())
+            }
+        }
+        Attachment::Image {
+            path,
+            data_base64,
+            media_type,
+        } => {
+            use hutan_protocol::assistant::{IMAGE_INLINE_MAX_BYTES, IMAGE_MEDIA_TYPES};
+            if !IMAGE_MEDIA_TYPES.contains(&media_type.to_ascii_lowercase().as_str()) {
+                return Err(format!(
+                    "`image` takes PNG, JPEG, GIF or WebP ({}), not `{media_type}`",
+                    IMAGE_MEDIA_TYPES.join(", ")
+                ));
+            }
+            match (path, data_base64) {
+                (Some(_), Some(_)) | (None, None) => {
+                    Err("`image` needs exactly one of `path` and `data_base64`".to_owned())
+                }
+                (Some(path), None) if path.trim().is_empty() => {
+                    Err("`image` needs a path".to_owned())
+                }
+                // base64 is 4 characters per 3 bytes; padding and a little slack.
+                (None, Some(data)) if data.len() > IMAGE_INLINE_MAX_BYTES.div_ceil(3) * 4 + 8 => {
+                    Err(format!(
+                        "an inline `image` is at most {IMAGE_INLINE_MAX_BYTES} bytes: attach it by `path`"
+                    ))
+                }
+                _ => Ok(()),
+            }
+        }
+        Attachment::PastedText { text } => {
+            use hutan_protocol::assistant::PASTED_TEXT_MAX_BYTES;
+            if text.trim().is_empty() {
+                Err("`pasted_text` needs some text".to_owned())
+            } else if text.len() > PASTED_TEXT_MAX_BYTES {
+                Err(format!(
+                    "`pasted_text` is {} bytes; at most {PASTED_TEXT_MAX_BYTES} are allowed",
+                    text.len()
+                ))
             } else {
                 Ok(())
             }
@@ -594,6 +708,7 @@ mod tests {
         let file = |range| Attachment::File {
             path: "a".into(),
             range,
+            picked: false,
         };
         assert!(ok(file(None)));
         assert!(ok(file(Some(LineRange { start: 3, end: 3 }))));

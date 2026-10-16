@@ -477,6 +477,14 @@ impl Connection {
             .is_some_and(|client| client.supports_worktree_review())
     }
 
+    /// True while connected to a daemon that advertised capability `chat.rich_input`
+    /// ([`Client::supports_rich_input`]); false when disconnected.
+    pub fn supports_rich_input(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_rich_input())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

@@ -258,7 +258,7 @@ impl ChatView {
     pub fn toggle_attach_menu(&mut self, cx: &mut Context<Self>) {
         if self.attach.is_some() {
             self.attach = None;
-        } else if self.supports_context(cx) {
+        } else {
             self.attach = Some(Attaching::new(Stage::Menu));
         }
         cx.notify();
@@ -951,35 +951,49 @@ impl ChatView {
                 .on_click(cx.listener(move |this, _, _, cx| this.open_attach(kind, "", cx)))
                 .child(probe(&self.regions, Region::Attach(id)))
             };
+        let supports_context = self.supports_context(cx);
         div()
             .flex()
             .flex_wrap()
             .gap(px(tokens.spacing * 2.0))
-            .child(item(
-                "shell",
-                "@shell · terminal output",
-                MentionKind::Shell,
-                cx,
-            ))
-            .child(item("omp", "@omp · OMP transcript", MentionKind::Omp, cx))
-            .child(item(
-                "agent",
-                "@agent · agent transcript",
-                MentionKind::Agent,
-                cx,
-            ))
-            .child(item(
-                "file",
-                "@file · workspace file",
-                MentionKind::File,
-                cx,
-            ))
-            .child(item(
-                "search",
-                "@search · history search",
-                MentionKind::Search,
-                cx,
-            ))
+            .child(
+                button(
+                    "chat-attach-files",
+                    "Attach file or image…",
+                    ButtonKind::Secondary,
+                    true,
+                    look,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)))
+                .child(probe(&self.regions, Region::Attach("files"))),
+            )
+            .when(supports_context, |menu| {
+                menu.child(item(
+                    "shell",
+                    "@shell · terminal output",
+                    MentionKind::Shell,
+                    cx,
+                ))
+                .child(item("omp", "@omp · OMP transcript", MentionKind::Omp, cx))
+                .child(item(
+                    "agent",
+                    "@agent · agent transcript",
+                    MentionKind::Agent,
+                    cx,
+                ))
+                .child(item(
+                    "file",
+                    "@file · workspace file",
+                    MentionKind::File,
+                    cx,
+                ))
+                .child(item(
+                    "search",
+                    "@search · history search",
+                    MentionKind::Search,
+                    cx,
+                ))
+            })
             .into_any_element()
     }
 

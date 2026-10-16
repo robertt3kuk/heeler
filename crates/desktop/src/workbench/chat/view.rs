@@ -279,10 +279,12 @@ impl ChatView {
         let info = self.info(cx);
         let gate = self.gate(info.as_ref(), cx);
         let model = self.model.read(cx);
+        // An attachment can be the whole message, unless one of them cannot be sent.
         gate.blocked.is_none()
             && !gate.running
             && !model.sending()
-            && !model.draft_message().is_empty()
+            && (!model.draft_message().is_empty() || model.has_context())
+            && self.refused_attachment(cx).is_none()
     }
 
     // ---- commands --------------------------------------------------------------------------
@@ -415,9 +417,7 @@ impl ChatView {
         if mods.platform {
             match key {
                 "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.edit(|input| input.insert(&text), cx);
-                    }
+                    self.paste(cx);
                 }
                 "z" => {
                     let shift = mods.shift;
@@ -476,7 +476,11 @@ impl ChatView {
                     self.edit(|input| input.insert("\n"), cx);
                 }
             }
-            "backspace" => self.edit(TextInput::backspace, cx),
+            "backspace" => {
+                if !self.backspace_removes_chip(cx) {
+                    self.edit(TextInput::backspace, cx);
+                }
+            }
             "delete" => self.edit(TextInput::delete, cx),
             "left" => self.edit(TextInput::left, cx),
             "right" => self.edit(TextInput::right, cx),
@@ -892,9 +896,8 @@ impl ChatView {
                 self.can_send(cx),
             )
         };
-        let supports_context = self.supports_context(cx);
         let mention_hint = self.render_mention_hint(look, cx);
-        let attach_button = supports_context.then(|| self.render_attach_button(look, cx));
+        let attach_button = self.render_attach_button(look, cx);
         let vim_pill = VimConfig::of(&self.settings).enabled.then(|| {
             let mode = self.model.read(cx).vim().mode();
             vim_ui::mode_pill(mode, theme, tokens)
@@ -903,6 +906,8 @@ impl ChatView {
         });
         let hint = if gate.running {
             "⌘. interrupts the turn".to_owned()
+        } else if self.refused_attachment(cx).is_some() {
+            "Remove the refused attachment to send".to_owned()
         } else if send_on_enter {
             "↩ send · ⇧↩ newline".to_owned()
         } else {
@@ -942,51 +947,8 @@ impl ChatView {
                     .child(probe(&self.regions, Region::ChatChip(index)))
             }),
         );
-        let context_row = div().flex().flex_wrap().gap(px(tokens.spacing)).children(
-            context.iter().enumerate().map(|(index, chip)| {
-                let hover = theme.surface_hover;
-                let color = if chip.refused.is_some() {
-                    theme.danger
-                } else {
-                    theme.accent
-                };
-                div()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(tokens.spacing))
-                    .pl(px(tokens.spacing * 2.0))
-                    .pr(px(tokens.spacing))
-                    .h(px(tokens.sidebar_row - 4.0))
-                    .rounded(px(crate::theme::PILL_RADIUS))
-                    .bg(if chip.refused.is_some() {
-                        color.opacity(0.14)
-                    } else {
-                        theme.accent_soft
-                    })
-                    .font_family(look.mono.clone())
-                    .text_size(px(tokens.secondary_font_size))
-                    .child(SharedString::from(chip.label()))
-                    .when(chip.refused.is_some(), |s| {
-                        s.child(div().text_color(theme.danger).child("· refused"))
-                    })
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("chat-context-remove-{index}")))
-                            .px(px(tokens.spacing))
-                            .rounded(px(tokens.radius - 2.0))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model
-                                    .update(cx, |model, cx| model.remove_context(index, cx));
-                            }))
-                            .child("×"),
-                    )
-                    .child(probe(&self.regions, Region::ChatContextChip(index)))
-            }),
-        );
+        let context_row = self.render_context_row(&context, look, cx);
+        let open_pastes = self.render_open_pastes(&context, look);
         let input = div()
             .id("chat-input")
             .relative()
@@ -1023,6 +985,7 @@ impl ChatView {
             .border_color(if focused { theme.accent } else { theme.border })
             .when(!chips.is_empty(), |s| s.child(chip_row))
             .when(!context.is_empty(), |s| s.child(context_row))
+            .children(open_pastes)
             .child(input)
             .children(mention_hint)
             .child(
@@ -1038,7 +1001,7 @@ impl ChatView {
                             .min_w_0()
                             .items_center()
                             .gap(px(tokens.spacing * 2.0))
-                            .children(attach_button)
+                            .child(attach_button)
                             .children(vim_pill)
                             .child(
                                 div()
@@ -1111,6 +1074,7 @@ impl Render for ChatView {
                 )
                 .into_any_element()
         };
+        let drop_overlay = self.render_drop_overlay(&look);
         let theme = look.theme;
         div()
             .id("chat")
@@ -1136,6 +1100,14 @@ impl Render for ChatView {
                     let _ = this;
                 }),
             )
+            .group(super::rich_view::DROP_GROUP)
+            .on_drop::<gpui::ExternalPaths>(cx.listener(
+                |this, paths: &gpui::ExternalPaths, window, cx| {
+                    // Files dropped anywhere on the chat attach to the next message.
+                    this.attach_paths(paths.paths(), cx);
+                    window.focus(&this.focus_handle, cx);
+                },
+            ))
             .relative()
             .size_full()
             .flex()
@@ -1147,5 +1119,6 @@ impl Render for ChatView {
             .child(div().relative().flex_1().min_h_0().child(body))
             .children(attach)
             .child(composer)
+            .child(drop_overlay)
     }
 }

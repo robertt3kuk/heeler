@@ -42,7 +42,7 @@ The permissions below (`[assistant.context]` …) gate attachments for every bac
 
 ## Attachments
 
-`chat.send { session_id, text, attachments }`. At most 16 per message. Only direct and assistant chats take attachments. Every attachment is validated (its own bounds, then the permission of the session's scope) before the first one is read, and the first one that cannot be resolved fails the message: nothing is journaled, nothing reaches the provider.
+`chat.send { session_id, text, attachments }`. At most 16 per message. Every chat takes attachments (protocol 0.23, `docs/protocol.md` § Rich input); `[assistant.context]` gates them for assistants and for agent-originated messages only. Every attachment is validated (its own bounds, then the permission of the session's scope) before the first one is read, and the first one that cannot be resolved fails the message: nothing is journaled, nothing reaches the provider.
 
 | Kind | Fields | Read from | Cut keeps |
 |---|---|---|---|
@@ -100,7 +100,7 @@ files = false
 
 An attachment the settings do not allow is `forbidden`, and the message names the setting (`assistant.context.shell`, `assistant.global_context.files`, `assistant.workspaces.<key>.files`); the error's `data.setting` has it too. The file is read when the daemon starts: restart it after editing. Settings gate the daemon's own reading; they do not make an attachment out of anything that was not attached.
 
-Other refusals: `bad_request` (bounds, more than 16 attachments, a session that is not a direct, assistant or harness chat — a Codex chat takes none), `not_found` (terminal, block, file, transcript), `invalid_state` (`search` or an external transcript while indexing is disabled).
+Other refusals: `bad_request` (bounds, more than 16 attachments, a session that is not a chat), `not_found` (terminal, block, file, transcript), `invalid_state` (`search` or an external transcript while indexing is disabled).
 
 ## Indexing of chats
 

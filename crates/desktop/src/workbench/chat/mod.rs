@@ -3,7 +3,8 @@
 //! transcript's cards; `markdown_view` draws message text; `chip` is what "Send to agent"
 //! attaches; `input` is the composer's text editing. For assistant chats (M16-B) `context`
 //! describes the structured attachments of a message and the `@` mentions that offer them, and
-//! `attach` is the Attach menu and form that turn a choice into one.
+//! `attach` is the Attach menu and form that turn a choice into one. `rich` is the rich input of
+//! every chat (protocol 0.23): dropped, picked and pasted files, images and long pastes.
 
 mod attach;
 mod cards;
@@ -12,6 +13,8 @@ mod context;
 mod input;
 mod markdown_view;
 mod model;
+mod rich;
+mod rich_view;
 mod view;
 pub mod vim;
 mod widgets;
@@ -19,12 +22,13 @@ mod widgets;
 pub(crate) use cards::{counts_of, diff_row};
 pub use chip::{Chip, cut_to};
 pub use context::{
-    ContextChip, DEFAULT_HITS, DEFAULT_LINES, DEFAULT_TURNS, Mention, MentionKind, find_mention,
-    is_gateway_chat, is_harness_chat, kind_label, parse_file_arg, split_context,
+    ContextChip, DEFAULT_HITS, DEFAULT_LINES, DEFAULT_TURNS, Mention, MentionKind, Thumb,
+    find_mention, is_gateway_chat, is_harness_chat, kind_label, parse_file_arg, split_context,
 };
 pub use input::TextInput;
 pub use markdown_view::Look;
 pub use model::{ChatModel, LoadStatus};
+pub use rich::{LONG_PASTE_CHARS, LONG_PASTE_LINES, format_size, is_long_paste};
 pub use view::{ChatView, KEY_CONTEXT};
 pub use vim::Vim;
 pub use widgets::{ButtonKind, button};

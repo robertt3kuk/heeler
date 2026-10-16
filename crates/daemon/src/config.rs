@@ -301,12 +301,15 @@ impl ContextPermissions {
         }
     }
 
-    /// Whether an attachment of this kind is accepted.
+    /// Whether an attachment of this kind is accepted. An `image` is a file read (`files`) when
+    /// it names a path; inline image data and pasted text are the user's own words and never
+    /// gated ([`crate::assistant`] decides which images name a path).
     pub fn allows(self, kind: AttachmentKind) -> bool {
         match kind {
             AttachmentKind::ShellBlock | AttachmentKind::ShellRecent => self.shell,
             AttachmentKind::AgentTranscript => self.agents,
-            AttachmentKind::File => self.files,
+            AttachmentKind::File | AttachmentKind::Image => self.files,
+            AttachmentKind::PastedText => true,
             AttachmentKind::Search => self.search,
         }
     }
@@ -317,7 +320,7 @@ pub fn gating_setting(kind: AttachmentKind) -> &'static str {
     match kind {
         AttachmentKind::ShellBlock | AttachmentKind::ShellRecent => "shell",
         AttachmentKind::AgentTranscript => "agents",
-        AttachmentKind::File => "files",
+        AttachmentKind::File | AttachmentKind::Image | AttachmentKind::PastedText => "files",
         AttachmentKind::Search => "search",
     }
 }

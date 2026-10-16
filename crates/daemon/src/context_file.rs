@@ -49,6 +49,73 @@ pub fn read_file(
             "file is outside the workspace roots",
         )
     })?;
+    read_text(file, canonical, (start, end), max_chars)
+}
+
+/// Like [`read_file`] for a path the user named themselves (protocol 0.23, `picked`): any
+/// regular file, symbolic links followed, not confined to the workspace roots.
+pub fn read_picked_file(
+    path: &Path,
+    range: Option<(u32, u32)>,
+    max_chars: usize,
+) -> io::Result<FileContext> {
+    let (start, end) = range.unwrap_or((1, u32::MAX));
+    if start == 0 || end < start || max_chars == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid file range or budget",
+        ));
+    }
+    let (file, canonical) = open_picked(path)?;
+    read_text(file, canonical, (start, end), max_chars)
+}
+
+/// The bytes of an image the user named (protocol 0.23): any regular file of at most
+/// `max_bytes`, symbolic links followed. Returns the canonical path with the bytes.
+pub fn read_picked_bytes(path: &Path, max_bytes: usize) -> io::Result<(PathBuf, Vec<u8>)> {
+    let (file, canonical) = open_picked(path)?;
+    let limit = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    if file.metadata()?.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "file is larger than the limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    // One byte more than the limit: a file that grew while it was read is still refused.
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "file is larger than the limit",
+        ));
+    }
+    Ok((canonical, bytes))
+}
+
+/// Opens a regular file named by the user; directories and special files are `InvalidInput`.
+fn open_picked(path: &Path) -> io::Result<(File, PathBuf)> {
+    let canonical = path.canonicalize()?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&canonical)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "attachment is not a regular file",
+        ));
+    }
+    Ok((file, canonical))
+}
+
+/// The text of lines `start..=end` of `file`, at most `max_chars` characters.
+fn read_text(
+    file: File,
+    canonical: PathBuf,
+    (start, end): (u32, u32),
+    max_chars: usize,
+) -> io::Result<FileContext> {
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -2,6 +2,7 @@
 //! [`AgentEventDraft`]s, and call it through [`AgentAdapter`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use hutan_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, SandboxMode, TurnId};
@@ -26,6 +27,9 @@ pub struct Started {
     pub model: String,
     pub thread_id: String,
     pub resumed: bool,
+    /// Whether the agent takes images (protocol 0.23): `Some` when its handshake says so (ACP
+    /// `promptCapabilities.image`), `None` when it cannot tell before a message is sent.
+    pub images: Option<bool>,
 }
 
 /// How an agent process ended.
@@ -56,6 +60,34 @@ pub struct ContextBlock {
     pub text: String,
 }
 
+/// An image attached to a message (protocol 0.23, `docs/agents.md` § Rich input): the bytes of
+/// a PNG, JPEG, GIF or WebP file the daemon read, which is not redacted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageBlock {
+    /// What the user's message says about it: `[image: shot.png · image/png · 120 KiB]`.
+    pub header: String,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub media_type: String,
+    pub data: Arc<Vec<u8>>,
+    /// A file that holds exactly these bytes, for agents that read images from disk (Codex):
+    /// the file it was attached from, or a temporary copy the daemon wrote.
+    pub path: Option<PathBuf>,
+}
+
+/// What a message carries besides its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MessageExtras {
+    /// Text attachments, one by one (ACP embedded context).
+    pub context: Vec<ContextBlock>,
+    pub images: Vec<ImageBlock>,
+}
+
+impl MessageExtras {
+    pub fn is_empty(&self) -> bool {
+        self.context.is_empty() && self.images.is_empty()
+    }
+}
+
 /// A turn the agent accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRef {
@@ -72,15 +104,16 @@ pub trait AgentAdapter: Send + Sync + std::fmt::Debug {
     /// Sends the user's message; the turn's events follow on the stream.
     fn send_message(&self, text: String) -> BoxFuture<'_, Result<TurnRef, AgentError>>;
 
-    /// [`send_message`](Self::send_message) with attached context. Agents that cannot take
-    /// context refuse a message that has some.
-    fn send_message_with_context(
+    /// [`send_message`](Self::send_message) with attachments. Agents that cannot take context
+    /// refuse a message that has some ([`AgentError::Unsupported`]); one that cannot take
+    /// images refuses images the same way.
+    fn send_message_with(
         &self,
         text: String,
-        context: Vec<ContextBlock>,
+        extras: MessageExtras,
     ) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
         Box::pin(async move {
-            if context.is_empty() {
+            if extras.is_empty() {
                 self.send_message(text).await
             } else {
                 Err(AgentError::Unsupported(format!(

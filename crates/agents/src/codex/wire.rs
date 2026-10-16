@@ -75,6 +75,8 @@ pub enum UserInput<'a> {
         text: &'a str,
         text_elements: Vec<Value>,
     },
+    /// An image the app-server reads from disk (protocol 0.23).
+    LocalImage { path: &'a str },
 }
 
 #[derive(Debug, Serialize)]

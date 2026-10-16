@@ -38,5 +38,6 @@ pub use provider::{Provider, ProviderConfig, connect};
 pub use redact::Redactor;
 pub use secret::Secret;
 pub use types::{
-    ChatMessage, ChatRequest, GatewayEvent, GatewayStream, ProviderKind, Role, is_length_cut,
+    ChatMessage, ChatRequest, GatewayEvent, GatewayStream, ImageContent, ProviderKind, Role,
+    is_length_cut,
 };

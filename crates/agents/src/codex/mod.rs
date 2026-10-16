@@ -24,7 +24,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
-use crate::adapter::{AdapterMessage, AgentAdapter, ExitInfo, StartSpec, Started, TurnRef};
+use crate::adapter::{
+    AdapterMessage, AgentAdapter, ExitInfo, MessageExtras, StartSpec, Started, TurnRef,
+};
 use crate::error::AgentError;
 use crate::jsonrpc::{Incoming, Launch, Transport};
 
@@ -357,6 +359,9 @@ impl CodexAppServerAdapter {
                 model,
                 thread_id,
                 resumed,
+                // The app-server takes `localImage` input; whether the model reads it is the
+                // model's business.
+                images: None,
             },
             mapper,
         ))
@@ -521,17 +526,48 @@ impl AgentAdapter for CodexAppServerAdapter {
     }
 
     fn send_message(&self, text: String) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
+        self.send_message_with(text, MessageExtras::default())
+    }
+
+    fn send_message_with(
+        &self,
+        text: String,
+        extras: MessageExtras,
+    ) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
         Box::pin(async move {
             let shared = &self.shared;
+            // Text attachments reach Codex as quoted text the daemon appended to `text`; only
+            // images are input items of their own, and they are read from disk.
+            if !extras.context.is_empty() {
+                return Err(AgentError::Unsupported(
+                    "codex takes text attachments quoted in the message, not as context blocks"
+                        .to_owned(),
+                ));
+            }
+            let mut paths = Vec::with_capacity(extras.images.len());
+            for image in &extras.images {
+                let path = image.path.as_ref().and_then(|path| path.to_str());
+                paths.push(path.ok_or_else(|| {
+                    AgentError::Unsupported(
+                        "codex reads images from a file with a UTF-8 path".to_owned(),
+                    )
+                })?);
+            }
+            let mut input = vec![wire::UserInput::Text {
+                text: &text,
+                text_elements: Vec::new(),
+            }];
+            input.extend(
+                paths
+                    .into_iter()
+                    .map(|path| wire::UserInput::LocalImage { path }),
+            );
             let started: wire::TurnStartResult = call(
                 &shared.transport,
                 "turn/start",
                 &wire::TurnStartParams {
                     thread_id: &shared.thread_id,
-                    input: vec![wire::UserInput::Text {
-                        text: &text,
-                        text_elements: Vec::new(),
-                    }],
+                    input,
                 },
             )
             .await?;

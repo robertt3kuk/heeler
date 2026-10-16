@@ -592,6 +592,15 @@ pub struct ChatSendArgs {
     /// exits 1 when the turn fails or is cancelled
     #[arg(long)]
     pub wait: bool,
+    /// Attach to the message, repeatable: file:<path>[:<first>-<last>], image:<path>, and for
+    /// an assistant chat block:<terminal>:<block>, recent:<terminal>:<lines>,
+    /// agent:<session>[:<turns>], search:<query>
+    #[arg(
+        long = "attach",
+        value_name = "KIND:VALUE",
+        value_parser = crate::attach_spec::parse_attachment
+    )]
+    pub attach: Vec<hutan_protocol::assistant::Attachment>,
 }
 
 #[derive(Debug, Args)]
@@ -603,7 +612,7 @@ pub struct AskArgs {
     #[arg(long = "ws", value_name = "ID|NAME")]
     pub workspace: Option<String>,
     /// Context to attach, repeatable: block:<terminal>:<block>, recent:<terminal>:<lines>,
-    /// agent:<session>[:<turns>], file:<path>[:<first>-<last>], search:<query>
+    /// agent:<session>[:<turns>], file:<path>[:<first>-<last>], image:<path>, search:<query>
     #[arg(
         long = "attach",
         value_name = "KIND:VALUE",

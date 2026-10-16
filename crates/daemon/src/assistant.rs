@@ -25,7 +25,7 @@ use hutan_index::{Role, SessionTextQuery, Source};
 use hutan_protocol::assistant::{
     AGENT_ASSISTANT, ATTACHMENTS_MAX, AssistantBackend, AssistantConfig, AssistantConfigure,
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, AssistantScope, Attachment,
-    AttachmentKind, LineRange,
+    AttachmentKind, IMAGE_INLINE_MAX_BYTES, IMAGE_MAX_BYTES, LineRange,
 };
 use hutan_protocol::blocks::{BlockPart, BlockState, TerminalBlockText, TerminalBlocks};
 use hutan_protocol::chat::ChatCreate;
@@ -35,13 +35,13 @@ use hutan_protocol::messages::{SessionInfo, SessionListFilter, WorkspaceInfo, Wo
 use hutan_storage::Storage;
 use tokio::sync::Mutex;
 
-use crate::chat::{AGENT_CODEX, is_gateway_agent};
+use crate::chat::AGENT_CODEX;
 use crate::config::{AssistantSettings, ContextPermissions, gating_setting};
 use crate::context::{
-    self, Attached, Bounded, Keep, Message, Part, REDACT_SLACK, last_turns, merge_chunks, one_line,
-    redact_and_bound,
+    self, Attached, Bounded, ImagePart, Keep, Message, Part, REDACT_SLACK, human_size, last_turns,
+    merge_chunks, one_line, redact_and_bound, sniff_image,
 };
-use crate::context_file::{FileContext, read_file};
+use crate::context_file::{FileContext, read_file, read_picked_bytes, read_picked_file};
 use crate::harness::CLAUDE_ASSISTANT_MODE;
 use crate::history::HistoryService;
 use crate::registry::RegistryHandle;
@@ -102,6 +102,32 @@ fn backend_of(session: &SessionInfo) -> AssistantBackend {
     }
 }
 
+/// Who sent the `chat.send` that carries attachments: the user's own client, or a client
+/// running inside an agent's session (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    User,
+    Agent,
+}
+
+/// Attachments only the user's own client may send: they stand for something the user handed
+/// over, which an agent cannot claim to have done.
+fn user_only(attachment: &Attachment) -> bool {
+    matches!(
+        attachment,
+        Attachment::Image { .. } | Attachment::PastedText { .. }
+    )
+}
+
+/// The kind whose `[assistant.context]` permission applies to `attachment`, if any: an image
+/// is a file read when it names a path, and its data or the user's pasted text is not.
+fn gated_kind(attachment: &Attachment) -> Option<AttachmentKind> {
+    match attachment {
+        Attachment::Image { path: None, .. } | Attachment::PastedText { .. } => None,
+        other => Some(other.kind()),
+    }
+}
+
 /// Runs assistants and resolves attachments.
 #[derive(Debug)]
 pub struct AssistantService {
@@ -119,6 +145,11 @@ pub struct AssistantService {
 struct Access {
     scope: AssistantScope,
     permissions: ContextPermissions,
+    /// The workspace permissions apply: the chat is an assistant, or an agent sends the message.
+    /// A user's own message in an ordinary agent chat is not gated by `[assistant.context]`.
+    gated: bool,
+    /// The user's own client sent the message: its `picked` paths are read from anywhere.
+    trusted: bool,
     workspace_name: String,
     /// The setting table the permissions came from, for the refusal message.
     settings_key: Option<String>,
@@ -458,14 +489,22 @@ impl AssistantService {
 
     // Attachments ---------------------------------------------------------------------------
 
-    /// Resolves the attachments of a message sent in `session` into the text it carries, or
-    /// `None` when there are none. Checked in full before anything is read: bounds, the kind of
-    /// session, and the permissions of its scope. The first attachment that cannot be resolved
-    /// fails the whole message (nothing is sent).
+    /// Resolves the attachments of a message sent in `session` into the text it carries (and
+    /// the images it carries as such), or `None` when there are none. Checked in full before
+    /// anything is read: bounds, who sends them, the kind of session, and the permissions of its
+    /// scope. The first attachment that cannot be resolved fails the whole message (nothing is
+    /// sent).
+    ///
+    /// Every chat takes attachments (protocol 0.23). `[assistant.context]` gates them for
+    /// assistants, and for messages an agent sends; the user's own message in an ordinary agent
+    /// chat is not gated. An agent (`origin`) never attaches images or pasted text, and its
+    /// `picked` files are read below the workspace roots only: just the user's desktop or CLI
+    /// vouches for what the user handed over.
     pub async fn prepare(
         &self,
         session: SessionId,
         attachments: &[Attachment],
+        origin: Origin,
     ) -> Result<Option<Attached>, ErrorBody> {
         if attachments.is_empty() {
             return Ok(None);
@@ -483,13 +522,35 @@ impl AssistantService {
             context::check_bounds(attachment)
                 .map_err(|message| error(ErrorCode::BadRequest, message))?;
         }
-        let access = self.access(session).await?;
-        for attachment in attachments {
-            if !access.permissions.allows(attachment.kind()) {
-                return Err(self.forbidden(&access, attachment.kind()));
+        if origin == Origin::Agent
+            && let Some(attachment) = attachments.iter().find(|a| user_only(a))
+        {
+            return Err(error(
+                ErrorCode::Forbidden,
+                format!(
+                    "`{}` attachments only come from the user's desktop or CLI, not from an agent",
+                    attachment.kind().as_str()
+                ),
+            ));
+        }
+        let mut access = self.access(session).await?;
+        access.gated |= origin == Origin::Agent;
+        access.trusted = origin == Origin::User;
+        if access.gated {
+            for attachment in attachments {
+                if let Some(kind) = gated_kind(attachment)
+                    && !access.permissions.allows(kind)
+                {
+                    return Err(self.forbidden(&access, kind));
+                }
             }
         }
-        let share = context::share(self.settings.context_budget_chars, attachments.len());
+        // Images have no characters: the budget is shared by the text attachments.
+        let texts = attachments
+            .iter()
+            .filter(|a| !matches!(a, Attachment::Image { .. }))
+            .count();
+        let share = context::share(self.settings.context_budget_chars, texts);
         let mut parts = Vec::with_capacity(attachments.len());
         for attachment in attachments {
             parts.push(self.resolve(&access, attachment, share).await?);
@@ -512,15 +573,7 @@ impl AssistantService {
                 format!("session {session} is not a chat session"),
             ));
         };
-        if !is_gateway_agent(&chat.agent)
-            && !crate::harness::is_harness_agent(&chat.agent)
-            && !chat.is_assistant()
-        {
-            return Err(error(
-                ErrorCode::BadRequest,
-                "attachments are only supported by direct, assistant and harness (omp, claude) chats",
-            ));
-        }
+        let gated = chat.is_assistant();
         let workspaces = self.workspaces().await?;
         let workspace = workspaces
             .iter()
@@ -547,6 +600,8 @@ impl AssistantService {
         Ok(Access {
             scope,
             permissions,
+            gated,
+            trusted: false,
             workspace_name: workspace.name.clone(),
             settings_key,
             roots: workspace.roots.clone(),
@@ -600,9 +655,19 @@ impl AssistantService {
                 session_id,
                 last_turns,
             } => self.transcript(session_id.trim(), *last_turns, share).await,
-            Attachment::File { path, range } => {
+            Attachment::File {
+                path,
+                range,
+                picked: true,
+            } if access.trusted => resolve_picked_file(&access.roots, path, *range, share).await,
+            // An agent's `picked` counts for nothing: it reads below the roots like any file.
+            Attachment::File { path, range, .. } => {
                 resolve_file(&access.roots, path, *range, share).await
             }
+            Attachment::Image {
+                path, data_base64, ..
+            } => resolve_image(&access.roots, path.as_deref(), data_base64.as_deref()).await,
+            Attachment::PastedText { text } => Ok(pasted_text_part(text, share)),
             Attachment::Search { query, limit } => self.search(query, *limit, share).await,
         }
     }
@@ -897,18 +962,74 @@ pub(crate) async fn resolve_file(
     .await
     .map_err(internal)?;
     let (context, shown) = read.map_err(|e| file_error(path, &e))?;
+    Ok(file_part(&context, &shown, range, share))
+}
+
+/// Reads a file the user named themselves (`picked`): anywhere, not only below the roots. A
+/// relative `path` is relative to the first root.
+async fn resolve_picked_file(
+    roots: &[PathBuf],
+    path: &str,
+    range: Option<LineRange>,
+    share: usize,
+) -> Result<Part, ErrorBody> {
+    let target = picked_target(roots, path)?;
+    let max_chars = share.saturating_add(REDACT_SLACK);
+    let read = tokio::task::spawn_blocking(move || {
+        read_picked_file(&target, range.map(|r| (r.start, r.end)), max_chars)
+    })
+    .await
+    .map_err(internal)?;
+    let context = read.map_err(|e| file_error(path, &e))?;
+    // Inside a workspace folder the header shows the path below it, like any file.
+    let shown = roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .find_map(|root| {
+            context
+                .path
+                .strip_prefix(&root)
+                .ok()
+                .map(|p| p.display().to_string())
+        })
+        .unwrap_or_else(|| context.path.display().to_string());
+    Ok(file_part(&context, &shown, range, share))
+}
+
+/// `path` as the daemon opens it: absolute as it is, relative below the first root.
+fn picked_target(roots: &[PathBuf], path: &str) -> Result<PathBuf, ErrorBody> {
+    let requested = PathBuf::from(path);
+    if requested.is_absolute() {
+        return Ok(requested);
+    }
+    roots
+        .first()
+        .map(|first| first.join(requested))
+        .ok_or_else(|| {
+            error(
+                ErrorCode::BadRequest,
+                format!(
+                    "`{}` is relative and the workspace has no folder",
+                    one_line(path)
+                ),
+            )
+        })
+}
+
+/// The part of a file attachment: header, redacted and cut body.
+fn file_part(context: &FileContext, shown: &str, range: Option<LineRange>, share: usize) -> Part {
     let range_note = range.map_or_else(String::new, |r| format!(" · lines {}-{}", r.start, r.end));
     let label = range.map_or_else(
-        || shown.clone(),
+        || shown.to_owned(),
         |r| format!("{shown}:{}-{}", r.start, r.end),
     );
     let body: Bounded = redact_and_bound(&context.text, share, Keep::Start);
     let description = format!(
         "{}{range_note} · {} lines",
-        one_line(&shown),
+        one_line(shown),
         context.text.lines().count()
     );
-    Ok(Part::new(
+    Part::new(
         AttachmentKind::File,
         &label,
         &description,
@@ -916,7 +1037,117 @@ pub(crate) async fn resolve_file(
         Keep::Start,
         !context.truncated,
         context.truncated,
-    ))
+    )
+}
+
+/// The part of text the user pasted: redacted and cut like any text attachment.
+fn pasted_text_part(text: &str, share: usize) -> Part {
+    let lines = text.lines().count();
+    let body = redact_and_bound(text, share, Keep::Start);
+    let noun = if lines == 1 { "line" } else { "lines" };
+    Part::new(
+        AttachmentKind::PastedText,
+        &format!("pasted · {lines} {noun}"),
+        &format!("{lines} {noun}"),
+        body,
+        Keep::Start,
+        true,
+        false,
+    )
+}
+
+/// Reads or decodes an image attachment: a path (the user's own, relative paths below the first
+/// root) or inline base64 data. The bytes are checked, not trusted: only PNG, JPEG, GIF and
+/// WebP, within the limits. Images are not redacted.
+async fn resolve_image(
+    roots: &[PathBuf],
+    path: Option<&str>,
+    data_base64: Option<&str>,
+) -> Result<Part, ErrorBody> {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    let (bytes, from, name) = match (path, data_base64) {
+        (Some(path), None) => {
+            let target = picked_target(roots, path)?;
+            let read =
+                tokio::task::spawn_blocking(move || read_picked_bytes(&target, IMAGE_MAX_BYTES))
+                    .await
+                    .map_err(internal)?;
+            let (canonical, bytes) = read.map_err(|e| file_error(path, &e))?;
+            let name = canonical
+                .file_name()
+                .map_or_else(|| "image".to_owned(), |n| n.to_string_lossy().into_owned());
+            (bytes, Some(canonical.display().to_string()), name)
+        }
+        (None, Some(data)) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|e| {
+                    error(
+                        ErrorCode::BadRequest,
+                        format!("`data_base64` of an `image` is not base64: {e}"),
+                    )
+                })?;
+            if bytes.len() > IMAGE_INLINE_MAX_BYTES {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    format!(
+                        "an inline image is {}; at most {} go inline, attach larger ones by path",
+                        human_size(bytes.len()),
+                        human_size(IMAGE_INLINE_MAX_BYTES)
+                    ),
+                ));
+            }
+            (bytes, None, "pasted image".to_owned())
+        }
+        _ => {
+            return Err(error(
+                ErrorCode::BadRequest,
+                "`image` needs exactly one of `path` and `data_base64`",
+            ));
+        }
+    };
+    let Some(media_type) = sniff_image(&bytes) else {
+        return Err(error(
+            ErrorCode::BadRequest,
+            format!(
+                "`{}` is not a PNG, JPEG, GIF or WebP image",
+                one_line(&name)
+            ),
+        ));
+    };
+    let digest = Sha256::digest(&bytes);
+    let sha256: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let description = format!(
+        "{name} · {media_type} · {} · sha256 {}",
+        human_size(bytes.len()),
+        &sha256[..12]
+    );
+    let part = Part::image(
+        &name,
+        &description,
+        ImagePart {
+            block: hutan_agents::ImageBlock {
+                header: String::new(),
+                media_type: media_type.to_owned(),
+                data: Arc::new(bytes),
+                path: from.as_ref().map(PathBuf::from),
+            },
+            path: from,
+            sha256,
+        },
+    );
+    // The header the message shows is the header the backend is given.
+    Ok(with_header(part))
+}
+
+/// `part` with its image block carrying the part's own header.
+fn with_header(mut part: Part) -> Part {
+    let header = part.header.clone();
+    if let Some(image) = &mut part.image {
+        image.block.header = header;
+    }
+    part
 }
 
 fn file_error(path: &str, error_: &io::Error) -> ErrorBody {
@@ -933,6 +1164,13 @@ fn file_error(path: &str, error_: &io::Error) -> ErrorBody {
         io::ErrorKind::InvalidInput => error(
             ErrorCode::BadRequest,
             format!("`{shown}` cannot be attached: {error_}"),
+        ),
+        io::ErrorKind::FileTooLarge => error(
+            ErrorCode::BadRequest,
+            format!(
+                "`{shown}` is larger than {}: an image is at most that big",
+                human_size(IMAGE_MAX_BYTES)
+            ),
         ),
         io::ErrorKind::InvalidData => error(
             ErrorCode::BadRequest,

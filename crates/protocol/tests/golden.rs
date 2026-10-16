@@ -130,6 +130,7 @@ fn chat_info() -> ChatInfo {
         provider_id: None,
         agent_session_id: None,
         assistant: false,
+        images: None,
     }
 }
 
@@ -148,6 +149,7 @@ fn harness_chat_session_info() -> SessionInfo {
             provider_id: None,
             agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
             assistant: false,
+            images: Some(true),
         }),
         ..chat_session_info()
     }
@@ -168,6 +170,7 @@ fn harness_assistant_session_info() -> SessionInfo {
             provider_id: None,
             agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
             assistant: true,
+            images: Some(false),
         }),
         ..chat_session_info()
     }
@@ -188,6 +191,7 @@ fn direct_chat_session_info() -> SessionInfo {
             provider_id: Some("openrouter".into()),
             agent_session_id: None,
             assistant: false,
+            images: None,
         }),
         ..chat_session_info()
     }
@@ -242,18 +246,16 @@ fn agent_event(seq: u64, kind: AgentEventKind) -> AgentEvent {
 
 fn attachments_meta_fixture() -> Vec<AttachmentMeta> {
     vec![
+        AttachmentMeta::text(AttachmentKind::ShellBlock, "cargo test", 1250, false),
+        AttachmentMeta::text(AttachmentKind::File, "src/main.rs:10-40", 3000, true),
         AttachmentMeta {
-            kind: AttachmentKind::ShellBlock,
-            label: "cargo test".into(),
-            chars: 1250,
-            truncated: false,
+            size: Some(120_345),
+            media_type: Some("image/png".into()),
+            path: Some("/Users/me/Desktop/shot.png".into()),
+            sha256: Some("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".into()),
+            ..AttachmentMeta::text(AttachmentKind::Image, "shot.png", 0, false)
         },
-        AttachmentMeta {
-            kind: AttachmentKind::File,
-            label: "src/main.rs:10-40".into(),
-            chars: 3000,
-            truncated: true,
-        },
+        AttachmentMeta::text(AttachmentKind::PastedText, "pasted · 312 lines", 2000, true),
     ]
 }
 
@@ -272,6 +274,7 @@ fn assistant_session_info() -> SessionInfo {
             provider_id: Some("ollama".into()),
             agent_session_id: None,
             assistant: false,
+            images: None,
         }),
         ..chat_session_info()
     }
@@ -1330,10 +1333,25 @@ fn requests() -> Vec<(&'static str, Request)> {
                     Attachment::File {
                         path: "src/main.rs".into(),
                         range: Some(LineRange { start: 10, end: 40 }),
+                        picked: false,
                     },
                     Attachment::File {
                         path: "/repo/README.md".into(),
                         range: None,
+                        picked: true,
+                    },
+                    Attachment::Image {
+                        path: Some("/Users/me/Desktop/shot.png".into()),
+                        data_base64: None,
+                        media_type: "image/png".into(),
+                    },
+                    Attachment::Image {
+                        path: None,
+                        data_base64: Some("iVBORw0KGgp4eXo=".into()),
+                        media_type: "image/png".into(),
+                    },
+                    Attachment::PastedText {
+                        text: "line one\nline two\n".into(),
                     },
                     Attachment::Search {
                         query: "scheduler stall".into(),
@@ -2831,6 +2849,16 @@ fn responses_match_fixtures() {
                 ErrorBody::new(
                     ErrorCode::Forbidden,
                     "attachment `file` is not allowed: `assistant.context.files` is false for the global assistant",
+                ),
+            ),
+        ),
+        (
+            "error_unsupported",
+            ControlMessage::err(
+                8,
+                ErrorBody::new(
+                    ErrorCode::Unsupported,
+                    "omp does not accept images (its handshake offers no `promptCapabilities.image`)",
                 ),
             ),
         ),

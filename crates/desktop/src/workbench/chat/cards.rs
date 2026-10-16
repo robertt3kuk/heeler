@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::context::{kind_label, split_context};
+use super::context::{meta_text, split_context};
 use super::markdown_view::{Ids, Look, blocks, code_block};
 use super::view::ChatView;
 use super::widgets::{ButtonKind, button, duration, pill, tail_lines, tokens};
@@ -190,16 +190,7 @@ impl ChatView {
                 } else {
                     theme.accent
                 };
-                let mut text = format!(
-                    "{} · {} · {} chars",
-                    kind_label(meta.kind),
-                    meta.label,
-                    meta.chars
-                );
-                if meta.truncated {
-                    text.push_str(" · cut to the budget");
-                }
-                pill(text, color, look).font_family(look.mono.clone())
+                pill(meta_text(meta), color, look).font_family(look.mono.clone())
             }));
         // No bubble for the agent; the user's message sits in an `accent_soft` bubble on the right.
         let bubble = div()

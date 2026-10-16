@@ -14,6 +14,7 @@ name = "hutan_gateway"
 test-support = ["tokio/net", "tokio/io-util"]
 
 [dependencies]
+base64.workspace = true
 bytes.workspace = true
 futures.workspace = true
 hutan-core.workspace = true

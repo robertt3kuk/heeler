@@ -660,6 +660,8 @@ pub struct RegistryConfig {
     pub providers: Arc<ProviderService>,
     /// `gateway.max_context_chars`.
     pub max_context_chars: usize,
+    /// `<home>/tmp`: scratch files of chat deliveries (clipboard images for Codex).
+    pub tmp_dir: PathBuf,
 }
 
 /// Starts the actor from the stored state. It stops when every [`RegistryHandle`] is dropped.
@@ -682,6 +684,7 @@ pub fn spawn(
         config.harnesses,
         config.providers,
         config.max_context_chars,
+        config.tmp_dir,
     );
     let (workspaces, home, next_position) =
         restored_workspaces(&stored, &config.storage, &config.home_folder);
@@ -2848,6 +2851,7 @@ impl SessionRegistry {
                 }
                 if let Some(chat) = &mut session.info.chat {
                     chat.model = started.model;
+                    chat.images = started.images;
                     if !is_gateway_agent(&chat.agent) {
                         chat.agent_session_id = Some(started.thread_id);
                     }
@@ -3757,6 +3761,7 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
         pending_approvals: 0,
         provider_id: spec.provider_id.clone(),
         assistant: spec.assistant,
+        images: None,
         agent_session_id: (!is_gateway_agent(&spec.agent))
             .then(|| spec.thread_id.clone())
             .flatten(),

@@ -135,7 +135,7 @@ impl Ctx {
                 .await?;
         }
         let sent = client
-            .chat_send(session.id, args.text)
+            .chat_send_with(session.id, args.text, args.attach)
             .await
             .map_err(|e| self.fail(e))?;
         if !args.wait {

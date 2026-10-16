@@ -52,7 +52,12 @@ fn body(request: &ChatRequest) -> Value {
                 Role::User => "user",
                 Role::Assistant => "assistant",
             };
-            json!({ "role": role, "content": m.content })
+            let mut message = json!({ "role": role, "content": m.content });
+            if !m.images.is_empty() {
+                // Ollama takes bare base64 strings, without a media type.
+                message["images"] = m.images.iter().map(|image| image.base64()).collect();
+            }
+            message
         })
         .collect();
     let mut options = serde_json::Map::new();
@@ -71,6 +76,20 @@ fn body(request: &ChatRequest) -> Value {
         body["options"] = Value::Object(options);
     }
     body
+}
+
+/// Whether an `/api/show` answer describes a model that reads images: `capabilities` has
+/// `vision` (Ollama 0.6 and later); older servers show a CLIP projector or vision keys in the
+/// model info.
+fn shows_vision(shown: &Value) -> bool {
+    if let Some(capabilities) = shown.get("capabilities").and_then(Value::as_array) {
+        return capabilities.iter().any(|c| c.as_str() == Some("vision"));
+    }
+    shown.get("projector_info").is_some()
+        || shown
+            .get("model_info")
+            .and_then(Value::as_object)
+            .is_some_and(|info| info.keys().any(|key| key.contains(".vision.")))
 }
 
 impl Provider for Ollama {
@@ -113,6 +132,33 @@ impl Provider for Ollama {
                 .collect();
             models.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(models)
+        }
+        .boxed()
+    }
+
+    fn supports_vision(&self, model: &str) -> BoxFuture<'_, Result<bool, GatewayError>> {
+        let payload = json!({ "model": model }).to_string();
+        async move {
+            let timeout = self.endpoint.config().request_timeout;
+            let response = self
+                .endpoint
+                .send(|| {
+                    auth(
+                        &self.endpoint,
+                        self.endpoint
+                            .post("api/show")
+                            .header("content-type", "application/json")
+                            .body(payload.clone())
+                            .timeout(timeout),
+                    )
+                })
+                .await?;
+            let bytes = response.bytes().await.map_err(|e| GatewayError::Stream {
+                message: e.to_string(),
+            })?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| GatewayError::Protocol(format!("`/api/show` is not JSON: {e}")))?;
+            Ok(shows_vision(&value))
         }
         .boxed()
     }

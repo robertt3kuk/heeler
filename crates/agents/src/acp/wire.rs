@@ -135,6 +135,8 @@ pub struct McpCapabilities {
 pub struct PromptCapabilities {
     #[serde(default)]
     pub embedded_context: bool,
+    #[serde(default)]
+    pub image: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -1,6 +1,7 @@
 //! The gateway's vocabulary: what is asked of a provider and what comes back.
 
 use std::fmt;
+use std::sync::Arc;
 
 use hutan_core::agent::TokenCounts;
 
@@ -73,10 +74,29 @@ pub enum Role {
     Assistant,
 }
 
+/// An image that goes with a message (protocol 0.23, `docs/gateway.md` § Images): the bytes of
+/// a PNG, JPEG, GIF or WebP file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageContent {
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub media_type: String,
+    pub data: Arc<Vec<u8>>,
+}
+
+impl ImageContent {
+    /// The bytes as standard base64.
+    pub fn base64(&self) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(self.data.as_slice())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// Images the user attached to this message; only a user message has any.
+    pub images: Vec<ImageContent>,
 }
 
 impl ChatMessage {
@@ -84,7 +104,15 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            images: Vec::new(),
         }
+    }
+
+    /// The same message with `images` attached.
+    #[must_use]
+    pub fn with_images(mut self, images: Vec<ImageContent>) -> Self {
+        self.images = images;
+        self
     }
 }
 

@@ -273,6 +273,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             harnesses: harnesses.clone(),
             providers,
             max_context_chars: settings.gateway.max_context_chars,
+            tmp_dir: paths.base.join("tmp"),
         },
         stored,
     );

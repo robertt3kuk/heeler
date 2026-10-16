@@ -518,7 +518,8 @@ fn every_kind_of_chip_adds_and_removes_and_only_the_selected_sources_reach_the_p
             },
             Attachment::File {
                 path: "src/lib.rs".to_owned(),
-                range: Some(hutan_protocol::assistant::LineRange { start: 2, end: 3 })
+                range: Some(hutan_protocol::assistant::LineRange { start: 2, end: 3 }),
+                picked: false
             }
         ]
     );

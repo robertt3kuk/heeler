@@ -1,11 +1,14 @@
-//! `hutan ask --attach <spec>`: the command-line spelling of an assistant attachment.
+//! `hutan ask --attach <spec>` and `hutan chat send --attach <spec>`: the command-line spelling
+//! of an attachment.
 //!
 //! ```text
 //! block:<terminal>:<block>        the output of one terminal block (`hutan api terminal.blocks`)
 //! recent:<terminal>:<lines>       the last lines of a terminal (at most 500)
 //! agent:<session>[:<turns>]       the last turns (default 5, at most 20) of a Hutan chat, or of
 //!                                 a Claude Code, Codex or OMP session found by `hutan search`
-//! file:<path>[:<first>-<last>]    a file under the workspace's folders, or some of its lines
+//! file:<path>[:<first>-<last>]    a file (anywhere, or below the session's workspace folder
+//!                                 when the path is relative), or some of its lines
+//! image:<path>                    a PNG, JPEG, GIF or WebP image (at most 5 MiB)
 //! search:<query>                  the best history hits (5) for the words; quotes are optional
 //! ```
 
@@ -27,7 +30,7 @@ fn number<T: std::str::FromStr>(text: &str, what: &str) -> Result<T, String> {
 pub fn parse_attachment(spec: &str) -> Result<Attachment, String> {
     let Some((kind, rest)) = spec.split_once(':') else {
         return Err(format!(
-            "expected KIND:VALUE (block, recent, agent, file or search), got `{spec}`"
+            "expected KIND:VALUE (block, recent, agent, file, image or search), got `{spec}`"
         ));
     };
     match kind {
@@ -77,9 +80,12 @@ pub fn parse_attachment(spec: &str) -> Result<Attachment, String> {
             if path.is_empty() {
                 return Err("expected file:<path>[:<first>-<last>]".to_owned());
             }
+            // Typed by the user: the daemon reads it wherever it is (an agent's own request
+            // is read below the workspace folders only).
             Ok(Attachment::File {
                 path: path.to_owned(),
                 range,
+                picked: true,
             })
         }
         "search" => {
@@ -96,8 +102,30 @@ pub fn parse_attachment(spec: &str) -> Result<Attachment, String> {
                 limit: DEFAULT_HITS,
             })
         }
+        "image" => {
+            let path = rest.trim();
+            if path.is_empty() {
+                return Err("expected image:<path>".to_owned());
+            }
+            let media_type = match path
+                .rsplit_once('.')
+                .map(|(_, extension)| extension.to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("png") => "image/png",
+                Some("jpg" | "jpeg") => "image/jpeg",
+                Some("gif") => "image/gif",
+                Some("webp") => "image/webp",
+                _ => return Err("an image is a .png, .jpg, .jpeg, .gif or .webp file".to_owned()),
+            };
+            Ok(Attachment::Image {
+                path: Some(path.to_owned()),
+                data_base64: None,
+                media_type: media_type.to_owned(),
+            })
+        }
         other => Err(format!(
-            "unknown attachment kind `{other}` (block, recent, agent, file or search)"
+            "unknown attachment kind `{other}` (block, recent, agent, file, image or search)"
         )),
     }
 }
@@ -140,21 +168,40 @@ mod tests {
             parse_attachment("file:src/main.rs").unwrap(),
             Attachment::File {
                 path: "src/main.rs".into(),
-                range: None
+                range: None,
+                picked: true
             }
         );
         assert_eq!(
             parse_attachment("file:src/main.rs:10-40").unwrap(),
             Attachment::File {
                 path: "src/main.rs".into(),
-                range: Some(LineRange { start: 10, end: 40 })
+                range: Some(LineRange { start: 10, end: 40 }),
+                picked: true
             }
         );
         assert_eq!(
             parse_attachment("file:/tmp/odd:name").unwrap(),
             Attachment::File {
                 path: "/tmp/odd:name".into(),
-                range: None
+                range: None,
+                picked: true
+            }
+        );
+        assert_eq!(
+            parse_attachment("image:/tmp/shot.PNG").unwrap(),
+            Attachment::Image {
+                path: Some("/tmp/shot.PNG".into()),
+                data_base64: None,
+                media_type: "image/png".into()
+            }
+        );
+        assert_eq!(
+            parse_attachment("image:a/b.c.jpeg").unwrap(),
+            Attachment::Image {
+                path: Some("a/b.c.jpeg".into()),
+                data_base64: None,
+                media_type: "image/jpeg".into()
             }
         );
         assert_eq!(
@@ -183,6 +230,8 @@ mod tests {
             "agent:",
             "agent:s:many",
             "file:",
+            "image:",
+            "image:notes.txt",
             "search:",
             "search:\"\"",
             "nonsense:1",

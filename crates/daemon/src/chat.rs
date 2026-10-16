@@ -23,13 +23,14 @@ use std::time::{Duration, Instant};
 
 use hutan_agents::{
     AcpAdapter, AcpSession, AdapterMessage, AgentAdapter, AgentError, CodexAppServerAdapter,
-    CodexConfig, CodexSession, ExitInfo, StartSpec, Started,
+    CodexConfig, CodexSession, ExitInfo, ImageBlock, MessageExtras, StartSpec, Started,
 };
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
     SandboxMode, SessionId, TurnId,
 };
+use hutan_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
 use hutan_protocol::chat::{
     ApprovalInfo, ApprovalList, ChatHistory, ChatHistoryRequest, ChatModels, HISTORY_MAX_LIMIT,
     SEND_MAX_BYTES,
@@ -54,6 +55,8 @@ use crate::registry::{self, ChatNotifier};
 
 /// The Codex app-server agent.
 pub const AGENT_CODEX: &str = "codex";
+/// Names of the temporary files that hold clipboard images for Codex (`<home>/tmp/`).
+const TEMP_IMAGE_PREFIX: &str = "img-";
 /// The model gateway: no agent, a provider's chat API.
 pub use hutan_protocol::assistant::AGENT_ASSISTANT;
 pub use hutan_protocol::provider::AGENT_DIRECT;
@@ -137,6 +140,18 @@ struct Live {
     /// The open messages and reasoning blocks of the running turn. Numbering an event and
     /// folding it in happen under this lock, so a snapshot is exact (see [`crate::partial`]).
     partials: Mutex<Partials>,
+    /// What the message being sent carries, until its turn ends.
+    delivery: Mutex<Delivery>,
+}
+
+/// Attachments of the message a turn started with.
+#[derive(Debug, Default)]
+struct Delivery {
+    /// Their meta, for the journaled user message (`attachments_meta`); taken by the first user
+    /// `message_end` of the turn.
+    meta: Option<Vec<AttachmentMeta>>,
+    /// Temporary files holding clipboard images for the agent; removed when the turn ends.
+    temp_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -161,6 +176,8 @@ pub struct ChatManager {
     models: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
     external: Mutex<Option<Weak<dyn ApprovalSource>>>,
     mcp: OnceLock<McpWiring>,
+    /// `<home>/tmp`: where clipboard images wait for an agent that reads images from disk.
+    tmp_dir: PathBuf,
 }
 
 /// Why a subagent thread could not be interrupted.
@@ -224,6 +241,7 @@ fn enum_name<T: Serialize>(value: &T) -> String {
 }
 
 impl ChatManager {
+    #[allow(clippy::too_many_arguments)] // The wiring of one manager, built once at start.
     pub(crate) fn new(
         bus: Arc<EventBus>,
         storage: Storage,
@@ -232,7 +250,24 @@ impl ChatManager {
         harnesses: Arc<Harnesses>,
         providers: Arc<ProviderService>,
         max_context_chars: usize,
+        tmp_dir: PathBuf,
     ) -> Arc<Self> {
+        // A daemon that was killed mid-turn left its images behind: nothing is in flight yet.
+        let stale = tmp_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(entries) = std::fs::read_dir(&stale) else {
+                return;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(TEMP_IMAGE_PREFIX)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        });
         Arc::new(Self {
             bus,
             storage,
@@ -246,6 +281,7 @@ impl ChatManager {
             models: Mutex::new(HashMap::new()),
             external: Mutex::new(None),
             mcp: OnceLock::new(),
+            tmp_dir,
         })
     }
 
@@ -350,6 +386,7 @@ impl ChatManager {
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
+            delivery: Mutex::new(Delivery::default()),
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, model = %started.model, resumed = started.resumed, "chat agent started");
@@ -404,6 +441,7 @@ impl ChatManager {
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
+            delivery: Mutex::new(Delivery::default()),
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, agent = %spec.agent, model = %started.model, resumed = started.resumed, "chat harness started");
@@ -465,6 +503,7 @@ impl ChatManager {
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
+            delivery: Mutex::new(Delivery::default()),
         });
         lock(&self.live).insert(id, live.clone());
         info!(session = %id, provider = %provider_id, %model, "direct chat started");
@@ -474,6 +513,8 @@ impl ChatManager {
             // There is no provider-side conversation: the session is its own thread.
             thread_id: id.to_string(),
             resumed: spec.thread_id.is_some(),
+            // The provider's model list answers when an image is attached.
+            images: None,
         })
     }
 
@@ -558,7 +599,7 @@ impl ChatManager {
         text: String,
         attached: Option<Attached>,
     ) -> Result<TurnId, ErrorBody> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && attached.is_none() {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 "the message is empty",
@@ -582,29 +623,63 @@ impl ChatManager {
         }
         let started = match &live.backend {
             Backend::Agent(adapter) => {
-                // ACP harnesses take each attachment as an embedded resource. Codex has no
-                // such input: its assistant gets the same text quoted after the message.
-                let (text, blocks) = match attached {
-                    Some(attached) if adapter.agent() == AGENT_CODEX => {
-                        (format!("{text}\n\n{}", attached.appendix), Vec::new())
-                    }
-                    Some(attached) => (text, attached.blocks),
-                    None => (text, Vec::new()),
+                // ACP harnesses take each text attachment as an embedded resource and each
+                // image as an image block. Codex has no resource input: it gets the same text
+                // quoted after the message, and images as files it reads (`localImage`).
+                let codex = adapter.agent() == AGENT_CODEX;
+                let (text, mut extras, meta) = match attached {
+                    Some(attached) if codex => (
+                        format!("{text}\n\n{}", attached.appendix),
+                        MessageExtras {
+                            context: Vec::new(),
+                            images: attached.images,
+                        },
+                        Some(attached.meta),
+                    ),
+                    Some(attached) => (
+                        text,
+                        MessageExtras {
+                            context: attached.blocks,
+                            images: attached.images,
+                        },
+                        Some(attached.meta),
+                    ),
+                    None => (text, MessageExtras::default(), None),
                 };
-                adapter
-                    .send_message_with_context(text, blocks)
-                    .await
-                    .map(|turn| turn.turn_id)
-                    .map_err(|error| match error {
-                        AgentError::Unsupported(_) => {
-                            ErrorBody::new(ErrorCode::BadRequest, error.to_string())
+                let prepared = if codex {
+                    self.give_images_a_file(&live, &mut extras.images).await
+                } else {
+                    Ok(())
+                };
+                match prepared {
+                    Ok(()) => {
+                        lock(&live.delivery).meta = meta;
+                        let sent = adapter
+                            .send_message_with(text, extras)
+                            .await
+                            .map(|turn| turn.turn_id)
+                            .map_err(|error| match error {
+                                AgentError::Unsupported(_) => {
+                                    ErrorBody::new(ErrorCode::Unsupported, error.to_string())
+                                }
+                                AgentError::TurnInProgress => ErrorBody::new(
+                                    ErrorCode::InvalidState,
+                                    "a turn is already in progress; wait for it or interrupt it",
+                                ),
+                                error => {
+                                    ErrorBody::new(ErrorCode::ProviderError, error.to_string())
+                                }
+                            });
+                        if sent.is_err() {
+                            self.drop_temp_images(&live);
                         }
-                        AgentError::TurnInProgress => ErrorBody::new(
-                            ErrorCode::InvalidState,
-                            "a turn is already in progress; wait for it or interrupt it",
-                        ),
-                        error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
-                    })
+                        sent
+                    }
+                    Err(error) => {
+                        self.drop_temp_images(&live);
+                        Err(error)
+                    }
+                }
             }
             Backend::Direct(session) => session.send(text, attached).await,
         };
@@ -965,6 +1040,63 @@ impl ChatManager {
         }
     }
 
+    /// Deletes the temporary copies of clipboard images a turn gave to its agent, and forgets
+    /// the attachments' meta of a turn that never journaled a user message.
+    fn drop_temp_images(&self, live: &Live) {
+        let files = {
+            let mut delivery = lock(&live.delivery);
+            delivery.meta = None;
+            std::mem::take(&mut delivery.temp_files)
+        };
+        for file in files {
+            if let Err(error) = std::fs::remove_file(&file)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(file = %file.display(), %error, "could not remove a temporary image");
+            }
+        }
+    }
+
+    /// Writes the clipboard images of `images` that have no file to `<home>/tmp/` for an agent
+    /// that reads images from disk; the files are removed when the turn ends.
+    async fn give_images_a_file(
+        &self,
+        live: &Live,
+        images: &mut [ImageBlock],
+    ) -> Result<(), ErrorBody> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let failed = |error: std::io::Error| {
+            ErrorBody::new(
+                ErrorCode::Internal,
+                format!("could not write a temporary image for the agent: {error}"),
+            )
+        };
+        for image in images.iter_mut().filter(|image| image.path.is_none()) {
+            let extension = match image.media_type.as_str() {
+                "image/jpeg" => "jpg",
+                "image/gif" => "gif",
+                "image/webp" => "webp",
+                _ => "png",
+            };
+            tokio::fs::create_dir_all(&self.tmp_dir)
+                .await
+                .map_err(failed)?;
+            let file = self.tmp_dir.join(format!(
+                "{TEMP_IMAGE_PREFIX}{}.{extension}",
+                ulid::Ulid::generate()
+            ));
+            lock(&live.delivery).temp_files.push(file.clone());
+            tokio::fs::write(&file, image.data.as_slice())
+                .await
+                .map_err(failed)?;
+            tokio::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .await
+                .map_err(failed)?;
+            image.path = Some(file);
+        }
+        Ok(())
+    }
+
     /// The agent is gone: nothing pending can be answered, an open turn is over.
     async fn finish(&self, live: &Live, exit: ExitInfo) {
         let leftover: Vec<ApprovalId> = lock(&self.approvals)
@@ -998,13 +1130,30 @@ impl ChatManager {
         // Text no turn end claimed (the agent died between messages) is kept as it is.
         self.flush_partials(live, Flush::Final);
         lock(&self.live).remove(&live.id);
+        self.drop_temp_images(live);
         info!(session = %live.id, code = ?exit.code, signal = ?exit.signal, "chat agent exited");
         self.notifier.exited(live.id, exit).await;
     }
 
-    async fn handle(&self, live: &Live, draft: AgentEventDraft) {
+    async fn handle(&self, live: &Live, mut draft: AgentEventDraft) {
         let ts_ms = registry::now_ms();
         let ends_turn = draft.kind.ends_turn();
+        // The user's message of a turn that carried attachments says what they were, whichever
+        // adapter journals the message.
+        if matches!(
+            draft.kind,
+            AgentEventKind::MessageEnd {
+                role: hutan_core::agent::MessageRole::User,
+                ..
+            }
+        ) && draft.payload.is_none()
+            && let Some(meta) = lock(&live.delivery).meta.take()
+        {
+            draft.payload = Some(serde_json::json!({ ATTACHMENTS_META_KEY: meta }));
+        }
+        if ends_turn {
+            self.drop_temp_images(live);
+        }
         let mut event = {
             // Numbered and folded into the open items in one step: see `Live::partials`.
             let mut partials = lock(&live.partials);

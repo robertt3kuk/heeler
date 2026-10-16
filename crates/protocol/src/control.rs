@@ -48,6 +48,9 @@ pub enum ErrorCode {
     Forbidden,
     ProviderError,
     Internal,
+    /// Protocol 0.23: the request is understood but the backend cannot do it (an image for a
+    /// chat whose agent or model takes none).
+    Unsupported,
     /// Code from a newer peer; treat like `internal`.
     #[serde(other)]
     Unknown,

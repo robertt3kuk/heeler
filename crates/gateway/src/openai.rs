@@ -50,7 +50,21 @@ impl OpenAi {
                     Role::User => "user",
                     Role::Assistant => "assistant",
                 };
-                json!({ "role": role, "content": m.content })
+                if m.images.is_empty() {
+                    return json!({ "role": role, "content": m.content });
+                }
+                // Images go as data URLs next to the text (the vision message shape every
+                // OpenAI-compatible server that takes images understands).
+                let mut parts = vec![json!({ "type": "text", "text": m.content })];
+                parts.extend(m.images.iter().map(|image| {
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", image.media_type, image.base64()),
+                        },
+                    })
+                }));
+                json!({ "role": role, "content": parts })
             })
             .collect();
         let mut body = json!({
@@ -73,6 +87,47 @@ impl OpenAi {
         }
         body
     }
+}
+
+/// What a `/models` entry says about image input, when it says anything: OpenRouter's
+/// `architecture.input_modalities`, a plain `input_modalities`, a boolean `capabilities.vision`
+/// or `vision`, LM Studio's `type: "vlm"`.
+fn declared_vision(entry: &Value) -> Option<bool> {
+    let modalities = entry
+        .pointer("/architecture/input_modalities")
+        .or_else(|| entry.get("input_modalities"))
+        .and_then(Value::as_array);
+    if let Some(modalities) = modalities {
+        return Some(modalities.iter().any(|m| m.as_str() == Some("image")));
+    }
+    if let Some(vision) = entry
+        .pointer("/capabilities/vision")
+        .or_else(|| entry.get("vision"))
+        .and_then(Value::as_bool)
+    {
+        return Some(vision);
+    }
+    entry
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|kind| kind == "vlm")
+}
+
+/// OpenAI's own `/models` says nothing about modalities: the model families documented to take
+/// images.
+fn openai_vision_family(model: &str) -> bool {
+    [
+        "gpt-4o",
+        "chatgpt-4o",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-5",
+        "o3",
+        "o4",
+    ]
+    .iter()
+    .any(|prefix| model.starts_with(prefix))
+        || (model.starts_with("o1") && !model.contains("mini") && !model.contains("preview"))
 }
 
 impl Provider for OpenAi {
@@ -107,6 +162,25 @@ impl Provider for OpenAi {
                 .collect();
             models.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(models)
+        }
+        .boxed()
+    }
+
+    fn supports_vision(&self, model: &str) -> BoxFuture<'_, Result<bool, GatewayError>> {
+        let model = model.to_owned();
+        async move {
+            let value = self.endpoint.get_json("models", |r| self.auth(r)).await?;
+            let entry = value
+                .get("data")
+                .and_then(Value::as_array)
+                .and_then(|models| {
+                    models
+                        .iter()
+                        .find(|m| m.get("id").and_then(Value::as_str) == Some(model.as_str()))
+                });
+            Ok(entry.and_then(declared_vision).unwrap_or_else(|| {
+                self.kind == ProviderKind::OpenAi && openai_vision_family(&model)
+            }))
         }
         .boxed()
     }

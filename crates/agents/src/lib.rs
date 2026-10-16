@@ -20,7 +20,8 @@ pub mod jsonrpc;
 
 pub use acp::{AcpAdapter, AcpConfig, AcpSession};
 pub use adapter::{
-    AdapterMessage, AgentAdapter, ContextBlock, ExitInfo, StartSpec, Started, TurnRef,
+    AdapterMessage, AgentAdapter, ContextBlock, ExitInfo, ImageBlock, MessageExtras, StartSpec,
+    Started, TurnRef,
 };
 pub use codex::{CodexAccount, CodexAppServerAdapter, CodexConfig, CodexSession};
 pub use error::AgentError;

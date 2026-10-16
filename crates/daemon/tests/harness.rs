@@ -887,6 +887,7 @@ async fn attached_context_reaches_a_harness_as_embedded_resources() {
             vec![Attachment::File {
                 path: "notes.txt".into(),
                 range: None,
+                picked: false,
             }],
         )
         .await
@@ -909,6 +910,240 @@ async fn attached_context_reaches_a_harness_as_embedded_resources() {
             if text.contains("what do my notes say?") && text.contains("remember the milk")
     )));
     // A Codex chat still takes none.
+    t.stop().await;
+}
+
+// Rich input (protocol 0.23) --------------------------------------------------------------------
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nxyz";
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn image_path(path: &Path) -> Attachment {
+    Attachment::Image {
+        path: Some(path.display().to_string()),
+        data_base64: None,
+        media_type: "image/png".into(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn images_and_pasted_text_reach_an_omp_chat_and_are_journaled_without_bytes() {
+    let mut t = H::omp(&fixture("plain-turn")).await;
+    let created = t.create("omp").await;
+    assert_eq!(created.chat.as_ref().unwrap().images, Some(true));
+    let shot = t.work.path().join("shot.png");
+    std::fs::write(&shot, PNG).unwrap();
+    t.client
+        .chat_send_with(
+            created.id,
+            "what is this?",
+            vec![
+                image_path(&shot),
+                Attachment::Image {
+                    path: None,
+                    data_base64: Some(b64(PNG)),
+                    media_type: "image/png".into(),
+                },
+                Attachment::PastedText {
+                    text: "line one\nline two".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    chat_event(&mut t.events, "the turn to end", |e| e.kind.ends_turn()).await;
+    let prompt = &t.received_of("session/prompt")[0]["params"]["prompt"];
+    assert_eq!(prompt[0]["text"], "what is this?");
+    assert_eq!(prompt[1]["type"], "resource");
+    assert!(
+        prompt[1]["resource"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("line two")
+    );
+    for image in [&prompt[2], &prompt[3]] {
+        assert_eq!(image["type"], "image");
+        assert_eq!(image["mimeType"], "image/png");
+        assert_eq!(image["data"], b64(PNG));
+    }
+    // The journal names the images and keeps path and hash, never the bytes.
+    let history = t.history(created.id).await;
+    let user = history
+        .events
+        .iter()
+        .find(|e| {
+            matches!(
+                &e.kind,
+                AgentEventKind::MessageEnd {
+                    role: MessageRole::User,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let AgentEventKind::MessageEnd { text, .. } = &user.kind else {
+        unreachable!()
+    };
+    assert!(text.contains("[image: shot.png · image/png"), "{text}");
+    assert!(!text.contains(&b64(PNG)));
+    let meta = hutan_protocol::assistant::attachments_meta(user);
+    assert_eq!(meta.len(), 3);
+    assert_eq!(meta[0].media_type.as_deref(), Some("image/png"));
+    assert_eq!(meta[0].size, Some(PNG.len() as u64));
+    assert_eq!(
+        meta[0].path.as_deref(),
+        Some(std::fs::canonicalize(&shot).unwrap().to_str().unwrap())
+    );
+    assert_eq!(meta[0].sha256.as_ref().map(String::len), Some(64));
+    assert_eq!(meta[1].path, None);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_omp_without_image_support_refuses_images_as_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = std::fs::read_to_string(fixture("plain-turn")).unwrap();
+    assert!(text.contains("\"image\":true"));
+    let without = dir.path().join("no-images.jsonl");
+    std::fs::write(&without, text.replace("\"image\":true", "\"image\":false")).unwrap();
+    let t = H::omp(&without).await;
+    let created = t.create("omp").await;
+    assert_eq!(created.chat.as_ref().unwrap().images, Some(false));
+    let error = t
+        .client
+        .chat_send_with(
+            created.id,
+            "look",
+            vec![Attachment::Image {
+                path: None,
+                data_base64: Some(b64(PNG)),
+                media_type: "image/png".into(),
+            }],
+        )
+        .await;
+    assert_eq!(remote_code(error), ErrorCode::Unsupported);
+    assert!(t.received_of("session/prompt").is_empty());
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attachments_are_bounded_and_checked() {
+    let t = H::omp(&fixture("plain-turn")).await;
+    let created = t.create("omp").await;
+    let send = |attachment: Attachment| {
+        let client = t.client.clone();
+        async move {
+            remote_code(
+                client
+                    .chat_send_with(created.id, "x", vec![attachment])
+                    .await,
+            )
+        }
+    };
+    // A folder, a file that is no image, an image over 5 MiB.
+    assert_eq!(send(image_path(t.work.path())).await, ErrorCode::BadRequest);
+    let text = t.work.path().join("notes.png");
+    std::fs::write(&text, "not an image").unwrap();
+    assert_eq!(send(image_path(&text)).await, ErrorCode::BadRequest);
+    let big = t.work.path().join("big.png");
+    let mut bytes = PNG.to_vec();
+    bytes.resize(5 * 1024 * 1024 + 1, 0);
+    std::fs::write(&big, &bytes).unwrap();
+    assert_eq!(send(image_path(&big)).await, ErrorCode::BadRequest);
+    // Inline data over the frame-sized limit, bad base64, and too much pasted text.
+    let mut inline = PNG.to_vec();
+    inline.resize(hutan_protocol::assistant::IMAGE_INLINE_MAX_BYTES + 1, 0);
+    assert_eq!(
+        send(Attachment::Image {
+            path: None,
+            data_base64: Some(b64(&inline)),
+            media_type: "image/png".into()
+        })
+        .await,
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        send(Attachment::Image {
+            path: None,
+            data_base64: Some("!!not base64!!".into()),
+            media_type: "image/png".into()
+        })
+        .await,
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        send(Attachment::PastedText {
+            text: "x".repeat(hutan_protocol::assistant::PASTED_TEXT_MAX_BYTES + 1)
+        })
+        .await,
+        ErrorCode::BadRequest
+    );
+    assert!(t.received_of("session/prompt").is_empty());
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_may_not_attach_images_or_read_picked_paths_outside_the_roots() {
+    let transcript = fixture("plain-turn");
+    let mut t = H::with(
+        |work| {
+            format!(
+                "[control]\nagents = \"allow\"\n{}",
+                harness_toml("omp", &transcript, &work.join("received.jsonl"))
+            )
+        },
+        |_| {},
+    )
+    .await;
+    let created = t.create("omp").await;
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "outside the roots").unwrap();
+    let shot = outside.path().join("shot.png");
+    std::fs::write(&shot, PNG).unwrap();
+
+    // A client running inside the chat's own session is an agent's.
+    let mut options = t.daemon.options();
+    options.client.origin = Some(hutan_protocol::messages::Origin {
+        session_id: created.id,
+    });
+    let agent = Client::connect(options).await.unwrap();
+    for attachment in [
+        image_path(&shot),
+        Attachment::PastedText { text: "hi".into() },
+        Attachment::File {
+            path: secret.display().to_string(),
+            range: None,
+            picked: true,
+        },
+    ] {
+        let refused = agent
+            .chat_send_with(created.id, "look", vec![attachment])
+            .await;
+        assert_eq!(remote_code(refused), ErrorCode::Forbidden);
+    }
+    assert!(t.received_of("session/prompt").is_empty());
+
+    // The user's own client may: the same picked path is read.
+    t.client
+        .chat_send_with(
+            created.id,
+            "read it",
+            vec![Attachment::File {
+                path: secret.display().to_string(),
+                range: None,
+                picked: true,
+            }],
+        )
+        .await
+        .unwrap();
+    chat_event(&mut t.events, "the turn to end", |e| e.kind.ends_turn()).await;
+    let prompt = &t.received_of("session/prompt")[0]["params"]["prompt"];
+    assert!(prompt.to_string().contains("outside the roots"));
     t.stop().await;
 }
 

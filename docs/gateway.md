@@ -82,6 +82,10 @@ A turn (`DirectSession::run_turn`), in order:
 
 Restart: a live direct chat is started again with the same session id (`restore_sessions = "respawn"`), its journal and model intact; `restore_sessions = "stopped"`, `session.stop` and `session.restart` work as for Codex chats. A chat whose provider was removed stays listed; its next `chat.send` says so, and `hutan chat model <session> <model> --provider <other>` repairs it.
 
+## Images
+
+Protocol 0.23. A user message may carry images (`ChatMessage.images`): OpenAI-compatible `image_url` data URLs, Anthropic `image` base64 blocks (before the text), Ollama `images`. Before sending, the daemon asks `Provider::supports_vision(model)`: OpenRouter-style `architecture.input_modalities`, a `vision` capability or LM Studio `type: "vlm"` in `/models` (OpenAI's own models by family, since its list says nothing), `capabilities.image_input` of Anthropic's `/v1/models`, `capabilities` of Ollama's `/api/show`. A model the provider does not say reads images is refused with `unsupported` (the answer is cached for five minutes). Later turns carry the image headers from the journal, not the images.
+
 ## Configuration
 
 `daemon.toml`:

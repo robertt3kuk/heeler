@@ -1,16 +1,17 @@
-//! Explicit context for assistant messages (M16-B): the chips the user attaches to the next
-//! message, the `@shell` / `@omp` / `@agent` / `@file` / `@search` mentions that offer them, and
-//! how a journaled user message with attachments is split for display.
+//! Explicit context for assistant messages (M16-B) and the rich input of every chat (protocol
+//! 0.23, [`super::rich`]): the chips the user attaches to the next message, the `@shell` /
+//! `@omp` / `@agent` / `@file` / `@search` mentions that offer them, and how a journaled user
+//! message with attachments is split for display.
 //!
 //! Nothing here reads anything: a chip only *describes* a source and its requested bounds, and
 //! becomes a structured [`Attachment`] that the daemon resolves, redacts and bounds when the
-//! message is sent (`docs/assistant.md`). No GPUI.
+//! message is sent (`docs/assistant.md`). Only a chip's thumbnail touches GPUI.
 
 use std::ops::Range;
 
 use hutan_core::TerminalId;
 use hutan_protocol::assistant::{
-    AGENT_ASSISTANT, Attachment, AttachmentKind, LineRange, SEARCH_MAX_LIMIT,
+    AGENT_ASSISTANT, Attachment, AttachmentKind, AttachmentMeta, LineRange, SEARCH_MAX_LIMIT,
     SHELL_RECENT_MAX_LINES, TRANSCRIPT_MAX_TURNS,
 };
 
@@ -46,9 +47,35 @@ pub struct ContextChip {
     pub source: String,
     /// The bounds requested: `last 50 lines`, `lines 1-40`, `last 5 turns`, `5 hits`.
     pub bounds: String,
-    /// The daemon refused the message because of this kind of attachment (the reason).
+    /// The daemon refused the message because of this kind of attachment, or the session cannot
+    /// take it (the reason): the chip is drawn as refused and holds the message back.
     pub refused: Option<String>,
+    /// A picture of an image chip (protocol 0.23).
+    pub thumb: Option<Thumb>,
+    /// A folded paste is open (its text is shown under the chips).
+    pub expanded: bool,
 }
+
+/// What an image chip shows as its thumbnail.
+#[derive(Debug, Clone)]
+pub enum Thumb {
+    /// An image file the user dropped or picked.
+    Path(std::path::PathBuf),
+    /// A clipboard image.
+    Image(std::sync::Arc<gpui::Image>),
+}
+
+impl PartialEq for Thumb {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Path(a), Self::Path(b)) => a == b,
+            (Self::Image(a), Self::Image(b)) => a.id() == b.id(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Thumb {}
 
 fn shorten(text: &str, max: usize) -> String {
     let line = text.lines().next().unwrap_or("").trim();
@@ -60,12 +87,14 @@ fn shorten(text: &str, max: usize) -> String {
 }
 
 impl ContextChip {
-    fn new(attachment: Attachment, source: String, bounds: String) -> Self {
+    pub(super) fn new(attachment: Attachment, source: String, bounds: String) -> Self {
         Self {
             attachment,
             source,
             bounds,
             refused: None,
+            thumb: None,
+            expanded: false,
         }
     }
 
@@ -133,6 +162,7 @@ impl ContextChip {
             Attachment::File {
                 path: path.to_owned(),
                 range,
+                picked: false,
             },
             path.to_owned(),
             bounds,
@@ -155,14 +185,26 @@ impl ContextChip {
         self.attachment.kind()
     }
 
-    /// What the chip says before the message is sent: `file · src/lib.rs · lines 1-40`.
+    /// What the chip says before the message is sent: `file · src/lib.rs · lines 1-40`; a
+    /// folded paste says `Pasted · 312 lines`.
     pub fn label(&self) -> String {
+        if self.kind() == AttachmentKind::PastedText {
+            return format!("{} · {}", self.source, self.bounds);
+        }
         format!(
             "{} · {} · {}",
             kind_label(self.kind()),
             self.source,
             self.bounds
         )
+    }
+
+    /// Marks the chip as one the daemon or the session refuses: it is drawn as refused and
+    /// holds the message back until it is removed.
+    #[must_use]
+    pub fn refused(mut self, reason: impl Into<String>) -> Self {
+        self.refused = Some(reason.into());
+        self
     }
 }
 
@@ -181,7 +223,35 @@ pub fn kind_label(kind: AttachmentKind) -> &'static str {
         AttachmentKind::ShellRecent => "shell recent",
         AttachmentKind::AgentTranscript => "agent",
         AttachmentKind::File => "file",
+        AttachmentKind::Image => "image",
+        AttachmentKind::PastedText => "pasted text",
         AttachmentKind::Search => "search",
+    }
+}
+
+/// What the transcript's chip of an attachment says: kind, label, and what the daemon kept
+/// (characters of text, the size of an image).
+pub fn meta_text(meta: &AttachmentMeta) -> String {
+    match meta.kind {
+        AttachmentKind::Image => {
+            let mut text = format!("image · {}", meta.label);
+            if let Some(size) = meta.size {
+                text.push_str(&format!(" · {}", super::rich::format_size(size)));
+            }
+            text
+        }
+        kind => {
+            let mut text = format!(
+                "{} · {} · {} chars",
+                kind_label(kind),
+                meta.label,
+                meta.chars
+            );
+            if meta.truncated {
+                text.push_str(" · cut to the budget");
+            }
+            text
+        }
     }
 }
 
@@ -191,7 +261,7 @@ pub fn gating_setting(kind: AttachmentKind) -> &'static str {
     match kind {
         AttachmentKind::ShellBlock | AttachmentKind::ShellRecent => "shell",
         AttachmentKind::AgentTranscript => "agents",
-        AttachmentKind::File => "files",
+        AttachmentKind::File | AttachmentKind::Image | AttachmentKind::PastedText => "files",
         AttachmentKind::Search => "search",
     }
 }

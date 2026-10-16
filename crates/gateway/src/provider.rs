@@ -22,6 +22,12 @@ pub trait Provider: Send + Sync + Debug {
     /// The models the provider offers (`/models`, `/v1/models`, `/api/tags`), sorted by id.
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, GatewayError>>;
 
+    /// Whether `model` reads images, as far as the provider says (protocol 0.23): OpenRouter-style
+    /// `input_modalities` or a `vision` capability in `/models` (OpenAI's own models by family),
+    /// the `image_input` capability of Anthropic's `/v1/models`, `capabilities` of Ollama's
+    /// `/api/show`. A model the provider does not say reads images does not.
+    fn supports_vision(&self, model: &str) -> BoxFuture<'_, Result<bool, GatewayError>>;
+
     /// Streams one chat completion. The request is sent when the stream is first polled;
     /// cancelling `cancel` ends the stream with [`GatewayError::Cancelled`] and closes the
     /// connection, whether that happens while connecting or in the middle of the reply.

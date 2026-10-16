@@ -18,6 +18,7 @@ name = "hutan-acp-fixture"
 path = "src/bin/acp_fixture.rs"
 
 [dependencies]
+base64.workspace = true
 futures.workspace = true
 hutan-core.workspace = true
 regex.workspace = true

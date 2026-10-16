@@ -30,7 +30,7 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterMessage, AgentAdapter, ContextBlock, ExitInfo, StartSpec, Started, TurnRef,
+    AdapterMessage, AgentAdapter, ExitInfo, MessageExtras, StartSpec, Started, TurnRef,
 };
 use crate::codex::{AnswerError, Mapped, Reply};
 use crate::error::AgentError;
@@ -120,6 +120,8 @@ struct Shared {
     model: Mutex<Option<ModelChoice>>,
     turn_active: AtomicBool,
     embedded_context: bool,
+    /// The agent said `promptCapabilities.image`: image content blocks are accepted.
+    images: bool,
     can_close: bool,
 }
 
@@ -552,6 +554,7 @@ impl AcpAdapter {
             },
             thread_id: opened.session_id.clone(),
             resumed: opened.resumed,
+            images: Some(opened.capabilities.prompt_capabilities.image),
         };
         let shared = Arc::new(Shared {
             transport,
@@ -563,6 +566,7 @@ impl AcpAdapter {
             model: Mutex::new(model),
             turn_active: AtomicBool::new(false),
             embedded_context: opened.capabilities.prompt_capabilities.embedded_context,
+            images: opened.capabilities.prompt_capabilities.image,
             can_close: opened.close,
         });
         tokio::spawn(pump(shared.clone(), incoming, exit));
@@ -801,33 +805,45 @@ impl AgentAdapter for AcpAdapter {
     }
 
     fn send_message(&self, text: String) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
-        self.send_message_with_context(text, Vec::new())
+        self.send_message_with(text, MessageExtras::default())
     }
 
-    fn send_message_with_context(
+    fn send_message_with(
         &self,
         text: String,
-        context: Vec<ContextBlock>,
+        extras: MessageExtras,
     ) -> BoxFuture<'_, Result<TurnRef, AgentError>> {
         Box::pin(async move {
             let shared = &self.shared;
+            let MessageExtras { context, images } = extras;
+            if !images.is_empty() && !shared.images {
+                return Err(AgentError::Unsupported(format!(
+                    "{} does not accept images (its handshake offers no `promptCapabilities.image`)",
+                    shared.agent
+                )));
+            }
             if shared.turn_active.swap(true, Ordering::AcqRel) {
                 return Err(AgentError::TurnInProgress);
             }
-            // What the journal shows as the user's message is what the agent is given.
-            let journaled = if context.is_empty() {
-                text.clone()
-            } else {
+            // What the journal shows as the user's message is what the agent is given; an
+            // image is journaled by its header only.
+            let journaled = {
                 let mut full = text.clone();
                 for block in &context {
                     full.push_str("\n\n");
                     full.push_str(&block.text);
                 }
+                for image in &images {
+                    full.push_str("\n\n");
+                    full.push_str(&image.header);
+                }
                 full
             };
             let mut prompt = Vec::new();
             if shared.embedded_context {
-                prompt.push(json!({"type": "text", "text": text}));
+                if !text.trim().is_empty() {
+                    prompt.push(json!({"type": "text", "text": text}));
+                }
                 for (index, block) in context.iter().enumerate() {
                     prompt.push(json!({
                         "type": "resource",
@@ -839,7 +855,20 @@ impl AgentAdapter for AcpAdapter {
                     }));
                 }
             } else {
-                prompt.push(json!({"type": "text", "text": journaled}));
+                let mut quoted = text.clone();
+                for block in &context {
+                    quoted.push_str("\n\n");
+                    quoted.push_str(&block.text);
+                }
+                prompt.push(json!({"type": "text", "text": quoted}));
+            }
+            for image in &images {
+                use base64::Engine as _;
+                prompt.push(json!({
+                    "type": "image",
+                    "mimeType": image.media_type,
+                    "data": base64::engine::general_purpose::STANDARD.encode(image.data.as_slice()),
+                }));
             }
             let (turn_id, drafts, working) = {
                 let (turn_id, drafts) = lock(&shared.mapper).begin_turn(&journaled);

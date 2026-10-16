@@ -112,6 +112,9 @@ pub(crate) const PROJECTS_CAPABILITY: &str = "projects.auto";
 pub(crate) const CONTROL_CAPABILITY: &str = "control";
 /// Capability for `worktree.diff`, `worktree.file_diff` and `worktree.merge` (protocol 0.22).
 pub(crate) const WORKTREE_REVIEW_CAPABILITY: &str = "worktree.review";
+/// Capability for `image` and `pasted_text` attachments, `file` attachments in every chat and
+/// `ChatInfo.images` (protocol 0.23).
+pub(crate) const RICH_INPUT_CAPABILITY: &str = "chat.rich_input";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -134,6 +137,7 @@ const CAPABILITIES: &[&str] = &[
     ASSISTANT_BACKEND_CAPABILITY,
     CONTROL_CAPABILITY,
     WORKTREE_REVIEW_CAPABILITY,
+    RICH_INPUT_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -671,6 +675,15 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == WORKTREE_REVIEW_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `chat.rich_input` (protocol 0.23): every chat
+    /// takes attachments, including `image` and `pasted_text`.
+    pub fn supports_rich_input(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == RICH_INPUT_CAPABILITY)
     }
 
     /// The files a checkout changed against its base (`worktree.diff`).

@@ -388,6 +388,33 @@ impl ChatModel {
         }
     }
 
+    /// Takes the last attachment off the draft (the last chip drawn): `false` when there is none.
+    pub fn pop_last_attachment(&mut self, cx: &mut Context<Self>) -> bool {
+        let popped = self.context.pop().is_some() || self.chips.pop().is_some();
+        if popped {
+            cx.notify();
+        }
+        popped
+    }
+
+    /// Opens or closes the text of a folded paste.
+    pub fn toggle_context_open(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(chip) = self.context.get_mut(index) {
+            chip.expanded = !chip.expanded;
+            cx.notify();
+        }
+    }
+
+    /// Whether the draft has structured attachments.
+    pub fn has_context(&self) -> bool {
+        !self.context.is_empty()
+    }
+
+    /// The reason of the first chip that cannot be sent, if any.
+    pub fn refused_context(&self) -> Option<&str> {
+        self.context.iter().find_map(|chip| chip.refused.as_deref())
+    }
+
     /// The message the composer would send now.
     pub fn draft_message(&self) -> String {
         compose(&self.chips, self.input.text())
@@ -398,7 +425,8 @@ impl ChatModel {
     /// draft back.
     pub fn send(&mut self, cx: &mut Context<Self>) -> bool {
         let message = self.draft_message();
-        if message.is_empty() || self.sending {
+        // An attachment can be the whole message: the daemon takes empty text with one.
+        if (message.is_empty() && self.context.is_empty()) || self.sending {
             return false;
         }
         let draft = self.input.take();
@@ -420,10 +448,12 @@ impl ChatModel {
                 let unsent = this.unsent.take();
                 if let Err(error) = sent {
                     let refusal = refusal_of(&error);
+                    let unsupported = unsupported_of(&error);
                     this.error = Some(
-                        match &refusal {
-                            Some((_, message)) => format!("Not allowed: {message}"),
-                            None => format!("Could not send: {error}"),
+                        match (&refusal, &unsupported) {
+                            (Some((_, message)), _) => format!("Not allowed: {message}"),
+                            (None, Some(message)) => format!("Not supported: {message}"),
+                            (None, None) => format!("Could not send: {error}"),
                         }
                         .into(),
                     );
@@ -441,7 +471,8 @@ impl ChatModel {
                         this.chips = all;
                         // A refusal says which kind of context the settings do not allow (a
                         // path outside the workspace names no setting: it is about files): the
-                        // chips of that kind show it.
+                        // chips of that kind show it. An image the model cannot read marks the
+                        // image chips.
                         if let Some((setting, message)) = refusal {
                             for chip in &mut context {
                                 let about = match setting.as_deref() {
@@ -449,6 +480,13 @@ impl ChatModel {
                                     None => chip.kind() == AttachmentKind::File,
                                 };
                                 if about {
+                                    chip.refused = Some(message.clone());
+                                }
+                            }
+                        }
+                        if let Some(message) = unsupported {
+                            for chip in &mut context {
+                                if chip.kind() == AttachmentKind::Image {
                                     chip.refused = Some(message.clone());
                                 }
                             }
@@ -507,6 +545,14 @@ fn refusal_of(error: &ClientError) -> Option<(Option<String>, String)> {
         .and_then(|setting| setting.as_str())
         .map(str::to_owned);
     Some((setting, body.message.clone()))
+}
+
+/// The message of an `unsupported` refusal: the backend or model takes no images.
+fn unsupported_of(error: &ClientError) -> Option<String> {
+    let ClientError::Remote(body) = error else {
+        return None;
+    };
+    (body.code == ErrorCode::Unsupported).then(|| body.message.clone())
 }
 
 /// The journal's newest events, oldest first. Without `stop_at` (the first read of a

@@ -23,6 +23,17 @@ pub const TRANSCRIPT_MAX_TURNS: u32 = 20;
 pub const SEARCH_MAX_LIMIT: u32 = 10;
 /// The key of a user `message_end` event's `payload` that holds the [`AttachmentMeta`] list.
 pub const ATTACHMENTS_META_KEY: &str = "attachments_meta";
+/// Largest image an `image` attachment may carry, read from a file or decoded from
+/// `data_base64` (protocol 0.23, capability `chat.rich_input`).
+pub const IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+/// Largest image a client may send inline as `data_base64`: the decoded size that still fits one
+/// frame (4 MiB, [`crate::MAX_PAYLOAD`]) once base64-encoded and wrapped in the request. A larger
+/// image goes by `path`.
+pub const IMAGE_INLINE_MAX_BYTES: usize = 3_000_000;
+/// Longest `pasted_text` attachment, in bytes.
+pub const PASTED_TEXT_MAX_BYTES: usize = 256 * 1024;
+/// The media types an `image` attachment may have.
+pub const IMAGE_MEDIA_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// Where an assistant lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -179,6 +190,10 @@ pub enum AttachmentKind {
     ShellRecent,
     AgentTranscript,
     File,
+    /// Protocol 0.23: an image (PNG, JPEG, GIF or WebP).
+    Image,
+    /// Protocol 0.23: text the user pasted into the composer.
+    PastedText,
     Search,
 }
 
@@ -189,6 +204,8 @@ impl AttachmentKind {
             Self::ShellRecent => "shell_recent",
             Self::AgentTranscript => "agent_transcript",
             Self::File => "file",
+            Self::Image => "image",
+            Self::PastedText => "pasted_text",
             Self::Search => "search",
         }
     }
@@ -221,13 +238,37 @@ pub enum Attachment {
     AgentTranscript { session_id: String, last_turns: u32 },
     /// A file under the roots of the session's workspace (the Home folder for the global
     /// assistant), optionally only some lines. A relative path is relative to the first root.
+    /// Protocol 0.23: accepted by every chat, not only assistants.
     File {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         range: Option<LineRange>,
+        /// Protocol 0.23: the user dropped, picked or typed this path (the desktop and the CLI
+        /// say so): the daemon reads it from anywhere, not only below the workspace roots. A
+        /// request an agent sends (ADR 0016) is read as if it said nothing: below the roots only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        picked: bool,
     },
     /// The best hits of a history search (`limit` 1 to [`SEARCH_MAX_LIMIT`]).
     Search { query: String, limit: u32 },
+    /// Protocol 0.23 (capability `chat.rich_input`): an image, given either by `path` (a file
+    /// the user dropped or picked; read by the daemon, at most [`IMAGE_MAX_BYTES`]) or inline as
+    /// standard base64 `data_base64` (a clipboard image; at most [`IMAGE_INLINE_MAX_BYTES`]
+    /// decoded). Exactly one of the two. `media_type` is one of [`IMAGE_MEDIA_TYPES`]; the
+    /// daemon checks the bytes (`bad_request` for anything else) and uses what it finds.
+    /// Only the user's desktop or CLI may attach images: an agent-originated request is
+    /// `forbidden`.
+    Image {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_base64: Option<String>,
+        media_type: String,
+    },
+    /// Protocol 0.23: text the user pasted into the composer and folded into a chip, at most
+    /// [`PASTED_TEXT_MAX_BYTES`]; redacted and bounded like any text attachment. An
+    /// agent-originated request is `forbidden`.
+    PastedText { text: String },
 }
 
 impl Attachment {
@@ -237,21 +278,56 @@ impl Attachment {
             Self::ShellRecent { .. } => AttachmentKind::ShellRecent,
             Self::AgentTranscript { .. } => AttachmentKind::AgentTranscript,
             Self::File { .. } => AttachmentKind::File,
+            Self::Image { .. } => AttachmentKind::Image,
+            Self::PastedText { .. } => AttachmentKind::PastedText,
             Self::Search { .. } => AttachmentKind::Search,
         }
     }
 }
 
 /// What a user message of a chat event says about its attachments (never their text, which is
-/// part of the journaled message): kind, a short label, characters kept, and whether the budget
-/// cut them. Carried in the `payload` of the user's `message_end` event under
-/// [`ATTACHMENTS_META_KEY`].
+/// part of the journaled message, nor the bytes of an image): kind, a short label, characters
+/// kept, and whether the budget cut them. Carried in the `payload` of the user's `message_end`
+/// event under [`ATTACHMENTS_META_KEY`].
+///
+/// Protocol 0.23: an image also says how big it was (`size`, bytes), its `media_type`, the
+/// `path` it was read from (absent for clipboard data) and a SHA-256 of its bytes (`sha256`,
+/// hex): the journal keeps those instead of the image.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentMeta {
     pub kind: AttachmentKind,
     pub label: String,
     pub chars: u64,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl AttachmentMeta {
+    /// A text attachment's meta: no size, media type, path or hash.
+    pub fn text(
+        kind: AttachmentKind,
+        label: impl Into<String>,
+        chars: u64,
+        truncated: bool,
+    ) -> Self {
+        Self {
+            kind,
+            label: label.into(),
+            chars,
+            truncated,
+            size: None,
+            media_type: None,
+            path: None,
+            sha256: None,
+        }
+    }
 }
 
 /// The attachments a chat event's `payload` describes; empty for any other event.

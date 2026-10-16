@@ -65,10 +65,16 @@ pub struct ChatCreate {
 /// `chat.send`: the user's message; the turn's events follow as `chat.event`.
 ///
 /// Protocol 0.12 (capability `assistant`): `attachments` is read-only context the daemon
-/// resolves, redacts, bounds and journals with the message (`docs/assistant.md`); only direct
-/// and assistant chats take any (`bad_request` for a Codex chat). `forbidden` when the daemon's
-/// `[assistant.context]` does not allow one of them, `not_found` when it names something that
-/// does not exist.
+/// resolves, redacts, bounds and journals with the message (`docs/assistant.md`).
+/// `forbidden` when the daemon's `[assistant.context]` does not allow one of them, when a path
+/// is outside the workspace roots and the user did not `pick` it (or an agent sent it), or when
+/// an agent (a client running inside an agent's session) sends an `image` or a `pasted_text`;
+/// `not_found` when it names something that does not exist.
+///
+/// Protocol 0.23 (capability `chat.rich_input`): every chat takes attachments (Codex too),
+/// including `image` and `pasted_text` (`docs/agents.md` § Rich input). `bad_request` for an
+/// attachment out of bounds, a directory, an image that is not PNG, JPEG, GIF or WebP, or a
+/// file that is not text; `unsupported` when the chat's backend or model cannot take images.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSend {
     pub session_id: SessionId,
@@ -189,6 +195,12 @@ pub struct ChatInfo {
     /// provider-backed assistant keeps `agent: "assistant"`. See [`ChatInfo::is_assistant`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub assistant: bool,
+    /// Protocol 0.23 (capability `chat.rich_input`): whether the chat's backend takes `image`
+    /// attachments. `true` or `false` when the daemon knows (an ACP harness after its
+    /// handshake: `promptCapabilities.image`); absent when only a send can tell (Codex, and the
+    /// model of a direct chat, which the provider's model list answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 
 impl ChatInfo {

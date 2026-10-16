@@ -62,7 +62,26 @@ fn body(request: &ChatRequest) -> Value {
             } else {
                 "assistant"
             };
-            json!({ "role": role, "content": m.content })
+            if m.images.is_empty() {
+                return json!({ "role": role, "content": m.content });
+            }
+            // Images first, then the text, as Anthropic recommends.
+            let mut blocks: Vec<Value> = m
+                .images
+                .iter()
+                .map(|image| {
+                    json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image.media_type,
+                            "data": image.base64(),
+                        },
+                    })
+                })
+                .collect();
+            blocks.push(json!({ "type": "text", "text": m.content }));
+            json!({ "role": role, "content": blocks })
         })
         .collect();
     let mut body = json!({
@@ -117,6 +136,34 @@ impl Provider for Anthropic {
                 })
                 .collect();
             Ok(models)
+        }
+        .boxed()
+    }
+
+    fn supports_vision(&self, model: &str) -> BoxFuture<'_, Result<bool, GatewayError>> {
+        let model = model.to_owned();
+        async move {
+            if self.endpoint.key().is_none() {
+                return Err(GatewayError::MissingCredential);
+            }
+            let value = self
+                .endpoint
+                .get_json("v1/models?limit=1000", |r| auth(&self.endpoint, r))
+                .await?;
+            let entry = value
+                .get("data")
+                .and_then(Value::as_array)
+                .and_then(|models| {
+                    models
+                        .iter()
+                        .find(|m| m.get("id").and_then(Value::as_str) == Some(model.as_str()))
+                });
+            // The API says per model; a model it does not describe is taken for a Claude
+            // model, and every current Claude model reads images.
+            Ok(entry
+                .and_then(|m| m.pointer("/capabilities/image_input/supported"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true))
         }
         .boxed()
     }
