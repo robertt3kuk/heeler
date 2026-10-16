@@ -347,7 +347,7 @@ async fn daemon_toml_backend_omp_creates_a_read_only_omp_assistant() {
     // OMP started with its tools limited to reading and the assistant prompt appended.
     let argv = t.argv("omp");
     let tools = argv.iter().position(|a| a == "--tools").expect("--tools");
-    assert_eq!(argv[tools + 1], "read,grep,find,glob");
+    assert_eq!(argv[tools + 1], "read,grep,glob");
     let prompt = argv
         .iter()
         .position(|a| a == "--append-system-prompt")

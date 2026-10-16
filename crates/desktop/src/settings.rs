@@ -914,12 +914,11 @@ impl Setting for AppSettings {
 #[serde(default)]
 pub struct AssistantSettings {
     /// Whether Hutan has an assistant at all. Off hides the Assistant panel, removes its
-    /// commands from the palette and unregisters the shortcuts (⌥Space in the app and the
-    /// system-wide one); the daemon keeps its assistant conversations.
+    /// commands from the palette and unregisters the system-wide shortcut; the daemon keeps its assistant conversations.
     pub enabled: bool,
     /// System-wide shortcut that brings Hutan forward and opens the Assistant, for example
     /// `alt-space` or `cmd-shift-space` (modifiers `cmd`, `ctrl`, `alt`, `shift`, at least one
-    /// of the first three). Empty turns it off. If another app already owns the shortcut,
+    /// of the first three). Empty (the default) turns it off. If another app already owns the shortcut,
     /// Hutan says so once and leaves the setting alone; the in-app keybinding is separate.
     pub global_shortcut: String,
 }
@@ -928,7 +927,7 @@ impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            global_shortcut: "alt-space".to_owned(),
+            global_shortcut: String::new(),
         }
     }
 }
@@ -1114,7 +1113,7 @@ mod tests {
         assert!(app.menu_bar && app.dock_badge);
         let parsed: AppSettings = toml::from_str("keep_running = true\nmenu_bar = false").unwrap();
         assert!(parsed.keep_running && !parsed.menu_bar && parsed.dock_badge);
-        assert_eq!(AssistantSettings::default().global_shortcut, "alt-space");
+        assert!(AssistantSettings::default().global_shortcut.is_empty());
         let off: AssistantSettings = toml::from_str("global_shortcut = \"\"").unwrap();
         assert!(off.global_shortcut.is_empty());
     }

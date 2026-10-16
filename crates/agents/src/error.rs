@@ -32,6 +32,7 @@ pub enum AgentError {
     Rpc {
         method: String,
         code: i64,
+        /// The agent's message, followed by its `error.data` details when it sent any.
         message: String,
     },
     #[error("agent request `{method}` timed out")]

@@ -990,6 +990,37 @@ fn select_tab_bounds() {
     assert_eq!(state.active_item(), Some(item("b")));
 }
 
+#[test]
+fn cycling_tabs_wraps_in_the_pane_and_follows_a_focused_dock() {
+    let mut state = WorkbenchState::with_center(leaf(1, &["a", "b", "c"]));
+    assert!(state.select_tab(0));
+    assert!(state.cycle_tab(false), "previous from the first tab wraps");
+    assert_eq!(state.active_item(), Some(item("c")));
+    assert!(state.cycle_tab(true));
+    assert_eq!(state.active_item(), Some(item("a")));
+    assert!(state.cycle_tab(true));
+    assert_eq!(state.active_item(), Some(item("b")));
+
+    // A focused dock cycles its own panels and leaves the pane alone.
+    let panels = state.docks.left.panels.clone();
+    assert!(panels.len() > 1, "the default left dock has several panels");
+    state.docks.left.active = panels.first().cloned();
+    state.focus = FocusTarget::Dock(DockPosition::Left);
+    assert!(state.cycle_tab(true));
+    assert_eq!(state.docks.left.active.as_ref(), Some(&panels[1]));
+    assert!(state.cycle_tab(false));
+    assert!(state.cycle_tab(false));
+    assert_eq!(state.docks.left.active.as_ref(), panels.last());
+    assert_eq!(
+        state.active_pane().unwrap().active,
+        1,
+        "the pane kept its tab"
+    );
+
+    let mut single = WorkbenchState::with_center(leaf(1, &["only"]));
+    assert!(!single.cycle_tab(true), "one tab: nothing to cycle");
+}
+
 // ---- presets ---------------------------------------------------------------------------
 
 #[test]

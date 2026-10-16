@@ -452,11 +452,7 @@ async fn resolve(
     let outcome = match message.get_mut("error") {
         Some(error) => Err(RpcFailure::Remote {
             code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
-            message: error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error")
-                .to_owned(),
+            message: remote_message(error),
         }),
         None => Ok(message
             .get_mut("result")
@@ -482,6 +478,34 @@ async fn resolve(
             // The consumer going away ends the read loop at its next send.
             let _ = incoming.send(Incoming::Completed { tag, result }).await;
         }
+    }
+}
+
+/// Longest `error.data` detail kept in a failure message, in characters.
+const DETAIL_MAX_CHARS: usize = 300;
+
+/// The text of a JSON-RPC error: its `message`, then what `data` says (`data.details`,
+/// `data.message` or a string `data`), on one line and bounded. "Internal error" alone does not
+/// tell the user that, say, a tool name was refused.
+fn remote_message(error: &Value) -> String {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown error");
+    let data = error.get("data");
+    let detail = data
+        .and_then(|d| d.get("details").or_else(|| d.get("message")))
+        .or(data)
+        .and_then(Value::as_str)
+        .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|d| !d.is_empty() && d != message);
+    match detail {
+        Some(detail) if detail.chars().count() > DETAIL_MAX_CHARS => {
+            let cut: String = detail.chars().take(DETAIL_MAX_CHARS).collect();
+            format!("{message}: {cut}…")
+        }
+        Some(detail) => format!("{message}: {detail}"),
+        None => message.to_owned(),
     }
 }
 
@@ -539,4 +563,29 @@ async fn reap(
         signal,
         stderr_tail,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_errors_carry_the_details_of_their_data() {
+        let refused = serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {"details": "Built-in tool unavailable in this session: find."}
+        });
+        assert_eq!(
+            remote_message(&refused),
+            "Internal error: Built-in tool unavailable in this session: find."
+        );
+        let plain = serde_json::json!({"code": -32600, "message": "Invalid request"});
+        assert_eq!(remote_message(&plain), "Invalid request");
+        let text = serde_json::json!({"message": "Bad", "data": "line one\n  line two"});
+        assert_eq!(remote_message(&text), "Bad: line one line two");
+        let long = serde_json::json!({"message": "Bad", "data": {"message": "x".repeat(1000)}});
+        let message = remote_message(&long);
+        assert!(message.ends_with('…') && message.chars().count() == "Bad: ".len() + 301);
+    }
 }

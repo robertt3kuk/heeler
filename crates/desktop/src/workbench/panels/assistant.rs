@@ -1047,13 +1047,30 @@ impl AssistantPanel {
                 vec![retry],
                 look,
             ),
-            Opened::Failed(Failure::Other(error)) => self.notice(
-                Mascot::Error,
-                "The assistant could not be opened",
-                vec![error],
-                vec![models, retry],
-                look,
-            ),
+            Opened::Failed(Failure::Other(error)) => {
+                // The configured backend failed to start: offer another one, not only a
+                // provider (a harness backend has nothing to do with provider keys).
+                let change = button(
+                    "assistant-change-backend",
+                    "Change backend…",
+                    ButtonKind::Primary,
+                    true,
+                    look,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_switcher(cx)))
+                .child(probe(
+                    &self.env.regions,
+                    Region::Assistant("change-backend"),
+                ))
+                .into_any_element();
+                self.notice(
+                    Mascot::Error,
+                    "The assistant could not be opened",
+                    vec![error],
+                    vec![change, retry],
+                    look,
+                )
+            }
         }
     }
 }

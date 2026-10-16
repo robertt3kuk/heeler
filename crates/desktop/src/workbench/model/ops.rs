@@ -93,6 +93,42 @@ impl WorkbenchState {
         }
     }
 
+    /// Activate the next (`forward`) or previous tab, wrapping around, of whatever has the
+    /// focus: a dock cycles its panels, else the active center pane its tabs. One tab or none
+    /// is a no-op.
+    pub fn cycle_tab(&mut self, forward: bool) -> bool {
+        let step = |index: usize, len: usize| {
+            if forward {
+                (index + 1) % len
+            } else {
+                (index + len - 1) % len
+            }
+        };
+        if let FocusTarget::Dock(pos) = self.focus {
+            let dock = self.docks.get_mut(pos);
+            let len = dock.panels.len();
+            if len < 2 {
+                return false;
+            }
+            let index = dock
+                .active
+                .as_ref()
+                .and_then(|a| dock.panels.iter().position(|p| p == a))
+                .unwrap_or(0);
+            dock.active = Some(dock.panels[step(index, len)].clone());
+            return true;
+        }
+        let id = self.active_pane_id();
+        match self.center.pane_mut(id) {
+            Some(pane) if pane.items.len() > 1 => {
+                pane.active = step(pane.active.min(pane.items.len() - 1), pane.items.len());
+                self.focus = FocusTarget::Pane(id);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn set_dock_active(
         &mut self,
         pos: DockPosition,

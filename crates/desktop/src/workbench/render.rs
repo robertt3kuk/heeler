@@ -350,6 +350,18 @@ impl Workbench {
             });
         }))
         .on_action(
+            cx.listener(|this, _: &actions::ActivatePreviousTab, _, cx| {
+                this.mutate(cx, |s| {
+                    s.cycle_tab(false);
+                });
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ActivateNextTab, _, cx| {
+            this.mutate(cx, |s| {
+                s.cycle_tab(true);
+            });
+        }))
+        .on_action(
             cx.listener(|this, _: &actions::ApplyPresetNumber9, window, cx| {
                 this.apply_preset_number(9, window, cx);
             }),

@@ -28,7 +28,7 @@
 //! cli = "/Users/me/.bun/bin/omp"       # the harness's own CLI (account list/login), default: `bin` or `omp`
 //!
 //! [harness.claude]               # Claude Code through its ACP adapter
-//! bin = "/opt/homebrew/bin/claude-code-acp"   # default: `claude-code-acp` on the login environment's PATH
+//! bin = "/opt/homebrew/bin/claude-agent-acp"  # default: `claude-agent-acp`, else `claude-code-acp`, on the login PATH
 //!
 //! [mcp.docs]                     # MCP servers handed to harness sessions (no secrets here: credentials stay in the harness)
 //! command = "npx"

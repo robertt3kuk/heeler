@@ -773,8 +773,21 @@ fn menu_bar_choices_drive_the_window(cx: &mut TestAppContext) {
 // ---- global shortcut ---------------------------------------------------------------------
 
 #[gpui::test]
-fn the_default_shortcut_is_registered_and_opens_the_assistant(cx: &mut TestAppContext) {
+fn nothing_is_registered_by_default_and_a_configured_shortcut_opens_the_assistant(
+    cx: &mut TestAppContext,
+) {
     let daemon = TestDaemon::start();
+    let fakes = Fakes::new();
+    let (view, cx) = open(cx, &daemon, &fakes);
+    wait_synced(&view, cx, 0);
+    assert!(
+        fakes.hotkey.attempts().is_empty(),
+        "no system-wide shortcut unless the user sets one"
+    );
+    drop(view);
+
+    let daemon = TestDaemon::start();
+    write_settings(&daemon, "[assistant]\nglobal_shortcut = \"alt-space\"\n");
     let (tx, rx) = event_channel();
     let fakes = Fakes::new();
     let mut mac = fakes.services();
@@ -801,6 +814,8 @@ fn the_default_shortcut_is_registered_and_opens_the_assistant(cx: &mut TestAppCo
 #[gpui::test]
 fn a_taken_shortcut_is_reported_once_and_the_setting_is_left_alone(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
+    let configured = "[assistant]\nglobal_shortcut = \"alt-space\"\n";
+    write_settings(&daemon, configured);
     let fakes = Fakes::new();
     fakes.hotkey.take("⌥Space");
     let (view, cx) = open(cx, &daemon, &fakes);
@@ -812,8 +827,9 @@ fn a_taken_shortcut_is_reported_once_and_the_setting_is_left_alone(cx: &mut Test
         text.contains("⌥Space") && text.contains("another app"),
         "{text}"
     );
-    assert!(
-        !daemon.home().join("settings.toml").exists(),
+    assert_eq!(
+        std::fs::read_to_string(daemon.home().join("settings.toml")).unwrap(),
+        configured,
         "the setting was not touched"
     );
     assert_eq!(

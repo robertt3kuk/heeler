@@ -931,7 +931,7 @@ impl Workbench {
     pub(crate) fn rebind_keys(&mut self, cx: &mut Context<Self>) {
         let mut load = self.settings.keymap(&actions::default_bindings());
         if !self.assistant_enabled() {
-            // Off: ⌥Space (or whatever the user bound) no longer opens the assistant.
+            // Off: a key the user bound no longer opens the assistant.
             let open = <actions::OpenAssistant as gpui::Action>::name_for_type();
             load.bindings.retain(|b| b.action != open);
         }

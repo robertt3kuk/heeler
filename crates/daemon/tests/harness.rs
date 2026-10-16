@@ -407,7 +407,10 @@ async fn a_missing_harness_says_what_to_install() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("no-such-claude-code-acp"), "{error}");
-    assert!(error.contains("@zed-industries/claude-code-acp"), "{error}");
+    assert!(
+        error.contains("@agentclientprotocol/claude-agent-acp"),
+        "{error}"
+    );
     assert!(error.contains("[harness.claude]"), "{error}");
     t.stop().await;
 }

@@ -26,7 +26,7 @@
 | Agent chat | Codex through `codex app-server`: streaming, tool cards, diffs, plans, approvals enforced in the daemon; the same conversation is visible from the CLI |
 | Agent monitor | Live state (working/blocked/idle) of agents and subagents from Codex, Claude Code hooks and the OMP extension |
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
-| Assistant | ⌥Space opens a quick chat, global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
+| Assistant | ⌘K → Assistant opens a quick chat (optional system-wide shortcut), global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
 | History search | Opt-in local SQLite FTS5 index over Hutan sessions and Claude Code, Codex and OMP transcripts, with one-click **Resume**, Reveal File and Open Block |
 | Notifications | The daemon raises intents (approval needed, agent blocked/finished, non-zero exit, reply ready). `Hutan.app` posts them as macOS notifications: **Allow once** on the banner answers the agent's approval; `hutan notify watch` prints them anywhere |
 | Worktrees | `hutan wt new/ls/rm`, `hutan new --worktree <branch>`; every session shows `main` or `wt <branch>`, with a warning when two agents work in one checkout |
@@ -103,7 +103,7 @@ The app starts `hutand` itself, using the copy built next to it. On quit it stop
 | Keys | Action |
 |---|---|
 | ⌘T / ⌘⇧T / ⌘⌥T | New terminal / new agent chat / new model chat |
-| ⌥Space | Assistant |
+| ⌘⇧[ / ⌘⇧] | Previous / next tab |
 | ⌘K | Command palette |
 | ⌘D / ⌘⇧D | Split right / down |
 | ⌘O / ⌘J | Open project / jump to a workspace or session |

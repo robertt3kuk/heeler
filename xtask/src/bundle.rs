@@ -49,19 +49,33 @@ pub struct Options {
 }
 
 pub fn run(options: Options) -> Result<()> {
-    let root = workspace_root();
-    let bin_dir = match options.bin_dir {
-        Some(dir) => dir,
-        None => build(&root, options.release)?,
+    let app = match options.bin_dir {
+        Some(bin_dir) => {
+            let root = workspace_root();
+            let out = options
+                .out
+                .unwrap_or_else(|| target_dir(&root).join("bundle"));
+            let app = assemble(&root, &bin_dir, &out)?;
+            sign(&app)?;
+            verify(&app)?;
+            app
+        }
+        None => build_bundle(options.release, options.out)?,
     };
-    let out = options
-        .out
-        .unwrap_or_else(|| target_dir(&root).join("bundle"));
+    println!("{}", app.display());
+    Ok(())
+}
+
+/// Builds the binaries and assembles, signs and verifies `Hutan.app` in `out` (default
+/// `target/bundle`); returns its path.
+pub fn build_bundle(release: bool, out: Option<PathBuf>) -> Result<PathBuf> {
+    let root = workspace_root();
+    let bin_dir = build(&root, release)?;
+    let out = out.unwrap_or_else(|| target_dir(&root).join("bundle"));
     let app = assemble(&root, &bin_dir, &out)?;
     sign(&app)?;
     verify(&app)?;
-    println!("{}", app.display());
-    Ok(())
+    Ok(app)
 }
 
 pub fn workspace_root() -> PathBuf {

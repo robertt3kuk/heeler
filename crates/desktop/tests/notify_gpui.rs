@@ -233,8 +233,8 @@ fn the_assistant_panel_counts_as_looked_at_wherever_it_is_and_only_while_it_is(
     let workspace = env.daemon.create_workspace("project", &[&root]);
     let (view, cx) = open(cx, &env.daemon);
 
-    // ⌥Space opens the panel with the keyboard in its composer: that session is looked at.
-    cx.simulate_keystrokes("alt-space");
+    // Opening the panel puts the keyboard in its composer: that session is looked at.
+    cx.dispatch_action(hutan_desktop::workbench::actions::OpenAssistant);
     let panel = open_assistant(&view, cx);
     let (global, model, chat) = shown(&panel, cx);
     wait_until(cx, "the docked assistant to be reported", |cx| {

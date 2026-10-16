@@ -162,7 +162,7 @@ fn the_global_assistant_streams_without_a_terminal_and_each_scope_keeps_its_conv
     let (view, cx) = open(cx, &env.daemon);
     let sessions_before = session_infos(&view, cx).len();
 
-    // The panel is registered, in ⌘K, and ⌥Space opens it.
+    // The panel is registered, in ⌘K, and its action opens it.
     assert!(view.read_with(cx, |wb, _| {
         wb.panel_registry()
             .get(&PanelId::new("assistant"))
@@ -176,7 +176,7 @@ fn the_global_assistant_streams_without_a_terminal_and_each_scope_keeps_its_conv
             .any(|t| t.as_ref() == "Assistant: Open / Focus")
     }));
     cx.simulate_keystrokes("escape");
-    cx.simulate_keystrokes("alt-space");
+    cx.dispatch_action(hutan_desktop::workbench::actions::OpenAssistant);
     let panel = open_assistant(&view, cx);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.state().docks.right.active.clone()),

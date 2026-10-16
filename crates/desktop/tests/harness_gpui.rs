@@ -311,8 +311,8 @@ fn the_assistant_can_be_turned_off(cx: &mut TestAppContext) {
     assert!(!view.read_with(cx, |wb, _| {
         wb.commands().iter().any(|c| c.title.contains("Assistant"))
     }));
-    // ⌥Space does nothing now.
-    cx.simulate_keystrokes("alt-space");
+    // Opening it does nothing now.
+    cx.dispatch_action(hutan_desktop::workbench::actions::OpenAssistant);
     assert!(!view.read_with(cx, |wb, _| wb.panel_open("assistant")));
 }
 

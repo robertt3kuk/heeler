@@ -262,7 +262,7 @@ menu_bar = true               # menu bar item: daemon state, count, sessions tha
 dock_badge = true             # number of sessions that need you on the Dock icon
 
 [assistant]
-global_shortcut = "alt-space" # system-wide shortcut that opens the Assistant; "" turns it off
+global_shortcut = ""          # system-wide shortcut that opens the Assistant, e.g. "alt-space"; "" (default) is off
 
 [appearance]
 density = "compact"            # compact | comfortable
@@ -405,7 +405,7 @@ The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws t
 
 - **Accounts** (Settings sheet → `accounts`, ⌘K "Accounts…"): one card per harness (OMP, Claude Code, Codex): name, a detection pill (installed / not found with the daemon's install hint), **Log in** and **Log out** buttons, then the accounts it reports (label, provider, plan pill, status pill; OMP has a Log out per provider). The login runs in a terminal session which the window shows (the sheet closes); `instructions` (OMP logs out inside its interface) appear as a notice. No token or address is ever shown. Empty state: the mascot when no harness is installed.
 - **New Agent** (⌘⇧T): harness rows (OMP first) with detection and logins, then direct providers, then the model list (OMP grouped by provider with section labels), the folder, Start.
-- **Assistant panel**: the scope tabs, a backend row (`harness · model ▾`) opening the backend and model chooser, and — until a backend is configured — the first-run card (mascot, *Use OMP* when OMP is installed and logged in, *Add a provider…*). `assistant.enabled = false` removes the panel, its commands and ⌥Space.
+- **Assistant panel**: the scope tabs, a backend row (`harness · model ▾`) opening the backend and model chooser, and — until a backend is configured — the first-run card (mascot, *Use OMP* when OMP is installed and logged in, *Add a provider…*). `assistant.enabled = false` removes the panel, its commands and the system-wide shortcut.
 
 ## Daemon lifecycle
 
@@ -454,7 +454,7 @@ Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait wit
   - Turning it off while sessions run: the app unregisters the agent and the daemon is whatever launchd leaves running; from the next quit on, the daemon follows the app again (§ Daemon lifecycle). [INFERENCE: whether `unregister()` also ends the running agent is not documented by Apple; the integrator's demo checks it, `docs/packaging.md` § Keep running.]
 - **Menu bar item** (`app.menu_bar`, default on): the orangutan glyph (`assets/macos/MenuBarIcon.png` 18 px and `@2x` 36 px, black template image tinted by the system, rendered from `assets/brand/05-mascot/svg/favicon.svg` by `just menubar-icon`) and, when something needs you, its count. Menu: the daemon state (`hutand connected` / `stopped` / `reconnecting…`, or the operation in progress), `N need you` with one item per session (title — blocked / approval / failed: detail; at most 10, then "…and N more"; a click brings the window forward and shows the session, an assistant conversation in the Assistant panel), *Open Hutan*, *New Terminal*, *Keep Daemon Running After Hutan Quits* (checkbox, same rules as above), *Quit Hutan* (the usual quit flow, with the window shown first when it has to ask). The item is created when the setting is on and removed when it goes off; hot reload, no restart. `StatusItemModel` is pure data (count, menu rows) derived from the attention model.
 - **Dock badge** (`app.dock_badge`, default on): `NSApp.dockTile.badgeLabel` is the number of sessions that need you, empty at zero. The same number as the menu bar item and the same rule: **blocked** (an agent in the session is blocked, or the session waits for an approval), **pending approvals** (a session with a permission request counts once, however many requests), and **unread failures** (exit ≠ 0, a signal or a spawn failure that the user has not looked at). A finished-and-unread session (`done`) is in the sidebar's *Needs you* but not in the badge: a badge says "go and decide" or "something broke". Opening the session marks a failure read; the count drops with it (`SessionsStore::attention_entries`, `attention::classify`).
-- **Global shortcut** (`assistant.global_shortcut`, default `alt-space`, empty turns it off): a Carbon hot key (`RegisterEventHotKey`), so no Accessibility permission is needed and it works while any app is in front. Pressing it brings the app forward and runs `OpenAssistant` (the same code as the in-app ⌥Space). Syntax: GPUI keystrokes (`alt-space`, `cmd-shift-k`, `ctrl-f12`); at least one of `cmd`, `ctrl`, `alt` is required so a bare key can never swallow typing everywhere. When registration fails (another app owns it) the window says so **once** and the setting is left as is; changing the setting tries again, other settings reloading does not. An invalid value gets its own notice. The in-app keybinding (`keymap.toml`) is independent of this setting.
+- **Global shortcut** (`assistant.global_shortcut`, empty by default = off; e.g. `alt-space`): a Carbon hot key (`RegisterEventHotKey`), so no Accessibility permission is needed and it works while any app is in front. Pressing it brings the app forward and runs `OpenAssistant` (the same code as ⌘K → Assistant: Open / Focus). Syntax: GPUI keystrokes (`alt-space`, `cmd-shift-k`, `ctrl-f12`); at least one of `cmd`, `ctrl`, `alt` is required so a bare key can never swallow typing everywhere. When registration fails (another app owns it) the window says so **once** and the setting is left as is; changing the setting tries again, other settings reloading does not. An invalid value gets its own notice. The in-app keybinding (`keymap.toml`) is independent of this setting.
 - **Events** (a menu choice, the shortcut) travel from the main-thread callbacks to the workbench over one bounded channel (`MacEvent`), drained in a GPUI task; a full queue drops the newest. Nothing is polled.
 
 ## Keyboard defaults
@@ -464,7 +464,8 @@ Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait wit
 | Command palette | ⌘K |
 | Settings | ⌘, |
 | New session (terminal) / new agent / new chat | ⌘T / ⌘⇧T / ⌘⌥T |
-| Open / focus the Assistant panel (OS-global registration is M6) | ⌥Space |
+| Open / focus the Assistant panel | none by default (⌘K → Assistant: Open / Focus; bind it in `keymap.toml` or set `assistant.global_shortcut`) |
+| Previous / next tab (the focused dock's panels, else the active pane's tabs; wraps) | ⌘⇧[ / ⌘⇧] (also ⌃⇧Tab / ⌃Tab) |
 | Jump to next "needs you" | ⌘⇧J |
 | Toggle the Resources panel | ⌘⌥R |
 | Tabs 1–9 in pane | ⌘1…⌘9 |

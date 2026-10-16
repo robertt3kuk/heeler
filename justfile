@@ -41,3 +41,8 @@ icon:
 # Render the menu bar glyph assets/macos/MenuBarIcon.png and @2x from the brand favicon.
 menubar-icon:
     cargo run -p xtask --locked -- menubar-icon
+
+# Build a release Hutan.app and install it into /Applications (docs/packaging.md). Extra args:
+# `just install --dest ~/Applications`, `just install --debug`.
+install *args:
+    cargo run -p xtask --locked -- install {{args}}

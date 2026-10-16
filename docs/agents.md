@@ -175,7 +175,7 @@ A turn is `session/prompt` (text, plus attached context as embedded `resource` b
 | Agent | Starts | Models | Resume |
 |---|---|---|---|
 | `omp` (first-class) | `omp acp` | the ACP session's model option (ids `provider/model`); `chat.models` asks a throwaway session and, when that cannot be had, `omp models --json` | `session/load` of the OMP session id (`omp --resume <id>` in a terminal) |
-| `claude` | `claude-code-acp` (Claude Code's ACP adapter; Hutan points to it and does not bundle it: `npm install -g @zed-industries/claude-code-acp`) | the session's model options (`chat.models` starts a throwaway session in the system temp directory, asks, closes it; a running chat's start refreshes the cache too; cached 5 minutes. A cold OMP takes several seconds to answer `initialize` + `session/new`) | `session/load` / `session/resume` |
+| `claude` | `claude-agent-acp`, else the older `claude-code-acp` (Claude Code's ACP adapter; Hutan points to an installed one and does not bundle or download it: `npm install -g @agentclientprotocol/claude-agent-acp`) | the session's model options (`chat.models` starts a throwaway session in the system temp directory, asks, closes it; a running chat's start refreshes the cache too; cached 5 minutes. A cold OMP takes several seconds to answer `initialize` + `session/new`) | `session/load` / `session/resume` |
 
 ```toml
 [harness.omp]                     # all keys optional
@@ -185,7 +185,7 @@ env = { OMP_PROFILE = "work" }    # extra environment; not for secrets
 cli = "/Users/me/.bun/bin/omp"    # the harness's own CLI for accounts; default `bin` (omp) / `claude`
 
 [harness.claude]
-bin = "/opt/homebrew/bin/claude-code-acp"
+bin = "/opt/homebrew/bin/claude-agent-acp"
 
 [mcp.docs]                        # handed to every harness session
 command = "npx"

@@ -2,8 +2,10 @@
 //! each is started, and where its own CLI is.
 //!
 //! - `omp`: `omp acp`, first-class.
-//! - `claude`: Claude Code through its ACP adapter, `claude-code-acp` (Hutan points to it and
-//!   does not bundle it).
+//! - `claude`: Claude Code through its ACP adapter. Hutan points to an installed one and does
+//!   not bundle or download it: the official `claude-agent-acp`
+//!   (`@agentclientprotocol/claude-agent-acp`) first, else the older `claude-code-acp`
+//!   (`@zed-industries/claude-code-acp`).
 //!
 //! Both are `[harness.<id>]` of `daemon.toml` (`bin`, `args`, `env`, `cli`) and are found on the
 //! `PATH` of the user's login environment otherwise: a GUI-launched daemon has a shorter `PATH`
@@ -32,9 +34,10 @@ pub fn is_harness_agent(agent: &str) -> bool {
     agent == AGENT_OMP || agent == AGENT_CLAUDE
 }
 
-/// The tools an OMP assistant keeps (`omp acp --tools`): read-only file and search tools. No
+/// The tools an OMP assistant keeps (`omp acp --tools`): read-only file and search tools, by OMP's
+/// own names (an unknown name fails `session/new` with "Built-in tool unavailable"). No
 /// `bash`, `edit`, `write`, `task` or network tools.
-pub const OMP_ASSISTANT_TOOLS: &str = "read,grep,find,glob";
+pub const OMP_ASSISTANT_TOOLS: &str = "read,grep,glob";
 
 /// The session mode a Claude Code assistant runs in: its read-only planning mode.
 pub const CLAUDE_ASSISTANT_MODE: &str = "plan";
@@ -50,8 +53,8 @@ and search the workspace, but you cannot run commands or change anything.";
 
 /// What is fixed about a harness.
 struct Def {
-    /// The ACP executable looked for on `PATH`.
-    acp_bin: &'static str,
+    /// The ACP executables looked for on `PATH`, preferred first.
+    acp_bins: &'static [&'static str],
     acp_args: &'static [&'static str],
     /// The harness's own CLI (accounts).
     cli: &'static str,
@@ -63,22 +66,22 @@ fn def(agent: &str) -> Option<Def> {
     match agent {
         // Codex is not an ACP harness, but its CLI is found the same way (accounts).
         "codex" => Some(Def {
-            acp_bin: "codex",
+            acp_bins: &["codex"],
             acp_args: &["app-server"],
             cli: "codex",
             install: "install Codex (`npm install -g @openai/codex`)",
         }),
         AGENT_OMP => Some(Def {
-            acp_bin: "omp",
+            acp_bins: &["omp"],
             acp_args: &["acp"],
             cli: "omp",
             install: "install OMP (`bun install -g @oh-my-pi/pi-coding-agent`)",
         }),
         AGENT_CLAUDE => Some(Def {
-            acp_bin: "claude-code-acp",
+            acp_bins: &["claude-agent-acp", "claude-code-acp"],
             acp_args: &[],
             cli: "claude",
-            install: "install the Claude Code ACP adapter (`npm install -g @zed-industries/claude-code-acp`)",
+            install: "install the Claude Code ACP adapter (`npm install -g @agentclientprotocol/claude-agent-acp`)",
         }),
         _ => None,
     }
@@ -139,35 +142,46 @@ impl Harnesses {
         self.settings.get(agent).cloned().unwrap_or_default()
     }
 
-    /// `acp_config`'s program and the environment it will run in.
+    /// `acp_config`'s program and the environment it will run in: `configured`, else the first
+    /// of `candidates` found on `PATH`.
     fn locate(
         &self,
         agent: &str,
         configured: Option<&Path>,
-        default: &str,
+        candidates: &[&str],
         env: &BTreeMap<String, String>,
     ) -> Result<PathBuf, ErrorBody> {
         let path = env
             .get("PATH")
             .cloned()
             .or_else(|| std::env::var("PATH").ok());
-        let name =
-            configured.map_or_else(|| default.to_owned(), |p| p.to_string_lossy().into_owned());
-        find_program(&name, path.as_deref()).ok_or_else(|| {
-            let install = def(agent).map_or("", |d| d.install);
-            let table = if agent == "codex" {
-                "[codex]".to_owned()
-            } else {
-                format!("[harness.{agent}]")
-            };
-            ErrorBody::new(
-                ErrorCode::ProviderError,
-                format!(
-                    "`{name}` was not found{}; {install}, or set `bin` under `{table}` in daemon.toml",
-                    if configured.is_some() { "" } else { " on PATH" },
-                ),
-            )
-        })
+        let names: Vec<String> = match configured {
+            Some(p) => vec![p.to_string_lossy().into_owned()],
+            None => candidates.iter().map(|c| (*c).to_owned()).collect(),
+        };
+        names
+            .iter()
+            .find_map(|name| find_program(name, path.as_deref()))
+            .ok_or_else(|| {
+                let install = def(agent).map_or("", |d| d.install);
+                let table = if agent == "codex" {
+                    "[codex]".to_owned()
+                } else {
+                    format!("[harness.{agent}]")
+                };
+                let tried = names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                ErrorBody::new(
+                    ErrorCode::ProviderError,
+                    format!(
+                        "{tried} was not found{}; {install}, or set `bin` under `{table}` in daemon.toml",
+                        if configured.is_some() { "" } else { " on PATH" },
+                    ),
+                )
+            })
     }
 
     /// How to start `agent`'s ACP process. Blocks (see [`environment`](Self::environment)).
@@ -187,7 +201,7 @@ impl Harnesses {
             })?;
         let settings = self.settings_of(agent);
         let mut env = self.environment();
-        let program = self.locate(agent, settings.bin.as_deref(), def.acp_bin, &env)?;
+        let program = self.locate(agent, settings.bin.as_deref(), def.acp_bins, &env)?;
         let mut args: Vec<String> = if settings.args.is_empty() {
             def.acp_args.iter().map(|a| (*a).to_owned()).collect()
         } else {
@@ -225,7 +239,7 @@ impl Harnesses {
         };
         if agent == "codex" {
             let env = self.environment();
-            let program = self.locate(agent, Some(codex_bin), def.cli, &env)?;
+            let program = self.locate(agent, Some(codex_bin), &[def.cli], &env)?;
             return Ok((program, env));
         }
         let settings = self.settings_of(agent);
@@ -236,7 +250,7 @@ impl Harnesses {
                 .then_some(settings.bin.as_deref())
                 .flatten()
         });
-        let program = self.locate(agent, configured, def.cli, &env)?;
+        let program = self.locate(agent, configured, &[def.cli], &env)?;
         Ok((program, env))
     }
 }
@@ -335,9 +349,47 @@ mod tests {
             error.message
         );
         assert!(
-            error.message.contains("@zed-industries/claude-code-acp"),
+            error
+                .message
+                .contains("@agentclientprotocol/claude-agent-acp"),
             "{}",
             error.message
+        );
+    }
+
+    #[test]
+    fn the_official_claude_adapter_wins_over_the_older_one() {
+        let old = tempfile::tempdir().unwrap();
+        executable(old.path(), "claude-code-acp");
+        let new = tempfile::tempdir().unwrap();
+        let official = executable(new.path(), "claude-agent-acp");
+        let h = harnesses(&[]);
+        let mut env = BTreeMap::new();
+        // The older adapter comes first on PATH; the official one is still preferred.
+        let path = std::env::join_paths([old.path(), new.path()]).unwrap();
+        env.insert("PATH".to_owned(), path.to_string_lossy().into_owned());
+        let found = h
+            .locate(
+                "claude",
+                None,
+                &["claude-agent-acp", "claude-code-acp"],
+                &env,
+            )
+            .unwrap();
+        assert_eq!(found, official);
+        env.insert("PATH".to_owned(), old.path().to_string_lossy().into_owned());
+        let found = h
+            .locate(
+                "claude",
+                None,
+                &["claude-agent-acp", "claude-code-acp"],
+                &env,
+            )
+            .unwrap();
+        assert_eq!(
+            found,
+            old.path().join("claude-code-acp"),
+            "the older one still works"
         );
     }
 

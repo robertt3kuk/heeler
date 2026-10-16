@@ -1,10 +1,12 @@
 //! Developer tasks. `cargo run -p xtask --release -- bench` measures the performance budgets;
-//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Hutan.app`, `-- icon` renders its
-//! icon and `-- menubar-icon` the menu bar glyph (`docs/packaging.md`).
+//! `cargo run -p xtask -- bundle` assembles and ad-hoc signs `Hutan.app`, `-- install` puts a
+//! release build into /Applications, `-- icon` renders its icon and `-- menubar-icon` the menu
+//! bar glyph (`docs/packaging.md`).
 
 mod bench;
 mod bundle;
 mod icon;
+mod install;
 mod menubar;
 mod proc;
 mod seed;
@@ -57,6 +59,16 @@ enum Command {
     Icon,
     /// Render the menu bar glyph (assets/macos/MenuBarIcon.png and @2x) from the brand favicon.
     MenubarIcon,
+    /// Build a release Hutan.app and install it into /Applications (quits a running Hutan
+    /// from there first; never stops sessions).
+    Install {
+        /// Install the debug build instead of release.
+        #[arg(long)]
+        debug: bool,
+        /// Folder that gets Hutan.app (default: /Applications).
+        #[arg(long, value_name = "DIR")]
+        dest: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -89,5 +101,6 @@ async fn main() -> anyhow::Result<()> {
         }),
         Command::Icon => icon::run(&bundle::workspace_root()),
         Command::MenubarIcon => menubar::run(&bundle::workspace_root()),
+        Command::Install { debug, dest } => install::run(install::Options { debug, dest }),
     }
 }

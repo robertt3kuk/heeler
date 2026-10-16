@@ -1,4 +1,4 @@
-//! Workbench behavior around the Assistant panel (M16-B): ⌥Space / ⌘K open and focus it, a
+//! Workbench behavior around the Assistant panel (M16-B): ⌘K (or a bound key) opens and focuses it, a
 //! history hit that is an assistant conversation shows it there, and "Send to agent" of a
 //! terminal block becomes a structured block attachment when the target is an assistant.
 //!
@@ -54,7 +54,7 @@ impl Workbench {
         view.downcast::<AssistantPanel>().ok()
     }
 
-    /// ⌥Space and ⌘K "Assistant: Open / Focus": shows the panel with the assistant of its scope
+    /// ⌘K "Assistant: Open / Focus" (and any key bound to it): shows the panel with the assistant of its scope
     /// (the first use asks the daemon to open it) and puts the keyboard in its composer. No
     /// terminal is started and no vendor agent is run.
     pub fn open_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {

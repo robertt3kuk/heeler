@@ -159,7 +159,7 @@ pub fn panel(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> Entity<Ass
         .expect("the Assistant panel is drawn")
 }
 
-/// ⌥Space, then waits until the shown scope has its assistant.
+/// Opens the Assistant, then waits until the shown scope has its assistant.
 pub fn open_assistant(
     view: &Entity<Workbench>,
     cx: &mut VisualTestContext,

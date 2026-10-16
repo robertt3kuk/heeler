@@ -33,7 +33,7 @@ What each harness assistant may do (restricted where the harness allows it, neve
 
 | Backend | How it runs | Tools |
 |---|---|---|
-| `omp` | `omp acp --tools read,grep,find,glob --append-system-prompt <assistant prompt>` | read-only: no `bash`, `edit`, `write`, `task`, web |
+| `omp` | `omp acp --tools read,grep,glob --append-system-prompt <assistant prompt>` | read-only: no `bash`, `edit`, `write`, `task`, web |
 | `claude` | Claude Code's ACP session in its `plan` mode | read-only planning mode of Claude Code; what it lists as tools in that mode is Claude Code's own |
 | `codex` | `codex app-server` with `sandbox: read-only`, approval policy `never` | read-only sandbox, nothing asks (a refused write fails inside the sandbox) |
 | `provider` | the direct chat gateway | none |
@@ -108,13 +108,13 @@ With `[history] enabled` the daemon feeds the journals of **all** chat sessions 
 
 ## Desktop
 
-The **Assistant** panel (`assistant`, registered like every panel: movable between docks and the center, listed under ⌘K → **Panel: Open Assistant**) shows one assistant chat with the ordinary chat transcript and composer of agent chats. ⌥Space (⌘K → **Assistant: Open / Focus**) reveals it and puts the keyboard in its composer; registering ⌥Space for the whole OS belongs to M6. Opening an assistant calls `assistant.open` and shows the returned direct-chat session: no terminal and no vendor agent process is started.
+The **Assistant** panel (`assistant`, registered like every panel: movable between docks and the center, listed under ⌘K → **Panel: Open Assistant**) shows one assistant chat with the ordinary chat transcript and composer of agent chats. ⌘K → **Assistant: Open / Focus** reveals it and puts the keyboard in its composer. No key is bound by default: bind `OpenAssistant` in `keymap.toml` and/or set `assistant.global_shortcut` (e.g. `alt-space`) for the whole OS. Opening an assistant calls `assistant.open` and shows the returned direct-chat session: no terminal and no vendor agent process is started.
 
 **Scope.** The header chooses **Global** (the Home assistant: it sees the Home folder only) or **Workspace · name** (the active workspace's assistant; disabled while Home is active). Each scope has its own session, so switching keeps both transcripts, drafts and chips; nothing moves from one to the other. A history hit that is an assistant conversation (`session_id` of a `hutan` hit) opens in the panel, in its own scope, instead of as a tab; the Sessions panel still opens any assistant as an ordinary chat tab, with the same composer.
 
 **Backend and model.** A row under the header shows what the shown scope's assistant runs on (`OMP · anthropic/claude-opus-4-5 ▾`); it opens a chooser: the backends (OMP, Claude Code, Codex with their detection and logins, and each provider), then the models of the one picked, or its default. Choosing stores it with `assistant.configure` for the shown scope (Global for the Global tab, the workspace for the Workspace tab) and opens that scope's assistant on it.
 
-**Off.** `assistant.enabled = false` (settings namespace `assistant`, default true) closes and hides the Assistant panel, removes *Assistant: Open / Focus* and *Panel: Open Assistant* from ⌘K, unbinds ⌥Space (also a user binding) and unregisters the system-wide shortcut; a history hit that is an assistant conversation opens as an ordinary chat tab. The daemon keeps its assistant sessions.
+**Off.** `assistant.enabled = false` (settings namespace `assistant`, default true) closes and hides the Assistant panel, removes *Assistant: Open / Focus* and *Panel: Open Assistant* from ⌘K, ignores an `OpenAssistant` binding and unregisters the system-wide shortcut; a history hit that is an assistant conversation opens as an ordinary chat tab. The daemon keeps its assistant sessions.
 
 **First run (no backend yet).** `assistant.open` answers `invalid_state` and the panel shows a card instead of the daemon's words: **Use OMP** when OMP is installed and logged in (it stores OMP globally and opens the assistant), **Add a provider…** (Models settings) and Retry. Nothing is sent anywhere until the user chooses.
 
@@ -131,7 +131,7 @@ The **Assistant** panel (`assistant`, registered like every panel: movable betwe
 
 Chips are removable (×) before the send and become structured attachments of `chat.send` (at most 16). An attachment that is not a chip is never read or added to the prompt. After the send the user's message shows what the daemon resolved for each attachment (`attachments_meta`: kind, label, characters kept, and a warning tint with "cut to the budget" when truncated), with the attached text folded away. A refusal (`forbidden`, `not_found`, `invalid_state`, bounds) shows the daemon's message in the banner, keeps the draft and the chips, marks the chips the settings refuse as *refused* and journals and sends nothing. File paths are checked by the daemon (see Files above): the form says so and never opens the file.
 
-**Send to agent.** "Send to agent" of a finished terminal block (button, ⌘K, key) attaches it to the chat the user looked at last — the assistant the Assistant panel shows counts once the user opened or focused it after the last chat tab — or to the only running chat, or to the one picked from the menu. When that chat is an assistant the block becomes a `shell_block` attachment (a block reference the daemon reads when the message is sent; the panel is shown and the chip waits in its composer); other chats keep the quoted-text chip. When several chats run and none is an assistant the menu adds **Send to Assistant**: the assistant of the terminal's workspace, opened on demand. With no chat running the notice points at ⌥Space.
+**Send to agent.** "Send to agent" of a finished terminal block (button, ⌘K, key) attaches it to the chat the user looked at last — the assistant the Assistant panel shows counts once the user opened or focused it after the last chat tab — or to the only running chat, or to the one picked from the menu. When that chat is an assistant the block becomes a `shell_block` attachment (a block reference the daemon reads when the message is sent; the panel is shown and the chip waits in its composer); other chats keep the quoted-text chip. When several chats run and none is an assistant the menu adds **Send to Assistant**: the assistant of the terminal's workspace, opened on demand. With no chat running the notice points at ⌘K → Assistant.
 
 ## CLI
 
