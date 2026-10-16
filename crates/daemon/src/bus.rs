@@ -57,6 +57,8 @@ struct Inner {
     observer: Option<mpsc::Sender<Event>>,
     /// Internal consumer of the events the task service follows.
     task_observer: Option<mpsc::Sender<Event>>,
+    /// Told (never with the event) when something the menu bar item shows may have changed.
+    attention: Option<mpsc::Sender<()>>,
 }
 
 #[derive(Debug)]
@@ -79,6 +81,7 @@ impl EventBus {
                 tap: None,
                 observer: None,
                 task_observer: None,
+                attention: None,
             }),
         }
     }
@@ -110,6 +113,13 @@ impl EventBus {
     /// for it (the service looks at its sessions directly now and then).
     pub fn set_task_observer(&self, observer: Option<mpsc::Sender<Event>>) {
         self.lock().task_observer = observer;
+    }
+
+    /// Pokes `attention` whenever an event that may change what needs the user (see
+    /// [`feeds_attention`]) is published, from now on (`None` stops). Never blocks, and a poke
+    /// that finds the queue full is dropped: one is already waiting.
+    pub fn set_attention(&self, attention: Option<mpsc::Sender<()>>) {
+        self.lock().attention = attention;
     }
 
     /// Seq of the most recent event (`0` before the first).
@@ -193,6 +203,15 @@ impl EventBus {
                 Err(mpsc::error::TrySendError::Closed(_)) => inner.task_observer = None,
             }
         }
+        if feeds_attention(event)
+            && let Some(attention) = &inner.attention
+            && matches!(
+                attention.try_send(()),
+                Err(mpsc::error::TrySendError::Closed(_))
+            )
+        {
+            inner.attention = None;
+        }
         Ok(seq)
     }
 
@@ -274,6 +293,20 @@ impl Inner {
         )
     }
 }
+
+/// The events that may change what the menu bar item of the daemon lists as needing the user:
+/// session states and agent reports, exits, approvals, and raised intents.
+fn feeds_attention(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::SessionUpdated { .. }
+            | Event::SessionExited { .. }
+            | Event::ApprovalRequired { .. }
+            | Event::ApprovalResolved { .. }
+            | Event::NotifyIntent { .. }
+    )
+}
+
 /// The events the task service follows: session states (ends, blocked agents), agent tree
 /// changes, the end of a live chat turn, and closed workspaces.
 fn feeds_tasks(event: &Event) -> bool {

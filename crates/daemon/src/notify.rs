@@ -24,7 +24,7 @@
 //! answers the requests.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use hutan_core::agent::{Delivery, MessageRole, PermissionOptionKind};
@@ -586,6 +586,9 @@ pub struct NotifyService {
     native_parts: Mutex<Option<NativeParts>>,
     /// How often expired intents are swept out so that their notifications go too.
     sweep: Duration,
+    /// Told when intents leave the pending list (acknowledged, acted on, expired, resolved,
+    /// pushed out), which no event announces: the menu bar item lists what is pending.
+    changed: OnceLock<mpsc::Sender<()>>,
 }
 
 impl NotifyService {
@@ -619,7 +622,14 @@ impl NotifyService {
             native,
             native_parts: Mutex::new(native_parts),
             sweep,
+            changed: OnceLock::new(),
         })
+    }
+
+    /// Pokes `changed` whenever intents leave the pending list, and sweeps for expired ones
+    /// even without native notifications. Call before [`start`](Self::start); once.
+    pub fn set_changed(&self, changed: mpsc::Sender<()>) {
+        let _ = self.changed.set(changed);
     }
 
     /// Starts watching the event bus until `shutdown`.
@@ -639,7 +649,7 @@ impl NotifyService {
                 None => warn!("the native notification poster has no responses; none are posted"),
             }
         }
-        let mut sweep = self.native.is_some().then(|| {
+        let mut sweep = (self.native.is_some() || self.changed.get().is_some()).then(|| {
             let mut interval = tokio::time::interval(self.sweep);
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
@@ -675,6 +685,12 @@ impl NotifyService {
             let result = f(&mut core);
             (result, std::mem::take(&mut core.withdrawn))
         };
+        if !withdrawn.is_empty()
+            && let Some(changed) = self.changed.get()
+        {
+            // Full: a poke is waiting already.
+            let _ = changed.try_send(());
+        }
         for id in withdrawn {
             self.native_send(NativeOp::Remove(id));
         }

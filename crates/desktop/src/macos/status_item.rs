@@ -3,6 +3,12 @@
 //! that need you, Open Hutan, New Terminal, Keep Daemon Running After Hutan Quits, Start Daemon at
 //! Login, Quit).
 //!
+//! This is the item of a running desktop. While no desktop is connected to the daemon, `hutand`
+//! shows an item of its own (`hutan_daemon::menu_bar`, M6-D) and takes it off the moment a
+//! desktop connects: one Hutan icon at a time. The desktop keeps this one on the menu bar for as
+//! long as it runs (`app.menu_bar` permitting), also while it reconnects, which the daemon's
+//! show delay covers.
+//!
 //! [`StatusItemModel`] is pure data: what the item shows and which menu it offers, derived
 //! from the attention model. [`StatusItemHost`] puts a model on the menu bar; the real host
 //! ([`SystemStatusItem`]) renders it with `NSStatusBar`/`NSMenu`, the fake records it.
@@ -408,6 +414,14 @@ mod tests {
 
     use super::*;
     use crate::sessions::attention::AttentionKind;
+
+    #[test]
+    fn the_daemons_menu_bar_asks_for_settings_by_the_name_of_this_action() {
+        assert_eq!(
+            hutan_daemon::menu_bar::OPEN_SETTINGS_ACTION,
+            <crate::workbench::actions::OpenSettings as gpui::Action>::name_for_type()
+        );
+    }
 
     fn entry(title: &str, kind: AttentionKind) -> AttentionEntry {
         AttentionEntry {

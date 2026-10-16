@@ -52,12 +52,17 @@ mod host_stub {
     use std::sync::Arc;
 
     use super::NativePoster;
+    use crate::menu_bar::MenuBar;
 
     #[derive(Debug)]
     pub enum MainThreadHost {}
 
     impl MainThreadHost {
         pub fn poster(&self) -> Arc<dyn NativePoster> {
+            match *self {}
+        }
+
+        pub fn menu_bar(&self) -> MenuBar {
             match *self {}
         }
 
@@ -248,7 +253,7 @@ pub fn runs_from_hutan_app(exe: &Path, bundle_identifier: Option<&str>) -> bool 
 }
 
 /// `X.app` for `X.app/Contents/MacOS/<exe>`.
-fn app_of(exe: &Path) -> Option<&Path> {
+pub(crate) fn app_of(exe: &Path) -> Option<&Path> {
     let macos = exe.parent()?;
     if macos.file_name()? != "MacOS" {
         return None;

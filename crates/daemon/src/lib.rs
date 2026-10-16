@@ -32,6 +32,7 @@
 //! - [`partial`]: journaled snapshots of streaming chat text (protocol 0.15).
 //! - [`notify_native`]: posting the intents to the system's notification centre from `Hutan.app`
 //!   and routing the clicks back (ADR 0007).
+//! - [`menu_bar`]: the daemon's own menu bar item while no desktop is connected (M6-D).
 //! - [`control`]: who is asking (`ClientInfo.origin`), the `[control]` policy for agents, the
 //!   `control` approvals and their audit (protocol 0.21, ADR 0016).
 //! - [`uihub`]: the desktop's published catalog and layout, `ui.run` / `ui.set_setting` routing.
@@ -53,6 +54,7 @@ pub mod error;
 pub mod harness;
 pub mod history;
 pub mod mcp_wiring;
+pub mod menu_bar;
 pub mod notify;
 pub mod notify_native;
 pub mod partial;

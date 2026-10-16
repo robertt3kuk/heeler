@@ -23,7 +23,7 @@ macOS-first Rust agentic development environment: `hutand` (Tokio daemon, source
 - `docs/resources.md` — the resource manager: process trees per session with CPU/RSS, `hutan ps|top|kill|agent interrupt`, `session.kill`, `process.signal`, `agent.interrupt`, redaction, audit
 - `docs/control.md` — the agent control surface: `hutan ui`, `hutan mcp`, who counts as an agent, the `[control]` policy and its approvals (protocol 0.21)
 - `docs/integrations.md` — agent reporting (state + resume command), `hutan agent`, `hutan integration` for Codex, Claude Code, OMP
-- `docs/packaging.md` — the signed app bundle (`just bundle`): layout, ad-hoc signing, how the executables find each other, what M6-B adds
+- `docs/packaging.md` — the signed app bundle (`just bundle`): layout, ad-hoc signing, how the executables find each other, native notifications, start at login, the daemon's own menu bar item (shown while no desktop is connected)
 - `docs/process.md` — how we work, gates, testing strategy
 - `docs/adr/` — decisions; `docs/spikes/` — evidence behind them
 

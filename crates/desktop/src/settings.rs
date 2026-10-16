@@ -908,7 +908,9 @@ pub struct AppSettings {
     /// the daemon keeps running until you quit; needs `menu_bar`).
     pub on_last_window_close: LastWindowClose,
     /// Show a menu bar item with the daemon state, a count of the sessions that need you and a
-    /// menu to jump to them.
+    /// menu to jump to them. Hides this item only, and only while Hutan runs: when no Hutan is
+    /// connected to the daemon (it keeps running after Hutan quit) the daemon shows an item of
+    /// its own, which is not optional.
     pub menu_bar: bool,
     /// Show the number of sessions that need you (blocked, waiting for an approval, failed and
     /// unread) as a badge on the Dock icon.

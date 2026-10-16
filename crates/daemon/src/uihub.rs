@@ -18,7 +18,7 @@ use hutan_protocol::ui::{
     UiLayoutResult, UiPublish, UiRan, UiRun, UiSetSetting, UiTarget,
 };
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
 use crate::bus::EventBus;
@@ -58,6 +58,9 @@ pub struct UiHub {
     timeout: Duration,
     next_request: AtomicU64,
     inner: Mutex<Inner>,
+    /// How many windows have published: a window that did is built and synchronised with the
+    /// daemon, so the daemon may ask it to do things (the menu bar item hands off through it).
+    windows: watch::Sender<usize>,
 }
 
 /// The window a request goes to.
@@ -78,7 +81,13 @@ impl UiHub {
             timeout,
             next_request: AtomicU64::new(1),
             inner: Mutex::new(Inner::default()),
+            windows: watch::Sender::new(0),
         })
+    }
+
+    /// How many windows have published (and not closed), as it changes.
+    pub fn windows(&self) -> watch::Receiver<usize> {
+        self.windows.subscribe()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -126,6 +135,7 @@ impl UiHub {
                 stamp,
             },
         );
+        self.windows.send_replace(inner.windows.len());
         Ok(())
     }
 
@@ -134,6 +144,7 @@ impl UiHub {
         let pending: Vec<Pending> = {
             let mut inner = self.lock();
             inner.windows.retain(|(c, _), _| *c != conn);
+            self.windows.send_replace(inner.windows.len());
             let ids: Vec<u64> = inner
                 .pending
                 .iter()

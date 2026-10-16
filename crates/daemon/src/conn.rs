@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::bus::EventBus;
+use crate::menu_bar::DesktopPresence;
 use crate::router::Router;
 
 /// Capabilities this daemon offers in `welcome`.
@@ -175,6 +176,8 @@ pub struct ConnContext {
     pub clients: Arc<AtomicU32>,
     pub outbound_queue: usize,
     pub daemon_uid: u32,
+    /// The `desktop` clients attached now (the daemon's menu bar item hides while there is one).
+    pub desktops: DesktopPresence,
     /// How long a new connection may stay silent before `hello` arrives.
     pub handshake_timeout: Duration,
     next_conn_id: AtomicU64,
@@ -197,6 +200,7 @@ impl ConnContext {
             clients,
             outbound_queue,
             daemon_uid,
+            desktops: DesktopPresence::default(),
             handshake_timeout,
             next_conn_id: AtomicU64::new(1),
         }
@@ -328,6 +332,8 @@ async fn run(reader: &mut Reader, handle: &ConnHandle, ctx: &ConnContext) {
         return;
     };
     let _guard = ClientGuard::new(ctx.clients.clone());
+    // Counted from the handshake, before it subscribes: the menu bar item hands over at once.
+    let _desktop = (client.kind == ClientKind::Desktop).then(|| ctx.desktops.join());
     info!(conn = %handle.id, client = ?client, "client connected");
 
     while let Some(frame) = next_frame(reader, handle, ctx).await {

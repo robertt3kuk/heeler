@@ -9,6 +9,14 @@
 //! queued (bounded) and a single drain block is scheduled on the main dispatch queue, so the
 //! tokio side never waits for Cocoa and Cocoa never waits for tokio.
 //!
+//! **The application object.** Once the daemon's menu bar item (`menu_bar::cocoa`) has
+//! something to show it asks [`shared_application`] for an `NSApplication` (an accessory: no
+//! Dock icon, no menu). From then on the loop dequeues and dispatches AppKit events itself
+//! (`nextEvent…` / `sendEvent:`), because status item clicks and modal alerts are delivered
+//! through the application's event queue, which a bare run loop never drains; queued blocks
+//! still run, as the main queue is served while it waits. A stop is announced with an
+//! application-defined event so that the wait ends.
+//!
 //! **Nothing here runs unless asked.** [`system_host`] asks the bundle (`NSBundle.mainBundle`)
 //! who we are and builds the poster only inside `Hutan.app`; the notification centre itself is
 //! first touched on the main thread when the first command arrives, which is the first post
@@ -28,9 +36,13 @@ use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventMask, NSEventModifierFlags,
+    NSEventType,
+};
 use objc2_foundation::{
-    NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSError, NSObject, NSObjectProtocol,
-    NSRunLoop, NSSet, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSBundle, NSDate, NSDefaultRunLoopMode, NSError, NSObject,
+    NSObjectProtocol, NSPoint, NSRunLoop, NSSet, NSString, NSTimer,
 };
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
@@ -43,9 +55,11 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use super::{
-    NativeNotification, NativePoster, NativeResponse, RESPONSE_QUEUE, response_action,
+    NativeNotification, NativePoster, NativeResponse, RESPONSE_QUEUE, app_of, response_action,
     runs_from_hutan_app,
 };
+use crate::menu_bar::MenuBar;
+use crate::menu_bar::cocoa::{OpenApp, SystemStatusItem};
 
 /// Commands queued for the main thread.
 const COMMAND_QUEUE: usize = super::OPS_QUEUE;
@@ -62,6 +76,46 @@ static STOP: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// The source that keeps `runMode:beforeDate:` waiting (main thread only).
     static KEEPALIVE: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
+    /// The application object, once the menu bar item asked for it (main thread only).
+    static APPLICATION: RefCell<Option<Retained<NSApplication>>> = const { RefCell::new(None) };
+}
+
+/// The process's `NSApplication` as an accessory, created on first use. Main thread only.
+pub fn shared_application(mtm: MainThreadMarker) -> Retained<NSApplication> {
+    APPLICATION.with(|slot| {
+        slot.borrow_mut()
+            .get_or_insert_with(|| {
+                let app = NSApplication::sharedApplication(mtm);
+                if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
+                    warn!("the system refused the accessory activation policy");
+                }
+                app.finishLaunching();
+                app
+            })
+            .clone()
+    })
+}
+
+/// Wakes the loop out of its wait for an AppKit event (main thread only). Nothing without an
+/// application: the loop then waits in the run loop, which a queued block wakes by itself.
+fn wake_application() {
+    let Some(app) = APPLICATION.with(|slot| slot.borrow().clone()) else {
+        return;
+    };
+    let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+        NSEventType::ApplicationDefined,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        0,
+        None,
+        0,
+        0,
+        0,
+    );
+    if let Some(event) = event {
+        app.postEvent_atStart(&event, true);
+    }
 }
 
 /// Runs the calling thread's run loop until a [`Stopper`] says stop. Must be the main thread:
@@ -80,7 +134,19 @@ pub fn run_main_loop() {
     while !STOP.load(Ordering::Acquire) {
         // SAFETY: reading a constant the framework exports.
         let mode = unsafe { NSDefaultRunLoopMode };
-        if !run_loop.runMode_beforeDate(mode, &NSDate::distantFuture()) {
+        let application = APPLICATION.with(|slot| slot.borrow().clone());
+        if let Some(app) = application {
+            // Sleeps until an event or a queued block arrives; a stop posts an event.
+            let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&NSDate::distantFuture()),
+                mode,
+                true,
+            );
+            if let Some(event) = event {
+                app.sendEvent(&event);
+            }
+        } else if !run_loop.runMode_beforeDate(mode, &NSDate::distantFuture()) {
             // No source at all (the keepalive timer was invalidated): do not spin.
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -113,6 +179,7 @@ impl Stopper {
                     timer.invalidate();
                 }
             });
+            wake_application();
         });
     }
 }
@@ -123,6 +190,7 @@ impl Stopper {
 #[derive(Debug)]
 pub struct MainThreadHost {
     poster: Arc<UserNotifications>,
+    menu_bar: MenuBar,
 }
 
 impl MainThreadHost {
@@ -132,6 +200,11 @@ impl MainThreadHost {
 
     pub fn stopper(&self) -> Stopper {
         Stopper
+    }
+
+    /// The daemon's menu bar item and the way to open `Hutan.app`.
+    pub fn menu_bar(&self) -> MenuBar {
+        self.menu_bar.clone()
     }
 
     /// Runs the main thread's run loop until [`Stopper::stop`].
@@ -147,15 +220,23 @@ pub fn system_host() -> Option<MainThreadHost> {
     let identifier = NSBundle::mainBundle()
         .bundleIdentifier()
         .map(|identifier| identifier.to_string());
-    match exe {
-        Some(exe) if runs_from_hutan_app(&exe, identifier.as_deref()) => Some(MainThreadHost {
+    let app = exe
+        .as_deref()
+        .filter(|exe| runs_from_hutan_app(exe, identifier.as_deref()))
+        .and_then(app_of);
+    match app {
+        Some(app) => Some(MainThreadHost {
             poster: Arc::new(UserNotifications::new()),
+            menu_bar: MenuBar::new(
+                Arc::new(SystemStatusItem::new()),
+                Arc::new(OpenApp::new(app)),
+            ),
         }),
-        exe => {
+        None => {
             info!(
                 executable = ?exe,
                 bundle = ?identifier,
-                "native notifications are off: not running from Hutan.app ({}); intents stay available through notify.list",
+                "native notifications and the menu bar item are off: not running from Hutan.app ({}); intents stay available through notify.list",
                 super::BUNDLE_IDENTIFIER
             );
             None

@@ -9,9 +9,10 @@
 //! on the real home).
 //!
 //! Threads: tokio runs on a thread of its own. When the daemon runs from `Hutan.app` the main
-//! thread serves the Cocoa run loop of the native notifications (`notify_native`), because the
-//! system's notification centre delivers its callbacks there; otherwise the main thread just
-//! waits for the runtime thread.
+//! thread serves the Cocoa run loop of the native notifications and of the daemon's own menu
+//! bar item (`notify_native`, `menu_bar`), because the system's notification centre delivers its
+//! callbacks there and AppKit needs an event loop there; otherwise the main thread just waits
+//! for the runtime thread.
 
 use std::fs::OpenOptions;
 use std::io::IsTerminal;
@@ -19,6 +20,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
+use hutan_daemon::menu_bar::MenuBar;
 use hutan_daemon::notify_native::{self, NativePoster, Stopper};
 use hutan_daemon::{DaemonConfig, DaemonError, Paths};
 use tokio::signal::unix::{SignalKind, signal};
@@ -72,9 +74,11 @@ fn run() -> anyhow::Result<()> {
     paths.prepare().context("preparing directories")?;
     init_logging(&paths)?;
 
-    // `Some` only inside Hutan.app: nothing is asked of the system before the first post.
+    // `Some` only inside Hutan.app: nothing is asked of the system before the first post or
+    // the first time the menu bar item has something to show.
     let host = notify_native::system_host();
     let poster = host.as_ref().map(notify_native::MainThreadHost::poster);
+    let menu_bar = host.as_ref().map(notify_native::MainThreadHost::menu_bar);
     let stopper = host.as_ref().map(notify_native::MainThreadHost::stopper);
     let runtime = std::thread::Builder::new()
         .name("hutand-runtime".to_owned())
@@ -82,7 +86,7 @@ fn run() -> anyhow::Result<()> {
         .spawn(move || {
             // However the daemon ends (a panic included), the main thread's loop must too.
             let _stop = stopper.map(StopOnDrop);
-            run_daemon(paths, poster)
+            run_daemon(paths, poster, menu_bar)
         })
         .context("starting the runtime thread")?;
     if let Some(host) = host {
@@ -102,7 +106,11 @@ impl Drop for StopOnDrop {
     }
 }
 
-fn run_daemon(paths: Paths, native: Option<Arc<dyn NativePoster>>) -> anyhow::Result<()> {
+fn run_daemon(
+    paths: Paths,
+    native: Option<Arc<dyn NativePoster>>,
+    menu_bar: Option<MenuBar>,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -110,6 +118,7 @@ fn run_daemon(paths: Paths, native: Option<Arc<dyn NativePoster>>) -> anyhow::Re
     runtime.block_on(async {
         let mut config = DaemonConfig::new(paths);
         config.native = native;
+        config.menu_bar = menu_bar;
         let daemon = hutan_daemon::start(config).await?;
 
         let token = daemon.shutdown_token();

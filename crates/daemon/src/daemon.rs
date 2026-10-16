@@ -13,6 +13,7 @@ use hutan_agents::CodexConfig;
 use hutan_core::Epoch;
 use hutan_storage::Storage;
 use tokio::net::UnixListener;
+use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +31,7 @@ use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::harness::Harnesses;
 use crate::history::HistoryService;
 use crate::mcp_wiring::McpWiring;
+use crate::menu_bar::{self, MenuBar};
 use crate::notify::NotifyService;
 use crate::notify_native::NativePoster;
 use crate::paths::Paths;
@@ -52,6 +54,9 @@ pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long shutdown waits for connections to flush before abandoning them.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// How long shutdown waits for the daemon's menu bar item to take itself off.
+const MENU_BAR_STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// How long shutdown waits for session processes to end: the SIGHUP grace plus margin for the
 /// SIGKILL and reaping that follow it.
@@ -84,6 +89,10 @@ pub struct DaemonConfig {
     /// from `Hutan.app` (`notify_native::system_host`), a fake in tests; `None` posts nothing.
     /// `[notify] native = false` ignores it.
     pub native: Option<Arc<dyn NativePoster>>,
+    /// The daemon's own menu bar item, shown while no desktop is connected: the real one of a
+    /// daemon that runs from `Hutan.app` (`notify_native::system_host`), a fake in tests;
+    /// `None` shows nothing. Not affected by `[notify] native`.
+    pub menu_bar: Option<MenuBar>,
     /// How long `ui.run` and `ui.set_setting` wait for the desktop to answer (protocol 0.21;
     /// 5 s). Tests shorten it.
     pub ui_command_timeout: Duration,
@@ -106,6 +115,7 @@ impl DaemonConfig {
             gateway: GatewayConfig::default(),
             login_shell: None,
             native: None,
+            menu_bar: None,
             ui_command_timeout: Duration::from_millis(hutan_protocol::ui::COMMAND_TIMEOUT_MS),
             socket_check_interval: SOCKET_CHECK_INTERVAL,
         }
@@ -292,12 +302,22 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         history.clone(),
         storage.clone(),
     );
+    // Told when something the menu bar item lists may have changed: events, and intents that
+    // leave the pending list (no event says so).
+    let menu_bar = config.menu_bar.map(|menu_bar| {
+        let (changes_tx, changes_rx) = mpsc::channel(1);
+        bus.set_attention(Some(changes_tx.clone()));
+        (menu_bar, changes_tx, changes_rx)
+    });
     let notify = NotifyService::new(
         settings.notify.clone(),
         bus.clone(),
         registry.clone(),
         config.native,
     );
+    if let Some((_, changes_tx, _)) = &menu_bar {
+        notify.set_changed(changes_tx.clone());
+    }
     // Observes the bus until shutdown; nothing needs its handle.
     drop(notify.start(shutdown.clone()));
     let worktrees = WorktreeService::new(registry.clone(), storage.clone(), bus.clone());
@@ -335,6 +355,15 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         shutdown.clone(),
     );
     let ui = UiHub::with_timeout(bus.clone(), config.ui_command_timeout);
+    let menu_bar = menu_bar.map(|(menu_bar, _, changes)| {
+        (
+            menu_bar,
+            changes,
+            notify.clone(),
+            registry.clone(),
+            ui.clone(),
+        )
+    });
     registry.chats().set_mcp_wiring(McpWiring {
         enabled: settings.control.mcp,
         hutan_bin,
@@ -360,13 +389,27 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     );
     let ctx = Arc::new(ConnContext::new(
         router,
-        bus,
+        bus.clone(),
         shutdown.clone(),
         clients,
         config.outbound_queue.max(2),
         daemon_uid,
         config.handshake_timeout,
     ));
+    // Shows the item while no desktop is connected, until shutdown takes it off.
+    let menu_bar = menu_bar.map(|(menu_bar, changes, notify, registry, ui)| {
+        menu_bar::start(menu_bar::Inputs {
+            menu_bar,
+            desktops: ctx.desktops.watch(),
+            changes,
+            notify,
+            registry,
+            bus,
+            ui,
+            settings_file: paths.base.join("settings.toml"),
+            shutdown: shutdown.clone(),
+        })
+    });
 
     info!(
         socket = %paths.socket.display(),
@@ -389,7 +432,14 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         config.socket_check_interval,
         shutdown.clone(),
     ));
-    let task = tokio::spawn(accept_loop(listener, ctx, shutdown.clone(), held, storage));
+    let task = tokio::spawn(accept_loop(
+        listener,
+        ctx,
+        shutdown.clone(),
+        held,
+        storage,
+        menu_bar,
+    ));
     Ok(RunningDaemon {
         socket: paths.socket.clone(),
         epoch,
@@ -478,6 +528,7 @@ async fn accept_loop(
     shutdown: CancellationToken,
     held: Held,
     storage: Storage,
+    menu_bar: Option<JoinHandle<()>>,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -526,6 +577,12 @@ async fn accept_loop(
         }
     };
     tokio::join!(stop_sessions, drain_connections);
+    // The menu bar item leaves with the daemon: its task takes it off at shutdown.
+    if let Some(menu_bar) = menu_bar
+        && timeout(MENU_BAR_STOP_WAIT, menu_bar).await.is_err()
+    {
+        warn!("the menu bar item did not leave in time");
+    }
     // Records from the sessions that just ended are applied before the indexer stops.
     ctx.router.stop_history().await;
     // Everything the registry queued while stopping the sessions reaches the disk before the
