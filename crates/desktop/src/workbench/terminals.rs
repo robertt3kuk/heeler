@@ -739,6 +739,7 @@ impl Workbench {
             self.focus_root(window, cx);
         }
         self.on_daemon_state_changed(cx);
+        self.check_harness_installs(cx);
         self.on_approvals_changed(cx);
         cx.notify();
     }
@@ -1003,6 +1004,9 @@ impl Workbench {
         }
         if changes.contains("app") {
             self.sync_daemon_menu(cx);
+        }
+        if changes.contains("integrations") {
+            self.on_integrations_setting_changed(cx);
         }
         self.on_mac_settings_changed(changes, window, cx);
         cx.notify();

@@ -1,6 +1,6 @@
 //! The daemon popover opened from the `connection` status item: status fields, the controls
 //! that the `Daemon` menu and the palette offer too (they all dispatch the same `daemon::*`
-//! actions), and the keep-running switch bound to `app.keep_running`.
+//! actions), and the two switches bound to `app.keep_running` and `app.start_at_login`.
 
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use super::render::probe;
 use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
 use crate::macos::LoginItemStatus;
-use crate::macos::status_item::KEEP_RUNNING;
+use crate::macos::status_item::{KEEP_RUNNING, START_AT_LOGIN};
 use crate::theme::DensityExt as _;
 
 const WIDTH: f32 = 440.0;
@@ -64,8 +64,9 @@ impl Workbench {
             .as_ref()
             .map(|p| p.display().to_string());
         let keep_running = self.keep_running_enabled();
-        let keep_available = self.keep_running_available();
-        let keep_status = self.keep_running_status();
+        let login = self.start_at_login_enabled();
+        let login_available = self.start_at_login_available();
+        let login_status = self.start_at_login_status();
         let hover = theme.surface_hover;
 
         let mut fields: Vec<(&'static str, String)> = Vec::new();
@@ -125,42 +126,68 @@ impl Workbench {
             Box::new(daemon::OpenLogs),
         ));
 
-        // The keep-running switch: where it is, and what the system says about it.
-        let switch = div()
-            .id("daemon-keep-running")
-            .relative()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(tokens.spacing * 2.0))
-            .px(px(tokens.spacing * 2.0))
-            .py(px(tokens.spacing))
-            .rounded(px(tokens.radius))
-            .border_1()
-            .border_color(if keep_running && keep_available {
-                theme.accent
-            } else {
-                theme.border
-            })
-            .when(keep_running && keep_available, |s| s.bg(theme.accent_soft))
-            .when(keep_available, |s| {
-                s.cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(Box::new(daemon::ToggleKeepRunning), cx);
-                    })
-            })
-            .child(KEEP_RUNNING)
-            .child(div().text_color(theme.muted).child(if keep_available {
+        // The two switches: where they are, and what the system says about starting at login.
+        let switch = |id: &'static str,
+                      region: &'static str,
+                      title: &'static str,
+                      on: bool,
+                      available: bool,
+                      note: String,
+                      action: Box<dyn Action>| {
+            div()
+                .id(id)
+                .relative()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(tokens.spacing * 2.0))
+                .px(px(tokens.spacing * 2.0))
+                .py(px(tokens.spacing))
+                .rounded(px(tokens.radius))
+                .border_1()
+                .border_color(if on && available {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .when(on && available, |s| s.bg(theme.accent_soft))
+                .when(available, |s| {
+                    s.cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(action.boxed_clone(), cx);
+                        })
+                })
+                .child(title)
+                .child(div().text_color(theme.muted).child(note))
+                .child(probe(&regions, Region::Popover(region)))
+        };
+        let keep_switch = switch(
+            "daemon-keep-running",
+            "keep_running",
+            KEEP_RUNNING,
+            keep_running,
+            true,
+            if keep_running { "on" } else { "off" }.to_owned(),
+            Box::new(daemon::ToggleKeepRunning),
+        );
+        let login_switch = switch(
+            "daemon-start-at-login",
+            "start_at_login",
+            START_AT_LOGIN,
+            login,
+            login_available,
+            if login_available {
                 format!(
                     "{} · {}",
-                    if keep_running { "on" } else { "off" },
-                    keep_status.label()
+                    if login { "on" } else { "off" },
+                    login_status.label()
                 )
             } else {
                 "available in Hutan.app".to_owned()
-            }))
-            .child(probe(&regions, Region::Popover("keep_running")));
+            },
+            Box::new(daemon::ToggleStartAtLogin),
+        );
 
         Some(
             div()
@@ -237,9 +264,10 @@ impl Workbench {
                             }),
                         ))
                         .child(actions)
-                        .child(switch)
+                        .child(keep_switch)
+                        .child(login_switch)
                         .when(
-                            keep_available && keep_status == LoginItemStatus::RequiresApproval,
+                            login_available && login_status == LoginItemStatus::RequiresApproval,
                             |s| {
                                 s.child(button(
                                     "daemon-login-items",

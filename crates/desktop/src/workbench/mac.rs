@@ -1,8 +1,9 @@
-//! The workbench side of the macOS integration (roadmap M6.4, `crate::macos`): keep running
-//! as a login item, the menu bar status item, the Dock badge, the global Assistant shortcut
-//! and living on in the menu bar after the last window closes.
+//! The workbench side of the macOS integration (roadmap M6.4, D-2, `crate::macos`): the daemon
+//! outliving the app, starting it at login as a login item, the menu bar status item, the Dock
+//! badge, the global Assistant shortcut and living on in the menu bar after the last window
+//! closes.
 //!
-//! Each of the four is driven by settings (`app.keep_running`, `app.menu_bar`,
+//! Each is driven by settings (`app.keep_running`, `app.start_at_login`, `app.menu_bar`,
 //! `app.dock_badge`, `assistant.global_shortcut`) and follows the attention model. The
 //! `sync_*` methods compare the wanted state with what was last handed to the system and only
 //! call the trait when something changed, so they are cheap to run on every session update and
@@ -16,7 +17,7 @@ use hutan_client::ConnectionState;
 use super::view::Workbench;
 use crate::macos::{
     DockBadge, GlobalHotkey, LoginItem, LoginItemStatus, MacEvent, MacServices, MenuCommand,
-    Presence, Shortcut, StatusItemHost, StatusItemModel,
+    NotificationPermission, Presence, Shortcut, StatusItemHost, StatusItemModel,
 };
 use crate::settings::{AppSettings, AssistantSettings, LastWindowClose};
 use hutan_settings::ChangeSet;
@@ -24,6 +25,7 @@ use hutan_settings::ChangeSet;
 /// State of the macOS integration inside the workbench.
 pub(crate) struct MacControl {
     login_item: Rc<dyn LoginItem>,
+    notifications: Rc<dyn NotificationPermission>,
     status_item: Rc<dyn StatusItemHost>,
     dock: Rc<dyn DockBadge>,
     hotkey: Rc<dyn GlobalHotkey>,
@@ -32,8 +34,8 @@ pub(crate) struct MacControl {
     in_menu_bar: bool,
     /// The status of the login item the last time it was read.
     login_status: LoginItemStatus,
-    /// The `(keep_running, status)` the system refused to reconcile: the same pair is not tried
-    /// again, so a write-back (ours, or another window's on the same file) cannot start a
+    /// The `(start_at_login, status)` the system refused to reconcile: the same pair is not
+    /// tried again, so a write-back (ours, or another window's on the same file) cannot start a
     /// register / refuse / write-back loop. An explicit toggle forgets it.
     refused: Option<(bool, LoginItemStatus)>,
     /// What the Dock badge shows now (`None` until it was set once).
@@ -56,6 +58,7 @@ impl MacControl {
     pub(crate) fn new(services: MacServices) -> (Self, Option<crate::macos::EventReceiver>) {
         let MacServices {
             login_item,
+            notifications,
             status_item,
             dock,
             hotkey,
@@ -68,6 +71,7 @@ impl MacControl {
         (
             Self {
                 login_item,
+                notifications,
                 status_item,
                 dock,
                 hotkey,
@@ -92,8 +96,12 @@ impl MacControl {
         self.login_status
     }
 
-    pub(crate) fn keep_running_available(&self) -> bool {
+    pub(crate) fn start_at_login_available(&self) -> bool {
         self.login_item.available()
+    }
+
+    pub(crate) fn notifications(&self) -> Rc<dyn NotificationPermission> {
+        Rc::clone(&self.notifications)
     }
 }
 
@@ -108,30 +116,41 @@ fn connection_words(state: ConnectionState) -> &'static str {
 }
 
 impl Workbench {
-    // ---- keep running ----------------------------------------------------------------------
+    // ---- the daemon outliving the app, and starting it at login ----------------------------
 
-    /// `app.keep_running` as set (the toggle's position, whatever the system says).
+    /// `app.keep_running` as set: quitting leaves the daemon running.
     pub fn keep_running_enabled(&self) -> bool {
         self.settings.get::<AppSettings>().keep_running
     }
 
-    /// Whether the toggle can be used: the desktop runs from Hutan.app.
-    pub fn keep_running_available(&self) -> bool {
-        self.mac.keep_running_available()
+    /// `app.start_at_login` as set (the toggle's position, whatever the system says).
+    pub fn start_at_login_enabled(&self) -> bool {
+        self.settings.get::<AppSettings>().start_at_login
+    }
+
+    /// Whether the start-at-login toggle can be used: the desktop runs from Hutan.app.
+    pub fn start_at_login_available(&self) -> bool {
+        self.mac.start_at_login_available()
     }
 
     /// What the system said about the launch agent when it was last asked.
-    pub fn keep_running_status(&self) -> LoginItemStatus {
+    pub fn start_at_login_status(&self) -> LoginItemStatus {
         self.mac.login_status()
     }
 
-    /// The launch agent is registered *and* allowed: launchd owns the daemon, quitting never
-    /// stops it and the quit question is not asked. Reads the system fresh, because the user
-    /// may have changed it in System Settings since the window last looked.
-    pub fn keep_running_active(&self) -> bool {
-        self.keep_running_available()
-            && self.keep_running_enabled()
+    /// The launch agent is registered *and* allowed: launchd owns the daemon and quitting never
+    /// stops it. Reads the system fresh, because the user may have changed it in System
+    /// Settings since the window last looked.
+    pub fn start_at_login_active(&self) -> bool {
+        self.start_at_login_available()
+            && self.start_at_login_enabled()
             && self.mac.login_item.status() == LoginItemStatus::Enabled
+    }
+
+    /// Quitting leaves the daemon alone and does not ask: it was asked to outlive the app
+    /// (`app.keep_running`), or launchd owns it (start at login, active).
+    pub fn daemon_outlives_app(&self) -> bool {
+        self.keep_running_enabled() || self.start_at_login_active()
     }
 
     /// Settings → General, the `Daemon` menu and the menu bar item: flips keep running.
@@ -139,24 +158,60 @@ impl Workbench {
         self.set_keep_running(!self.keep_running_enabled(), cx);
     }
 
-    /// Writes `app.keep_running`, which registers or unregisters the launch agent.
+    /// Writes `app.keep_running`. Nothing is registered with the system: the daemon is just
+    /// left running when Hutan quits.
     pub fn set_keep_running(&mut self, on: bool, cx: &mut Context<Self>) {
-        if !self.keep_running_available() {
-            self.set_notice("Keep running is available in Hutan.app", cx);
+        // `keep_running = true` on its own is what a settings file from before
+        // `app.start_at_login` looks like (and is migrated as); naming start_at_login next to
+        // it says this file knows both.
+        let written = if on {
+            self.settings
+                .write_user(
+                    "app.start_at_login",
+                    toml::Value::Boolean(self.start_at_login_enabled()),
+                )
+                .and_then(|()| {
+                    self.settings
+                        .write_user("app.keep_running", toml::Value::Boolean(true))
+                })
+        } else {
+            self.settings
+                .write_user("app.keep_running", toml::Value::Boolean(false))
+        };
+        if let Err(error) = written {
+            tracing::warn!("cannot save keep running: {error}");
+            self.set_notice(format!("Cannot save keep running: {error}"), cx);
+            return;
+        }
+        // The settings change would do it too; doing it here keeps the answer immediate.
+        self.sync_daemon_menu(cx);
+        self.sync_status_item(cx);
+        cx.notify();
+    }
+
+    /// Settings → General, the `Daemon` menu and the menu bar item: flips starting at login.
+    pub fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
+        self.set_start_at_login(!self.start_at_login_enabled(), cx);
+    }
+
+    /// Writes `app.start_at_login`, which registers or unregisters the launch agent.
+    pub fn set_start_at_login(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !self.start_at_login_available() {
+            self.set_notice("Starting at login is available in Hutan.app", cx);
             return;
         }
         if let Err(error) = self
             .settings
-            .write_user("app.keep_running", toml::Value::Boolean(on))
+            .write_user("app.start_at_login", toml::Value::Boolean(on))
         {
-            tracing::warn!("cannot save keep running: {error}");
-            self.set_notice(format!("Cannot save keep running: {error}"), cx);
+            tracing::warn!("cannot save start at login: {error}");
+            self.set_notice(format!("Cannot save start at login: {error}"), cx);
             return;
         }
         // The user asked: whatever was refused before may be tried again.
         self.mac.refused = None;
         // The settings change would do it too; doing it here keeps the answer immediate.
-        self.sync_keep_running(cx);
+        self.sync_start_at_login(cx);
     }
 
     /// "Open Login Items": System Settings → General → Login Items.
@@ -164,12 +219,12 @@ impl Workbench {
         self.mac.login_item.open_login_items_settings();
     }
 
-    /// Makes the launch agent match `app.keep_running`: registers it when the setting is on
+    /// Makes the launch agent match `app.start_at_login`: registers it when the setting is on
     /// and nothing is registered, unregisters it when the setting is off and something is.
     /// A failure is shown and the setting goes back to what is true.
-    pub(crate) fn sync_keep_running(&mut self, cx: &mut Context<Self>) {
-        if self.keep_running_available() {
-            let wanted = self.keep_running_enabled();
+    pub(crate) fn sync_start_at_login(&mut self, cx: &mut Context<Self>) {
+        if self.start_at_login_available() {
+            let wanted = self.start_at_login_enabled();
             let status = self.mac.login_item.status();
             let differs = wanted != status.registered();
             if differs && self.mac.refused != Some((wanted, status)) {
@@ -187,15 +242,17 @@ impl Workbench {
     /// Registers the launch agent; `true` when that failed (the setting was written back).
     fn register_launch_agent(&mut self, cx: &mut Context<Self>) -> bool {
         let failure = match self.mac.login_item.register() {
-            Err(error) => Some(format!("Cannot keep Hutan running: {error}")),
+            Err(error) => Some(format!("Cannot start Hutan's daemon at login: {error}")),
             Ok(()) => match self.mac.login_item.status() {
                 LoginItemStatus::NotFound => Some(
-                    "Cannot keep Hutan running: the launch agent is missing from Hutan.app"
+                    "Cannot start Hutan's daemon at login: the launch agent is missing from \
+                     Hutan.app"
                         .to_owned(),
                 ),
                 LoginItemStatus::RequiresApproval => {
                     self.set_notice(
-                        "Allow Hutan in System Settings → General → Login Items to keep it running",
+                        "Allow Hutan in System Settings → General → Login Items to start its \
+                         daemon at login",
                         cx,
                     );
                     None
@@ -207,7 +264,7 @@ impl Workbench {
             return false;
         };
         tracing::warn!("{message}");
-        self.write_keep_running_back(false, cx);
+        self.write_start_at_login_back(false, cx);
         self.set_notice(message, cx);
         true
     }
@@ -217,21 +274,21 @@ impl Workbench {
         let Err(error) = self.mac.login_item.unregister() else {
             return false;
         };
-        let message = format!("Cannot stop keeping Hutan running: {error}");
+        let message = format!("Cannot stop starting Hutan's daemon at login: {error}");
         tracing::warn!("{message}");
-        self.write_keep_running_back(true, cx);
+        self.write_start_at_login_back(true, cx);
         self.set_notice(message, cx);
         true
     }
 
-    /// Puts `app.keep_running` back to what the system says after a refused change.
-    fn write_keep_running_back(&mut self, value: bool, cx: &mut Context<Self>) {
+    /// Puts `app.start_at_login` back to what the system says after a refused change.
+    fn write_start_at_login_back(&mut self, value: bool, cx: &mut Context<Self>) {
         if let Err(error) = self
             .settings
-            .write_user("app.keep_running", toml::Value::Boolean(value))
+            .write_user("app.start_at_login", toml::Value::Boolean(value))
         {
-            tracing::warn!("cannot restore keep running: {error}");
-            self.set_notice(format!("Cannot save keep running: {error}"), cx);
+            tracing::warn!("cannot restore start at login: {error}");
+            self.set_notice(format!("Cannot save start at login: {error}"), cx);
         }
     }
 
@@ -271,8 +328,9 @@ impl Workbench {
             daemon,
             needs_you: self.sessions.read(cx).attention_entries(),
             keep_running: self.keep_running_enabled(),
-            keep_running_available: self.keep_running_available(),
-            keep_running_status: self.mac.login_status,
+            start_at_login: self.start_at_login_enabled(),
+            start_at_login_available: self.start_at_login_available(),
+            start_at_login_status: self.mac.login_status,
         }
     }
 
@@ -353,7 +411,7 @@ impl Workbench {
 
     /// Brings every surface up to date (the window just opened).
     pub(crate) fn sync_mac_all(&mut self, cx: &mut Context<Self>) {
-        self.sync_keep_running(cx);
+        self.sync_start_at_login(cx);
         self.sync_status_item(cx);
         self.sync_dock(cx);
         self.sync_hotkey(cx);
@@ -380,7 +438,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         if changes.contains("app") {
-            self.sync_keep_running(cx);
+            self.sync_start_at_login(cx);
             self.sync_status_item(cx);
             self.sync_dock(cx);
             self.sync_last_window_close_note();
@@ -465,6 +523,7 @@ impl Workbench {
                 }
             }
             MacEvent::Menu(MenuCommand::ToggleKeepRunning) => self.toggle_keep_running(cx),
+            MacEvent::Menu(MenuCommand::ToggleStartAtLogin) => self.toggle_start_at_login(cx),
             // Hidden in the menu bar, the quit question needs the window (`open_quit_dialog`).
             MacEvent::Menu(MenuCommand::Quit) => self.request_quit(window, cx),
         }

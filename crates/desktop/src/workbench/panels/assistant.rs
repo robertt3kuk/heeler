@@ -1063,11 +1063,34 @@ impl AssistantPanel {
                     Region::Assistant("change-backend"),
                 ))
                 .into_any_element();
+                // A harness the daemon could not find: offer to install it from its source.
+                let install = crate::harness_install::harness_of_missing(&error).map(|harness| {
+                    button(
+                        "assistant-install",
+                        "Install…",
+                        ButtonKind::Primary,
+                        true,
+                        look,
+                    )
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(crate::workbench::actions::InstallHarness(
+                                harness.to_owned(),
+                            )),
+                            cx,
+                        );
+                    })
+                    .child(probe(&self.env.regions, Region::Assistant("install")))
+                    .into_any_element()
+                });
+                let mut buttons: Vec<AnyElement> = install.into_iter().collect();
+                buttons.push(change);
+                buttons.push(retry);
                 self.notice(
                     Mascot::Error,
                     "The assistant could not be opened",
                     vec![error],
-                    vec![change, retry],
+                    buttons,
                     look,
                 )
             }

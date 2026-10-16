@@ -404,6 +404,7 @@ impl Workbench {
     /// harness follows what is installed until the user picks one, and the model list is the
     /// shown harness's.
     pub(crate) fn on_harnesses_changed(&mut self, cx: &mut Context<Self>) {
+        self.auto_install_step(cx);
         let Some(picker) = &self.agent_picker else {
             return;
         };
@@ -827,12 +828,40 @@ impl Workbench {
                                 .overflow_y_scroll()
                                 .children(models),
                         )
-                        .children(note.map(|(text, color)| {
+                        .children(note.as_ref().map(|(text, color)| {
                             div()
                                 .px(px(tokens.spacing * 2.0))
-                                .text_color(color)
-                                .child(text)
+                                .text_color(*color)
+                                .child(text.clone())
                         }))
+                        .children(
+                            note.as_ref()
+                                .and_then(|(text, _)| {
+                                    crate::harness_install::harness_of_missing(text)
+                                })
+                                .filter(|_| self.harness_install_available())
+                                .map(|harness| {
+                                    div().px(px(tokens.spacing * 2.0)).child(
+                                        button(
+                                            "agent-install-harness",
+                                            "Install…",
+                                            ButtonKind::Secondary,
+                                            true,
+                                            &look,
+                                        )
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                window.dispatch_action(
+                                                    Box::new(super::actions::InstallHarness(
+                                                        harness.to_owned(),
+                                                    )),
+                                                    cx,
+                                                );
+                                            },
+                                        ),
+                                    )
+                                }),
+                        )
                         .child(section("Folder"))
                         .child(
                             div()

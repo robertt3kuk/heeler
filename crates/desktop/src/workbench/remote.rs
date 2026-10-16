@@ -251,12 +251,17 @@ fn check_value(kind: &FieldKind, value: &Value) -> Result<(), String> {
     }
 }
 
-/// `app.keep_running` registers the launch agent, which the Daemon menu owns.
+/// `app.start_at_login` registers the launch agent and `app.keep_running` is saved together
+/// with it, which the `Daemon` menu's actions own.
 fn writable_kind(namespace: &str, key: &str, kind: &FieldKind) -> FieldKind {
-    if namespace == "app" && key == "keep_running" {
-        FieldKind::Unsupported("use the action daemon::ToggleKeepRunning".to_owned())
-    } else {
-        kind.clone()
+    match (namespace, key) {
+        ("app", "keep_running") => {
+            FieldKind::Unsupported("use the action daemon::ToggleKeepRunning".to_owned())
+        }
+        ("app", "start_at_login") => {
+            FieldKind::Unsupported("use the action daemon::ToggleStartAtLogin".to_owned())
+        }
+        _ => kind.clone(),
     }
 }
 
@@ -768,9 +773,15 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_agent_setting_is_not_writable_here() {
-        let kind = writable_kind("app", "keep_running", &FieldKind::Bool);
-        assert!(matches!(kind, FieldKind::Unsupported(_)));
+    fn the_daemon_settings_are_not_writable_here() {
+        for key in ["keep_running", "start_at_login"] {
+            let kind = writable_kind("app", key, &FieldKind::Bool);
+            assert!(matches!(kind, FieldKind::Unsupported(_)), "{key}");
+        }
+        assert_eq!(
+            writable_kind("app", "setup_done", &FieldKind::Bool),
+            FieldKind::Bool
+        );
         assert_eq!(
             writable_kind("terminal", "font_size", &FieldKind::Integer),
             FieldKind::Integer

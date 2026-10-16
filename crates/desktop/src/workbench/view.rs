@@ -20,6 +20,9 @@ use super::settings_sheet::SettingsSheet;
 use super::style::{TerminalStyle, UiStyle};
 use super::terminals::TerminalItem;
 use super::workspaces::PickerState;
+use crate::cli_link::CliLink;
+use crate::harness_install::PackageRunner;
+use crate::integrations::IntegrationInstaller;
 use crate::macos::MacServices;
 use crate::sessions::{SessionsStore, TerminalSession, UiOpenRequested};
 use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
@@ -61,6 +64,15 @@ pub struct WorkbenchOptions {
     /// What the workbench uses to reach macOS: login item, menu bar item, Dock tile, global
     /// shortcut. Inert unless given real services (`app::run`) or fakes (tests).
     pub mac: MacServices,
+    /// Show the first-run setup when `app.setup_done` is not set (`app::run`; tests ask for it).
+    pub first_run_setup: bool,
+    /// The link the setup's Command line step may make; `None` outside `Hutan.app`.
+    pub cli_link: Option<CliLink>,
+    /// Runs `hutan integration` for the agent integrations; `None` installs nothing.
+    pub installer: Option<Arc<dyn IntegrationInstaller>>,
+    /// Checks and installs missing harness packages (the "Install…" buttons); `None` offers
+    /// none.
+    pub package_runner: Option<Arc<dyn PackageRunner>>,
 }
 
 impl WorkbenchOptions {
@@ -78,12 +90,40 @@ impl WorkbenchOptions {
             state_path,
             initial_state: None,
             mac: MacServices::inert(),
+            first_run_setup: false,
+            cli_link: None,
+            installer: None,
+            package_runner: None,
         }
     }
 
     /// The same options with these macOS services.
     pub fn with_mac(mut self, mac: MacServices) -> Self {
         self.mac = mac;
+        self
+    }
+
+    /// The same options showing the first-run setup until it is done (`app.setup_done`).
+    pub fn with_first_run_setup(mut self) -> Self {
+        self.first_run_setup = true;
+        self
+    }
+
+    /// The same options with the link the Command line step may make.
+    pub fn with_cli_link(mut self, link: Option<CliLink>) -> Self {
+        self.cli_link = link;
+        self
+    }
+
+    /// The same options offering to install missing harness packages through `runner`.
+    pub fn with_package_runner(mut self, runner: Arc<dyn PackageRunner>) -> Self {
+        self.package_runner = Some(runner);
+        self
+    }
+
+    /// The same options installing agent integrations through `installer`.
+    pub fn with_installer(mut self, installer: Arc<dyn IntegrationInstaller>) -> Self {
+        self.installer = Some(installer);
         self
     }
 }
@@ -159,6 +199,12 @@ pub enum Region {
     AgentHarness(&'static str),
     /// A control of the Accounts page: harness id (or `*`) and the control (`login`, `logout`, `card`, `refresh`).
     Account(&'static str, &'static str),
+    /// A control of the first-run setup, by name (`continue`, `back`, `skip`, `appearance-dark`,
+    /// `keep-running`, `start-at-login`, `notifications`, `cli-link`, …).
+    Setup(&'static str),
+    /// A control of the setup's Agents step for harness `id`: `login`, `install-guide`,
+    /// `uninstall`, `backend`.
+    SetupHarness(&'static str, &'static str),
     /// Model row `index` of the new-agent picker.
     AgentModel(usize),
     /// Node row `index` of the agent monitor, counting every session's rows top to bottom.
@@ -340,6 +386,9 @@ pub struct Workbench {
     pub(crate) daemon_focus: FocusHandle,
     pub(crate) daemon: DaemonControl,
     pub(crate) mac: MacControl,
+    pub(crate) setup: super::setup::SetupControl,
+    pub(crate) integrations: super::integrations::IntegrationControl,
+    pub(crate) harness_install: super::harness_install::HarnessInstallControl,
     pub(crate) palette: Option<PaletteState>,
     pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) modal: Option<Modal>,
@@ -382,6 +431,7 @@ impl Focusable for Workbench {
 impl Workbench {
     pub fn new(options: WorkbenchOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = options.settings;
+        let first_run_setup = options.first_run_setup;
         crate::settings::register_all(&settings);
         let (mac, mac_events) = MacControl::new(options.mac);
         let appearance_settings = settings.get::<AppearanceSettings>();
@@ -577,6 +627,11 @@ impl Workbench {
             daemon_focus,
             daemon: DaemonControl::new(),
             mac,
+            setup: super::setup::SetupControl::new(cx.focus_handle(), options.cli_link),
+            integrations: super::integrations::IntegrationControl::new(options.installer),
+            harness_install: super::harness_install::HarnessInstallControl::new(
+                options.package_runner,
+            ),
             palette: None,
             context_menu: None,
             modal: None,
@@ -596,6 +651,14 @@ impl Workbench {
             _subscriptions: subscriptions,
         };
         this.mac.events_task = events_task;
+        if first_run_setup
+            && !this
+                .settings
+                .get::<crate::settings::AppSettings>()
+                .setup_done
+        {
+            this.open_setup(window, cx);
+        }
         this.schedule_publish(cx);
         this.rebind_keys(cx);
         this.refresh_menus(cx);
@@ -608,6 +671,7 @@ impl Workbench {
                 this.update(cx, |this, cx| this.launchd_grace_over(cx)).ok();
             }));
         }
+        this.maybe_auto_install(cx);
         this
     }
 

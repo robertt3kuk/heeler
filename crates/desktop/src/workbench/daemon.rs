@@ -1,5 +1,6 @@
 //! The daemon's lifetime as the desktop sees it (design.md § Daemon lifecycle): the quit flow
-//! (the daemon follows the app unless `app.keep_running`), what closing the last window does
+//! (the daemon follows the app unless `app.keep_running` or `app.start_at_login`), what closing
+//! the last window does
 //! (`app.on_last_window_close`), the daemon controls shared by the `Daemon` menu, the status-bar
 //! popover and the palette, and the "daemon stopped" state that keeps a daemon the user
 //! stopped from being brought back until they start it again.
@@ -235,8 +236,9 @@ impl Workbench {
         DaemonMenu {
             running: self.daemon_connected(cx),
             keep_running: self.keep_running_enabled(),
-            keep_running_available: self.keep_running_available(),
-            keep_running_status: self.keep_running_status(),
+            start_at_login: self.start_at_login_enabled(),
+            start_at_login_available: self.start_at_login_available(),
+            start_at_login_status: self.start_at_login_status(),
         }
     }
 
@@ -264,6 +266,7 @@ impl Workbench {
         if !self.daemon_connected(cx) {
             self.daemon.status = None;
         }
+        self.maybe_auto_install(cx);
     }
 
     // ---- popover -----------------------------------------------------------------------------
@@ -490,13 +493,14 @@ impl Workbench {
     /// ⌘Q, the app menu, the menu bar item's Quit and closing the last window when
     /// `app.on_last_window_close` is `quit` (design.md § Daemon lifecycle). The daemon follows
     /// the app: it stops with it, silently when no session is live and after a confirmation when
-    /// some are, unless keep running is active (then launchd owns it and the app just leaves).
+    /// some are, unless it was asked to outlive the app (`app.keep_running`) or launchd owns it
+    /// (`app.start_at_login`, registered and approved): then the app just leaves.
     /// While disconnected there is no daemon to stop and the app quits at once.
     pub fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.daemon.quitting {
             return;
         }
-        if !self.daemon_connected(cx) || self.keep_running_active() {
+        if !self.daemon_connected(cx) || self.daemon_outlives_app() {
             self.finish_quit(cx);
             return;
         }
@@ -508,7 +512,7 @@ impl Workbench {
     }
 
     /// "Quit Hutan and stop N sessions?": Stop Sessions & Quit, Keep Running in Background
-    /// (turns keep running on, so the daemon stays and starts at login), Cancel.
+    /// (turns `app.keep_running` on, so the daemon stays; no login item), Cancel.
     fn open_quit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Quitting from the menu bar item while the window is hidden: the question needs it.
         self.show_if_hidden(window, cx);
@@ -518,7 +522,7 @@ impl Workbench {
             message: SharedString::from(
                 "The daemon stops with Hutan, and so do its sessions. To leave them running, \
                  keep the daemon running in the background: Hutan turns on \"Keep daemon \
-                 running after Hutan quits\" and quits.",
+                 running after Hutan quits\" and quits. That does not start it at login.",
             ),
             confirm_label: "Stop Sessions & Quit".into(),
             input: None,
@@ -533,16 +537,14 @@ impl Workbench {
         self.open_modal(modal, window, cx);
     }
 
-    /// The quit dialog's second choice: registers the launch agent (keep running on) and quits
-    /// leaving the daemon. Outside Hutan.app there is nothing to register: the daemon is left
-    /// running all the same. A registration the system refuses keeps the app open (the notice
-    /// says why), because the user asked for the daemon to stay and that is not settled.
+    /// The quit dialog's second choice: turns `app.keep_running` on (nothing is registered with
+    /// the system) and quits leaving the daemon. When the setting cannot be saved the app stays
+    /// open (the notice says why), because the user asked for the daemon to stay and that is not
+    /// settled.
     fn keep_running_in_background(&mut self, cx: &mut Context<Self>) {
-        if self.keep_running_available() {
-            self.set_keep_running(true, cx);
-            if !self.keep_running_enabled() {
-                return;
-            }
+        self.set_keep_running(true, cx);
+        if !self.keep_running_enabled() {
+            return;
         }
         self.finish_quit(cx);
     }
@@ -559,7 +561,7 @@ impl Workbench {
         self.flush_save();
         let idle = !self.daemon.quitting
             && self.daemon_connected(cx)
-            && !self.keep_running_active()
+            && !self.daemon_outlives_app()
             && self.live_sessions(cx) == 0;
         let connection = idle.then(|| self.connection(cx));
         async move {

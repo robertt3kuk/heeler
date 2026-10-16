@@ -1,6 +1,7 @@
 //! The menu bar status item (`app.menu_bar`): the orangutan glyph as a template image, the
 //! number of sessions that need the user next to it, and a menu (daemon state, the sessions
-//! that need you, Open Hutan, New Terminal, Keep Daemon Running After Hutan Quits, Quit).
+//! that need you, Open Hutan, New Terminal, Keep Daemon Running After Hutan Quits, Start Daemon at
+//! Login, Quit).
 //!
 //! [`StatusItemModel`] is pure data: what the item shows and which menu it offers, derived
 //! from the attention model. [`StatusItemHost`] puts a model on the menu bar; the real host
@@ -37,10 +38,12 @@ pub struct StatusItemModel {
     pub daemon: String,
     /// The sessions that need the user, in daemon order.
     pub needs_you: Vec<AttentionEntry>,
-    /// The keep-running checkbox: on, whether it can be used, and what the system says.
+    /// The keep-running checkbox (`app.keep_running`): always usable.
     pub keep_running: bool,
-    pub keep_running_available: bool,
-    pub keep_running_status: LoginItemStatus,
+    /// The start-at-login checkbox: on, whether it can be used, and what the system says.
+    pub start_at_login: bool,
+    pub start_at_login_available: bool,
+    pub start_at_login_status: LoginItemStatus,
 }
 
 impl StatusItemModel {
@@ -85,10 +88,16 @@ impl StatusItemModel {
         menu.push(item("New Terminal", MenuCommand::NewTerminal));
         menu.push(MenuSpec::Separator);
         menu.push(MenuSpec::Item {
-            title: keep_running_title(self.keep_running_available, self.keep_running_status),
+            title: KEEP_RUNNING.to_owned(),
             command: MenuCommand::ToggleKeepRunning,
             checked: self.keep_running,
-            enabled: self.keep_running_available,
+            enabled: true,
+        });
+        menu.push(MenuSpec::Item {
+            title: start_at_login_title(self.start_at_login_available, self.start_at_login_status),
+            command: MenuCommand::ToggleStartAtLogin,
+            checked: self.start_at_login,
+            enabled: self.start_at_login_available,
         });
         menu.push(MenuSpec::Separator);
         menu.push(item("Quit Hutan", MenuCommand::Quit));
@@ -105,16 +114,19 @@ fn item(title: &str, command: MenuCommand) -> MenuSpec {
     }
 }
 
-/// The title of the keep-running checkbox, with what is wrong with it when something is.
+/// The title of the keep-running checkbox.
 pub const KEEP_RUNNING: &str = "Keep Daemon Running After Hutan Quits";
+/// The title of the start-at-login checkbox, before what is wrong with it when something is.
+pub const START_AT_LOGIN: &str = "Start Daemon at Login";
 
-pub fn keep_running_title(available: bool, status: LoginItemStatus) -> String {
+/// The title of the start-at-login checkbox, with what is wrong with it when something is.
+pub fn start_at_login_title(available: bool, status: LoginItemStatus) -> String {
     if !available {
-        return format!("{KEEP_RUNNING} (available in Hutan.app)");
+        return format!("{START_AT_LOGIN} (available in Hutan.app)");
     }
     match status {
-        LoginItemStatus::Enabled | LoginItemStatus::NotRegistered => KEEP_RUNNING.to_owned(),
-        other => format!("{KEEP_RUNNING} ({})", other.label()),
+        LoginItemStatus::Enabled | LoginItemStatus::NotRegistered => START_AT_LOGIN.to_owned(),
+        other => format!("{START_AT_LOGIN} ({})", other.label()),
     }
 }
 
@@ -411,8 +423,9 @@ mod tests {
             daemon: "hutand connected".to_owned(),
             needs_you,
             keep_running: false,
-            keep_running_available: true,
-            keep_running_status: LoginItemStatus::NotRegistered,
+            start_at_login: false,
+            start_at_login_available: true,
+            start_at_login_status: LoginItemStatus::NotRegistered,
         }
     }
 
@@ -441,6 +454,7 @@ mod tests {
                 MenuCommand::OpenHutan,
                 MenuCommand::NewTerminal,
                 MenuCommand::ToggleKeepRunning,
+                MenuCommand::ToggleStartAtLogin,
                 MenuCommand::Quit
             ]
         );
@@ -500,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_running_shows_its_state_and_is_disabled_outside_the_bundle() {
+    fn keep_running_is_always_usable() {
         let keep = |model: &StatusItemModel| {
             model
                 .menu()
@@ -519,16 +533,44 @@ mod tests {
         let mut model = model(vec![]);
         assert_eq!(keep(&model), (KEEP_RUNNING.to_owned(), false, true));
         model.keep_running = true;
-        model.keep_running_status = LoginItemStatus::RequiresApproval;
+        model.start_at_login_available = false;
         assert_eq!(
             keep(&model),
-            (format!("{KEEP_RUNNING} (requires approval)"), true, true)
+            (KEEP_RUNNING.to_owned(), true, true),
+            "it needs no login item"
         );
-        model.keep_running_available = false;
+    }
+
+    #[test]
+    fn start_at_login_shows_its_state_and_is_disabled_outside_the_bundle() {
+        let login = |model: &StatusItemModel| {
+            model
+                .menu()
+                .into_iter()
+                .find_map(|row| match row {
+                    MenuSpec::Item {
+                        command: MenuCommand::ToggleStartAtLogin,
+                        title,
+                        checked,
+                        enabled,
+                    } => Some((title, checked, enabled)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let mut model = model(vec![]);
+        assert_eq!(login(&model), (START_AT_LOGIN.to_owned(), false, true));
+        model.start_at_login = true;
+        model.start_at_login_status = LoginItemStatus::RequiresApproval;
         assert_eq!(
-            keep(&model),
+            login(&model),
+            (format!("{START_AT_LOGIN} (requires approval)"), true, true)
+        );
+        model.start_at_login_available = false;
+        assert_eq!(
+            login(&model),
             (
-                format!("{KEEP_RUNNING} (available in Hutan.app)"),
+                format!("{START_AT_LOGIN} (available in Hutan.app)"),
                 true,
                 false
             )

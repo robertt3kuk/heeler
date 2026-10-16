@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use hutan_desktop::macos::{
-    FakeDock, FakeHotkey, FakeLoginItem, FakePresence, FakeStatusItem, MacServices,
+    FakeDock, FakeHotkey, FakeLoginItem, FakeNotifications, FakePresence, FakeStatusItem,
+    MacServices,
 };
 use hutan_desktop::workbench::{Workbench, WorkbenchOptions};
 use hutan_settings::{SettingsPaths, SettingsStore};
@@ -19,6 +20,7 @@ use super::{TestDaemon, open_options};
 /// Every fake, kept by the test while the workbench holds clones.
 pub struct Fakes {
     pub login: FakeLoginItem,
+    pub notifications: FakeNotifications,
     pub item: FakeStatusItem,
     pub dock: FakeDock,
     pub hotkey: FakeHotkey,
@@ -29,6 +31,7 @@ impl Fakes {
     pub fn new() -> Self {
         Self {
             login: FakeLoginItem::new(),
+            notifications: FakeNotifications::new(),
             item: FakeStatusItem::new(),
             dock: FakeDock::new(),
             hotkey: FakeHotkey::new(),
@@ -39,6 +42,7 @@ impl Fakes {
     pub fn services(&self) -> MacServices {
         MacServices {
             login_item: Rc::new(self.login.clone()),
+            notifications: Rc::new(self.notifications.clone()),
             status_item: Rc::new(self.item.clone()),
             dock: Rc::new(self.dock.clone()),
             hotkey: Rc::new(self.hotkey.clone()),

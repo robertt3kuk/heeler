@@ -26,7 +26,7 @@ use super::view::Workbench;
 use crate::macos::LoginItemStatus;
 use crate::theme::Theme;
 
-/// The color of the launch agent's status next to the Keep running toggle.
+/// The color of the launch agent's status next to the Start at login toggle.
 fn status_tone(status: LoginItemStatus, theme: Theme) -> gpui::Hsla {
     match status {
         LoginItemStatus::Enabled => theme.success,
@@ -240,9 +240,15 @@ impl Workbench {
         if let Some((namespace, f, value)) = self.sheet_field(field)
             && f.kind == FieldKind::Bool
         {
-            // Keep running registers the launch agent; the workbench owns that.
+            // Both daemon toggles are the workbench's: keep running is saved together with
+            // `start_at_login` (see `set_keep_running`), starting at login registers the
+            // launch agent.
             if namespace == "app" && field == "keep_running" {
                 self.toggle_keep_running(cx);
+                return;
+            }
+            if namespace == "app" && field == "start_at_login" {
+                self.toggle_start_at_login(cx);
                 return;
             }
             let on = value.as_bool().unwrap_or(false);
@@ -538,7 +544,10 @@ impl Workbench {
         let hover = theme.surface_hover;
         let accent = theme.accent;
         let selected = sheet.namespace;
-        let keep_running = (self.keep_running_available(), self.keep_running_status());
+        let login = (
+            self.start_at_login_available(),
+            self.start_at_login_status(),
+        );
         let editing = sheet.edit.clone();
         let dropdown = sheet.dropdown.clone();
         let message = sheet.message.clone();
@@ -610,11 +619,11 @@ impl Workbench {
                             on,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| this.sheet_toggle(&k, cx)));
-                        if selected == "app" && key == "keep_running" {
+                        if selected == "app" && key == "start_at_login" {
                             // The toggle, what the system says about the launch agent, and
                             // the way to approve it.
-                            let available = keep_running.0;
-                            let status = keep_running.1;
+                            let available = login.0;
+                            let status = login.1;
                             let (text, tone) = if available {
                                 (status.label().to_owned(), status_tone(status, theme))
                             } else {
@@ -643,7 +652,7 @@ impl Workbench {
                                 )
                                 .child(
                                     div()
-                                        .id("keep-running-status")
+                                        .id("start-at-login-status")
                                         .text_color(tone)
                                         .child(SharedString::from(text)),
                                 )
@@ -936,6 +945,10 @@ impl Workbench {
             vec![self.render_providers(cx)]
         } else if selected == "accounts" {
             vec![self.render_accounts(cx)]
+        } else if selected == "app" {
+            let mut with_setup = vec![self.render_run_setup_row(cx)];
+            with_setup.extend(rows);
+            with_setup
         } else {
             rows
         };

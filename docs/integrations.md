@@ -46,6 +46,10 @@ What `install` does, and only this:
 
 Codex asks you to review new or changed hooks the first time it starts after an install (its `hooks.state` trust list in `config.toml`); Hutan does not touch that file, so approve the Hutan hooks there once.
 
+### Installing on launch (`integrations.auto_install`)
+
+The desktop runs `hutan integration install <omp|claude|codex>` itself (the `hutan` beside the app: `Contents/MacOS/hutan` in the bundle, `target/debug/hutan` in development) when it starts and the daemon answers, off the main thread, for each harness the Accounts page finds installed whose `status` is not `installed`. The installs are idempotent, only touch Hutan-marked entries and do nothing outside a Hutan session. Results go to the log; a failure shows one notice with the command to run by hand. `integrations.auto_install = false` stops future installs (it does not uninstall; the setup's Agents step has *Uninstall hooks* per harness, `hutan integration uninstall`). Codex asks once to trust new hooks (above).
+
 ## Letting an agent drive Hutan: `--mcp`
 
 ```sh

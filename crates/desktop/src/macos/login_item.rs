@@ -1,4 +1,5 @@
-//! "Keep running": registering the bundled launch agent `dev.hutan.daemon.plist` with
+//! "Start at login" (`app.start_at_login`): registering the bundled launch agent
+//! `dev.hutan.daemon.plist` with
 //! `SMAppService` (macOS 13+), which makes it a Login Item the user can see and switch off in
 //! System Settings → General → Login Items.
 //!
@@ -77,7 +78,7 @@ impl LoginItem for Unavailable {
     }
 
     fn register(&self) -> Result<(), String> {
-        Err("keep running is available in Hutan.app".to_owned())
+        Err("starting at login is available in Hutan.app".to_owned())
     }
 
     fn unregister(&self) -> Result<(), String> {

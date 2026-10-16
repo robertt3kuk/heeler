@@ -7,8 +7,10 @@ mod changes;
 pub mod chat;
 mod daemon;
 mod daemon_popover;
+mod harness_install;
 pub(crate) mod harnesses;
 mod history;
+mod integrations;
 mod mac;
 mod modal;
 pub mod model;
@@ -26,6 +28,7 @@ mod resources;
 mod review;
 pub mod settings_schema;
 mod settings_sheet;
+mod setup;
 pub mod style;
 mod terminals;
 pub mod ui;
@@ -41,6 +44,7 @@ pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};
 pub use registry::{PanelEnv, StatusBarLayout, StatusData};
 pub use settings_sheet::{Edit, SettingsSheet};
+pub use setup::{NotificationUi, SetupFinish, SetupState, SetupStep};
 pub use terminals::session_of_item;
 pub use view::{
     BadgeSite, DragPreview, DraggedItem, Region, SAVE_DEBOUNCE, Workbench, WorkbenchOptions,

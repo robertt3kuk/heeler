@@ -3,8 +3,11 @@
 
 pub mod app;
 pub mod bench;
+pub mod cli_link;
 pub mod crash;
+pub mod harness_install;
 pub mod instance;
+pub mod integrations;
 pub mod macos;
 pub mod sessions;
 pub mod settings;

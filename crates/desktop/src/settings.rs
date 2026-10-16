@@ -7,6 +7,7 @@
 //! rounding noise (`1.2`, not `1.2000000476837158`).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use hutan_protocol::messages::TerminalSpec;
 pub use hutan_settings::AppearanceSettings;
@@ -853,11 +854,21 @@ impl LastWindowClose {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AppSettings {
-    /// Keep daemon running after Hutan quits: registers the bundled launch agent (macOS Login
-    /// Items) so `hutand` starts at login and survives quitting the app, which then never stops
-    /// it and never asks. Off, the daemon runs while Hutan runs and stops when it quits. Only
-    /// available when the app runs from Hutan.app.
+    /// Keep the daemon running after Hutan quits: quitting leaves `hutand` and its sessions
+    /// running, without asking and without any login item. It stops when you stop it (Daemon
+    /// menu, `hutan daemon stop`) or when you log out. Off (the default), the daemon runs while
+    /// Hutan runs and stops when it quits, like Orca or Paseo.
     pub keep_running: bool,
+    /// Start Hutan's daemon when you log in: registers the bundled launch agent (macOS Login
+    /// Items) so `hutand` starts at login and is restarted after a crash. While it is
+    /// registered and allowed, quitting Hutan never stops the daemon. Off by default; only
+    /// available when the app runs from Hutan.app. A `settings.toml` written before this key
+    /// existed with `keep_running = true` (which then meant this) is migrated when it is first
+    /// read.
+    pub start_at_login: bool,
+    /// The first-run setup has been completed or skipped. Off shows it once; "Run setup
+    /// again" (Settings, ⌘K "Hutan: Run Setup…") opens it whatever this says.
+    pub setup_done: bool,
     /// When the last window closes: `quit` (Quit Hutan, like ⌘Q: asks first while sessions run
     /// and keep running is off) or `menu_bar` (keep Hutan in the menu bar, without a Dock icon;
     /// the daemon keeps running until you quit; needs `menu_bar`).
@@ -874,6 +885,8 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             keep_running: false,
+            start_at_login: false,
+            setup_done: false,
             on_last_window_close: LastWindowClose::Quit,
             menu_bar: true,
             dock_badge: true,
@@ -909,6 +922,48 @@ impl Setting for AppSettings {
     const NAMESPACE: &'static str = "app";
 }
 
+/// Settings written before `app.start_at_login` existed: `app.keep_running = true` meant "the
+/// launch agent is registered" (it started the daemon at login). Such a file gets
+/// `start_at_login = true` too, so that what the user had keeps working; `keep_running` stays
+/// on because the daemon outliving the app is what it always did. A file that names
+/// `start_at_login` (whatever the value) has been written by a Hutan that knows both and is
+/// left alone, so this runs once. `user_file` is the file `store` reads. `true` when the file
+/// was migrated. Nothing is registered by this: the launch agent already is.
+pub fn migrate_start_at_login(store: &SettingsStore, user_file: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(user_file) else {
+        return false;
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    let Some(app) = table.get("app").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    if app.get("keep_running").and_then(toml::Value::as_bool) != Some(true)
+        || app.contains_key("start_at_login")
+    {
+        return false;
+    }
+    if let Err(error) = store.write_user("app.start_at_login", toml::Value::Boolean(true)) {
+        tracing::warn!("cannot migrate app.keep_running to app.start_at_login: {error}");
+        return false;
+    }
+    store.set_notes(
+        MIGRATION_NOTE,
+        vec![hutan_settings::SettingsError::warning(
+            Some(user_file),
+            "app.start_at_login",
+            "app.keep_running used to start the daemon at login. That is now app.start_at_login, \
+             which was set to true to keep your setup; app.keep_running only leaves the daemon \
+             running after Hutan quits",
+        )],
+    );
+    true
+}
+
+/// The diagnostics source of [`migrate_start_at_login`]'s note.
+const MIGRATION_NOTE: &str = "app.migration";
+
 /// The `assistant` namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -936,12 +991,36 @@ impl Setting for AssistantSettings {
     const NAMESPACE: &'static str = "assistant";
 }
 
+/// The `integrations` namespace: Hutan's hooks in the agents (`docs/integrations.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct IntegrationsSettings {
+    /// Install Hutan's hooks into Codex, Claude Code and OMP when Hutan starts: for each of
+    /// them that is installed and whose integration is not (`hutan integration install`,
+    /// idempotent, only Hutan-marked entries are written, the files are backed up first). The
+    /// hooks do nothing outside a Hutan session. Turning this off stops future installs; it
+    /// does not remove what is installed (`hutan integration uninstall`, or the setup's Agents
+    /// step).
+    pub auto_install: bool,
+}
+
+impl Default for IntegrationsSettings {
+    fn default() -> Self {
+        Self { auto_install: true }
+    }
+}
+
+impl Setting for IntegrationsSettings {
+    const NAMESPACE: &'static str = "integrations";
+}
+
 /// Registers every namespace the desktop owns (plus `appearance`) so the schema and diagnostics
 /// know them from the start.
 pub fn register_all(store: &SettingsStore) {
     store.register::<AppearanceSettings>();
     store.register::<AppSettings>();
     store.register::<AssistantSettings>();
+    store.register::<IntegrationsSettings>();
     store.register::<TerminalSettings>();
     store.register::<LayoutSettings>();
     store.register::<SessionsPanelSettings>();
@@ -1107,15 +1186,63 @@ mod tests {
     fn the_mac_integrations_default_as_documented() {
         let app = AppSettings::default();
         assert!(
-            !app.keep_running,
-            "nothing is registered with the system by default"
+            !app.keep_running && !app.start_at_login,
+            "nothing outlives the app and nothing is registered with the system by default"
         );
+        assert!(!app.setup_done, "the first-run setup is still to come");
         assert!(app.menu_bar && app.dock_badge);
         let parsed: AppSettings = toml::from_str("keep_running = true\nmenu_bar = false").unwrap();
-        assert!(parsed.keep_running && !parsed.menu_bar && parsed.dock_badge);
+        assert!(parsed.keep_running && !parsed.start_at_login);
+        assert!(!parsed.menu_bar && parsed.dock_badge);
         assert!(AssistantSettings::default().global_shortcut.is_empty());
         let off: AssistantSettings = toml::from_str("global_shortcut = \"\"").unwrap();
         assert!(off.global_shortcut.is_empty());
+    }
+
+    fn migrated(text: &str) -> (bool, AppSettings, Vec<hutan_settings::SettingsError>) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = hutan_settings::SettingsPaths::in_dir(dir.path());
+        std::fs::write(&paths.user, text).unwrap();
+        let store = SettingsStore::new(paths.clone());
+        register_all(&store);
+        let done = migrate_start_at_login(&store, &paths.user);
+        let notes = store
+            .errors()
+            .into_iter()
+            .filter(|e| e.key_path == "app.start_at_login")
+            .collect();
+        (done, (*store.get::<AppSettings>()).clone(), notes)
+    }
+
+    #[test]
+    fn the_old_keep_running_meaning_becomes_start_at_login_once() {
+        // Before: keep_running was the login item. Now both, and the user is told.
+        let (done, app, notes) = migrated("[app]\nkeep_running = true\n");
+        assert!(done);
+        assert!(app.keep_running && app.start_at_login);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].message.contains("app.start_at_login"));
+
+        // A file that already names start_at_login, either way, is not touched again.
+        for text in [
+            "[app]\nkeep_running = true\nstart_at_login = false\n",
+            "[app]\nkeep_running = true\nstart_at_login = true\n",
+        ] {
+            let (done, _, notes) = migrated(text);
+            assert!(!done, "{text}");
+            assert!(notes.is_empty());
+        }
+
+        // Nothing to migrate: off, absent, no file content, broken file.
+        for text in [
+            "[app]\nkeep_running = false\n",
+            "[app]\nmenu_bar = false\n",
+            "",
+            "[app\nkeep_running = true",
+        ] {
+            let (done, app, _) = migrated(text);
+            assert!(!done && !app.start_at_login, "{text}");
+        }
     }
 
     #[test]

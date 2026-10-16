@@ -348,6 +348,8 @@ impl Workbench {
                 this.update_in(cx, |this, window, cx| {
                     // The sheet covers the window: close it so the terminal is seen.
                     this.close_settings(window, cx);
+                    // The first-run setup steps aside too, until it is opened again.
+                    this.suspend_setup(cx);
                     this.open_session(answer.session.id, window, cx);
                     if let Some(instructions) = answer.instructions {
                         this.set_notice(instructions, cx);
@@ -415,7 +417,7 @@ impl Workbench {
                     .child(SharedString::from(format!("Could not start: {problem}"))),
             );
         }
-        if none_installed {
+        if none_installed && !self.harness_install_available() {
             return body
                 .child(ui::empty_state(
                     Mascot::Empty,
@@ -425,6 +427,15 @@ impl Workbench {
                     &tokens,
                 ))
                 .into_any_element();
+        }
+        if none_installed {
+            // The cards carry the Install… buttons.
+            body = body.child(
+                div()
+                    .prose(&tokens)
+                    .text_color(theme.muted)
+                    .child("No harness is installed yet. Install one below, then check again."),
+            );
         }
         for (harness, detection) in detections {
             body = body.child(self.render_account_card(harness, &detection, &look, cx));
@@ -504,6 +515,24 @@ impl Workbench {
                             .child(SharedString::from(harness.name)),
                     )
                     .child(ui::pill(state_text, state_color, &tokens))
+                    .when(!found && self.harness_install_available(), |s| {
+                        s.child(
+                            button(
+                                format!("account-install-{id}"),
+                                "Install…",
+                                ButtonKind::Primary,
+                                true,
+                                look,
+                            )
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(super::actions::InstallHarness(id.to_owned())),
+                                    cx,
+                                );
+                            })
+                            .child(probe(&self.regions, Region::Account(id, "install"))),
+                        )
+                    })
                     .child(login)
                     .child(logout),
             )

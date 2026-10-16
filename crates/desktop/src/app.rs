@@ -1,7 +1,10 @@
 //! Application bootstrap: keymap, menus, window options, quit routing, and the `run` entry point.
 
+use crate::cli_link::CliLink;
+use crate::harness_install::SystemRunner;
 use crate::instance;
-use crate::macos::status_item::keep_running_title;
+use crate::integrations::CliInstaller;
+use crate::macos::status_item::{KEEP_RUNNING, start_at_login_title};
 use crate::macos::{LoginItem, LoginItemStatus, MacServices};
 use crate::settings::{AppSettings, WorkspaceSort};
 use crate::workbench::actions::{self, ApplyPreset, daemon};
@@ -16,17 +19,20 @@ use hutan_client::{ConnectOptions, Connection};
 use hutan_protocol::messages::{ClientInfo, ClientKind};
 use hutan_settings::{SettingsPaths, SettingsStore};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// What the `Daemon` menu shows: whether the daemon is up (Restart and Stop apply) or not
-/// (Start applies), and the keep-running checkbox.
+/// (Start applies), and the two checkboxes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonMenu {
     pub running: bool,
-    /// `app.keep_running`, whether it can be used (the app runs from Hutan.app) and what the
-    /// system says about the launch agent.
+    /// `app.keep_running`.
     pub keep_running: bool,
-    pub keep_running_available: bool,
-    pub keep_running_status: LoginItemStatus,
+    /// `app.start_at_login`, whether it can be used (the app runs from Hutan.app) and what the
+    /// system says about the launch agent.
+    pub start_at_login: bool,
+    pub start_at_login_available: bool,
+    pub start_at_login_status: LoginItemStatus,
 }
 
 impl Default for DaemonMenu {
@@ -34,8 +40,9 @@ impl Default for DaemonMenu {
         Self {
             running: true,
             keep_running: false,
-            keep_running_available: false,
-            keep_running_status: LoginItemStatus::NotRegistered,
+            start_at_login: false,
+            start_at_login_available: false,
+            start_at_login_status: LoginItemStatus::NotRegistered,
         }
     }
 }
@@ -155,17 +162,19 @@ pub fn menus(presets: &[LayoutPreset], daemon_menu: &DaemonMenu) -> Vec<Menu> {
             MenuItem::action("Start Daemon", daemon::Start).disabled(daemon_menu.running),
             MenuItem::action("Open Logs", daemon::OpenLogs),
             MenuItem::separator(),
+            MenuItem::action(KEEP_RUNNING, daemon::ToggleKeepRunning)
+                .checked(daemon_menu.keep_running),
             MenuItem::action(
-                keep_running_title(
-                    daemon_menu.keep_running_available,
-                    daemon_menu.keep_running_status,
+                start_at_login_title(
+                    daemon_menu.start_at_login_available,
+                    daemon_menu.start_at_login_status,
                 ),
-                daemon::ToggleKeepRunning,
+                daemon::ToggleStartAtLogin,
             )
-            .checked(daemon_menu.keep_running)
-            .disabled(!daemon_menu.keep_running_available),
+            .checked(daemon_menu.start_at_login)
+            .disabled(!daemon_menu.start_at_login_available),
             MenuItem::action("Open Login Items", daemon::OpenLoginItems)
-                .disabled(daemon_menu.keep_running_status != LoginItemStatus::RequiresApproval),
+                .disabled(daemon_menu.start_at_login_status != LoginItemStatus::RequiresApproval),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", actions::MinimizeWindow),
@@ -214,14 +223,20 @@ pub fn open_workbench(
 /// `hutand` next to the running binary (`target/debug`, an app bundle), else the name for a
 /// `PATH` lookup.
 pub fn hutand_path() -> PathBuf {
-    hutand_beside(std::env::current_exe().ok().as_deref())
+    binary_beside(std::env::current_exe().ok().as_deref(), "hutand")
 }
 
-fn hutand_beside(exe: Option<&Path>) -> PathBuf {
+/// The `hutan` CLI next to the running binary, else the name for a `PATH` lookup: what
+/// `hutan integration install` is run with.
+pub fn hutan_path() -> PathBuf {
+    binary_beside(std::env::current_exe().ok().as_deref(), "hutan")
+}
+
+fn binary_beside(exe: Option<&Path>, name: &str) -> PathBuf {
     exe.and_then(Path::parent)
-        .map(|dir| dir.join("hutand"))
+        .map(|dir| dir.join(name))
         .filter(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from("hutand"))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 /// Connection options of the desktop: the standard socket (`HUTAN_SOCKET` / `HUTAN_HOME`
@@ -238,33 +253,38 @@ pub fn connect_options() -> ConnectOptions {
     }
 }
 
-/// Starts the connection. With keep running on and approved, launchd starts the daemon, so the
-/// connection only dials ([`Connection::start_held`]) and the workbench lets it start `hutand`
-/// itself if none has answered after a grace period; otherwise it autostarts as always.
-/// The second value says which of the two it was.
+/// Starts the connection. With starting at login on and approved, launchd starts the daemon, so
+/// the connection only dials ([`Connection::start_held`]) and the workbench lets it start
+/// `hutand` itself if none has answered after a grace period; otherwise it autostarts as
+/// always. The second value says which of the two it was.
 pub fn start_connection(
     options: ConnectOptions,
     settings: &SettingsStore,
     login_item: &dyn LoginItem,
 ) -> (Connection, bool) {
     crate::settings::register_all(settings);
-    let keep_running = settings.get::<AppSettings>().keep_running
+    let launchd = settings.get::<AppSettings>().start_at_login
         && login_item.available()
         && login_item.status() == LoginItemStatus::Enabled;
-    if keep_running {
+    if launchd {
         (Connection::start_held(options), true)
     } else {
         (Connection::start(options), false)
     }
 }
 
-/// The settings store over `settings.toml` / `keymap.toml` in the Hutan home.
+/// The settings store over `settings.toml` / `keymap.toml` in the Hutan home. A `settings.toml`
+/// from before `app.start_at_login` is migrated here, before anything reads it.
 pub fn settings_store() -> SettingsStore {
     let paths = SettingsPaths::from_env().unwrap_or_else(|err| {
         tracing::warn!("{err}; settings are kept in the temp directory");
         SettingsPaths::in_dir(std::env::temp_dir().join("hutan"))
     });
-    SettingsStore::new(paths)
+    let user_file = paths.user.clone();
+    let store = SettingsStore::new(paths);
+    crate::settings::register_all(&store);
+    crate::settings::migrate_start_at_login(&store, &user_file);
+    store
 }
 
 /// Wakes the app from the listener thread of [`instance`]: a second desktop asked for it.
@@ -328,7 +348,11 @@ fn open_main(cx: &mut App) -> gpui::Result<WindowHandle<Workbench>> {
     mac.launchd_daemon = launchd;
     let options =
         WorkbenchOptions::builtin(settings, connection, persistence::default_state_path())
-            .with_mac(mac);
+            .with_mac(mac)
+            .with_first_run_setup()
+            .with_cli_link(CliLink::system())
+            .with_installer(Arc::new(CliInstaller::new(hutan_path())))
+            .with_package_runner(Arc::new(SystemRunner));
     open_workbench(cx, options)
 }
 
@@ -440,10 +464,13 @@ mod tests {
     fn hutand_is_found_beside_the_binary_else_on_path() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("hutan-desktop");
-        assert_eq!(hutand_beside(Some(&exe)), PathBuf::from("hutand"));
+        assert_eq!(binary_beside(Some(&exe), "hutand"), PathBuf::from("hutand"));
         std::fs::write(dir.path().join("hutand"), "").unwrap();
-        assert_eq!(hutand_beside(Some(&exe)), dir.path().join("hutand"));
-        assert_eq!(hutand_beside(None), PathBuf::from("hutand"));
+        assert_eq!(
+            binary_beside(Some(&exe), "hutand"),
+            dir.path().join("hutand")
+        );
+        assert_eq!(binary_beside(None, "hutand"), PathBuf::from("hutand"));
     }
 
     #[test]
@@ -455,7 +482,7 @@ mod tests {
             std::fs::write(macos.join(name), "").unwrap();
         }
         assert_eq!(
-            hutand_beside(Some(&macos.join("hutan-desktop"))),
+            binary_beside(Some(&macos.join("hutan-desktop")), "hutand"),
             macos.join("hutand")
         );
     }

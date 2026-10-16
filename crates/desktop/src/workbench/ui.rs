@@ -234,7 +234,8 @@ pub fn section_label(text: impl Into<SharedString>, theme: &Theme, tokens: &Toke
         .child(text.into())
 }
 
-/// Which mascot image an empty state shows (`assets/brand/05-mascot/png`).
+/// Which mascot image a view shows (`assets/brand/05-mascot/png`): the states of the empty
+/// states, and the poses the first-run setup uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mascot {
     /// Nothing here yet.
@@ -247,15 +248,27 @@ pub enum Mascot {
     Error,
     /// The daemon is not running: idle.
     Sleep,
+    /// Looking straight at you: a welcome.
+    AngleFront,
+    /// Three-quarter view from the left.
+    Angle34Left,
+    /// Looking down, at the prompt.
+    AngleLookDown,
+    /// Concentrating.
+    Focus,
 }
 
 impl Mascot {
-    pub const ALL: [Mascot; 5] = [
+    pub const ALL: [Mascot; 9] = [
         Mascot::Empty,
         Mascot::Thinking,
         Mascot::Success,
         Mascot::Error,
         Mascot::Sleep,
+        Mascot::AngleFront,
+        Mascot::Angle34Left,
+        Mascot::AngleLookDown,
+        Mascot::Focus,
     ];
 
     /// The file name under `assets/brand/05-mascot/png`.
@@ -266,6 +279,10 @@ impl Mascot {
             Mascot::Success => "state-success@2x.png",
             Mascot::Error => "state-error@2x.png",
             Mascot::Sleep => "state-sleep@2x.png",
+            Mascot::AngleFront => "angle-front@2x.png",
+            Mascot::Angle34Left => "angle-34-left@2x.png",
+            Mascot::AngleLookDown => "angle-look-down@2x.png",
+            Mascot::Focus => "state-focus@2x.png",
         }
     }
 
@@ -286,11 +303,23 @@ impl Mascot {
             Mascot::Sleep => {
                 include_bytes!("../../../../assets/brand/05-mascot/png/state-sleep@2x.png")
             }
+            Mascot::AngleFront => {
+                include_bytes!("../../../../assets/brand/05-mascot/png/angle-front@2x.png")
+            }
+            Mascot::Angle34Left => {
+                include_bytes!("../../../../assets/brand/05-mascot/png/angle-34-left@2x.png")
+            }
+            Mascot::AngleLookDown => {
+                include_bytes!("../../../../assets/brand/05-mascot/png/angle-look-down@2x.png")
+            }
+            Mascot::Focus => {
+                include_bytes!("../../../../assets/brand/05-mascot/png/state-focus@2x.png")
+            }
         }
     }
 
     fn image(self) -> Arc<Image> {
-        static IMAGES: LazyLock<[Arc<Image>; 5]> = LazyLock::new(|| {
+        static IMAGES: LazyLock<[Arc<Image>; 9]> = LazyLock::new(|| {
             Mascot::ALL.map(|m| Arc::new(Image::from_bytes(ImageFormat::Png, m.bytes().to_vec())))
         });
         let index = Mascot::ALL.iter().position(|m| *m == self).unwrap_or(0);
@@ -332,4 +361,111 @@ pub fn empty_state(
                 .child(text.into()),
         )
         .when_some(action, |s, action| s.child(action))
+}
+
+/// A serif headline (the prose family at 24 px, `fg`): the title of a first-run step.
+pub fn headline(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    div()
+        .font_family(prose_family())
+        .text_size(px(24.0))
+        .line_height(relative(1.25))
+        .text_color(theme.fg)
+        .child(text.into())
+}
+
+/// One option of a choice (appearance, density, the assistant's backend): a hairline `surface`
+/// button, with an `accent` border and a soft fill while it is the selected one.
+pub fn choice(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    theme: &Theme,
+    tokens: &Tokens,
+) -> Stateful<gpui::Div> {
+    let hover = theme.surface_hover;
+    div()
+        .id(id.into())
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .h(px(tokens.control_height))
+        .px(px(12.0))
+        .rounded(px(tokens.radius))
+        .border_1()
+        .text_size(px(tokens.font_size))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(selected, |s| {
+            s.border_color(theme.accent)
+                .bg(theme.accent_soft)
+                .text_color(theme.fg)
+                .medium()
+        })
+        .when(!selected, |s| {
+            s.border_color(theme.border)
+                .bg(theme.surface)
+                .text_color(theme.muted)
+                .hover(move |s| s.bg(hover))
+        })
+        .child(label.into())
+}
+
+/// An on/off switch, 34 × 20 px: `accent` track with the knob at the right when on, a hairline
+/// track with the knob at the left when off. Dim and inert when disabled (the caller adds the
+/// click handler only when enabled).
+pub fn switch(
+    id: impl Into<gpui::ElementId>,
+    on: bool,
+    enabled: bool,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let track = div()
+        .id(id.into())
+        .flex_none()
+        .flex()
+        .items_center()
+        .w(px(34.0))
+        .h(px(20.0))
+        .px(px(2.0))
+        .rounded(px(PILL_RADIUS))
+        .border_1()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .when(on, |s| {
+            s.bg(theme.accent).border_color(theme.accent).justify_end()
+        })
+        .when(!on, |s| {
+            s.bg(theme.surface_hover)
+                .border_color(theme.border)
+                .justify_start()
+        })
+        .child(div().size(px(14.0)).rounded(px(PILL_RADIUS)).bg(if on {
+            theme.on_accent()
+        } else {
+            theme.surface
+        }));
+    if enabled {
+        track.cursor_pointer()
+    } else {
+        track.opacity(0.45)
+    }
+}
+
+/// The dots of a stepped flow: `total` of them, the `current` one in `accent`, the others
+/// `border`.
+pub fn step_dots(current: usize, total: usize, theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .children((0..total).map(|index| {
+            div()
+                .size(px(if index == current { 8.0 } else { 6.0 }))
+                .rounded(px(PILL_RADIUS))
+                .bg(if index == current {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+        }))
 }

@@ -1,10 +1,13 @@
-//! macOS integration of the desktop (roadmap M6.4): keep running as a login item, the menu bar
-//! status item, the Dock badge and the system-wide Assistant shortcut.
+//! macOS integration of the desktop (roadmap M6.4, D-2): starting the daemon at login as a login
+//! item, the notification permission, the menu bar status item, the Dock badge and the
+//! system-wide Assistant shortcut.
 //!
-//! Every system API sits behind a small trait ([`LoginItem`], [`StatusItemHost`],
-//! [`DockBadge`], [`GlobalHotkey`], [`Presence`]) with a fake that records what the workbench asked for.
+//! Every system API sits behind a small trait ([`LoginItem`], [`NotificationPermission`],
+//! [`StatusItemHost`], [`DockBadge`], [`GlobalHotkey`], [`Presence`]) with a fake that records
+//! what the workbench asked for.
 //! The workbench ([`crate::workbench`], `mac.rs`) only talks to the traits, and tests only use
-//! the fakes: they never call `SMAppService`, `NSStatusBar`, the Dock tile or the hotkey API.
+//! the fakes: they never call `SMAppService`, `UNUserNotificationCenter`, `NSStatusBar`, the Dock
+//! tile or the hotkey API.
 //! [`MacServices::system`] builds the real ones, and only `app::run` calls it.
 //!
 //! Things the system tells us (a menu item was chosen, the shortcut was pressed) arrive as
@@ -13,6 +16,7 @@
 pub mod dock;
 pub mod hotkey;
 pub mod login_item;
+pub mod notifications;
 pub mod presence;
 pub mod status_item;
 
@@ -26,6 +30,7 @@ use tokio::sync::mpsc;
 pub use dock::{DockBadge, FakeDock};
 pub use hotkey::{FakeHotkey, GlobalHotkey, HotkeyError, Shortcut};
 pub use login_item::{FakeLoginItem, LoginItem, LoginItemCall, LoginItemStatus};
+pub use notifications::{FakeNotifications, NotificationAnswer, NotificationPermission};
 pub use presence::{FakePresence, Presence, PresenceCall};
 pub use status_item::{FakeStatusItem, MenuSpec, StatusItemHost, StatusItemModel};
 
@@ -44,6 +49,8 @@ pub enum MenuCommand {
     NewTerminal,
     /// Flip `app.keep_running`.
     ToggleKeepRunning,
+    /// Flip `app.start_at_login`.
+    ToggleStartAtLogin,
     Quit,
 }
 
@@ -68,13 +75,14 @@ pub fn event_channel() -> (EventSender, EventReceiver) {
 /// Everything the workbench needs from the system, as trait objects.
 pub struct MacServices {
     pub login_item: Rc<dyn LoginItem>,
+    pub notifications: Rc<dyn NotificationPermission>,
     pub status_item: Rc<dyn StatusItemHost>,
     pub dock: Rc<dyn DockBadge>,
     pub hotkey: Rc<dyn GlobalHotkey>,
     pub presence: Rc<dyn Presence>,
     /// What the system asked for; the workbench takes it when it is built.
     pub events: Option<EventReceiver>,
-    /// The daemon is expected to be started by launchd (keep running is on and approved): the
+    /// The daemon is expected to be started by launchd (start at login is on and approved): the
     /// connection was made with [`hutan_client::Connection::start_held`], and the workbench
     /// lets it start `hutand` itself after [`MacServices::launchd_grace`].
     pub launchd_daemon: bool,
@@ -90,11 +98,13 @@ impl fmt::Debug for MacServices {
 }
 
 impl MacServices {
-    /// No integration: keep running is unavailable, the other three do nothing. What every
-    /// workbench gets unless it is given more (`WorkbenchOptions::builtin`).
+    /// No integration: starting at login and notifications are unavailable, the other three do
+    /// nothing. What every workbench gets unless it is given more
+    /// (`WorkbenchOptions::builtin`).
     pub fn inert() -> Self {
         Self {
             login_item: Rc::new(login_item::Unavailable),
+            notifications: Rc::new(notifications::Unavailable),
             status_item: Rc::new(status_item::Nothing),
             dock: Rc::new(dock::Nothing),
             hotkey: Rc::new(hotkey::Nothing),
@@ -116,8 +126,14 @@ impl MacServices {
                 Some(item) => Rc::new(item),
                 None => Rc::new(login_item::Unavailable),
             };
+            let notifications: Rc<dyn NotificationPermission> =
+                match notifications::SystemNotifications::new() {
+                    Some(permission) => Rc::new(permission),
+                    None => Rc::new(notifications::Unavailable),
+                };
             Self {
                 login_item,
+                notifications,
                 status_item: Rc::new(status_item::SystemStatusItem::new(sender.clone())),
                 dock: Rc::new(dock::SystemDock),
                 hotkey: Rc::new(hotkey::SystemHotkey::new(sender)),

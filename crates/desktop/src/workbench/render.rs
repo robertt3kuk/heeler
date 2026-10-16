@@ -88,6 +88,7 @@ impl Render for Workbench {
         let modal = self.render_modal(cx);
         let daemon_popover = self.render_daemon_popover(cx);
         let sheet = self.render_settings_sheet(cx);
+        let setup = self.render_setup(window, cx);
 
         let root = div()
             .id("workbench")
@@ -149,6 +150,7 @@ impl Render for Workbench {
         .children(agent_picker)
         .children(menu)
         .children(sheet)
+        .children(setup)
         .children(modal)
     }
 }
@@ -644,6 +646,19 @@ impl Workbench {
                 this.toggle_keep_running(cx);
             }),
         )
+        .on_action(
+            cx.listener(|this, _: &actions::daemon::ToggleStartAtLogin, _, cx| {
+                this.toggle_start_at_login(cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, action: &actions::InstallHarness, window, cx| {
+                this.install_harness(&action.0, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::RunSetup, window, cx| {
+            this.open_setup(window, cx);
+        }))
         .on_action(
             cx.listener(|this, _: &actions::daemon::OpenLoginItems, _, cx| {
                 this.open_login_items(cx);

@@ -23,7 +23,7 @@ flowchart LR
   LD[launchd agent<br/>optional] -.starts.-> H
 ```
 
-- `hutand` is started on demand by any client (spawn, wait for socket) or by launchd when "keep running" is enabled (M6). By default the daemon follows the desktop: the desktop starts it, and quitting stops it (silently when no session is live, after a confirmation otherwise); `app.keep_running` hands its lifetime to launchd (design.md § Daemon lifecycle). The CLI controls the same daemon at any time.
+- `hutand` is started on demand by any client (spawn, wait for socket) or by launchd when "start at login" is enabled (M6). By default the daemon follows the desktop: the desktop starts it, and quitting stops it (silently when no session is live, after a confirmation otherwise); `app.keep_running` leaves it running after quit and `app.start_at_login` hands its lifetime to launchd (design.md § Daemon lifecycle). The CLI controls the same daemon at any time.
 - All clients are equal protocol peers; the desktop has no private channel.
 
 ## Crates

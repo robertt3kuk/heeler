@@ -99,6 +99,7 @@ actions!(
         NewTask,
         ShowTasksPanel,
         ReviewChanges,
+        RunSetup,
     ]
 );
 
@@ -126,6 +127,12 @@ pub mod sheet {
     actions!(settings_sheet, [Dismiss]);
 }
 
+/// Actions of the first-run setup (`Setup` key context).
+pub mod setup {
+    use gpui::actions;
+    actions!(setup, [Continue]);
+}
+
 /// Daemon controls (design.md § Daemon lifecycle). The `Daemon` menu, the status-bar popover
 /// and the palette all dispatch these, so there is one implementation.
 pub mod daemon {
@@ -139,6 +146,7 @@ pub mod daemon {
             Start,
             OpenLogs,
             ToggleKeepRunning,
+            ToggleStartAtLogin,
             OpenLoginItems
         ]
     );
@@ -192,6 +200,9 @@ data_actions! {
     ApplyPreset(String);
     /// Reveal the panel with this id, opening it in its default dock if it is closed.
     OpenPanel(String);
+    /// Offer to install the missing package of this harness (`omp`, `claude`, `codex`) from its
+    /// original source (`docs/design.md` § First-run setup).
+    InstallHarness(String);
     /// Switch the next turn's direct-chat model.
     SwitchChatModelById(String);
     /// Open a write-only credential prompt for a provider.
@@ -417,6 +428,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command("App: Command Palette", TogglePalette),
         command("App: Settings…", OpenSettings),
         command("App: About Hutan", About),
+        command("Hutan: Run Setup…", RunSetup),
         command("Window: Minimize", MinimizeWindow),
         command("Window: Zoom", ZoomWindow),
         command("App: Quit Hutan", Quit),
@@ -428,6 +440,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command(
             "Daemon: Toggle Keep Daemon Running After Hutan Quits",
             daemon::ToggleKeepRunning,
+        ),
+        command(
+            "Daemon: Toggle Start Daemon at Login",
+            daemon::ToggleStartAtLogin,
         ),
         command("Daemon: Open Login Items", daemon::OpenLoginItems),
     ];
@@ -688,6 +704,7 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<palette::SelectPrev>("ctrl-p", Some("Picker")),
         bind::<palette::Confirm>("enter", Some("Picker")),
         bind::<palette::Dismiss>("escape", Some("Picker")),
+        bind::<setup::Continue>("enter", Some("Setup")),
     ];
     let tabs: [&str; 9] = [
         ActivateTab1::name_for_type(),
