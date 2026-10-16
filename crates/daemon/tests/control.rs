@@ -839,3 +839,140 @@ async fn ui_run_asks_per_action_and_grants_cover_one_action_only() {
     assert_eq!(remote_code(other.await.unwrap()), ErrorCode::Forbidden);
     t.stop().await;
 }
+
+// ---- worktree review and merge (protocol 0.22) -------------------------------------------------
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_reads_a_worktree_diff_freely_and_a_merge_waits_for_the_user() {
+    use hutan_protocol::messages::{WorkspaceOpen, WorkspaceOpened};
+    use hutan_protocol::worktree::{
+        MergeStrategy, WorktreeCreate, WorktreeDiffRequest, WorktreeMerge,
+    };
+
+    let t = TestDaemon::start_with(&daemon_toml("ask"), |_| {}).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    for (k, v) in [
+        ("user.name", "Test"),
+        ("user.email", "test@example.com"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        git(&root, &["config", k, v]);
+    }
+    std::fs::write(root.join("a.txt"), "one\n").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "first"]);
+
+    let agent_session = shell(&t).await;
+    report_agent(&t, agent_session.id).await;
+    let user = t.connect_as(ClientKind::Desktop).await;
+    let agent = connect_from(&t, agent_session.id).await;
+    let workspace = user
+        .call::<WorkspaceOpened>(Request::WorkspaceOpen(WorkspaceOpen {
+            path: root.clone(),
+            created_by: None,
+        }))
+        .await
+        .unwrap()
+        .workspace
+        .id;
+    let wt = user
+        .worktree_create(WorktreeCreate {
+            workspace_id: workspace,
+            repo: None,
+            branch: "feature/agent".into(),
+            base: None,
+            path: None,
+        })
+        .await
+        .unwrap();
+    std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
+    git(&wt.path, &["add", "-A"]);
+    git(&wt.path, &["commit", "-q", "-m", "work"]);
+
+    // Reading what the worktree changed needs no approval.
+    let diff = agent
+        .worktree_diff(WorktreeDiffRequest {
+            path: wt.path.clone(),
+            base: None,
+            include_uncommitted: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(diff.files.len(), 1);
+    assert!(pending(&user).await.is_empty());
+
+    // Merging asks, names what it does, and runs once the user allowed it.
+    let merging = tokio::spawn({
+        let agent = agent.clone();
+        let path = wt.path.clone();
+        async move {
+            agent
+                .worktree_merge(WorktreeMerge {
+                    path,
+                    into: None,
+                    strategy: MergeStrategy::Squash,
+                    message: Some("Add b".into()),
+                })
+                .await
+        }
+    });
+    let approval = next_approval(&user).await;
+    assert_eq!(approval.session_id, agent_session.id);
+    assert!(
+        approval.title.contains("squash-merge") && approval.title.contains("feature-agent"),
+        "{}",
+        approval.title
+    );
+    assert!(
+        !root.join("b.txt").exists(),
+        "nothing ran before the answer"
+    );
+    answer(&user, approval.id, "allow_once").await;
+    let merged = merging.await.unwrap().unwrap();
+    assert_eq!(merged.target, "main");
+    assert!(root.join("b.txt").is_file());
+
+    // A denied merge changes nothing.
+    std::fs::write(wt.path.join("c.txt"), "c\n").unwrap();
+    git(&wt.path, &["add", "-A"]);
+    git(&wt.path, &["commit", "-q", "-m", "more"]);
+    let denied = tokio::spawn({
+        let agent = agent.clone();
+        let path = wt.path.clone();
+        async move {
+            agent
+                .worktree_merge(WorktreeMerge {
+                    path,
+                    into: None,
+                    strategy: MergeStrategy::Merge,
+                    message: None,
+                })
+                .await
+        }
+    });
+    let approval = next_approval(&user).await;
+    answer(&user, approval.id, "deny").await;
+    assert_eq!(remote_code(denied.await.unwrap()), ErrorCode::Forbidden);
+    assert!(!root.join("c.txt").exists());
+    t.stop().await;
+}

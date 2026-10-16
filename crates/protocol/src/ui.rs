@@ -119,7 +119,8 @@ pub enum PaneSummary {
 /// A tab of a pane.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneItem {
-    /// `terminal`, `chat`, `panel` or `placeholder`.
+    /// `terminal`, `chat`, `panel`, `placeholder` or `changes` (the Changes view of a checkout,
+    /// titled `Changes · <branch>`).
     pub kind: String,
     /// The session of a `terminal` or `chat` tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]

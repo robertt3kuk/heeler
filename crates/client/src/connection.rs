@@ -469,14 +469,6 @@ impl Connection {
             .is_some_and(|client| client.supports_tasks())
     }
 
-    /// True while connected to a daemon that advertised capability `harness.acp`
-    /// ([`Client::supports_harness_chat`]); false when disconnected.
-    pub fn supports_harness_chat(&self) -> bool {
-        self.shared
-            .client()
-            .is_some_and(|client| client.supports_harness_chat())
-    }
-
     /// True while connected to a daemon that advertised capability `worktree.review`
     /// ([`Client::supports_worktree_review`]); false when disconnected.
     pub fn supports_worktree_review(&self) -> bool {

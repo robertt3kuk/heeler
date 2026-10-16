@@ -571,6 +571,10 @@ fn classification(request: &Request) -> (&'static str, Access) {
         Request::WorktreeCreate(_) => ("worktree.create", Mutate),
         Request::WorktreeList(_) => ("worktree.list", Read),
         Request::WorktreeRemove(_) => ("worktree.remove", Mutate),
+        // Reading what a checkout changed is free; merging commits in the main checkout.
+        Request::WorktreeDiff(_) => ("worktree.diff", Read),
+        Request::WorktreeFileDiff(_) => ("worktree.file_diff", Read),
+        Request::WorktreeMerge(_) => ("worktree.merge", Mutate),
         Request::TaskCreate(_) => ("task.create", Mutate),
         Request::TaskList(_) => ("task.list", Read),
         Request::TaskUpdate(_) => ("task.update", Mutate),
@@ -666,6 +670,17 @@ mod classification_tests {
             ),
             Access::UserOnly
         );
+        // Reading what a checkout changed is free; merging it into the main checkout asks.
+        let path = serde_json::json!({"path": "/work/repo-wt/x"});
+        assert_eq!(access_of("worktree.diff", path.clone()), Access::Read);
+        assert_eq!(
+            access_of(
+                "worktree.file_diff",
+                serde_json::json!({"path": "/work/repo-wt/x", "file": "a.txt"})
+            ),
+            Access::Read
+        );
+        assert_eq!(access_of("worktree.merge", path), Access::Mutate);
         for method in ["resources.list", "resources.unsubscribe"] {
             assert_eq!(
                 access_of(method, serde_json::json!({})),

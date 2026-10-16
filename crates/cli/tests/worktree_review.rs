@@ -76,7 +76,7 @@ async fn hutan_in(t: &TestDaemon, cwd: &Path, args: &[&str]) -> Out {
 /// rename-free edit and one untracked file.
 async fn setup(t: &TestDaemon) -> Repo {
     let repo = Repo::new();
-    t.hutan(&["ws", "open", s(&repo.root)]).await.ok();
+    t.hutan(&["project", "open", s(&repo.root)]).await.ok();
     hutan_in(t, &repo.root, &["wt", "new", "feature/x"])
         .await
         .ok();

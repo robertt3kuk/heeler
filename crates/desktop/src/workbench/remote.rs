@@ -431,6 +431,7 @@ impl Workbench {
                 ItemRef::Chat { session: id } => ("chat", session(id), None),
                 ItemRef::Panel { panel } => ("panel", None, Some(panel.to_string())),
                 ItemRef::Placeholder { .. } => ("placeholder", None, None),
+                ItemRef::Changes { .. } => ("changes", None, None),
             };
             PaneItem {
                 kind: kind.to_owned(),

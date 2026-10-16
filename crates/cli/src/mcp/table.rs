@@ -494,6 +494,70 @@ static TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "worktree_diff",
+        description: "List the files a git checkout (a worktree, or the main checkout) changed \
+                      against its base branch: the commits since it branched off plus uncommitted \
+                      changes, each file with status (added, modified, deleted, renamed) and \
+                      added/removed line counts. Read-only. Use `worktree_file_diff` for one \
+                      file's patch. `worktree_list` shows the paths.",
+        read_only: true,
+        call: request("worktree.diff"),
+        schema: || {
+            object(
+                json!({
+                    "path": path("The checkout's directory (absolute, as `worktree_list` shows it)."),
+                    "base": text("Branch or commit to compare against (default: the repository's default branch)."),
+                    "include_uncommitted": {"type": "boolean", "default": true, "description": "Include staged, unstaged and untracked changes."},
+                }),
+                &["path"],
+            )
+        },
+    },
+    Tool {
+        name: "worktree_file_diff",
+        description: "The unified diff of one changed file of a checkout (a file `worktree_diff` \
+                      listed). Read-only; very large patches are cut at 2 MiB and say so.",
+        read_only: true,
+        call: request("worktree.file_diff"),
+        schema: || {
+            object(
+                json!({
+                    "path": path("The checkout's directory."),
+                    "file": text("The file, relative to the checkout, as `worktree_diff` lists it."),
+                    "old_path": text("For a renamed file: its old path from `worktree_diff`."),
+                    "base": text("Same as in `worktree_diff`."),
+                    "include_uncommitted": {"type": "boolean", "default": true},
+                }),
+                &["path", "file"],
+            )
+        },
+    },
+    Tool {
+        name: "worktree_merge",
+        description: ask!(
+            "Merge the branch checked out in a git worktree into the branch the repository's \
+             main checkout has checked out (default: the default branch), with a local commit; \
+             nothing is pushed. `strategy`: `merge` (a merge commit), `squash` (one commit) or \
+             `rebase` (linear history). Refused, changing nothing, when the main checkout has \
+             uncommitted changes, when the target is not checked out there, or when there is \
+             nothing to merge; on conflicts it aborts cleanly and lists the conflicting files. \
+             It does not remove the worktree (`worktree_rm` does)."
+        ),
+        read_only: false,
+        call: request("worktree.merge"),
+        schema: || {
+            object(
+                json!({
+                    "path": path("The worktree's directory (not the main checkout)."),
+                    "into": text("Target branch; it must be the one checked out in the main checkout (default: the default branch)."),
+                    "strategy": {"type": "string", "enum": ["merge", "squash", "rebase"], "default": "merge"},
+                    "message": text("Commit message for `merge` and `squash` (not for `rebase`)."),
+                }),
+                &["path"],
+            )
+        },
+    },
+    Tool {
         name: "worktree_rm",
         description: ask!(
             "Remove a git worktree. Refuses the main worktree, one with live sessions, and one \
@@ -958,6 +1022,9 @@ mod tests {
             "task_reset",
             "worktree_new",
             "worktree_list",
+            "worktree_diff",
+            "worktree_file_diff",
+            "worktree_merge",
             "worktree_rm",
             "workspace_list",
             "workspace_create",

@@ -668,6 +668,16 @@ fn describe_request(request: &Request, session: &dyn Fn(SessionId) -> String) ->
         Request::NotifyAck(r) => format!("dismiss notification {}", r.id),
         Request::WorktreeCreate(r) => format!("create a git worktree for the branch {}", r.branch),
         Request::WorktreeRemove(r) => format!("remove the git worktree {}", r.path.display()),
+        Request::WorktreeMerge(r) => format!(
+            "{} the branch of the git worktree {} into {} in the main checkout",
+            match r.strategy {
+                hutan_protocol::worktree::MergeStrategy::Merge => "merge",
+                hutan_protocol::worktree::MergeStrategy::Squash => "squash-merge",
+                hutan_protocol::worktree::MergeStrategy::Rebase => "rebase and merge",
+            },
+            r.path.display(),
+            r.into.as_deref().unwrap_or("the default branch")
+        ),
         Request::TaskCreate(r) => format!("create the task “{}”", r.title),
         Request::TaskUpdate(r) => format!("change task {}", r.id),
         Request::TaskDelete(r) => format!("delete task {}", r.id),
