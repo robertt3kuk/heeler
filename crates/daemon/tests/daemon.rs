@@ -61,6 +61,7 @@ impl TestDaemon {
         ClientInfo {
             kind: ClientKind::Cli,
             version: "test".into(),
+            origin: None,
         }
     }
 
@@ -201,7 +202,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "accounts",
             "resources",
             "projects.auto",
-            "assistant.backend"
+            "assistant.backend",
+            "control"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

@@ -29,6 +29,7 @@ async fn a_held_connection_dials_but_never_spawns_until_it_is_allowed() {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: "test".into(),
+            origin: None,
         },
     });
     assert!(!connection.autostart(), "held from the first dial");

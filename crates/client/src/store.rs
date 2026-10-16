@@ -111,6 +111,15 @@ pub enum Notice {
     ResourcesUpdated {
         sample: Box<ResourceSample>,
     },
+    /// The daemon asks this client, as a desktop window, to run an action or write a setting
+    /// (`ui.command`, protocol 0.21). Answer with `ui.command_result` carrying `request_id`; it
+    /// is never replayed.
+    UiCommand {
+        request_id: u64,
+        window_id: String,
+        action: String,
+        args: serde_json::Value,
+    },
 }
 
 /// Side effects of folding events into the state, for the caller to act on after publishing.
@@ -360,6 +369,17 @@ impl StoreState {
             Event::ResourcesUpdated { sample } => {
                 effects.notices.push(Notice::ResourcesUpdated { sample });
             }
+            Event::UiCommand {
+                request_id,
+                window_id,
+                action,
+                args,
+            } => effects.notices.push(Notice::UiCommand {
+                request_id,
+                window_id,
+                action,
+                args,
+            }),
         }
         effects
     }

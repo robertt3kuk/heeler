@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use hutan_core::SessionId;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::messages::{ClientInfo, ClientKind, Hello, Request, Welcome};
 use hutan_protocol::{
@@ -49,6 +50,7 @@ pub const CAPABILITIES: &[&str] = &[
     "resources",
     "projects.auto",
     "assistant.backend",
+    "control",
 ];
 
 /// How long a closing connection may take to flush already queued messages.
@@ -78,6 +80,7 @@ pub struct ConnHandle {
     tx: mpsc::Sender<Outbound>,
     cancel: CancellationToken,
     client: Arc<OnceLock<ClientInfo>>,
+    origin: Arc<OnceLock<SessionId>>,
 }
 
 impl ConnHandle {
@@ -88,6 +91,12 @@ impl ConnHandle {
     /// What kind of client this is, once it has said hello.
     pub fn client_kind(&self) -> Option<ClientKind> {
         self.client.get().map(|client| client.kind)
+    }
+
+    /// The Hutan session this client runs in, once `hello` named one that is live: the
+    /// connection is an agent's (`[control]`, protocol 0.21).
+    pub fn origin(&self) -> Option<SessionId> {
+        self.origin.get().copied()
     }
 
     /// Queues without waiting. Returns `false` if the message was not queued: the connection is
@@ -234,6 +243,7 @@ pub async fn serve(stream: UnixStream, ctx: Arc<ConnContext>) {
         tx,
         cancel: cancel.clone(),
         client: Arc::new(OnceLock::new()),
+        origin: Arc::new(OnceLock::new()),
     };
     let mut writer = tokio::spawn(write_loop(
         FramedWrite::new(write_half, FrameCodec),
@@ -365,7 +375,7 @@ async fn handle_input(frame: &Frame, handle: &ConnHandle, ctx: &ConnContext) -> 
         biased;
         _ = handle.cancel.cancelled() => return false,
         _ = ctx.shutdown.cancelled() => return false,
-        routed = ctx.router.input(frame) => routed,
+        routed = ctx.router.input(handle, frame) => routed,
     };
     match routed {
         Ok(()) => true,
@@ -420,6 +430,19 @@ async fn handshake(
 
     // Set before `open` so slow-consumer logs can name the client.
     let _ = handle.client.set(hello.client.clone());
+    // An origin is only believed while its session is live: the connection then counts as an
+    // agent's (`[control]`). A claim that does not hold is ignored, and logged.
+    if let Some(origin) = hello.client.origin {
+        if ctx.router.origin_is_live(origin.session_id).await {
+            let _ = handle.origin.set(origin.session_id);
+        } else {
+            warn!(
+                conn = %handle.id,
+                session = %origin.session_id,
+                "ignoring the origin of a client: no such live session"
+            );
+        }
+    }
     let epoch = ctx.bus.epoch();
     let opened = ctx.bus.open(handle, hello.resume, |resume| {
         ControlMessage::ok(

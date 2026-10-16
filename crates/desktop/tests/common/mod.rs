@@ -8,6 +8,7 @@
 pub mod agents;
 pub mod assistant;
 pub mod chat;
+pub mod control;
 pub mod history;
 pub mod mac;
 
@@ -35,6 +36,7 @@ fn client_info() -> ClientInfo {
     ClientInfo {
         kind: ClientKind::Desktop,
         version: "desktop-test".into(),
+        origin: None,
     }
 }
 

@@ -73,6 +73,11 @@
 //!
 //! [projects]                     # automatic projects (protocol 0.19, docs/orchestration.md)
 //! auto = true                    # sessions go to the project of their folder; false: Home unless the request names a workspace
+//!
+//! [control]                      # agents driving Hutan (protocol 0.21, docs/control.md)
+//! agents = "ask"                 # "ask" (approval per mutation), "allow", or "read_only"
+//! mcp = true                     # Hutan-started harness/Codex sessions get `hutan mcp`
+//! approval_timeout_secs = 600    # a pending control approval is refused after this long
 //! ```
 
 use std::collections::BTreeMap;
@@ -116,6 +121,7 @@ pub struct DaemonSettings {
     pub terminal: TerminalSettings,
     pub tasks: TasksSettings,
     pub projects: ProjectsSettings,
+    pub control: ControlSettings,
 }
 
 /// `[projects]` of `daemon.toml`: automatic projects (protocol 0.19).
@@ -435,6 +441,45 @@ impl Default for TasksSettings {
     }
 }
 
+/// What an agent-originated connection (one whose client runs in a chat session or in a terminal
+/// session an agent reported itself in, `ClientInfo.origin`) may change (protocol 0.21, ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPolicy {
+    /// A mutating request becomes an approval (kind `control`) the user answers.
+    #[default]
+    Ask,
+    /// Mutating requests run; every one is still written to the audit table.
+    Allow,
+    /// Mutating requests are refused with `forbidden`; reads work.
+    ReadOnly,
+}
+
+/// `control.approval_timeout_secs` when the setting is absent.
+pub const DEFAULT_CONTROL_APPROVAL_TIMEOUT_SECS: u64 = 600;
+
+/// `[control]` of `daemon.toml`: the policy for agents driving Hutan through the CLI and
+/// `hutan mcp` (`docs/control.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ControlSettings {
+    pub agents: AgentPolicy,
+    /// Harness and Codex sessions Hutan starts get `hutan mcp` as an MCP server.
+    pub mcp: bool,
+    /// How long a `control` approval waits for the user; then the request is refused.
+    pub approval_timeout_secs: u64,
+}
+
+impl Default for ControlSettings {
+    fn default() -> Self {
+        Self {
+            agents: AgentPolicy::Ask,
+            mcp: true,
+            approval_timeout_secs: DEFAULT_CONTROL_APPROVAL_TIMEOUT_SECS,
+        }
+    }
+}
+
 /// The `range_days` values the settings accept.
 pub const RANGE_DAYS: [u32; 3] = [0, 30, 90];
 
@@ -464,6 +509,8 @@ struct File {
     tasks: TasksSettings,
     #[serde(default)]
     projects: ProjectsSettings,
+    #[serde(default)]
+    control: ControlSettings,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -552,6 +599,7 @@ impl DaemonSettings {
             terminal: file.terminal,
             tasks: file.tasks,
             projects: file.projects,
+            control: file.control,
         })
     }
 }

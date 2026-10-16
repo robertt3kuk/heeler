@@ -268,6 +268,7 @@ async fn run_connection(
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: format!("attach-example/{}", env!("CARGO_PKG_VERSION")),
+            origin: None,
         },
     })
     .await?;

@@ -76,6 +76,7 @@ fn approval_heading(kind: PermissionKind) -> &'static str {
         PermissionKind::Command => "Run this command?",
         PermissionKind::FileChange => "Apply these changes?",
         PermissionKind::Permissions => "Grant extra permissions?",
+        PermissionKind::Control => "Let this agent control Hutan?",
         PermissionKind::Other => "Allow this?",
     }
 }

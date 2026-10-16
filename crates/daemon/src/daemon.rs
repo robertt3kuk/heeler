@@ -25,9 +25,11 @@ use crate::bus::{EventBus, RingLimits};
 use crate::chat;
 use crate::config::DaemonSettings;
 use crate::conn::{self, ConnContext};
+use crate::control::ControlService;
 use crate::error::{DaemonError, MAX_SOCKET_PATH_BYTES};
 use crate::harness::Harnesses;
 use crate::history::HistoryService;
+use crate::mcp_wiring::McpWiring;
 use crate::notify::NotifyService;
 use crate::notify_native::NativePoster;
 use crate::paths::Paths;
@@ -40,6 +42,7 @@ use crate::restore::{self, Stored};
 use crate::router::{Router, Services};
 use crate::tasks::TaskService;
 use crate::terminals::TerminalHub;
+use crate::uihub::UiHub;
 use crate::worktrees::WorktreeService;
 
 pub const DEFAULT_OUTBOUND_QUEUE: usize = 1024;
@@ -81,6 +84,9 @@ pub struct DaemonConfig {
     /// from `Hutan.app` (`notify_native::system_host`), a fake in tests; `None` posts nothing.
     /// `[notify] native = false` ignores it.
     pub native: Option<Arc<dyn NativePoster>>,
+    /// How long `ui.run` and `ui.set_setting` wait for the desktop to answer (protocol 0.21;
+    /// 5 s). Tests shorten it.
+    pub ui_command_timeout: Duration,
 }
 
 impl DaemonConfig {
@@ -96,6 +102,7 @@ impl DaemonConfig {
             gateway: GatewayConfig::default(),
             login_shell: None,
             native: None,
+            ui_command_timeout: Duration::from_millis(hutan_protocol::ui::COMMAND_TIMEOUT_MS),
         }
     }
 }
@@ -231,6 +238,10 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         login_shell,
     ));
     let codex_config = config.codex.unwrap_or_else(|| settings.codex.to_config());
+    let hutan_bin = config
+        .hutan_bin
+        .clone()
+        .unwrap_or_else(agent::resolve_hutan_bin);
     let registry = registry::spawn(
         bus.clone(),
         hub.clone(),
@@ -242,7 +253,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
                 .login_shell
                 .as_ref()
                 .map(|shell| shell.to_string_lossy().into_owned()),
-            hutan_bin: config.hutan_bin.unwrap_or_else(agent::resolve_hutan_bin),
+            hutan_bin: hutan_bin.clone(),
             storage: storage.clone(),
             restore: settings.restore_sessions,
             home_folder,
@@ -306,6 +317,19 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         bus.clone(),
         Arc::new(SystemProcesses),
     );
+    let control = ControlService::new(
+        settings.control,
+        bus.clone(),
+        storage.clone(),
+        registry.clone(),
+        shutdown.clone(),
+    );
+    let ui = UiHub::with_timeout(bus.clone(), config.ui_command_timeout);
+    registry.chats().set_mcp_wiring(McpWiring {
+        enabled: settings.control.mcp,
+        hutan_bin,
+        socket: paths.socket.clone(),
+    });
     let router = Router::new(
         registry,
         hub,
@@ -317,6 +341,8 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
             tasks,
             accounts,
             resources,
+            control,
+            ui,
         },
         bus.clone(),
         shutdown.clone(),

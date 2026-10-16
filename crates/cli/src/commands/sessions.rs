@@ -3,20 +3,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal as _;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hutan_client::Client;
 use hutan_core::{SessionId, SessionState, TerminalId};
 use hutan_protocol::messages::{
     AgentState, DaemonStatusInfo, Empty, Request, SessionCreate, SessionInfo, SessionList,
-    SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSpec, TerminalAttach,
-    TerminalAttached, TerminalHistory, TerminalHistoryRows, TerminalRef, TerminalSize,
+    SessionListFilter, SessionRef, SessionRename, SessionResult, SessionSpec, TerminalSize,
     TerminalSpec,
 };
-use hutan_protocol::render::{Row, TerminalRender};
 use hutan_protocol::worktree::PlacementKind;
-use serde_json::Value;
-use tokio::time::timeout;
 
 use super::attach::end_message;
 use super::{Ctx, print_line};
@@ -26,10 +22,6 @@ use hutan_cli::host;
 
 /// Shortest session id prefix accepted as a target.
 const MIN_PREFIX: usize = 4;
-/// Scrollback rows requested per `terminal.history` call, so a reply stays well below the
-/// protocol's frame limit.
-const HISTORY_PAGE: u32 = 1000;
-const SNAPSHOT_WAIT: Duration = Duration::from_secs(5);
 
 impl Ctx {
     pub(super) async fn new_session(&self, args: NewArgs) -> Result<(), CliError> {
@@ -202,67 +194,10 @@ impl Ctx {
             .terminal_id
             .ok_or_else(|| CliError::Failed(format!("session {} has no terminal", session.id)))?;
         let want = usize::try_from(args.lines).unwrap_or(usize::MAX);
-
-        // Scrollback only holds lines that already left the screen; the current screen comes
-        // from a snapshot. Attach without a size so no other client's view is resized.
-        let mut frames = client.terminal_frames(terminal);
-        let _: TerminalAttached = self
-            .call(
-                &client,
-                Request::TerminalAttach(TerminalAttach {
-                    terminal_id: terminal,
-                    size: None,
-                }),
-            )
-            .await?;
-        let snapshot = match timeout(SNAPSHOT_WAIT, frames.recv()).await {
-            Ok(Some(TerminalRender::Snapshot(snapshot))) => snapshot,
-            Ok(Some(TerminalRender::Frame(_))) | Ok(None) | Err(_) => {
-                return Err(CliError::Failed(
-                    "the daemon did not send a screen snapshot".to_owned(),
-                ));
-            }
-        };
-        let _: Value = self
-            .call(
-                &client,
-                Request::TerminalDetach(TerminalRef {
-                    terminal_id: terminal,
-                }),
-            )
-            .await?;
-
-        let mut screen: Vec<String> = snapshot.lines.iter().map(row_text).collect();
-        while screen.last().is_some_and(String::is_empty) {
-            screen.pop();
-        }
-        let missing = want.saturating_sub(screen.len());
-        let mut scrollback_rows = Vec::new(); // newest first
-        let available = usize::try_from(snapshot.history_len).unwrap_or(usize::MAX);
-        let total = missing.min(available);
-        while scrollback_rows.len() < total {
-            let count = HISTORY_PAGE
-                .min(u32::try_from(total - scrollback_rows.len()).unwrap_or(HISTORY_PAGE));
-            let from_line = u32::try_from(scrollback_rows.len()).unwrap_or(u32::MAX);
-            let page: TerminalHistoryRows = self
-                .call(
-                    &client,
-                    Request::TerminalHistory(TerminalHistory {
-                        terminal_id: terminal,
-                        from_line,
-                        count,
-                    }),
-                )
-                .await?;
-            if page.rows.is_empty() {
-                break;
-            }
-            scrollback_rows.extend(page.rows);
-        }
-        let mut lines: Vec<String> = scrollback_rows.iter().rev().map(row_text).collect();
-        lines.extend(screen);
-        let start = lines.len().saturating_sub(want);
-        let lines = &lines[start..];
+        let lines = crate::tail::terminal_tail(&client, terminal, want)
+            .await
+            .map_err(|e| self.fail(e))?;
+        let lines = &lines[..];
         if self.json {
             print_line(&serde_json::json!({"session_id": session.id, "lines": lines}).to_string())
         } else {
@@ -567,11 +502,6 @@ pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
-fn row_text(row: &Row) -> String {
-    let text: String = row.runs.iter().map(|run| run.text.as_str()).collect();
-    text.trim_end().to_owned()
 }
 
 #[cfg(test)]

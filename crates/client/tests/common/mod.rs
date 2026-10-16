@@ -140,6 +140,7 @@ impl Env {
             client: ClientInfo {
                 kind: ClientKind::Desktop,
                 version: "test".into(),
+                origin: None,
             },
         }
     }

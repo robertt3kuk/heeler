@@ -427,6 +427,7 @@ fn connect_options(socket: &Path, autostart: Option<&Path>) -> ConnectOptions {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: "desktop-test".into(),
+            origin: None,
         },
     }
 }

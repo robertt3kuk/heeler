@@ -52,6 +52,7 @@ async fn a_stopped_daemon_stays_down_until_autostart_is_turned_on_again() {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: "test".into(),
+            origin: None,
         },
     });
     assert!(connection.autostart());

@@ -8,7 +8,12 @@ use hutan_core::{ApprovalPolicy, SandboxMode};
 /// Exit codes: 0 ok, 1 remote or other error, 2 usage (including an ambiguous session target),
 /// 3 hutand unreachable or lost. `attach` killed by SIGTERM/SIGHUP exits 143/129.
 #[derive(Debug, Parser)]
-#[command(name = "hutan", version, about = "Command-line client for hutand")]
+#[command(
+    name = "hutan",
+    version,
+    about = "Command-line client for hutand",
+    disable_help_subcommand = true
+)]
 pub struct Cli {
     /// hutand socket; default: $HUTAN_SOCKET, else $HUTAN_HOME/hutand.sock, else the
     /// standard location under ~/Library/Application Support/Hutan
@@ -105,7 +110,95 @@ pub enum Command {
     /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|cancel|reset|rm|show`)
     #[command(subcommand)]
     Task(TaskCommand),
+    /// Control the desktop window through the daemon: actions, layout, settings
+    /// (`hutan ui actions|layout|run|set`)
+    #[command(subcommand)]
+    Ui(UiCommand),
+    /// Serve Hutan's control tools to an agent as an MCP server on stdio (started by the agent;
+    /// see `hutan help agent`)
+    Mcp,
+    /// Help for a command; `hutan help agent` prints the compact guide for coding agents
+    Help(HelpArgs),
 }
+
+#[derive(Debug, Args)]
+pub struct HelpArgs {
+    /// `agent` for the agent guide, or the command to explain
+    pub topic: Vec<String>,
+}
+
+/// What the desktop window offers, and how to drive it. Needs a running desktop; anything an
+/// agent changes this way may wait for the user's approval (`hutan help agent`).
+#[derive(Debug, Subcommand)]
+pub enum UiCommand {
+    /// List the actions and settings the window offers
+    Actions(UiActionsArgs),
+    /// Show the window's layout: preset, docks, panes with their tabs, focus
+    Layout(UiWindowArgs),
+    /// Run an action (`hutan ui actions` lists them)
+    Run(UiRunArgs),
+    /// Change a setting: `hutan ui set terminal.font_size 14`
+    Set(UiSetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct UiWindowArgs {
+    /// The window (default: the one used most recently; `hutan ui layout` shows its id)
+    #[arg(long, value_name = "ID")]
+    pub window: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct UiActionsArgs {
+    #[command(flatten)]
+    pub window: UiWindowArgs,
+    /// Only the actions and settings whose id, title or key contains this text
+    #[arg(long, value_name = "TEXT")]
+    pub filter: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct UiRunArgs {
+    /// The action id, as `hutan ui actions` shows it (`workbench::SplitRight`)
+    pub action: String,
+    /// An argument of the action: `--arg name=focus`; repeatable. The value is JSON when it
+    /// parses as such for the argument's declared type, else text.
+    #[arg(long = "arg", value_name = "KEY=VALUE")]
+    pub args: Vec<String>,
+    #[command(flatten)]
+    pub window: UiWindowArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UiSetArgs {
+    /// `namespace.key`, as `hutan ui actions` shows them (`terminal.cursor.style`)
+    pub key: String,
+    /// The value: true/false, a number, text, or a JSON list
+    pub value: String,
+    /// The settings layer to write
+    #[arg(long, value_enum, default_value_t = UiLayer::User)]
+    pub layer: UiLayer,
+    #[command(flatten)]
+    pub window: UiWindowArgs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UiLayer {
+    User,
+    Workspace,
+    Project,
+}
+
+impl UiLayer {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Workspace => "workspace",
+            Self::Project => "project",
+        }
+    }
+}
+
 /// Tasks with dependencies: plan work, run it in the main checkout or a worktree, in a
 /// terminal or a Codex chat, and let the daemon start what is ready.
 #[derive(Debug, Subcommand)]
@@ -1002,6 +1095,12 @@ pub struct IntegrationArgs {
     /// or ~/.claude; $PI_CODING_AGENT_DIR or ~/.omp/agent)
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
+    /// Manage the `hutan mcp` MCP server entry in the agent's own MCP configuration (Codex
+    /// `config.toml`, Claude Code `.claude.json`, OMP `mcp.json`) instead of the hooks. Only
+    /// Hutan's marked entry is touched; the file is backed up first. Without this flag no MCP
+    /// entry is written or removed.
+    #[arg(long)]
+    pub mcp: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

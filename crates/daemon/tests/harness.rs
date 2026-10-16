@@ -1245,3 +1245,53 @@ async fn logins_are_validated() {
     assert!(sessions.sessions.is_empty(), "{:?}", sessions.sessions);
     a.t.stop().await;
 }
+
+// Hutan's own MCP server (protocol 0.21, docs/control.md) -----------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_harness_chat_gets_hutans_mcp_server_with_its_own_session_id() {
+    let t = H::omp(&fixture("plain-turn")).await;
+    let created = t.create("omp").await;
+    let new = t.received_of("session/new");
+    let servers = new[0]["params"]["mcpServers"].as_array().unwrap();
+    let hutan = servers
+        .iter()
+        .find(|s| s["name"] == "hutan")
+        .unwrap_or_else(|| panic!("no hutan server in {servers:?}"));
+    assert_eq!(hutan["args"], serde_json::json!(["mcp"]));
+    let env = hutan["env"].as_array().unwrap();
+    let value = |name: &str| {
+        env.iter()
+            .find(|e| e["name"] == name)
+            .and_then(|e| e["value"].as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        value("HUTAN_SESSION_ID"),
+        Some(created.id.to_string()),
+        "requests of the server are attributed to this session"
+    );
+    assert_eq!(
+        value("HUTAN_SOCKET"),
+        Some(t.daemon.paths.socket.to_string_lossy().into_owned())
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn control_mcp_false_keeps_hutans_server_out_of_harness_chats() {
+    let t = H::with(
+        |work| {
+            format!(
+                "{}\n[control]\nmcp = false\n",
+                harness_toml("omp", &fixture("plain-turn"), &work.join("received.jsonl"))
+            )
+        },
+        |_| {},
+    )
+    .await;
+    t.create("omp").await;
+    let new = t.received_of("session/new");
+    assert_eq!(new[0]["params"]["mcpServers"], serde_json::json!([]));
+    t.stop().await;
+}

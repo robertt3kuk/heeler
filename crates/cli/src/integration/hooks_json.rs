@@ -23,6 +23,9 @@ pub enum EditError {
     NotAnObject,
     #[error("`{0}` is not the shape the agent documents (an object or array was expected)")]
     UnexpectedShape(String),
+    /// An entry that is not Hutan's is in the way (the MCP server entry).
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// Makes sure every event in `events` has a Hutan hook running `command`, and that no other

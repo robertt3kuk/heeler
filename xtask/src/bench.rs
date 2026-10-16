@@ -472,6 +472,7 @@ impl<'a> Stack<'a> {
                 client: ClientInfo {
                     kind: ClientKind::Cli,
                     version: "xtask-bench".to_owned(),
+                    origin: None,
                 },
             })
             .await;

@@ -176,6 +176,7 @@ async fn client(t: &TestDaemon) -> Client {
         client: ClientInfo {
             kind: ClientKind::Cli,
             version: "test".into(),
+            origin: None,
         },
     })
     .await

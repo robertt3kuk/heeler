@@ -826,6 +826,7 @@ async fn sigterm_stops_sessions_and_removes_the_socket() {
             client: ClientInfo {
                 kind: ClientKind::Cli,
                 version: "test".into(),
+                origin: None,
             },
         })
         .await

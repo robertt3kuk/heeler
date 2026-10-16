@@ -32,6 +32,10 @@
 //! - [`partial`]: journaled snapshots of streaming chat text (protocol 0.15).
 //! - [`notify_native`]: posting the intents to the system's notification centre from `Hutan.app`
 //!   and routing the clicks back (ADR 0007).
+//! - [`control`]: who is asking (`ClientInfo.origin`), the `[control]` policy for agents, the
+//!   `control` approvals and their audit (protocol 0.21, ADR 0016).
+//! - [`uihub`]: the desktop's published catalog and layout, `ui.run` / `ui.set_setting` routing.
+//! - [`mcp_wiring`]: how `hutan mcp` is registered with the agents Hutan starts.
 
 pub mod accounts;
 pub mod agent;
@@ -42,11 +46,13 @@ pub mod config;
 pub mod conn;
 pub mod context;
 pub mod context_file;
+pub mod control;
 pub mod daemon;
 pub mod direct;
 pub mod error;
 pub mod harness;
 pub mod history;
+pub mod mcp_wiring;
 pub mod notify;
 pub mod notify_native;
 pub mod partial;
@@ -62,12 +68,13 @@ pub mod router;
 pub mod tasks;
 pub mod terminals;
 pub mod tree;
+pub mod uihub;
 pub mod worktrees;
 
 pub use bus::RingLimits;
 pub use config::{
-    AssistantSettings, DaemonSettings, HistorySettings, NotifySettings, ProjectsSettings,
-    RestoreMode, TasksSettings,
+    AgentPolicy, AssistantSettings, ControlSettings, DaemonSettings, HistorySettings,
+    NotifySettings, ProjectsSettings, RestoreMode, TasksSettings,
 };
 pub use daemon::{DaemonConfig, RunningDaemon, start};
 pub use error::DaemonError;

@@ -24,6 +24,7 @@ mod agents;
 mod assistant;
 mod attach;
 mod chat;
+mod help;
 mod history;
 mod integration;
 mod notify;
@@ -32,6 +33,7 @@ mod providers;
 mod resources;
 mod sessions;
 mod tasks;
+mod ui;
 mod workspaces;
 mod worktrees;
 
@@ -49,6 +51,9 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Integration(command) => integration::run(cli.json, command),
+        Command::Help(args) => help::run(&args.topic),
+        Command::Mcp => crate::mcp::run(ctx?.socket_arg).await,
+        Command::Ui(command) => ctx?.ui(command).await,
         Command::Daemon(DaemonCommand::Start) => ctx?.daemon_start().await,
         Command::Daemon(DaemonCommand::Status) => ctx?.daemon_status().await,
         Command::Daemon(DaemonCommand::Stop {
@@ -118,6 +123,7 @@ impl Ctx {
             client: ClientInfo {
                 kind: ClientKind::Cli,
                 version: env!("CARGO_PKG_VERSION").to_owned(),
+                origin: session_origin(),
             },
         }
     }
@@ -445,6 +451,12 @@ fn print_line(text: &str) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{text}")?;
     Ok(())
+}
+
+/// The Hutan session this process runs in (`HUTAN_SESSION_ID`): sent as the client's origin so
+/// the daemon applies its `[control]` policy to what runs here (protocol 0.21).
+pub(crate) fn session_origin() -> Option<hutan_protocol::messages::Origin> {
+    agent::session_from_env().map(|session_id| hutan_protocol::messages::Origin { session_id })
 }
 
 /// `hutand` next to this binary (also through symlinks), else the first one on `PATH`.

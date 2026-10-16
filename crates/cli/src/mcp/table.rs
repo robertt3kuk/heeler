@@ -1,0 +1,985 @@
+//! The MCP tools of `hutan mcp`, declared once (ADR 0016): each is a name, a description written
+//! for a model, a JSON Schema of its arguments, and how it maps to a daemon request. Adding a
+//! tool is adding a row; the tests check that every row decodes into a real request, that its
+//! schema is valid, and that `read_only` agrees with the daemon's classification.
+
+use serde_json::{Value, json};
+
+/// How a tool reaches the daemon.
+#[derive(Debug, Clone, Copy)]
+pub enum Call {
+    /// One daemon request: the arguments (shaped by `shape`, with `fixed` string fields added)
+    /// are its params.
+    Request {
+        method: &'static str,
+        shape: Option<fn(Value) -> Result<Value, String>>,
+        fixed: &'static [(&'static str, &'static str)],
+    },
+    /// The last lines of a terminal session as text (`session.list`, then the terminal's
+    /// snapshot and scrollback).
+    SessionOutput,
+}
+
+/// One tool.
+pub struct Tool {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Agrees with the daemon's classification of the request: reads run without asking.
+    pub read_only: bool,
+    pub call: Call,
+    pub schema: fn() -> Value,
+}
+
+impl std::fmt::Debug for Tool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tool").field("name", &self.name).finish()
+    }
+}
+
+/// Appends what every mutating tool's description says about approval.
+macro_rules! ask {
+    ($text:literal) => {
+        concat!(
+            $text,
+            " This changes state: depending on the user's Hutan settings the call may wait \
+             (minutes, not seconds) for the user to approve it, and the result says so; if the \
+             user denies it, it fails and must not be retried unless the user asks."
+        )
+    };
+}
+
+const ULID_EXAMPLE: &str = "01K7F3B5N2Q9W8E4R6T1Y0V3KM";
+
+fn id(description: &str) -> Value {
+    json!({"type": "string", "description": description, "examples": [ULID_EXAMPLE]})
+}
+
+fn text(description: &str) -> Value {
+    json!({"type": "string", "description": description})
+}
+
+fn object(properties: Value, required: &[&str]) -> Value {
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+fn session_id() -> Value {
+    id("The session id (`session_list` shows them).")
+}
+
+fn workspace_id(description: &str) -> Value {
+    id(description)
+}
+
+fn task_id() -> Value {
+    id("The task id (`task_list` shows them).")
+}
+
+fn path(description: &str) -> Value {
+    json!({"type": "string", "description": description, "examples": ["/Users/me/project"]})
+}
+
+/// Every tool, in the order `tools/list` shows them.
+pub fn tools() -> &'static [Tool] {
+    TOOLS
+}
+
+pub fn find(name: &str) -> Option<&'static Tool> {
+    TOOLS.iter().find(|tool| tool.name == name)
+}
+
+const fn request(method: &'static str) -> Call {
+    Call::Request {
+        method,
+        shape: None,
+        fixed: &[],
+    }
+}
+
+const fn shaped(method: &'static str, shape: fn(Value) -> Result<Value, String>) -> Call {
+    Call::Request {
+        method,
+        shape: Some(shape),
+        fixed: &[],
+    }
+}
+
+const fn fixed(method: &'static str, fixed: &'static [(&'static str, &'static str)]) -> Call {
+    Call::Request {
+        method,
+        shape: None,
+        fixed,
+    }
+}
+
+static TOOLS: &[Tool] = &[
+    // ---- sessions ---------------------------------------------------------------------------
+    Tool {
+        name: "session_list",
+        description: "List Hutan's sessions (terminals and agent chats): id, title, state, \
+                      working directory, workspace, the agent reported in it. Start here to find \
+                      a session id.",
+        read_only: true,
+        call: request("session.list"),
+        schema: || {
+            object(
+                json!({"workspace_id": workspace_id("Only the sessions of this workspace.")}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "session_create",
+        description: ask!(
+            "Start a new terminal session, running `command` (default: the user's login \
+             shell) in `cwd`. Returns the session with its id; use `session_send_text` to type \
+             into it and `session_output` to read it."
+        ),
+        read_only: false,
+        call: shaped("session.create", shape_session_create),
+        schema: || {
+            object(
+                json!({
+                    "command": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "argv of the process, e.g. [\"cargo\", \"test\"]; empty or absent runs the login shell.",
+                    },
+                    "cwd": path("Working directory (absolute path)."),
+                    "title": text("Name shown for the session."),
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Extra environment variables for this process.",
+                    },
+                    "workspace_id": workspace_id("The workspace to put it in (default: the one of `cwd`, else Home)."),
+                }),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "session_send_text",
+        description: ask!(
+            "Type text into a running terminal session, as if the user typed it; with `enter` \
+             it also presses Return. The text is not echoed back: read the effect with \
+             `session_output`. Not for agent chats (use `chat_send`)."
+        ),
+        read_only: false,
+        call: request("session.send_text"),
+        schema: || {
+            object(
+                json!({
+                    "session_id": session_id(),
+                    "text": text("What to type."),
+                    "enter": {"type": "boolean", "description": "Press Return after the text."},
+                }),
+                &["session_id", "text"],
+            )
+        },
+    },
+    Tool {
+        name: "session_output",
+        description: "Read the last lines of a terminal session as plain text (scrollback plus \
+                      the current screen), oldest first. For agent chats use `chat_log`.",
+        read_only: true,
+        call: Call::SessionOutput,
+        schema: || {
+            object(
+                json!({
+                    "session_id": session_id(),
+                    "lines": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100,
+                              "description": "How many lines from the end."},
+                }),
+                &["session_id"],
+            )
+        },
+    },
+    Tool {
+        name: "session_stop",
+        description: ask!(
+            "Stop a session: its process gets SIGHUP, then SIGKILL after a few seconds. The \
+             session stays listed (stopped) and can be restarted."
+        ),
+        read_only: false,
+        call: request("session.stop"),
+        schema: || object(json!({"session_id": session_id()}), &["session_id"]),
+    },
+    Tool {
+        name: "session_restart",
+        description: ask!(
+            "Start an ended session again (same id, new process in its last directory)."
+        ),
+        read_only: false,
+        call: request("session.restart"),
+        schema: || object(json!({"session_id": session_id()}), &["session_id"]),
+    },
+    Tool {
+        name: "session_rename",
+        description: ask!("Change the title shown for a session."),
+        read_only: false,
+        call: request("session.rename"),
+        schema: || {
+            object(
+                json!({"session_id": session_id(), "title": text("The new title.")}),
+                &["session_id", "title"],
+            )
+        },
+    },
+    Tool {
+        name: "session_kill",
+        description: ask!(
+            "Kill a session now: SIGKILL for its whole process tree (a chat's agent process and \
+             everything below it). Use `session_stop` for a polite stop first; kill only a \
+             session that does not stop. The session ends and stays in the list."
+        ),
+        read_only: false,
+        call: request("session.kill"),
+        schema: || object(json!({"session_id": session_id()}), &["session_id"]),
+    },
+    Tool {
+        name: "process_signal",
+        description: ask!(
+            "Send a signal to one process of a session's process tree (a runaway build, say), \
+             without ending the session. `resources_list` shows the pids. Only processes of \
+             that session can be signalled."
+        ),
+        read_only: false,
+        call: request("process.signal"),
+        schema: || {
+            object(
+                json!({
+                    "session_id": session_id(),
+                    "pid": {"type": "integer", "minimum": 1, "description": "A pid from `resources_list`."},
+                    "signal": {"type": "string", "enum": ["term", "kill", "int", "hup", "stop", "cont"], "description": "`int` is ^C, `term` asks to quit, `kill` cannot be caught, `stop`/`cont` pause and resume."},
+                }),
+                &["session_id", "pid", "signal"],
+            )
+        },
+    },
+    Tool {
+        name: "agent_interrupt",
+        description: ask!(
+            "Stop what an agent of a session is doing without ending the session: the running \
+             turn of a chat, or the ^C a user would type in a terminal agent. With `node_id` \
+             (from the session's agent tree) it interrupts one subagent; `force` follows a \
+             subagent's SIGINT with SIGTERM after two seconds."
+        ),
+        read_only: false,
+        call: request("agent.interrupt"),
+        schema: || {
+            object(
+                json!({
+                    "session_id": session_id(),
+                    "node_id": text("A subagent's node id; default: the main agent."),
+                    "force": {"type": "boolean", "default": false},
+                }),
+                &["session_id"],
+            )
+        },
+    },
+    // ---- chats ------------------------------------------------------------------------------
+    Tool {
+        name: "chat_create",
+        description: ask!(
+            "Open a conversation with another agent as a Hutan session: `agent` is `codex` (the \
+             Codex app server), `omp` or `claude` (those agents over ACP) or `direct` (a model \
+             provider; needs `provider_id`). Returns the \
+             session; send the first message with `chat_send`."
+        ),
+        read_only: false,
+        call: request("chat.create"),
+        schema: || {
+            object(
+                json!({
+                    "cwd": path("Directory the agent works in (absolute, must exist)."),
+                    "agent": {"type": "string", "enum": ["codex", "omp", "claude", "direct"], "description": "Which agent."},
+                    "mode": text("`omp` / `claude` only: a session mode the agent offers (e.g. `plan`)."),
+                    "model": text("A model id (default: the agent's default)."),
+                    "title": text("Name shown for the session."),
+                    "workspace_id": workspace_id("The workspace (default: the one of `cwd`, else Home)."),
+                    "approval_policy": {"type": "string", "enum": ["untrusted", "on-request", "never"], "description": "When the agent asks the user before acting (default on-request)."},
+                    "sandbox": {"type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "description": "What the agent may touch (default workspace-write)."},
+                    "provider_id": text("`direct` only: the provider (`hutan provider ls`)."),
+                    "system_prompt": text("`direct` only: sent to the model ahead of the conversation."),
+                }),
+                &["cwd", "agent"],
+            )
+        },
+    },
+    Tool {
+        name: "chat_send",
+        description: ask!(
+            "Send a message to an agent chat session; the agent starts a turn. Returns the turn \
+             id; read the answer with `chat_log`. Fails while a turn is running."
+        ),
+        read_only: false,
+        call: request("chat.send"),
+        schema: || {
+            object(
+                json!({"session_id": session_id(), "text": text("The message.")}),
+                &["session_id", "text"],
+            )
+        },
+    },
+    Tool {
+        name: "chat_log",
+        description: "Read an agent chat session's journal: messages, tool calls, results, oldest \
+                      first, the newest `limit` events (page back with `before_seq`). Includes \
+                      `last_seq` and `has_more`.",
+        read_only: true,
+        call: shaped("chat.history", shape_chat_log),
+        schema: || {
+            object(
+                json!({
+                    "session_id": session_id(),
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
+                    "before_seq": {"type": "integer", "minimum": 1, "description": "Only events older than this seq (the first seq of the previous page)."},
+                }),
+                &["session_id"],
+            )
+        },
+    },
+    Tool {
+        name: "resources_list",
+        description: "One fresh sample of what Hutan runs: per live session its process tree \
+                      (pid, parent, command, CPU %, memory) with totals and the agents found in \
+                      it, and `hutand` itself. Use it to find a runaway process (then \
+                      `process_signal`) or to see which session is heavy.",
+        read_only: true,
+        call: request("resources.list"),
+        schema: || {
+            object(
+                json!({"session_id": id("Only this session (default: all live sessions).")}),
+                &[],
+            )
+        },
+    },
+    // ---- approvals --------------------------------------------------------------------------
+    Tool {
+        name: "approval_list",
+        description: "List the permission requests that wait for the user (including your own \
+                      pending requests to control Hutan). Only the user answers them; you cannot.",
+        read_only: true,
+        call: request("approval.list"),
+        schema: || object(json!({"session_id": session_id()}), &[]),
+    },
+    // ---- tasks ------------------------------------------------------------------------------
+    Tool {
+        name: "task_add",
+        description: ask!(
+            "Create a task in a workspace: a unit of work with optional dependencies (`depends_on`), \
+             a placement (main checkout or its own git worktree) and a run (a terminal command, \
+             or a Codex chat with the `prompt` as first message). It starts when started with \
+             `task_start`, or by itself with `auto_start` once its dependencies are done."
+        ),
+        read_only: false,
+        call: request("task.create"),
+        schema: || {
+            object(
+                json!({
+                    "workspace_id": workspace_id("The workspace the task belongs to."),
+                    "title": text("One line, at most 200 characters."),
+                    "prompt": text("What to do; the first message of a chat run."),
+                    "depends_on": {"type": "array", "items": task_id(), "description": "Tasks (same workspace) that must be done first."},
+                    "placement": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["main", "worktree"]},
+                            "branch": text("`worktree` only; default task/<slug of the title>."),
+                            "base": text("`worktree` only: where a new branch starts (default HEAD)."),
+                        },
+                        "required": ["kind"],
+                        "additionalProperties": false,
+                    },
+                    "run": {
+                        "description": "What runs: a terminal command, or a chat with an agent.",
+                        "oneOf": [
+                            {"type": "object", "properties": {"kind": {"const": "terminal"}, "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["kind", "argv"], "additionalProperties": false},
+                            {"type": "object", "properties": {"kind": {"const": "chat"}, "agent": {"type": "string", "enum": ["codex"]}}, "required": ["kind", "agent"], "additionalProperties": false},
+                        ],
+                    },
+                    "auto_start": {"type": "boolean", "description": "Start by itself when ready and a slot is free."},
+                }),
+                &["workspace_id", "title"],
+            )
+        },
+    },
+    Tool {
+        name: "task_list",
+        description: "List tasks in dependency order with their state (todo, ready, running, \
+                      blocked, done, failed, cancelled), dependencies and sessions.",
+        read_only: true,
+        call: request("task.list"),
+        schema: || {
+            object(
+                json!({
+                    "workspace_id": workspace_id("Only this workspace's tasks."),
+                    "state": {"type": "string", "enum": ["todo", "ready", "running", "blocked", "done", "failed", "cancelled"]},
+                }),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "task_start",
+        description: ask!(
+            "Start a ready task now: it runs in a new session (in a worktree when its placement \
+             says so). Returns the task and the session."
+        ),
+        read_only: false,
+        call: request("task.start"),
+        schema: || object(json!({"id": task_id()}), &["id"]),
+    },
+    Tool {
+        name: "task_done",
+        description: ask!("Mark a task done (your word overrides what Hutan saw)."),
+        read_only: false,
+        call: fixed("task.update", &[("state", "done")]),
+        schema: || object(json!({"id": task_id()}), &["id"]),
+    },
+    Tool {
+        name: "task_cancel",
+        description: ask!("Give a task up; stops its session when it is running."),
+        read_only: false,
+        call: fixed("task.update", &[("state", "cancelled")]),
+        schema: || object(json!({"id": task_id()}), &["id"]),
+    },
+    Tool {
+        name: "task_reset",
+        description: ask!(
+            "Run an ended task again: back to todo, earlier sessions stay in its history."
+        ),
+        read_only: false,
+        call: fixed("task.update", &[("state", "todo")]),
+        schema: || object(json!({"id": task_id()}), &["id"]),
+    },
+    // ---- worktrees --------------------------------------------------------------------------
+    Tool {
+        name: "worktree_new",
+        description: ask!(
+            "Create a git worktree for a branch (a new branch from `base`, or the existing one) \
+             so work can run isolated from the main checkout. Returns its path."
+        ),
+        read_only: false,
+        call: request("worktree.create"),
+        schema: || {
+            object(
+                json!({
+                    "workspace_id": workspace_id("The workspace whose repository it is."),
+                    "branch": text("Branch name."),
+                    "base": text("Where a new branch starts (default HEAD)."),
+                    "repo": path("A directory inside the repository (default: the workspace's repository)."),
+                    "path": path("Where to create it (absolute, not existing; default beside the repository)."),
+                }),
+                &["workspace_id", "branch"],
+            )
+        },
+    },
+    Tool {
+        name: "worktree_list",
+        description: "List the git worktrees of a workspace's repositories: branch, path, dirty \
+                      or not, live sessions inside.",
+        read_only: true,
+        call: request("worktree.list"),
+        schema: || {
+            object(
+                json!({"workspace_id": workspace_id("Only this workspace's repositories.")}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "worktree_rm",
+        description: ask!(
+            "Remove a git worktree. Refuses the main worktree, one with live sessions, and one \
+             with uncommitted changes unless `force`. `delete_branch` also deletes the branch \
+             when merged."
+        ),
+        read_only: false,
+        call: request("worktree.remove"),
+        schema: || {
+            object(
+                json!({
+                    "path": path("The worktree's directory."),
+                    "force": {"type": "boolean", "description": "Remove despite uncommitted changes."},
+                    "delete_branch": {"type": "boolean"},
+                }),
+                &["path"],
+            )
+        },
+    },
+    // ---- workspaces and projects ------------------------------------------------------------
+    Tool {
+        name: "workspace_list",
+        description: "List workspaces and projects: id, name, `kind` (`home`, `project` - a folder \
+                      or git repository, made automatically - or `workspace` - a group of \
+                      projects the user made), `parent_id` (the workspace a project is in), \
+                      the project's folder, pinned, how many sessions are live.",
+        read_only: true,
+        call: request("workspace.list"),
+        schema: || object(json!({}), &[]),
+    },
+    Tool {
+        name: "project_recent",
+        description: "List recently opened projects (folders), newest first.",
+        read_only: true,
+        call: request("workspace.recent"),
+        schema: || {
+            object(
+                json!({"limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "workspace_create",
+        description: ask!(
+            "Create a workspace: a named group of projects. `paths` are folders whose projects \
+             become members (a project is made for a folder that has none); `project_ids` move \
+             existing projects in."
+        ),
+        read_only: false,
+        call: fixed("workspace.create", &[("created_by", "agent")]),
+        schema: || {
+            object(
+                json!({
+                    "name": text("The workspace's name."),
+                    "paths": {"type": "array", "items": path("A folder."), "description": "Folders whose projects join the workspace."},
+                    "project_ids": {"type": "array", "items": id("A project id (`workspace_list`, kind `project`)."), "description": "Existing projects to move in."},
+                }),
+                &["name"],
+            )
+        },
+    },
+    Tool {
+        name: "workspace_assign",
+        description: ask!(
+            "Put a project into a workspace, or out of its workspace when `workspace_id` is \
+             left out. Both ids come from `workspace_list`."
+        ),
+        read_only: false,
+        call: request("workspace.assign"),
+        schema: || {
+            object(
+                json!({
+                    "project_id": id("The project (kind `project`)."),
+                    "workspace_id": workspace_id("The workspace (kind `workspace`); omit to ungroup the project."),
+                }),
+                &["project_id"],
+            )
+        },
+    },
+    Tool {
+        name: "workspace_delete",
+        description: ask!(
+            "Delete a workspace (a group). Its projects stay, ungrouped. A workspace with live \
+             sessions of its own cannot be deleted."
+        ),
+        read_only: false,
+        call: request("workspace.delete"),
+        schema: || {
+            object(
+                json!({"workspace_id": workspace_id("The workspace (kind `workspace`).")}),
+                &["workspace_id"],
+            )
+        },
+    },
+    Tool {
+        name: "workspace_open",
+        description: ask!(
+            "Open a folder as a project: finds the workspace that contains it, else creates one \
+             (for the git root when inside a repository). Returns the workspace and whether it \
+             was created. To show it in the window use `ui_run` with `workbench::OpenWorkspace`."
+        ),
+        read_only: false,
+        call: fixed("workspace.open", &[("created_by", "agent")]),
+        schema: || {
+            object(
+                json!({"path": path("An existing folder (absolute).")}),
+                &["path"],
+            )
+        },
+    },
+    // ---- notifications ----------------------------------------------------------------------
+    Tool {
+        name: "notification_list",
+        description: "List the pending notification intents: things that need the user (an \
+                      approval, a blocked agent, a finished task).",
+        read_only: true,
+        call: request("notify.list"),
+        schema: || object(json!({}), &[]),
+    },
+    // ---- search -----------------------------------------------------------------------------
+    Tool {
+        name: "history_search",
+        description: "Search past sessions: Hutan terminal blocks and chats, and Claude Code, \
+                      Codex and OMP transcripts. Fails with invalid_state while the user has not \
+                      enabled the history index.",
+        read_only: true,
+        call: request("history.search"),
+        schema: || {
+            object(
+                json!({
+                    "query": text("Words that must all match; \"quoted phrases\" match as phrases."),
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                    "sources": {"type": "array", "items": {"type": "string", "enum": ["hutan", "claude", "codex", "omp"]}},
+                    "project": text("Only sessions in this directory or below."),
+                }),
+                &["query"],
+            )
+        },
+    },
+    // ---- the window -------------------------------------------------------------------------
+    Tool {
+        name: "ui_actions",
+        description: "List what the Hutan desktop window can do: the actions (the same ones as \
+                      its command palette, with their argument schemas) and the settings (key, \
+                      type, current value, layers). Use it before `ui_run` or `ui_set_setting`. \
+                      Fails with invalid_state when no window is open.",
+        read_only: true,
+        call: request("ui.actions"),
+        schema: || {
+            object(
+                json!({"window_id": text("Default: the window used most recently.")}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "ui_layout",
+        description: "Show the window's layout: preset, docks and their panels, the panes with \
+                      their tabs (terminals, chats, panels, with session ids), what is focused \
+                      or zoomed, appearance.",
+        read_only: true,
+        call: request("ui.layout"),
+        schema: || {
+            object(
+                json!({"window_id": text("Default: the window used most recently.")}),
+                &[],
+            )
+        },
+    },
+    Tool {
+        name: "ui_run",
+        description: ask!(
+            "Run an action in the Hutan window, e.g. `workbench::SplitRight`, \
+             `workbench::ApplyPreset` with {\"name\": \"focus\"}, `workbench::OpenSession` with \
+             {\"id\": \"<session id>\"}. `ui_actions` lists the ids and each one's `args_schema`."
+        ),
+        read_only: false,
+        call: request("ui.run"),
+        schema: || {
+            object(
+                json!({
+                    "action": text("The action id from `ui_actions`."),
+                    "args": {"type": "object", "description": "Arguments matching the action's args_schema."},
+                    "window_id": text("Default: the window used most recently."),
+                }),
+                &["action"],
+            )
+        },
+    },
+    Tool {
+        name: "ui_set_setting",
+        description: ask!(
+            "Change a Hutan setting in the user's `settings.toml`; the window validates the value \
+             against the setting's type and applies it at once. `ui_actions` lists the settings \
+             with their types and the layers each can be written to."
+        ),
+        read_only: false,
+        call: shaped("ui.set_setting", shape_set_setting),
+        schema: || {
+            object(
+                json!({
+                    "namespace": text("e.g. `terminal`, `panels.sessions`."),
+                    "key": text("Dotted key inside the namespace, e.g. `cursor.style`."),
+                    "value": {"description": "The new value, of the setting's type."},
+                    "layer": {"type": "string", "enum": ["user", "workspace", "project"], "default": "user", "description": "The settings layer (default `user`; the `layers` of a setting in `ui_actions` say which it takes)."},
+                    "window_id": text("Default: the window used most recently."),
+                }),
+                &["namespace", "key", "value"],
+            )
+        },
+    },
+];
+
+/// `layer` defaults to `user`.
+fn shape_set_setting(args: Value) -> Result<Value, String> {
+    let Value::Object(mut args) = args else {
+        return Err("arguments must be an object".to_owned());
+    };
+    args.entry("layer").or_insert_with(|| json!("user"));
+    Ok(Value::Object(args))
+}
+
+fn shape_session_create(args: Value) -> Result<Value, String> {
+    let Value::Object(mut args) = args else {
+        return Err("arguments must be an object".to_owned());
+    };
+    let mut params = serde_json::Map::new();
+    if let Some(workspace) = args.remove("workspace_id") {
+        params.insert("workspace_id".to_owned(), workspace);
+    }
+    params.insert("kind".to_owned(), json!("terminal"));
+    for key in ["command", "cwd", "env", "title"] {
+        if let Some(value) = args.remove(key) {
+            params.insert(key.to_owned(), value);
+        }
+    }
+    if let Some(unknown) = args.keys().next() {
+        return Err(format!("unknown argument `{unknown}`"));
+    }
+    Ok(Value::Object(params))
+}
+
+/// `chat_log` defaults to 50 events: the protocol's 200 are more than a model wants to read.
+fn shape_chat_log(args: Value) -> Result<Value, String> {
+    let Value::Object(mut args) = args else {
+        return Err("arguments must be an object".to_owned());
+    };
+    args.entry("limit").or_insert(json!(50));
+    Ok(Value::Object(args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A document made of the tools' schemas is valid JSON Schema (draft 2020-12 vocabulary as
+    /// far as the structure goes): every schema is an object schema, `required` names declared
+    /// properties, and nested schemas have a known `type` or a composition keyword.
+    fn check_schema(path: &str, schema: &Value) {
+        let Some(object) = schema.as_object() else {
+            panic!("{path}: a schema is an object, got {schema}");
+        };
+        const TYPES: [&str; 7] = [
+            "object", "array", "string", "integer", "number", "boolean", "null",
+        ];
+        if let Some(kind) = object.get("type") {
+            let kinds: Vec<&str> = match kind {
+                Value::String(kind) => vec![kind.as_str()],
+                Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
+                other => panic!("{path}: bad type {other}"),
+            };
+            assert!(!kinds.is_empty(), "{path}: empty type");
+            for kind in kinds {
+                assert!(TYPES.contains(&kind), "{path}: unknown type `{kind}`");
+            }
+        }
+        if let Some(properties) = object.get("properties") {
+            let properties = properties
+                .as_object()
+                .unwrap_or_else(|| panic!("{path}: properties is an object"));
+            for (name, property) in properties {
+                check_schema(&format!("{path}.{name}"), property);
+            }
+            if let Some(required) = object.get("required") {
+                for name in required.as_array().expect("required is an array") {
+                    let name = name.as_str().expect("required names are strings");
+                    assert!(
+                        properties.contains_key(name),
+                        "{path}: required `{name}` is not a property"
+                    );
+                }
+            }
+        }
+        if let Some(items) = object.get("items") {
+            check_schema(&format!("{path}[]"), items);
+        }
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            if let Some(variants) = object.get(keyword) {
+                for (i, variant) in variants
+                    .as_array()
+                    .expect("composition is an array")
+                    .iter()
+                    .enumerate()
+                {
+                    check_schema(&format!("{path}.{keyword}[{i}]"), variant);
+                }
+            }
+        }
+        if let Some(extra) = object.get("additionalProperties")
+            && extra.is_object()
+        {
+            check_schema(&format!("{path}.*"), extra);
+        }
+    }
+
+    #[test]
+    fn names_are_unique_and_schemas_are_object_schemas() {
+        let mut seen = std::collections::BTreeSet::new();
+        for tool in tools() {
+            assert!(seen.insert(tool.name), "duplicate tool {}", tool.name);
+            assert!(
+                tool.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{}",
+                tool.name
+            );
+            let schema = (tool.schema)();
+            assert_eq!(schema["type"], "object", "{}", tool.name);
+            check_schema(tool.name, &schema);
+            assert!(
+                tool.description.len() > 40,
+                "{}: describe it for a model",
+                tool.name
+            );
+        }
+    }
+
+    /// An example argument object for `schema`: required properties only, from `examples`,
+    /// `enum`, `const` or a value of the declared type.
+    fn example(schema: &Value) -> Value {
+        if let Some(first) = schema.get("examples").and_then(|e| e.get(0)) {
+            return first.clone();
+        }
+        if let Some(first) = schema.get("enum").and_then(|e| e.get(0)) {
+            return first.clone();
+        }
+        if let Some(constant) = schema.get("const") {
+            return constant.clone();
+        }
+        if let Some(first) = schema.get("oneOf").and_then(|v| v.get(0)) {
+            return example(first);
+        }
+        match schema.get("type").and_then(Value::as_str) {
+            Some("object") => {
+                let mut out = serde_json::Map::new();
+                let properties = schema.get("properties").and_then(Value::as_object);
+                for name in schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    if let Some(property) = properties.and_then(|p| p.get(name)) {
+                        out.insert(name.to_owned(), example(property));
+                    }
+                }
+                Value::Object(out)
+            }
+            Some("array") => {
+                let item = schema.get("items").map_or(Value::Null, example);
+                Value::Array(vec![item])
+            }
+            Some("integer") | Some("number") => json!(1),
+            Some("boolean") => json!(true),
+            Some("string") => json!("x"),
+            _ => json!("x"),
+        }
+    }
+
+    pub(crate) fn params_for(tool: &Tool) -> Option<(&'static str, Value)> {
+        let Call::Request {
+            method,
+            shape,
+            fixed,
+        } = tool.call
+        else {
+            return None;
+        };
+        let mut params = example(&(tool.schema)());
+        if let Some(shape) = shape {
+            params = shape(params).expect("the example shapes");
+        }
+        if let Value::Object(map) = &mut params {
+            for (key, value) in fixed {
+                map.insert((*key).to_owned(), json!(value));
+            }
+        }
+        Some((method, params))
+    }
+
+    #[test]
+    fn every_tool_maps_to_a_real_daemon_request() {
+        for tool in tools() {
+            let Some((method, params)) = params_for(tool) else {
+                continue;
+            };
+            let request = hutan_protocol::Request::decode(method, params.clone())
+                .unwrap_or_else(|e| panic!("{}: {method} {params}: {}", tool.name, e.message));
+            let (wire, _) = request.encode().unwrap();
+            assert_eq!(wire, method, "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn read_only_agrees_with_the_daemons_classification() {
+        use hutan_daemon::control::Access;
+        for tool in tools() {
+            let Some((method, params)) = params_for(tool) else {
+                // `session_output` reads sessions and terminals.
+                assert!(tool.read_only, "{}", tool.name);
+                continue;
+            };
+            let request = hutan_protocol::Request::decode(method, params).unwrap();
+            let access = hutan_daemon::router::classify(&request);
+            assert_ne!(
+                access,
+                Access::UserOnly,
+                "{}: an agent cannot use a user-only request",
+                tool.name
+            );
+            assert_eq!(
+                tool.read_only,
+                access == Access::Read,
+                "{}: read_only disagrees with the daemon's classification of {method}",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_brief_s_tool_families_are_all_there() {
+        for name in [
+            "session_list",
+            "session_create",
+            "session_send_text",
+            "session_output",
+            "session_stop",
+            "session_restart",
+            "session_rename",
+            "chat_create",
+            "chat_send",
+            "chat_log",
+            "approval_list",
+            "task_add",
+            "task_list",
+            "task_start",
+            "task_done",
+            "task_cancel",
+            "task_reset",
+            "worktree_new",
+            "worktree_list",
+            "worktree_rm",
+            "workspace_list",
+            "workspace_create",
+            "workspace_assign",
+            "workspace_delete",
+            "workspace_open",
+            "notification_list",
+            "history_search",
+            "ui_actions",
+            "ui_layout",
+            "ui_run",
+            "ui_set_setting",
+            "resources_list",
+            "session_kill",
+            "process_signal",
+            "agent_interrupt",
+        ] {
+            assert!(find(name).is_some(), "missing tool {name}");
+        }
+        assert!(
+            tools().iter().all(|t| t.name != "approval_respond"),
+            "agents never answer approvals"
+        );
+    }
+}

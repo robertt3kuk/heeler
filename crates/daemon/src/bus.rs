@@ -196,6 +196,22 @@ impl EventBus {
         Ok(seq)
     }
 
+    /// Sends `event` to one connection only, with a seq of its own (so the client's "newer than
+    /// what I applied" rule lets it through) but outside the replay ring and the internal
+    /// consumers: other clients never see it, and a reconnecting client never gets it replayed.
+    /// For requests aimed at one client (`ui.command`). `false` when it could not be queued.
+    pub fn publish_to(&self, conn: &ConnHandle, event: &Event) -> Result<bool, PublishError> {
+        let mut inner = self.lock();
+        let seq = inner.last.next();
+        let frame = ControlMessage::event(self.epoch, seq, event)?.to_frame()?;
+        let len = frame.payload.len();
+        if len > MAX_PAYLOAD {
+            return Err(PublishError::TooLarge { len });
+        }
+        inner.last = seq;
+        Ok(conn.enqueue(Outbound::Frame(frame)))
+    }
+
     /// Completes a handshake atomically with respect to publishing: queues the welcome built by
     /// `welcome`, then (if the client can resume) every missed event, and subscribes the
     /// connection so no event is lost or duplicated in between.

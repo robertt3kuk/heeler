@@ -337,7 +337,9 @@ impl SessionsStore {
             | Notice::TaskUpdated { .. }
             | Notice::TaskRemoved { .. }
             // The resources panel listens for itself.
-            | Notice::ResourcesUpdated { .. } => {}
+            | Notice::ResourcesUpdated { .. }
+            // `workbench/remote.rs` follows `Connection::notices` itself.
+            | Notice::UiCommand { .. } => {}
             // A login or logout session of a harness ended: whoever lists the accounts asks
             // again.
             Notice::AccountsChanged { harness } => cx.emit(AccountsChanged {

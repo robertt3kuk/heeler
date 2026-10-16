@@ -18,6 +18,7 @@ use crate::args::IntegrationTarget;
 use crate::error::CliError;
 
 mod hooks_json;
+pub mod mcp;
 
 /// The script both hook-based integrations run (`integrations/hooks/`).
 const HOOK_SCRIPT: &str = include_str!("../../../../integrations/hooks/hutan-agent-state.sh");

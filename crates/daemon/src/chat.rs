@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use hutan_agents::{
@@ -47,6 +47,7 @@ use crate::bus::EventBus;
 use crate::context::Attached;
 use crate::direct::{DirectSession, Target};
 use crate::harness::{Harnesses, is_harness_agent};
+use crate::mcp_wiring::{McpServerSpec, McpWiring};
 use crate::partial::{Flush, PARTIAL_INTERVAL, Partials};
 use crate::providers::ProviderService;
 use crate::registry::{self, ChatNotifier};
@@ -107,6 +108,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Pending approvals that are not an agent's tool permissions (the control gate's, protocol
+/// 0.21), offered through the same `approval.*` requests, notification intents and events.
+pub trait ApprovalSource: Send + Sync + std::fmt::Debug {
+    /// The pending approvals, optionally of one session.
+    fn list(&self, session: Option<SessionId>) -> Vec<ApprovalInfo>;
+    /// Answers `approval` when it is the source's: `None` when it is not.
+    fn respond(
+        &self,
+        approval: ApprovalId,
+        option_id: String,
+        client: Option<ClientKind>,
+    ) -> Option<Result<(), ErrorBody>>;
+}
+
 #[derive(Debug)]
 struct Live {
     id: SessionId,
@@ -144,6 +159,8 @@ pub struct ChatManager {
     approvals: Mutex<HashMap<ApprovalId, Pending>>,
     /// Model catalogs by agent.
     models: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
+    external: Mutex<Option<Weak<dyn ApprovalSource>>>,
+    mcp: OnceLock<McpWiring>,
 }
 
 /// Why a subagent thread could not be interrupted.
@@ -227,12 +244,49 @@ impl ChatManager {
             live: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
             models: Mutex::new(HashMap::new()),
+            external: Mutex::new(None),
+            mcp: OnceLock::new(),
         })
     }
 
     /// The model providers of this daemon.
     pub(crate) fn providers(&self) -> &Arc<ProviderService> {
         &self.providers
+    }
+
+    /// The pending approvals of another service (the control gate, protocol 0.21) that
+    /// `approval.list` and `approval.respond` serve next to the agents' own. Weak: the service
+    /// owns the registry that owns this manager.
+    pub(crate) fn set_external_approvals(&self, source: Weak<dyn ApprovalSource>) {
+        *lock(&self.external) = Some(source);
+    }
+
+    fn external_approvals(&self) -> Option<Arc<dyn ApprovalSource>> {
+        lock(&self.external).as_ref().and_then(Weak::upgrade)
+    }
+
+    /// How `hutan mcp` is described to the agents of this daemon (protocol 0.21): set once at
+    /// start from `[control] mcp`.
+    pub fn set_mcp_wiring(&self, wiring: McpWiring) {
+        let _ = self.mcp.set(wiring);
+    }
+
+    /// The MCP server to give the agent of `session`: `None` when `[control] mcp = false`.
+    /// Codex gets it through [`Self::codex_for`], the ACP harnesses (OMP, Claude Code) through
+    /// [`Self::start_harness`] as [`McpServerSpec::acp_server`]. The session id is passed
+    /// explicitly so the server's requests are attributed to that session (a chat session is
+    /// always an agent's, `control::is_agent_session`).
+    pub fn mcp_server(&self, session: SessionId) -> Option<McpServerSpec> {
+        self.mcp.get().and_then(|wiring| wiring.server_for(session))
+    }
+
+    /// The Codex command line for the agent of `session`, with `hutan mcp` registered.
+    fn codex_for(&self, session: SessionId) -> CodexConfig {
+        let mut codex = self.codex.clone();
+        if let Some(server) = self.mcp_server(session) {
+            codex.args.extend(server.codex_overrides());
+        }
+        codex
     }
 
     /// Whether the session has a running backend (not merely a record).
@@ -280,13 +334,14 @@ impl ChatManager {
             sandbox: spec.sandbox,
             resume_thread_id: spec.thread_id.clone(),
         };
+        let codex = self.codex_for(id);
         let CodexSession {
             adapter,
             started,
             events,
-        } = CodexAppServerAdapter::start(&self.codex, &start)
+        } = CodexAppServerAdapter::start(&codex, &start)
             .await
-            .map_err(|e| provider_error(&e, &self.codex.program))?;
+            .map_err(|e| provider_error(&e, &codex.program))?;
         let live = Arc::new(Live {
             id,
             backend: Backend::Agent(adapter),
@@ -326,19 +381,18 @@ impl ChatManager {
             sandbox: spec.sandbox,
             resume_thread_id: spec.thread_id.clone(),
         };
+        // The user's `[mcp.*]` servers, and Hutan's own (`[control] mcp`), which carries this
+        // session's id so that its requests are attributed to it.
+        let mut servers = self.harnesses.mcp_servers().to_vec();
+        servers.extend(self.mcp_server(id).map(|server| server.acp_server()));
         let AcpSession {
             adapter,
             started,
             events,
             models,
-        } = AcpAdapter::start(
-            &config,
-            &start,
-            spec.mode.as_deref(),
-            self.harnesses.mcp_servers(),
-        )
-        .await
-        .map_err(|e| harness_error(&e, &spec.agent, &config.program))?;
+        } = AcpAdapter::start(&config, &start, spec.mode.as_deref(), &servers)
+            .await
+            .map_err(|e| harness_error(&e, &spec.agent, &config.program))?;
         if !models.is_empty() {
             lock(&self.models).insert(spec.agent.clone(), (Instant::now(), models));
         }
@@ -625,6 +679,9 @@ impl ChatManager {
             .map(|p| p.info.clone())
             .filter(|info| session.is_none_or(|s| s == info.session_id))
             .collect();
+        if let Some(source) = self.external_approvals() {
+            approvals.extend(source.list(session));
+        }
         approvals.sort_by(|a, b| {
             a.requested_at_ms
                 .cmp(&b.requested_at_ms)
@@ -640,6 +697,11 @@ impl ChatManager {
         option_id: String,
         client: Option<ClientKind>,
     ) -> Result<(), ErrorBody> {
+        if let Some(source) = self.external_approvals()
+            && let Some(answered) = source.respond(approval, option_id.clone(), client)
+        {
+            return answered;
+        }
         let session = {
             let mut approvals = lock(&self.approvals);
             let Some(pending) = approvals.get_mut(&approval) else {

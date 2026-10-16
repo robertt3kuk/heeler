@@ -107,6 +107,7 @@ fn dead_end_options() -> ConnectOptions {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: "test".into(),
+            origin: None,
         },
     }
 }

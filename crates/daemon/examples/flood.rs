@@ -61,6 +61,7 @@ async fn run(home: &std::path::Path) -> Result<()> {
             client: ClientInfo {
                 kind: ClientKind::Cli,
                 version: "flood".to_owned(),
+                origin: None,
             },
         })
         .await

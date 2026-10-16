@@ -46,6 +46,23 @@ What `install` does, and only this:
 
 Codex asks you to review new or changed hooks the first time it starts after an install (its `hooks.state` trust list in `config.toml`); Hutan does not touch that file, so approve the Hutan hooks there once.
 
+## Letting an agent drive Hutan: `--mcp`
+
+```sh
+hutan integration install   codex|claude|omp --mcp [--dir DIR]
+hutan integration status    codex|claude|omp --mcp [--dir DIR]
+hutan integration uninstall codex|claude|omp --mcp [--dir DIR]
+```
+
+With `--mcp` the command manages the `hutan mcp` server (`docs/control.md`) in the agent's own MCP configuration, **instead of** the hooks; without it no server entry is written or removed. The directory is the same as for the hooks.
+
+- Where: `[mcp_servers.hutan]` in Codex's `config.toml`; `mcpServers.hutan` in Claude Code's `.claude.json` (next to `~/.claude/`, or inside `$CLAUDE_CONFIG_DIR` / `--dir` when that is not a `.claude` directory) and in OMP's `mcp.json`. The entry runs the `hutan` executable with `mcp`, and asks the host to wait up to 700 s for a tool (an approval can take minutes).
+- Only Hutan's entry: it is marked by `env.HUTAN_MCP_ENTRY = "hutan-managed"`. A `hutan` server without the marker is never overwritten or removed (the install fails and says so; nothing changes). Every other key and server stays; a TOML file keeps its comments.
+- The file is copied to `<name>.hutan-<unix ms>.bak` before it changes; a file that does not parse is left alone and the command fails. Idempotent: a second install changes nothing and writes no backup. `uninstall` removes the entry and the table or file it leaves empty. `status` says `installed`, `partial` (the entry runs another `hutan` than this one) or `not installed`.
+- Hutan never writes these files by itself, and the tests use temporary directories only. The OMP and Claude Code locations follow their documentation and OMP's schema; they were not checked against a live install.
+
+Agents Hutan starts itself (Codex chats, ACP harnesses) get the server without any of this, while `[control] mcp = true`. Whether the agent's requests are gated depends on where it runs: see `docs/control.md` § Who is asking — in short, an agent that reported itself in a terminal (the hooks above) or a chat session is gated by `[control]`; a plain shell, and a server started outside any Hutan session, is the user.
+
 ## What each integration reports
 
 | Agent | Event | Report | Resume command |
@@ -91,4 +108,4 @@ Not yet: reconstructing trees from OMP directories, Claude `subagents/` files or
 
 Nothing here runs with more rights than the agent has. The hook script is a few lines of `sh` that checks `HUTAN_ENV`, finds `HUTAN_BIN`, and calls `hutan agent hook`; the daemon validates every resume command before it stores it. No credentials pass through any of it.
 
-Tests: `crates/daemon/tests/agent.rs` (protocol semantics, restart resumes a fake agent through its reported argv), `crates/cli/tests/{agent,integration,omp_extension}.rs` (CLI against a real daemon; installs on temporary copies of real-shaped configuration; the OMP extension under Bun, skipped when Bun is missing).
+Tests: `crates/daemon/tests/agent.rs` (protocol semantics, restart resumes a fake agent through its reported argv), `crates/cli/tests/{agent,integration,integration_mcp,omp_extension}.rs` (CLI against a real daemon; installs on temporary copies of real-shaped configuration; the OMP extension under Bun, skipped when Bun is missing).

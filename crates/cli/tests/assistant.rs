@@ -89,6 +89,7 @@ impl Env {
             client: ClientInfo {
                 kind: ClientKind::Cli,
                 version: "test".into(),
+                origin: None,
             },
         })
         .await

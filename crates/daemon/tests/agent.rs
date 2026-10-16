@@ -410,6 +410,7 @@ async fn sessions_get_the_hutan_environment_and_the_daemon_wins_over_the_spec() 
         client: hutan_protocol::messages::ClientInfo {
             kind: hutan_protocol::messages::ClientKind::Cli,
             version: "test".into(),
+            origin: None,
         },
     })
     .await

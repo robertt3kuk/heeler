@@ -22,6 +22,7 @@ use crate::accounts::AccountService;
 use crate::assistant::AssistantService;
 use crate::bus::EventBus;
 use crate::conn::{ConnHandle, ConnId};
+use crate::control::{Access, ControlService};
 use crate::history::HistoryService;
 use crate::notify::NotifyService;
 use crate::providers::ProviderService;
@@ -29,7 +30,9 @@ use crate::registry::RegistryHandle;
 use crate::resources::{Actor, ResourceService, audit};
 use crate::tasks::TaskService;
 use crate::terminals::TerminalHub;
+use crate::uihub::UiHub;
 use crate::worktrees::WorktreeService;
+use hutan_protocol::ui::{SessionSendText, SessionTextSent};
 
 /// The services a router hands requests to besides the registry and the terminal hub.
 #[derive(Debug)]
@@ -41,6 +44,8 @@ pub struct Services {
     pub tasks: Arc<TaskService>,
     pub accounts: Arc<AccountService>,
     pub resources: Arc<ResourceService>,
+    pub control: Arc<ControlService>,
+    pub ui: Arc<UiHub>,
 }
 
 #[derive(Debug)]
@@ -58,6 +63,8 @@ pub struct Router {
     started: Instant,
     shutdown: CancellationToken,
     clients: Arc<AtomicU32>,
+    control: Arc<ControlService>,
+    ui: Arc<UiHub>,
     /// The shutdown in progress asked to drop the stopped sessions from the restore set.
     forget: AtomicBool,
 }
@@ -85,12 +92,30 @@ impl Router {
             started: Instant::now(),
             shutdown,
             clients,
+            control: services.control,
+            ui: services.ui,
             forget: AtomicBool::new(false),
         }
     }
 
     /// Runs one request from an already handshaken connection and returns the response result.
     pub async fn dispatch(&self, conn: &ConnHandle, request: Request) -> Result<Value, ErrorBody> {
+        // A connection that runs inside an agent's session (a chat, or a terminal an agent
+        // reported itself in) is an agent's: the policy of `[control]` decides before anything
+        // runs. A plain shell session is the user.
+        let Some(origin) = self.agent_origin(conn).await else {
+            return self.run(conn, request).await;
+        };
+        let gated = self
+            .control
+            .gate(origin, conn.client_kind(), &request)
+            .await?;
+        let result = self.run(conn, request).await?;
+        Ok(gated.annotate(result))
+    }
+
+    /// Runs one request, whoever asked.
+    async fn run(&self, conn: &ConnHandle, request: Request) -> Result<Value, ErrorBody> {
         match request {
             Request::Hello(_) => Err(ErrorBody::new(
                 ErrorCode::BadRequest,
@@ -319,6 +344,19 @@ impl Router {
             }
             Request::ProviderModels(req) => ok(&self.providers().models(&req.provider_id).await?),
             Request::ProviderDiscover(_) => ok(&self.providers().discover().await?),
+            Request::SessionSendText(req) => ok(&self.send_text(req).await?),
+            Request::UiPublish(req) => {
+                self.ui.publish(conn, req)?;
+                ok(&Empty {})
+            }
+            Request::UiActions(req) => ok(&self.ui.actions(&req)?),
+            Request::UiLayout(req) => ok(&self.ui.layout(&req)?),
+            Request::UiRun(req) => ok(&self.ui.run(req).await?),
+            Request::UiSetSetting(req) => ok(&self.ui.set_setting(req).await?),
+            Request::UiCommandResult(req) => {
+                self.ui.command_result(conn.id(), req)?;
+                ok(&Empty {})
+            }
         }
     }
 
@@ -338,15 +376,89 @@ impl Router {
         }
     }
 
+    /// `session.send_text`: types into the terminal of a live terminal session.
+    async fn send_text(&self, req: SessionSendText) -> Result<SessionTextSent, ErrorBody> {
+        if req.text.len() > hutan_protocol::chat::SEND_MAX_BYTES {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                format!(
+                    "text is {} bytes; at most {} are accepted",
+                    req.text.len(),
+                    hutan_protocol::chat::SEND_MAX_BYTES
+                ),
+            ));
+        }
+        let list = self
+            .registry
+            .list_sessions(hutan_protocol::messages::SessionListFilter::default())
+            .await?;
+        let session = list
+            .sessions
+            .iter()
+            .find(|s| s.id == req.session_id)
+            .ok_or_else(|| {
+                ErrorBody::new(
+                    ErrorCode::NotFound,
+                    format!("session {} not found", req.session_id),
+                )
+            })?;
+        if session.chat.is_some() {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("session {} is a chat: use `chat.send`", session.id),
+            ));
+        }
+        let Some(terminal) = session.terminal_id.filter(|_| session.state.is_live()) else {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("session {} is not running", session.id),
+            ));
+        };
+        let mut bytes = req.text.into_bytes();
+        if req.enter {
+            bytes.push(b'\r');
+        }
+        let sent = bytes.len() as u64;
+        if self.hub.input(terminal, Bytes::from(bytes)).await {
+            self.registry.note_activity(terminal);
+        }
+        Ok(SessionTextSent { bytes: sent })
+    }
+
     /// Routes a kind=2 frame to its terminal. Only a malformed frame is an error (the caller
     /// closes the connection); unknown or ended terminals just drop the bytes. Waits while the
     /// terminal's input queue is full.
-    pub async fn input(&self, frame: &Frame) -> Result<(), ProtocolError> {
+    pub async fn input(&self, conn: &ConnHandle, frame: &Frame) -> Result<(), ProtocolError> {
         let (terminal, bytes): (TerminalId, Bytes) = frame.split_terminal()?;
+        // Input frames have no response to carry an approval's outcome: an agent-originated
+        // connection types only where policy (or an earlier "allow for this session" of
+        // `session.send_text`) lets it.
+        if let Some(origin) = self.agent_origin(conn).await
+            && !self.control.input_allowed(origin)
+        {
+            tracing::debug!(
+                conn = %conn.id(),
+                terminal = %terminal,
+                "terminal input of an agent-originated connection dropped: not allowed by [control]"
+            );
+            return Ok(());
+        }
         if self.hub.input(terminal, bytes).await {
             self.registry.note_activity(terminal);
         }
         Ok(())
+    }
+
+    /// Whether `session` exists and is live: what a client's claimed `origin` must satisfy.
+    pub async fn origin_is_live(&self, session: hutan_core::SessionId) -> bool {
+        self.control.origin_is_live(session).await
+    }
+
+    /// The session whose agent this connection is, when it is one: the verified `origin`
+    /// while that session is an agent's (see [`crate::control::is_agent_session`]).
+    async fn agent_origin(&self, conn: &ConnHandle) -> Option<hutan_core::SessionId> {
+        let origin = conn.origin()?;
+        self.control.is_agent_origin(origin).await.then_some(origin)
     }
 
     /// Drops everything the closed connection had attached.
@@ -354,6 +466,7 @@ impl Router {
         self.hub.connection_closed(conn);
         self.notify.connection_closed(conn);
         self.resources.unsubscribe(conn);
+        self.ui.connection_closed(conn);
     }
 
     /// Stops the history indexer, applying what it has queued; the index stays on disk.
@@ -374,4 +487,209 @@ impl Router {
 fn ok<T: Serialize>(value: &T) -> Result<Value, ErrorBody> {
     serde_json::to_value(value)
         .map_err(|e| ErrorBody::new(ErrorCode::Internal, format!("encoding result: {e}")))
+}
+
+/// Every wire method and how it is treated for an agent-originated connection (ADR 0016): the
+/// one table. The match is exhaustive on purpose: a new request that is not classified here
+/// does not build.
+fn classification(request: &Request) -> (&'static str, Access) {
+    use Access::{Mutate, Read, UserOnly};
+    match request {
+        Request::Hello(_) => ("hello", Read),
+        Request::DaemonStatus(_) => ("daemon.status", Read),
+        Request::DaemonShutdown(_) => ("daemon.shutdown", Mutate),
+        Request::EventsSubscribe(_) => ("events.subscribe", Read),
+        Request::WorkspaceCreate(_) => ("workspace.create", Mutate),
+        Request::WorkspaceList(_) => ("workspace.list", Read),
+        Request::WorkspaceRename(_) => ("workspace.rename", Mutate),
+        Request::WorkspaceClose(_) => ("workspace.close", Mutate),
+        Request::WorkspaceOpen(_) => ("workspace.open", Mutate),
+        Request::WorkspaceAddRoot(_) => ("workspace.add_root", Mutate),
+        Request::WorkspaceRemoveRoot(_) => ("workspace.remove_root", Mutate),
+        Request::WorkspaceRecent(_) => ("workspace.recent", Read),
+        Request::WorkspaceAssign(_) => ("workspace.assign", Mutate),
+        Request::WorkspaceDelete(_) => ("workspace.delete", Mutate),
+        Request::WorkspaceMove(_) => ("workspace.move", Mutate),
+        Request::WorkspacePin(_) => ("workspace.pin", Mutate),
+        Request::SessionCreate(_) => ("session.create", Mutate),
+        Request::SessionList(_) => ("session.list", Read),
+        Request::SessionSnapshot(_) => ("session.snapshot", Read),
+        Request::SessionStop(_) => ("session.stop", Mutate),
+        Request::SessionRestart(_) => ("session.restart", Mutate),
+        Request::SessionRename(_) => ("session.rename", Mutate),
+        Request::SessionSendText(_) => ("session.send_text", Mutate),
+        Request::TerminalAttach(_) => ("terminal.attach", Read),
+        Request::TerminalDetach(_) => ("terminal.detach", Read),
+        Request::TerminalResize(_) => ("terminal.resize", Mutate),
+        Request::TerminalAck(_) => ("terminal.ack", Read),
+        Request::TerminalHistory(_) => ("terminal.history", Read),
+        Request::TerminalSetColors(_) => ("terminal.set_colors", Mutate),
+        // A coding agent describing its own state: what hooks do from inside a session.
+        Request::AgentReport(_) => ("agent.report", Read),
+        Request::AgentRelease(_) => ("agent.release", Read),
+        Request::AgentTree(_) => ("agent.tree", Read),
+        Request::TerminalBlocks(_) => ("terminal.blocks", Read),
+        Request::TerminalBlockText(_) => ("terminal.block_text", Read),
+        Request::HistorySearch(_) => ("history.search", Read),
+        Request::HistoryStatus(_) => ("history.status", Read),
+        Request::HistorySetEnabled(_) => ("history.set_enabled", Mutate),
+        Request::HistoryClear(_) => ("history.clear", Mutate),
+        Request::HistoryRebuild(_) => ("history.rebuild", Mutate),
+        Request::ChatCreate(_) => ("chat.create", Mutate),
+        Request::ChatSend(_) => ("chat.send", Mutate),
+        Request::ChatInterrupt(_) => ("chat.interrupt", Mutate),
+        Request::ChatHistory(_) => ("chat.history", Read),
+        Request::ChatModels(_) => ("chat.models", Read),
+        Request::ApprovalList(_) => ("approval.list", Read),
+        // An agent never answers approvals, its own included.
+        Request::ApprovalRespond(_) => ("approval.respond", UserOnly),
+        Request::ProviderList(_) => ("provider.list", Read),
+        // Provider configuration decides where credentials are sent: the user's.
+        Request::ProviderAdd(_) => ("provider.add", UserOnly),
+        Request::ProviderUpdate(_) => ("provider.update", UserOnly),
+        Request::ProviderRemove(_) => ("provider.remove", UserOnly),
+        Request::ProviderSetCredential(_) => ("provider.set_credential", UserOnly),
+        Request::ProviderClearCredential(_) => ("provider.clear_credential", UserOnly),
+        Request::ProviderModels(_) => ("provider.models", Read),
+        Request::ProviderDiscover(_) => ("provider.discover", Read),
+        Request::ChatSetModel(_) => ("chat.set_model", Mutate),
+        Request::AccountList(_) => ("account.list", Read),
+        // Logging in or out changes which credentials a harness holds: the user's.
+        Request::AccountLogin(_) => ("account.login", UserOnly),
+        Request::AccountLogout(_) => ("account.logout", UserOnly),
+        Request::AssistantOpen(_) => ("assistant.open", Mutate),
+        Request::AssistantConfigure(_) => ("assistant.configure", Mutate),
+        Request::AssistantList(_) => ("assistant.list", Read),
+        Request::NotifyList(_) => ("notify.list", Read),
+        Request::NotifyAck(_) => ("notify.ack", Mutate),
+        // Acting on an intent can answer an approval.
+        Request::NotifyAct(_) => ("notify.act", UserOnly),
+        Request::ClientFocus(_) => ("client.focus", Read),
+        Request::WorktreeCreate(_) => ("worktree.create", Mutate),
+        Request::WorktreeList(_) => ("worktree.list", Read),
+        Request::WorktreeRemove(_) => ("worktree.remove", Mutate),
+        Request::TaskCreate(_) => ("task.create", Mutate),
+        Request::TaskList(_) => ("task.list", Read),
+        Request::TaskUpdate(_) => ("task.update", Mutate),
+        Request::TaskDelete(_) => ("task.delete", Mutate),
+        Request::TaskStart(_) => ("task.start", Mutate),
+        // The resource manager (protocol 0.18): looking is free, ending processes is not.
+        Request::ResourcesList(_) => ("resources.list", Read),
+        Request::ResourcesSubscribe(_) => ("resources.subscribe", Read),
+        Request::ResourcesUnsubscribe(_) => ("resources.unsubscribe", Read),
+        Request::SessionKill(_) => ("session.kill", Mutate),
+        Request::ProcessSignal(_) => ("process.signal", Mutate),
+        Request::AgentInterrupt(_) => ("agent.interrupt", Mutate),
+        // The desktop's side of the control surface: an agent must not impersonate a window.
+        Request::UiPublish(_) => ("ui.publish", UserOnly),
+        Request::UiActions(_) => ("ui.actions", Read),
+        Request::UiLayout(_) => ("ui.layout", Read),
+        Request::UiRun(_) => ("ui.run", Mutate),
+        Request::UiSetSetting(_) => ("ui.set_setting", Mutate),
+        Request::UiCommandResult(_) => ("ui.command_result", UserOnly),
+    }
+}
+
+/// How `request` is treated for an agent-originated connection.
+pub fn classify(request: &Request) -> Access {
+    classification(request).1
+}
+
+/// The wire name of `request`'s method.
+pub fn method_name(request: &Request) -> &'static str {
+    classification(request).0
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    /// Every committed request fixture decodes to a request whose table name is its wire name,
+    /// and the table's exhaustive match (a compile error for an unclassified variant) covers
+    /// all of them.
+    #[test]
+    fn the_table_names_every_fixture_request_by_its_wire_method() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../protocol/tests/fixtures/v0");
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !(name.starts_with("request_") && name.ends_with(".json")) {
+                continue;
+            }
+            let value: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let method = value["method"].as_str().unwrap().to_owned();
+            let request = Request::decode(&method, value["params"].clone())
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message));
+            assert_eq!(method_name(&request), method, "{name}");
+            seen.insert(method);
+        }
+        assert!(
+            seen.len() > 60,
+            "too few request fixtures found: {}",
+            seen.len()
+        );
+    }
+
+    fn access_of(method: &str, params: serde_json::Value) -> Access {
+        classify(&Request::decode(method, params).unwrap())
+    }
+
+    #[test]
+    fn reads_mutations_and_user_only_requests_are_told_apart() {
+        let id = "01K7F3B5N2Q9W8E4R6T1Y0V3KM";
+        assert_eq!(
+            access_of("session.list", serde_json::json!({})),
+            Access::Read
+        );
+        assert_eq!(
+            access_of("session.stop", serde_json::json!({"session_id": id})),
+            Access::Mutate
+        );
+        assert_eq!(
+            access_of(
+                "approval.respond",
+                serde_json::json!({"approval_id": id, "option_id": "allow_once"})
+            ),
+            Access::UserOnly,
+            "an agent never answers approvals"
+        );
+        assert_eq!(
+            access_of(
+                "provider.set_credential",
+                serde_json::json!({"provider_id": "p", "secret": "s"})
+            ),
+            Access::UserOnly
+        );
+        for method in ["resources.list", "resources.unsubscribe"] {
+            assert_eq!(
+                access_of(method, serde_json::json!({})),
+                Access::Read,
+                "{method}"
+            );
+        }
+        assert_eq!(
+            access_of("resources.subscribe", serde_json::json!({})),
+            Access::Read
+        );
+        for (method, params) in [
+            ("session.kill", serde_json::json!({"session_id": id})),
+            (
+                "process.signal",
+                serde_json::json!({"session_id": id, "pid": 7, "signal": "term"}),
+            ),
+            ("agent.interrupt", serde_json::json!({"session_id": id})),
+        ] {
+            assert_eq!(access_of(method, params), Access::Mutate, "{method}");
+        }
+        assert_eq!(
+            access_of(
+                "ui.run",
+                serde_json::json!({"action": "workbench::SplitRight"})
+            ),
+            Access::Mutate
+        );
+    }
 }

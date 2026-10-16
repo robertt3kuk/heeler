@@ -44,6 +44,7 @@ impl Attached {
             client: ClientInfo {
                 kind: ClientKind::Other,
                 version: "terminal-view-test".into(),
+                origin: None,
             },
         })
         .await

@@ -34,6 +34,7 @@ use crate::resources::{
 };
 use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskUpdate};
 use crate::tree::{AgentTreeRequest, NodeReport};
+use crate::ui::{SessionSendText, UiCommandResult, UiPublish, UiRun, UiSetSetting, UiTarget};
 use crate::worktree::{Placement, WorktreeCreate, WorktreeListRequest, WorktreeRemove};
 
 /// Parameterless request body; encoded as `{}`.
@@ -291,6 +292,28 @@ pub enum Request {
     /// with `AgentInterrupted`.
     #[serde(rename = "agent.interrupt")]
     AgentInterrupt(AgentInterrupt),
+    /// Capability `control` (protocol 0.21): the desktop publishes its action catalog, settings
+    /// catalog and layout (`docs/control.md`); answered with `Empty`.
+    #[serde(rename = "ui.publish")]
+    UiPublish(UiPublish),
+    /// Capability `control`: the action catalog of a window; answered with `UiActionList`.
+    #[serde(rename = "ui.actions")]
+    UiActions(UiTarget),
+    /// Capability `control`: the layout summary of a window; answered with `UiLayoutResult`.
+    #[serde(rename = "ui.layout")]
+    UiLayout(UiTarget),
+    /// Capability `control`: run an action of a window's catalog; answered with `UiRan`.
+    #[serde(rename = "ui.run")]
+    UiRun(UiRun),
+    /// Capability `control`: write a settings layer through a window; answered with `UiRan`.
+    #[serde(rename = "ui.set_setting")]
+    UiSetSetting(UiSetSetting),
+    /// Capability `control`: the desktop's answer to a `ui.command` event; answered with `Empty`.
+    #[serde(rename = "ui.command_result")]
+    UiCommandResult(UiCommandResult),
+    /// Capability `control`: type text into a terminal session; answered with `SessionTextSent`.
+    #[serde(rename = "session.send_text")]
+    SessionSendText(SessionSendText),
 }
 
 impl Request {
@@ -325,6 +348,18 @@ pub struct Hello {
 pub struct ClientInfo {
     pub kind: ClientKind,
     pub version: String,
+    /// Protocol 0.21 (capability `control`): the Hutan session this client runs in (from
+    /// `HUTAN_SESSION_ID`), when it does. The daemon verifies that the session exists and is
+    /// live; the connection is an agent's (`[control]` of `daemon.toml`) only while that session
+    /// is a chat or an agent reported itself in it. A plain shell session is the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// The session a client runs in (`ClientInfo.origin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub session_id: SessionId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -938,6 +973,18 @@ pub enum Event {
         #[serde(flatten)]
         sample: Box<ResourceSample>,
     },
+    /// Capability `control` (protocol 0.21): the daemon asks this desktop to run an action
+    /// (`ui.run`) or write a setting (`ui.set_setting`, action `ui::SetSetting`) and expects
+    /// `ui.command_result` with the same `request_id`. Sent to one connection only, with a seq of its
+    /// own but outside the replay ring: it is never replayed.
+    #[serde(rename = "ui.command")]
+    UiCommand {
+        request_id: u64,
+        window_id: String,
+        action: String,
+        #[serde(default)]
+        args: Value,
+    },
 }
 
 impl Event {
@@ -976,6 +1023,7 @@ impl Event {
         "task.removed",
         "account.changed",
         "resources.updated",
+        "ui.command",
     ];
 }
 

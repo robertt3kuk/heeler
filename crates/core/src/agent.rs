@@ -188,6 +188,9 @@ pub enum PermissionKind {
     FileChange,
     /// Extra permissions (network, file system) for the turn or session.
     Permissions,
+    /// An agent asks Hutan itself for something (protocol 0.19, ADR 0016): a mutating request
+    /// of an agent-originated connection under `[control] agents = "ask"`.
+    Control,
     Other,
 }
 

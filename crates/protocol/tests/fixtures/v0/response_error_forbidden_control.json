@@ -1,0 +1,1 @@
+{"error":{"code":"forbidden","data":{"control":{"decision":"deny"}},"message":"the user denied `session.stop`: it was not run"},"id":65}

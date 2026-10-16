@@ -122,6 +122,32 @@ fn workspace_override_allowed_for_overridable_namespaces() {
 }
 
 #[test]
+fn write_workspace_creates_the_workspace_file_and_applies_it() {
+    let f = Fixture::new(Some("[layout]\npreset = \"user\"\n"));
+    // No workspace folder active: nothing to write to.
+    let error = f
+        .store
+        .write_workspace("layout.preset", toml::Value::String("ws".into()))
+        .unwrap_err();
+    assert!(error.to_string().contains("no workspace folder"), "{error}");
+
+    let root = f.dir.path().join("repo");
+    f.store.set_workspace_root(Some(root.clone()));
+    f.store
+        .write_workspace("layout.preset", toml::Value::String("ws".into()))
+        .unwrap();
+    let file = root.join(".hutan/settings.toml");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("ws"));
+    assert_eq!(f.store.get::<Layout>().preset, "ws");
+    // The user's file is untouched.
+    assert!(
+        std::fs::read_to_string(f.user_path())
+            .unwrap()
+            .contains("user")
+    );
+}
+
+#[test]
 fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
     let f = Fixture::new(Some(
         "[layout]\npreset = \"user\"\n[layout.presets.a]\nsize = 1\n[layout.presets.b]\nsize = 2\n",

@@ -635,6 +635,128 @@ fn detached_worktree_info() -> WorktreeInfo {
     }
 }
 
+fn ui_publish_fixture() -> hutan_protocol::ui::UiPublish {
+    use hutan_protocol::ui::*;
+    UiPublish {
+        actions: vec![
+            UiAction {
+                id: "workbench::SplitRight".into(),
+                title: "Layout: Split Right".into(),
+                args_schema: None,
+            },
+            UiAction {
+                id: "workbench::ApplyPreset".into(),
+                title: "Layout: Apply Preset".into(),
+                args_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "enum": ["default", "focus"]}},
+                    "required": ["name"],
+                })),
+            },
+        ],
+        settings: vec![UiSetting {
+            namespace: "terminal".into(),
+            key: "cursor.style".into(),
+            kind: "enum".into(),
+            doc: "Shape of the cursor.".into(),
+            layers: vec!["user".into(), "workspace".into(), "project".into()],
+            values: vec!["block".into(), "bar".into(), "underline".into()],
+            current: Some(serde_json::json!("block")),
+        }],
+        layout: layout_fixture(),
+    }
+}
+
+fn layout_fixture() -> hutan_protocol::ui::LayoutSummary {
+    use hutan_protocol::ui::*;
+    LayoutSummary {
+        window_id: "window-1".into(),
+        workspace_id: Some(ws()),
+        preset: "default".into(),
+        docks: vec![
+            DockSummary {
+                position: "left".into(),
+                visible: true,
+                panels: vec!["sessions".into(), "history".into()],
+                active: Some("sessions".into()),
+            },
+            DockSummary {
+                position: "bottom".into(),
+                visible: false,
+                panels: vec![],
+                active: None,
+            },
+        ],
+        panes: PaneSummary::Split {
+            axis: "horizontal".into(),
+            children: vec![
+                PaneSummary::Pane {
+                    pane_id: "pane-1".into(),
+                    items: vec![PaneItem {
+                        kind: "terminal".into(),
+                        session_id: Some(sid()),
+                        panel: None,
+                        title: "omp".into(),
+                    }],
+                    active: Some(0),
+                },
+                PaneSummary::Pane {
+                    pane_id: "pane-2".into(),
+                    items: vec![PaneItem {
+                        kind: "panel".into(),
+                        session_id: None,
+                        panel: Some("inspector".into()),
+                        title: "Inspector".into(),
+                    }],
+                    active: Some(0),
+                },
+            ],
+        },
+        focused: FocusSummary {
+            kind: "pane".into(),
+            target: "pane-1".into(),
+        },
+        zoomed: None,
+        appearance: AppearanceSummary {
+            chrome: "dark".into(),
+            density: "compact".into(),
+        },
+        window_active: true,
+    }
+}
+
+fn control_approval() -> ApprovalInfo {
+    ApprovalInfo {
+        id: approval(),
+        session_id: sid(),
+        turn_id: None,
+        kind: PermissionKind::Control,
+        title: "Agent in session “omp” asks Hutan to stop session “api”".into(),
+        detail: Some("{\"session_id\":\"01K7F3B5N2Q9W8E4R6T1Y0V3KM\"}".into()),
+        options: vec![
+            PermissionOption {
+                id: "allow_once".into(),
+                label: "Allow once".into(),
+                kind: PermissionOptionKind::AllowOnce,
+                provider: None,
+            },
+            PermissionOption {
+                id: "allow_session".into(),
+                label: "Allow for this session".into(),
+                kind: PermissionOptionKind::AllowAlways,
+                provider: None,
+            },
+            PermissionOption {
+                id: "deny".into(),
+                label: "Deny".into(),
+                kind: PermissionOptionKind::RejectOnce,
+                provider: None,
+            },
+        ],
+        requested_at_ms: 1_791_894_180_000,
+    }
+}
+
 fn requests() -> Vec<(&'static str, Request)> {
     vec![
         (
@@ -644,6 +766,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 client: ClientInfo {
                     kind: ClientKind::Desktop,
                     version: "0.1.0".into(),
+                    origin: None,
                 },
                 capabilities: vec!["terminal.render.v1".into()],
                 resume: Some(ResumePoint {
@@ -1559,6 +1682,84 @@ fn requests() -> Vec<(&'static str, Request)> {
                 provider: Some("ollama".into()),
             }),
         ),
+        (
+            "hello_origin",
+            Request::Hello(Hello {
+                protocol: PROTOCOL_VERSION,
+                client: ClientInfo {
+                    kind: ClientKind::Cli,
+                    version: "0.1.0".into(),
+                    origin: Some(Origin { session_id: sid() }),
+                },
+                capabilities: vec!["control".into()],
+                resume: None,
+            }),
+        ),
+        ("ui_publish", Request::UiPublish(ui_publish_fixture())),
+        (
+            "ui_actions",
+            Request::UiActions(hutan_protocol::ui::UiTarget::default()),
+        ),
+        (
+            "ui_actions_window",
+            Request::UiActions(hutan_protocol::ui::UiTarget {
+                window_id: Some("window-1".into()),
+            }),
+        ),
+        (
+            "ui_layout",
+            Request::UiLayout(hutan_protocol::ui::UiTarget::default()),
+        ),
+        (
+            "ui_run",
+            Request::UiRun(hutan_protocol::ui::UiRun {
+                window_id: None,
+                action: "workbench::SplitRight".into(),
+                args: None,
+            }),
+        ),
+        (
+            "ui_run_args",
+            Request::UiRun(hutan_protocol::ui::UiRun {
+                window_id: Some("window-1".into()),
+                action: "workbench::ApplyPreset".into(),
+                args: Some(serde_json::json!({"name": "focus"})),
+            }),
+        ),
+        (
+            "ui_set_setting",
+            Request::UiSetSetting(hutan_protocol::ui::UiSetSetting {
+                window_id: None,
+                namespace: "terminal".into(),
+                key: "cursor.style".into(),
+                value: serde_json::json!("bar"),
+                layer: "user".into(),
+            }),
+        ),
+        (
+            "ui_command_result_ok",
+            Request::UiCommandResult(hutan_protocol::ui::UiCommandResult {
+                request_id: 7,
+                ok: Some(serde_json::json!({"preset": "focus"})),
+                error: None,
+            }),
+        ),
+        (
+            "ui_command_result_error",
+            Request::UiCommandResult(hutan_protocol::ui::UiCommandResult {
+                request_id: 8,
+                ok: None,
+                error: Some(ErrorBody::new(ErrorCode::NotFound, "no such preset")),
+            }),
+        ),
+        (
+            "session_send_text",
+            Request::SessionSendText(hutan_protocol::ui::SessionSendText {
+                session_id: sid(),
+                text: "cargo test".into(),
+                enter: true,
+            }),
+        ),
     ]
 }
 
@@ -2090,6 +2291,35 @@ fn events() -> Vec<(&'static str, Event)> {
                     folder: Some("/repo/crates/daemon".into()),
                     ..session_info()
                 },
+            },
+        ),
+        (
+            "ui_command",
+            Event::UiCommand {
+                request_id: 7,
+                window_id: "window-1".into(),
+                action: "workbench::ApplyPreset".into(),
+                args: serde_json::json!({"name": "focus"}),
+            },
+        ),
+        (
+            "ui_command_set_setting",
+            Event::UiCommand {
+                request_id: 8,
+                window_id: "window-1".into(),
+                action: "ui::SetSetting".into(),
+                args: serde_json::json!({
+                    "namespace": "terminal",
+                    "key": "cursor.style",
+                    "value": "bar",
+                    "layer": "user"
+                }),
+            },
+        ),
+        (
+            "approval_required_control",
+            Event::ApprovalRequired {
+                approval: Box::new(control_approval()),
             },
         ),
     ]
@@ -2988,12 +3218,34 @@ fn responses_match_fixtures() {
             .unwrap(),
         ),
         (
+            "ui_action_list",
+            ControlMessage::ok(
+                60,
+                &hutan_protocol::ui::UiActionList {
+                    window_id: "window-1".into(),
+                    actions: ui_publish_fixture().actions,
+                    settings: ui_publish_fixture().settings,
+                },
+            )
+            .unwrap(),
+        ),
+        (
             "account_session",
             ControlMessage::ok(
                 35,
                 &AccountSession {
                     session: session_info(),
                     instructions: None,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "ui_layout",
+            ControlMessage::ok(
+                61,
+                &hutan_protocol::ui::UiLayoutResult {
+                    layout: layout_fixture(),
                 },
             )
             .unwrap(),
@@ -3025,6 +3277,17 @@ fn responses_match_fixtures() {
             .unwrap(),
         ),
         (
+            "ui_ran",
+            ControlMessage::ok(
+                62,
+                &hutan_protocol::ui::UiRan {
+                    window_id: "window-1".into(),
+                    result: serde_json::json!({"preset": "focus"}),
+                },
+            )
+            .unwrap(),
+        ),
+        (
             "process_signaled",
             ControlMessage::ok(
                 36,
@@ -3032,6 +3295,20 @@ fn responses_match_fixtures() {
                     session_id: sid(),
                     pid: 48_215,
                     signal: SignalName::Term,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "session_text_sent",
+            ControlMessage::ok(63, &hutan_protocol::ui::SessionTextSent { bytes: 11 }).unwrap(),
+        ),
+        (
+            "approval_list_control",
+            ControlMessage::ok(
+                64,
+                &ApprovalList {
+                    approvals: vec![control_approval()],
                 },
             )
             .unwrap(),
@@ -3061,6 +3338,17 @@ fn responses_match_fixtures() {
                 },
             )
             .unwrap(),
+        ),
+        (
+            "error_forbidden_control",
+            ControlMessage::err(65, {
+                let mut error = ErrorBody::new(
+                    ErrorCode::Forbidden,
+                    "the user denied `session.stop`: it was not run",
+                );
+                error.data = Some(serde_json::json!({"control": {"decision": "deny"}}));
+                error
+            }),
         ),
     ];
     for (name, message) in cases {

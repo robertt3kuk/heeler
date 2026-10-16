@@ -6,6 +6,8 @@ mod commands;
 mod error;
 mod hook;
 mod integration;
+mod mcp;
+mod tail;
 
 use std::io::Write as _;
 use std::process::ExitCode;

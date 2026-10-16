@@ -738,12 +738,55 @@ impl SettingsStore {
     /// and its directory (`0700`) when missing. Comments and formatting elsewhere survive. The
     /// change is applied to the store immediately; the file watcher later sees identical text.
     pub fn write_user(&self, key_path: &str, value: Value) -> Result<(), SettingsError> {
+        self.write_layer(Kind::User, key_path, value)
+    }
+
+    /// Like [`write_user`](Self::write_user) for the workspace layer: `<root>/.hutan/settings.toml`
+    /// of the root set with [`set_workspace_root`](Self::set_workspace_root), created with its
+    /// directory when missing. An error when no workspace root is set.
+    pub fn write_workspace(&self, key_path: &str, value: Value) -> Result<(), SettingsError> {
+        self.write_layer(Kind::Workspace, key_path, value)
+    }
+
+    /// Writes `key_path` into `<root>/.hutan/settings.toml` of a project folder (created with
+    /// its directory when missing). When `root` is the active workspace root the change applies
+    /// at once; otherwise it is only written (the file takes effect when that folder is shown).
+    pub fn write_project(
+        &self,
+        root: &Path,
+        key_path: &str,
+        value: Value,
+    ) -> Result<(), SettingsError> {
+        if self.shared.state.read().workspace_root.as_deref() == Some(root) {
+            return self.write_layer(Kind::Workspace, key_path, value);
+        }
+        let path = workspace_file(root);
+        let fail = |message: String| SettingsError::error(Some(&path), key_path, message);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(fail(format!("cannot read file: {e}"))),
+        };
+        let updated = edit::set_key(&existing, key_path, &value).map_err(fail)?;
+        write_atomic(&path, &updated).map_err(|e| fail(format!("cannot write file: {e}")))
+    }
+
+    fn write_layer(&self, kind: Kind, key_path: &str, value: Value) -> Result<(), SettingsError> {
         let mut state = self.shared.state.write();
-        let path = state
-            .user
-            .path
-            .clone()
-            .ok_or_else(|| SettingsError::error(None, key_path, "no user settings path"))?;
+        let layer = match kind {
+            Kind::Workspace => &state.workspace,
+            _ => &state.user,
+        };
+        let path = layer.path.clone().ok_or_else(|| {
+            SettingsError::error(
+                None,
+                key_path,
+                match kind {
+                    Kind::Workspace => "no workspace folder is active",
+                    _ => "no user settings path",
+                },
+            )
+        })?;
         let fail = |message: String| SettingsError::error(Some(&path), key_path, message);
 
         let existing = match std::fs::read_to_string(&path) {
@@ -754,7 +797,10 @@ impl SettingsStore {
         let updated = edit::set_key(&existing, key_path, &value).map_err(fail)?;
         write_atomic(&path, &updated).map_err(|e| fail(format!("cannot write file: {e}")))?;
 
-        state.user.refresh(Kind::User);
+        match kind {
+            Kind::Workspace => state.workspace.refresh(Kind::Workspace),
+            _ => state.user.refresh(Kind::User),
+        };
         let changed = state.recompute();
         self.shared.commit(&mut state, changed, false);
         Ok(())

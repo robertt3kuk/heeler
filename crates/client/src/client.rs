@@ -47,6 +47,10 @@ use hutan_protocol::task::{
     TaskStarted, TaskUpdate,
 };
 use hutan_protocol::tree::{AgentTree, AgentTreeRequest};
+use hutan_protocol::ui::{
+    SessionSendText, SessionTextSent, UiActionList, UiCommandResult, UiLayoutResult, UiPublish,
+    UiRan, UiRun, UiSetSetting, UiTarget,
+};
 use hutan_protocol::worktree::{
     WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeListRequest,
     WorktreeRemove, WorktreeRemoved,
@@ -102,6 +106,9 @@ pub(crate) const RESOURCES_CAPABILITY: &str = "resources";
 /// Capability for automatic projects, `workspace.assign` / `workspace.delete`,
 /// `WorkspaceInfo.parent_id` / `project` and `SessionInfo.folder` (protocol 0.19).
 pub(crate) const PROJECTS_CAPABILITY: &str = "projects.auto";
+/// Capability for `ui.*`, `session.send_text`, the `ui.command` event and `ClientInfo.origin`
+/// (protocol 0.21).
+pub(crate) const CONTROL_CAPABILITY: &str = "control";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -122,6 +129,7 @@ const CAPABILITIES: &[&str] = &[
     RESOURCES_CAPABILITY,
     PROJECTS_CAPABILITY,
     ASSISTANT_BACKEND_CAPABILITY,
+    CONTROL_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -526,6 +534,59 @@ impl Client {
         self.call::<Empty>(Request::ClientFocus(ClientFocus { session_id }))
             .await
             .map(|_| ())
+    }
+
+    /// True when the daemon advertised capability `control` (protocol 0.21).
+    pub fn supports_control(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == CONTROL_CAPABILITY)
+    }
+
+    /// Publishes this window's action catalog, settings catalog and layout (`ui.publish`).
+    pub async fn ui_publish(&self, publish: UiPublish) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::UiPublish(publish))
+            .await
+            .map(|_| ())
+    }
+
+    /// Answers a `ui.command` event (`ui.command_result`).
+    pub async fn ui_command_result(&self, result: UiCommandResult) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::UiCommandResult(result))
+            .await
+            .map(|_| ())
+    }
+
+    /// The action and settings catalog of a window (`ui.actions`).
+    pub async fn ui_actions(&self, window_id: Option<String>) -> Result<UiActionList, ClientError> {
+        self.call(Request::UiActions(UiTarget { window_id })).await
+    }
+
+    /// The layout of a window (`ui.layout`).
+    pub async fn ui_layout(
+        &self,
+        window_id: Option<String>,
+    ) -> Result<UiLayoutResult, ClientError> {
+        self.call(Request::UiLayout(UiTarget { window_id })).await
+    }
+
+    /// Runs an action of a window's catalog (`ui.run`).
+    pub async fn ui_run(&self, req: UiRun) -> Result<UiRan, ClientError> {
+        self.call(Request::UiRun(req)).await
+    }
+
+    /// Writes a setting layer through a window (`ui.set_setting`).
+    pub async fn ui_set_setting(&self, req: UiSetSetting) -> Result<UiRan, ClientError> {
+        self.call(Request::UiSetSetting(req)).await
+    }
+
+    /// Types text into a terminal session (`session.send_text`).
+    pub async fn session_send_text(
+        &self,
+        req: SessionSendText,
+    ) -> Result<SessionTextSent, ClientError> {
+        self.call(Request::SessionSendText(req)).await
     }
 
     /// True when the daemon advertised capability `worktree` (protocol 0.14).

@@ -63,6 +63,7 @@ impl TestDaemon {
             client: ClientInfo {
                 kind: ClientKind::Cli,
                 version: "test".into(),
+                origin: None,
             },
         }
     }

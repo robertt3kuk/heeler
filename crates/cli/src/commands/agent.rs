@@ -170,7 +170,7 @@ fn outcome(arg: OutcomeArg) -> NodeOutcome {
 }
 
 /// The Hutan session this process runs in, from the environment the daemon gave it.
-fn session_from_env() -> Option<SessionId> {
+pub(crate) fn session_from_env() -> Option<SessionId> {
     std::env::var("HUTAN_SESSION_ID").ok()?.parse().ok()
 }
 

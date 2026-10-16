@@ -233,6 +233,7 @@ pub fn connect_options() -> ConnectOptions {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            origin: None,
         },
     }
 }

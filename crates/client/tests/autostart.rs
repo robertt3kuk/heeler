@@ -46,6 +46,7 @@ async fn autostarts_a_missing_daemon_at_most_once_per_interval() {
         client: ClientInfo {
             kind: ClientKind::Desktop,
             version: "test".into(),
+            origin: None,
         },
     });
     let mut state = connection.state();

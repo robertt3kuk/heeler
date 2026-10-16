@@ -333,6 +333,9 @@ pub struct Workbench {
     last_saved: Option<String>,
     save_task: Option<Task<()>>,
     _watch: Option<WatchGuard>,
+    /// What publishes this window to the daemon's control surface and executes its commands
+    /// (`remote.rs`).
+    pub(crate) remote: super::remote::RemoteControl,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -446,6 +449,7 @@ impl Workbench {
                 let changed = changes.borrow_and_update().clone();
                 let alive = this.update_in(cx, |this, window, cx| {
                     this.on_settings_changed(&changed, window, cx);
+                    this.schedule_publish(cx);
                 });
                 if alive.is_err() {
                     break;
@@ -471,12 +475,14 @@ impl Workbench {
             cx.on_app_quit(|this, cx| this.on_platform_quit(cx)),
             cx.observe_in(&sessions, window, |this, _, window, cx| {
                 this.on_sessions_changed(window, cx);
+                this.schedule_publish(cx);
             }),
             cx.observe(&harnesses, |this, _, cx| this.on_harnesses_changed(cx)),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_active = window.is_window_active();
                 this.sync_session_focus(cx);
                 this.refresh_login_status(cx);
+                this.schedule_publish(cx);
             }),
             cx.subscribe_in(
                 &sessions,
@@ -487,6 +493,7 @@ impl Workbench {
             ),
         ];
 
+        let remote = super::remote::RemoteControl::start(&sessions, window, cx);
         let mut this = Self {
             last_saved: options
                 .state_path
@@ -559,10 +566,12 @@ impl Workbench {
             state_path: options.state_path,
             save_task: None,
             _watch: watch,
+            remote,
             _tasks: vec![settings_task],
             _subscriptions: subscriptions,
         };
         this.mac.events_task = events_task;
+        this.schedule_publish(cx);
         this.rebind_keys(cx);
         this.refresh_menus(cx);
         this.sync_session_focus(cx);
@@ -750,6 +759,7 @@ impl Workbench {
         self.sync_session_focus(cx);
         cx.notify();
         self.schedule_save(cx);
+        self.schedule_publish(cx);
     }
 
     pub(crate) fn schedule_save(&mut self, cx: &mut Context<Self>) {

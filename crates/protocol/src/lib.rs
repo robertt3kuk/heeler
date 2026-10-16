@@ -6,6 +6,8 @@
 //!   `resources`).
 //! - [`project`]: automatic projects and user workspaces (protocol 0.19, capability
 //!   `projects.auto`).
+//! - [`ui`]: the agent control surface: action catalog, layout, `ui.run` (protocol 0.21,
+//!   capability `control`).
 //! - [`task`]: tasks with dependencies (protocol 0.16, capability `task`).
 //! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
 //!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
@@ -39,6 +41,7 @@ pub mod render;
 pub mod resources;
 pub mod task;
 pub mod tree;
+pub mod ui;
 pub mod worktree;
 
 pub use control::{ControlMessage, ErrorBody, ErrorCode};
@@ -51,7 +54,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 20,
+    minor: 21,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

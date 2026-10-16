@@ -429,6 +429,38 @@ impl Connection {
             .is_some_and(|client| client.supports_worktrees())
     }
 
+    /// True while connected to a daemon that advertised capability `control`
+    /// ([`Client::supports_control`]); false when disconnected.
+    pub fn supports_control(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_control())
+    }
+
+    /// `ui.publish` on the current connection, answering the connection's
+    /// [`generation`](Self::generation) it went out on (a window publishes again after a
+    /// reconnect).
+    pub async fn ui_publish(
+        &self,
+        publish: hutan_protocol::ui::UiPublish,
+    ) -> Result<u64, ClientError> {
+        let (generation, client) = self
+            .shared
+            .client_generation()
+            .ok_or(ClientError::Disconnected)?;
+        client.ui_publish(publish).await?;
+        Ok(generation)
+    }
+
+    /// `ui.command_result` on the current connection.
+    pub async fn ui_command_result(
+        &self,
+        result: hutan_protocol::ui::UiCommandResult,
+    ) -> Result<(), ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.ui_command_result(result).await
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {
