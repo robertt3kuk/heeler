@@ -104,7 +104,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 ## M8 — ACP, MCP, more harnesses
 - [x] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
 - [x] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
-- [ ] M8-C Agent control surface (ADR 0016): UI commands and layout through the daemon, origin + approval policy, `hutan ui …`, `hutan mcp` passed to harness sessions
+- [x] M8-C Agent control surface (ADR 0016): UI commands and layout through the daemon, origin + approval policy, `hutan ui …`, `hutan mcp` passed to harness sessions
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
 
 ## M9 — Extensibility and remote
@@ -161,7 +161,7 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 
 ## M18 — Projects (ADR 0014)
 - [x] M18-A Automatic projects (git common dir) alongside user workspaces that contain projects; easier workspace management (daemon + CLI, protocol 0.18)
-- [ ] M18-B Sidebar workspaces → projects → sessions (or flat projects) with folder and worktree badge; drag a project into a workspace, new workspace from selection
+- [x] M18-B Sidebar workspaces → projects → sessions (or flat projects) with folder and worktree badge; drag a project into a workspace, new workspace from selection
 
 ## D — Design
 - [x] D-1 Visual system v2: Claude-Desktop-like style, terminal-first layout (`docs/design.md` § Visual system)
