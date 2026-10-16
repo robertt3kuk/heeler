@@ -2,7 +2,11 @@
 //!
 //! Environment: `HUTAN_HOME` (base directory), `HUTAN_SOCKET` (socket path only),
 //! `HUTAN_LOG` or `RUST_LOG` (log filter, default `info`). Exit codes: 0 clean stop,
-//! 1 failure, 2 another daemon already holds the lock.
+//! 1 failure, 2 another daemon already holds the lock, 64 unknown argument.
+//!
+//! Arguments: none to run; `--version` / `-V` and `--help` / `-h` print and exit without
+//! touching any directory (anything else is refused, so a mistyped flag never starts a daemon
+//! on the real home).
 //!
 //! Threads: tokio runs on a thread of its own. When the daemon runs from `Hutan.app` the main
 //! thread serves the Cocoa run loop of the native notifications (`notify_native`), because the
@@ -24,8 +28,30 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
 const EXIT_ALREADY_RUNNING: u8 = 2;
+const EXIT_USAGE: u8 = 64;
+
+const HELP: &str = "hutand: the Hutan daemon (normally started by `hutan` or the app)
+
+Usage: hutand [--version | --help]
+
+Environment: HUTAN_HOME (base directory), HUTAN_SOCKET (socket path), HUTAN_LOG (log filter)";
 
 fn main() -> ExitCode {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("--version" | "-V") => {
+            println!("hutand {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Some("--help" | "-h") => {
+            println!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Some(other) => {
+            eprintln!("hutand: unknown argument `{other}`\n\n{HELP}");
+            return ExitCode::from(EXIT_USAGE);
+        }
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
