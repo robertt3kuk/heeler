@@ -352,7 +352,8 @@ pub struct SessionsPanelSettings {
     pub group_by: GroupBy,
     /// Show the "Needs you" section on top.
     pub needs_you: bool,
-    /// Fields of a row, in order: `state`, `kind`, `title`, `placement`, `age`.
+    /// Fields of a row, in order: `state`, `kind`, `title`, `age` on the first line, `folder`
+    /// (where the session is now) and `placement` (`main` / `wt <branch>`) on the second.
     pub row: Vec<String>,
 }
 
@@ -361,7 +362,7 @@ impl Default for SessionsPanelSettings {
         Self {
             group_by: GroupBy::Workspace,
             needs_you: true,
-            row: ["state", "kind", "title", "placement", "age"]
+            row: ["state", "kind", "title", "folder", "placement", "age"]
                 .map(str::to_owned)
                 .to_vec(),
         }
@@ -370,6 +371,49 @@ impl Default for SessionsPanelSettings {
 
 impl Setting for SessionsPanelSettings {
     const NAMESPACE: &'static str = "panels.sessions";
+}
+
+/// How the sidebar organizes sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarOrganize {
+    /// User workspaces → their projects → sessions, then the projects in no workspace, then
+    /// Home.
+    #[default]
+    Workspaces,
+    /// A flat list of projects (pinned first) → sessions, then Home.
+    Projects,
+}
+
+impl SidebarOrganize {
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            SidebarOrganize::Workspaces => "workspaces",
+            SidebarOrganize::Projects => "projects",
+        }
+    }
+
+    /// The mode as the sidebar menu shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SidebarOrganize::Workspaces => "Workspaces → Projects",
+            SidebarOrganize::Projects => "Projects",
+        }
+    }
+}
+
+/// The `sidebar` namespace: how the Projects panel organizes what the daemon knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SidebarSettings {
+    /// `workspaces` (user workspaces → their projects → sessions) or `projects` (a flat list of
+    /// projects → sessions).
+    pub organize: SidebarOrganize,
+}
+
+impl Setting for SidebarSettings {
+    const NAMESPACE: &'static str = "sidebar";
 }
 
 /// The `panels.inspector` namespace.
@@ -453,11 +497,12 @@ impl Setting for OverviewPanelSettings {
     const NAMESPACE: &'static str = "panels.overview";
 }
 
-/// How the sidebar orders workspaces (pinned ones always come first).
+/// How the sidebar orders workspaces, and the projects inside each level (pinned ones always
+/// come first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSort {
-    /// The order the user dragged them into; Home leads the unpinned ones.
+    /// The order the user dragged them into.
     #[default]
     Manual,
     /// Most recent session activity first.
@@ -497,20 +542,21 @@ impl WorkspaceSort {
     }
 }
 
-/// The `workspaces` namespace: how the sidebar sorts and filters workspaces. Pinned workspaces
-/// and Home are never hidden by the filters; hidden workspaces stay reachable through ⌘J.
+/// The `workspaces` namespace: how the sidebar sorts workspaces and projects, and which
+/// projects the filters hide. Workspaces, Home and pinned projects are never hidden by the
+/// filters; hidden projects stay reachable through ⌘J.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkspacesSettings {
     /// `manual`, `recent`, `attention` or `name`.
     pub sort: WorkspaceSort,
-    /// Hide workspaces without any session.
+    /// Hide projects without any session.
     pub hide_empty: bool,
-    /// Hide workspaces without a live session.
+    /// Hide projects without a live session.
     pub hide_sleeping: bool,
-    /// Hide workspaces the `hutan` CLI (or an agent) created.
+    /// Hide projects the `hutan` CLI (or an agent) created.
     pub hide_cli_created: bool,
-    /// Keep the workspace you are in visible whatever the filters say.
+    /// Keep the project and workspace you are in visible whatever the filters say.
     pub always_show_active: bool,
 }
 
@@ -858,6 +904,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<InspectorPanelSettings>();
     store.register::<OverviewPanelSettings>();
     store.register::<WorkspacesSettings>();
+    store.register::<SidebarSettings>();
     store.register::<HistorySettings>();
     store.register::<ChatSettings>();
     store.register::<AgentsSettings>();

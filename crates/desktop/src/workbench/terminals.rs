@@ -402,23 +402,23 @@ impl Workbench {
     }
 
     /// What a new terminal in `workspace` starts with: `cwd`, and the `terminal.shell` and
-    /// `terminal.env` settings as resolved for that workspace's first root (its
-    /// `.hutan/settings.toml` over the user's), which need not be the workspace on screen.
+    /// `terminal.env` settings as resolved for that project (its `.hutan/settings.toml` over
+    /// its workspace's over the user's), which need not be the one on screen.
     pub(crate) fn new_terminal_spec(
         &self,
         workspace: Option<WorkspaceId>,
         cwd: Option<PathBuf>,
         cx: &gpui::App,
     ) -> TerminalSpec {
-        let root = workspace
-            .and_then(|id| self.sessions.read(cx).workspace(id))
-            .and_then(|w| w.roots.first().cloned());
+        let (workspace_root, project_root) = workspace.map_or((None, None), |id| {
+            super::workspaces::layer_roots_of(self.sessions.read(cx), id)
+        });
         let mut spec = TerminalSpec {
             cwd,
             ..TerminalSpec::default()
         };
         self.settings
-            .get_for_workspace::<TerminalSettings>(root.as_deref())
+            .get_for_roots::<TerminalSettings>(workspace_root.as_deref(), project_root.as_deref())
             .apply_to_spec(&mut spec);
         spec
     }
@@ -739,9 +739,15 @@ impl Workbench {
         cx.notify();
     }
 
-    /// The root of the active workspace, whose `.hutan/settings.toml` currently applies.
+    /// The root whose `.hutan/settings.toml` is the workspace layer: the first project of the
+    /// active workspace, or Home's folder; none while a project in no workspace is shown.
     pub fn workspace_root(&self) -> Option<&PathBuf> {
         self.workspace_root.as_ref()
+    }
+
+    /// The root whose `.hutan/settings.toml` is the project layer: the project the user works in.
+    pub fn project_root(&self) -> Option<&PathBuf> {
+        self.project_root.as_ref()
     }
 
     // ---- rendering --------------------------------------------------------------------------

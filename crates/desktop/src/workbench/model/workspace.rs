@@ -136,6 +136,33 @@ impl WorkbenchState {
         self.parked.remove(id).is_some()
     }
 
+    /// `from` became part of workspace `to` (a project was put into a workspace), so its layout
+    /// belongs to `to` now. The layout `to` already has wins; without one, `from`'s becomes
+    /// `to`'s (shown or parked as it was). `false` when `from` has no layout here.
+    pub fn merge_workspace(&mut self, from: &str, to: &str) -> bool {
+        if from == to {
+            return false;
+        }
+        if self.active_workspace.as_deref() == Some(from) {
+            if self.parked.contains_key(to) {
+                self.switch_workspace(to);
+                self.parked.remove(from);
+            } else {
+                self.active_workspace = Some(to.to_owned());
+            }
+            return true;
+        }
+        match self.parked.remove(from) {
+            Some(layout) => {
+                if self.active_workspace.as_deref() != Some(to) && !self.parked.contains_key(to) {
+                    self.parked.insert(to.to_owned(), layout);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Ids of the workspaces with a parked layout.
     pub fn parked_workspaces(&self) -> impl Iterator<Item = &str> {
         self.parked.keys().map(String::as_str)
@@ -343,5 +370,38 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_project_layout_follows_the_workspace_it_joins() {
+        // Shown, and the workspace has no layout yet: the layout is the workspace's now.
+        let mut state = split_of("p", "s1", "s2");
+        let before = state.center.clone();
+        assert!(state.merge_workspace("p", "w"));
+        assert_eq!(state.workspace(), Some("w"));
+        assert_eq!(state.center, before);
+        assert!(state.parked_workspaces().next().is_none());
+
+        // Shown, and the workspace has its own: that one is shown, the project's is dropped.
+        let mut state = split_of("p", "s1", "s2");
+        state.switch_workspace("w");
+        state.replace_item(&ItemRef::placeholder("Welcome"), terminal("w1"));
+        state.switch_workspace("p");
+        assert!(state.merge_workspace("p", "w"));
+        assert_eq!(state.workspace(), Some("w"));
+        assert_eq!(sessions_of(&state), ["w1"]);
+        assert!(state.parked_workspaces().next().is_none());
+
+        // Parked: moves over when the workspace has none, else is forgotten.
+        let mut state = split_of("p", "s1", "s2");
+        state.switch_workspace("home");
+        assert!(state.merge_workspace("p", "w"));
+        assert_eq!(state.parked_workspaces().collect::<Vec<_>>(), ["w"]);
+        assert!(!state.merge_workspace("p", "w"), "nothing left to merge");
+        let mut state = split_of("p", "s1", "s2");
+        state.switch_workspace("w");
+        state.switch_workspace("home");
+        assert!(state.merge_workspace("p", "w"));
+        assert_eq!(state.parked_workspaces().collect::<Vec<_>>(), ["w"]);
     }
 }

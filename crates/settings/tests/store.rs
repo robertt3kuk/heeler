@@ -135,7 +135,7 @@ fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
     std::fs::create_dir_all(&bare).unwrap();
     let active = f.workspace("[layout]\npreset = \"active\"\n");
 
-    let other_layout = f.store.get_for_workspace::<Layout>(Some(&other));
+    let other_layout = f.store.get_for_roots::<Layout>(Some(&other), None);
     assert_eq!(
         other_layout.preset, "other",
         "that workspace's file wins over the user's"
@@ -149,13 +149,13 @@ fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
     assert_eq!(f.store.get::<Layout>().preset, "active");
     // A workspace without a file, and no workspace at all.
     assert_eq!(
-        f.store.get_for_workspace::<Layout>(Some(&bare)).preset,
+        f.store.get_for_roots::<Layout>(Some(&bare), None).preset,
         "user"
     );
-    assert_eq!(f.store.get_for_workspace::<Layout>(None).preset, "active");
+    assert_eq!(f.store.get_for_roots::<Layout>(None, None).preset, "active");
     // The active root is the cached value.
     assert_eq!(
-        f.store.get_for_workspace::<Layout>(Some(&active)).preset,
+        f.store.get_for_roots::<Layout>(Some(&active), None).preset,
         "active"
     );
 
@@ -165,13 +165,13 @@ fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
         "[layout]\npreset = \"again\"\n",
     );
     assert_eq!(
-        f.store.get_for_workspace::<Layout>(Some(&other)).preset,
+        f.store.get_for_roots::<Layout>(Some(&other), None).preset,
         "again"
     );
     // Broken TOML, or a namespace that may not be overridden: the active value.
     write_file(&other.join(".hutan/settings.toml"), "[layout\n");
     assert_eq!(
-        f.store.get_for_workspace::<Layout>(Some(&other)).preset,
+        f.store.get_for_roots::<Layout>(Some(&other), None).preset,
         "active"
     );
     write_file(
@@ -180,7 +180,7 @@ fn a_workspace_can_be_resolved_without_making_it_the_active_one() {
     );
     assert_eq!(
         f.store
-            .get_for_workspace::<Terminal>(Some(&other))
+            .get_for_roots::<Terminal>(Some(&other), None)
             .font_size,
         13
     );
@@ -210,6 +210,136 @@ fn workspace_override_refused_for_other_namespaces() {
         "{}",
         errors[0].message
     );
+}
+
+impl Fixture {
+    /// Writes `<dir>/<name>/.hutan/settings.toml` and returns the root.
+    fn root(&self, name: &str, text: &str) -> std::path::PathBuf {
+        let root = self.dir.path().join(name);
+        write_file(&root.join(".hutan/settings.toml"), text);
+        root
+    }
+}
+
+#[test]
+fn the_project_layer_sits_above_the_workspace_layer() {
+    let f = Fixture::new(Some(
+        "[layout]\npreset = \"user\"\n[layout.presets.a]\nsize = 1\npanels = [\"p\"]\n",
+    ));
+    let workspace = f.root(
+        "workspace",
+        "[layout]\npreset = \"workspace\"\n[layout.presets.a]\nsize = 10\n[layout.presets.w]\nsize = 5\n",
+    );
+    let project = f.root(
+        "project",
+        "[layout.presets.a]\nsize = 20\n[layout.presets.p]\nsize = 7\n",
+    );
+
+    f.store.set_workspace_root(Some(workspace.clone()));
+    assert_eq!(f.store.get::<Layout>().presets["a"].size, 10);
+    f.store.set_project_root(Some(project.clone()));
+    let l = f.store.get::<Layout>();
+    assert_eq!(l.preset, "workspace", "the project did not set the preset");
+    assert_eq!(l.presets["a"].size, 20, "project beats workspace");
+    assert_eq!(
+        l.presets["a"].panels,
+        ["p"],
+        "deep merge keeps what no layer above the user's touched"
+    );
+    assert_eq!(l.presets["w"].size, 5, "workspace keys survive");
+    assert_eq!(l.presets["p"].size, 7);
+    assert!(f.store.errors().is_empty(), "{:?}", f.store.errors());
+
+    // A project outside any workspace layers only its own file.
+    f.store.set_workspace_root(None);
+    let l = f.store.get::<Layout>();
+    assert_eq!(l.preset, "user");
+    assert_eq!(l.presets["a"].size, 20);
+    assert!(!l.presets.contains_key("w"));
+
+    // Runtime still wins.
+    f.store.set_runtime(Layout {
+        preset: "runtime".into(),
+        presets: Default::default(),
+    });
+    assert_eq!(f.store.get::<Layout>().preset, "runtime");
+    assert_eq!(f.store.get::<Layout>().presets["a"].size, 20);
+
+    f.store.set_project_root(None);
+    assert!(!f.store.get::<Layout>().presets.contains_key("p"));
+}
+
+#[test]
+fn the_project_layer_refuses_keys_that_may_not_be_overridden() {
+    let f = Fixture::new(Some("[terminal]\nfont_size = 15\n"));
+    f.store.register::<Terminal>();
+    let project = f.root("project", "[terminal]\nfont_size = 99\n");
+    f.store.set_project_root(Some(project.clone()));
+
+    assert_eq!(f.store.get::<Terminal>().font_size, 15);
+    let errors = f.store.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].severity, Severity::Error);
+    assert_eq!(errors[0].key_path, "terminal");
+    assert_eq!(
+        errors[0].file.as_deref(),
+        Some(project.join(".hutan/settings.toml").as_path())
+    );
+    assert!(
+        errors[0].message.contains("per project"),
+        "{}",
+        errors[0].message
+    );
+}
+
+#[test]
+fn a_broken_project_file_is_reported_with_its_path() {
+    let f = Fixture::new(None);
+    let project = f.root("project", "[layout]\npreset = \"mine\"\n");
+    f.store.set_project_root(Some(project.clone()));
+    assert_eq!(f.store.get::<Layout>().preset, "mine");
+
+    write_file(&project.join(".hutan/settings.toml"), "[layout\n");
+    f.store.set_project_root(Some(project.clone()));
+    let errors = f.store.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(
+        errors[0].file.as_deref(),
+        Some(project.join(".hutan/settings.toml").as_path())
+    );
+}
+
+#[test]
+fn workspace_and_project_can_be_resolved_without_making_them_active() {
+    let f = Fixture::new(Some("[layout]\npreset = \"user\"\n"));
+    let workspace = f.root("workspace", "[layout]\npreset = \"workspace\"\n");
+    let project = f.root("project", "[layout.presets.p]\nsize = 7\n");
+    let loose = f.root("loose", "[layout]\npreset = \"loose\"\n");
+
+    let both = f
+        .store
+        .get_for_roots::<Layout>(Some(&workspace), Some(&project));
+    assert_eq!(both.preset, "workspace");
+    assert_eq!(both.presets["p"].size, 7);
+    let only_project = f.store.get_for_roots::<Layout>(None, Some(&loose));
+    assert_eq!(
+        only_project.preset, "loose",
+        "a project outside a workspace"
+    );
+    let only_workspace = f.store.get_for_roots::<Layout>(Some(&workspace), None);
+    assert!(!only_workspace.presets.contains_key("p"));
+    // Nothing active, nothing asked: the active value.
+    assert_eq!(f.store.get_for_roots::<Layout>(None, None).preset, "user");
+
+    // What the active layers say is the cached value.
+    f.store.set_workspace_root(Some(workspace.clone()));
+    f.store.set_project_root(Some(project.clone()));
+    let active = f.store.get::<Layout>();
+    assert!(Arc::ptr_eq(
+        &active,
+        &f.store
+            .get_for_roots::<Layout>(Some(&workspace), Some(&project))
+    ));
 }
 
 #[test]

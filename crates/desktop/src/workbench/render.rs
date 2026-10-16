@@ -673,12 +673,42 @@ impl Workbench {
         )
         .on_action(
             cx.listener(|this, _: &actions::AddFolderToWorkspace, window, cx| {
-                match this.active_workspace_info(cx) {
-                    Some(info) if info.kind == hutan_protocol::messages::WorkspaceKind::Home => {
-                        this.set_notice("Home has one folder; change it in daemon.toml", cx);
-                    }
-                    Some(info) => this.add_workspace_folder(info.id, window, cx),
-                    None => {}
+                this.add_folder_to_active(window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::NewWorkspace, window, cx| {
+            this.new_workspace_dialog(Vec::new(), true, window, cx);
+        }))
+        .on_action(cx.listener(|this, a: &actions::ShowPlusMenu, window, cx| {
+            this.show_plus_menu(a.0, window, cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ShowProjectMenu, window, cx| {
+                if let Ok(project) = a.0.project.parse() {
+                    let selection: Vec<_> =
+                        a.0.selection
+                            .iter()
+                            .filter_map(|s| s.parse().ok())
+                            .collect();
+                    this.show_project_menu(project, &selection, a.0.position, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::DropProjectOnto, window, cx| {
+                if let Ok(dragged) = a.0.dragged.parse() {
+                    let target = a.0.target.as_deref().and_then(|t| t.parse().ok());
+                    this.drop_project(dragged, target, window, cx);
+                }
+            }),
+        )
+        .on_action(cx.listener(|this, a: &actions::SetSidebarOrganize, _, cx| {
+            this.set_sidebar_organize(a.0, cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::RenameWorkspaceTo, window, cx| {
+                if let Ok(id) = a.0.workspace.parse() {
+                    this.rename_workspace_to(id, a.0.name.clone(), window, cx);
                 }
             }),
         )

@@ -25,14 +25,12 @@ use hutan_protocol::history::HistorySource;
 use hutan_protocol::messages::{RecentProject, WorkspaceInfo, WorkspaceKind};
 
 use super::actions::palette;
-use super::modal::PromptSpec;
 use super::palette::fuzzy_score;
 use super::panels::HistoryResume;
 use super::terminals::session_of_item;
 use super::ui::StyledExt as _;
 use super::view::{MenuEntry, Workbench};
-use crate::sessions::workspaces as order;
-use crate::settings::{WorkspaceSort, WorkspacesSettings};
+use crate::settings::{SidebarOrganize, SidebarSettings, WorkspaceSort, WorkspacesSettings};
 use crate::theme::DensityExt as _;
 
 /// How many projects the ⌘O picker asks the daemon for.
@@ -202,33 +200,36 @@ pub(super) fn tilde(path: &Path) -> String {
     }
 }
 
-fn folder_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
-}
-
 impl Workbench {
-    // ---- the active workspace ----------------------------------------------------------------
+    // ---- the active container ----------------------------------------------------------------
 
-    /// The workspace whose layout is shown.
+    /// The container whose layout is shown: the workspace the user is in, else the project in
+    /// no workspace, else Home.
     pub fn active_workspace(&self) -> Option<WorkspaceId> {
         self.state.workspace().and_then(|id| id.parse().ok())
     }
 
-    /// The workspace new sessions start in: the active one, else Home (`kind == home`).
+    /// Where new sessions start: the project the user works in (the active project, else the
+    /// first project of the active workspace, else the workspace itself), the active project
+    /// or Home.
     pub(crate) fn target_workspace<'a>(
         &self,
         store: &'a crate::sessions::SessionsStore,
     ) -> Option<&'a WorkspaceInfo> {
-        self.active_workspace()
-            .and_then(|id| store.workspace(id))
-            .or_else(|| store.home_workspace())
+        let container = self.active_workspace().and_then(|id| store.workspace(id));
+        match container {
+            Some(container) if container.kind == WorkspaceKind::Workspace => store
+                .active_project()
+                .filter(|p| p.parent_id == Some(container.id))
+                .or_else(|| store.state().projects_in(container.id).next())
+                .or(Some(container)),
+            Some(container) => Some(container),
+            None => store.home_workspace(),
+        }
     }
 
-    /// Shows `workspace`: its layout becomes the live one, its settings apply, and the
-    /// terminals of the layout that was shown detach.
+    /// Shows the container of `workspace` (a project, a workspace or Home): its layout becomes
+    /// the live one, its settings apply, and the terminals of the layout that was shown detach.
     pub fn switch_workspace(
         &mut self,
         workspace: WorkspaceId,
@@ -239,11 +240,42 @@ impl Workbench {
         self.focus_root(window, cx);
     }
 
-    /// The model part of [`Self::switch_workspace`]: a no-op for the workspace already shown.
+    /// The model part of [`Self::switch_workspace`]. The layout belongs to the container the
+    /// user switches to: the workspace when `workspace` is a project inside one, else the
+    /// project, else Home. A no-op for the container already shown (the project chosen inside
+    /// it still changes).
     pub(crate) fn show_workspace(&mut self, workspace: WorkspaceId, cx: &mut Context<Self>) {
         self.resolve_active_workspace(cx);
-        let key = workspace.to_string();
+        let (container, project) = {
+            let store = self.sessions.read(cx);
+            let state = store.state();
+            let container = state.workspace_of(workspace);
+            // The project chosen so far stays the workspace's choice for when it comes back.
+            if let Some(chosen) = self.chosen_project {
+                let of = state.workspace_of(chosen);
+                if of != chosen {
+                    self.remembered_projects.insert(of, chosen);
+                }
+            }
+            // An id the store does not know yet is a project (or workspace) whose events are on
+            // their way; the choice is checked against the store when it is used.
+            let project = match store.workspace(workspace) {
+                Some(w) if w.kind == WorkspaceKind::Project => Some(w.id),
+                Some(_) => None,
+                None => Some(workspace),
+            };
+            // A workspace keeps the project the user had chosen in it.
+            let kept = self
+                .remembered_projects
+                .get(&container)
+                .copied()
+                .filter(|chosen| state.workspace_of(*chosen) == container);
+            (container, project.or(kept))
+        };
+        self.chosen_project = project;
+        let key = container.to_string();
         if self.state.workspace() == Some(key.as_str()) {
+            self.sync_workspace(cx);
             return;
         }
         self.mutate(cx, |s| {
@@ -251,7 +283,8 @@ impl Workbench {
         });
     }
 
-    /// Switches to the workspace `session` belongs to (it is about to be shown).
+    /// Switches to the container `session` belongs to (it is about to be shown), and makes its
+    /// project the one the user works in.
     pub(crate) fn show_workspace_of(&mut self, session: SessionId, cx: &mut Context<Self>) {
         let workspace = self
             .sessions
@@ -263,30 +296,64 @@ impl Workbench {
         }
     }
 
-    /// Tells the sessions store and the settings which workspace is active: the first root of
-    /// the active workspace layers its `.hutan/settings.toml` over the user settings (the
-    /// settings store re-reads and hot-reloads that file while it stays the active one).
+    /// Tells the sessions store which container and project are active, and layers their
+    /// `.hutan/settings.toml` files over the user settings: the first project root of the
+    /// workspace (or Home's folder) is the workspace layer, the root of the project the user
+    /// works in the project layer (a project in no workspace layers only its own). The settings
+    /// store re-reads and hot-reloads both while they stay the active ones.
     pub(crate) fn sync_workspace(&mut self, cx: &mut Context<Self>) {
         let active = self.active_workspace();
-        let root = {
+        // Focusing a session of another project of the workspace moves the active project (not
+        // when the focus only changed because the layout did: a project row that was clicked
+        // chose its project, whatever tab the restored layout had focused).
+        let focused = self.sessions.read(cx).focused();
+        if focused != self.focus_seen {
+            self.focus_seen = focused;
+            if self.synced_container == active {
+                let store = self.sessions.read(cx);
+                let project = focused
+                    .and_then(|id| store.session(id))
+                    .and_then(|s| store.workspace(s.workspace_id))
+                    .filter(|w| w.kind == WorkspaceKind::Project)
+                    .map(|w| w.id);
+                if project.is_some() {
+                    self.chosen_project = project;
+                }
+            }
+        }
+        self.synced_container = active;
+        let (project, workspace_root, project_root) = {
             let store = self.sessions.read(cx);
-            active
-                .and_then(|id| store.workspace(id))
-                .and_then(|w| w.roots.first().cloned())
+            let container = active.and_then(|id| store.workspace(id));
+            let project = match container {
+                Some(container) if container.kind == WorkspaceKind::Project => Some(container),
+                Some(container) if container.kind == WorkspaceKind::Workspace => self
+                    .chosen_project
+                    .and_then(|id| store.workspace(id))
+                    .filter(|p| p.parent_id == Some(container.id)),
+                _ => None,
+            };
+            let (workspace_root, project_root) = layer_roots(container, project);
+            (project.map(|p| p.id), workspace_root, project_root)
         };
         self.sessions
-            .update(cx, |store, cx| store.set_active_workspace(active, cx));
-        if root != self.workspace_root {
-            self.workspace_root = root.clone();
-            self.settings.set_workspace_root(root);
+            .update(cx, |store, cx| store.set_active(active, project, cx));
+        if workspace_root != self.workspace_root {
+            self.workspace_root.clone_from(&workspace_root);
+            self.settings.set_workspace_root(workspace_root);
+        }
+        if project_root != self.project_root {
+            self.project_root.clone_from(&project_root);
+            self.settings.set_project_root(project_root);
         }
     }
 
     /// After the daemon told us what it has: a layout from before workspaces existed (or a first
-    /// start) belongs to the workspace of its first session, else Home; a workspace that is gone
-    /// hands the window to Home; parked layouts of vanished workspaces are forgotten.
+    /// start) belongs to the container of its first session, else Home; a project that joined a
+    /// workspace hands its layout to it; a container that is gone hands the window to Home;
+    /// parked layouts of vanished containers are forgotten.
     pub(crate) fn resolve_active_workspace(&mut self, cx: &mut Context<Self>) {
-        let (known, home, owner) = {
+        let (known, parents, home, owner) = {
             let store = self.sessions.read(cx);
             if !store.synced() || store.connection_state() != ConnectionState::Connected {
                 return;
@@ -296,6 +363,11 @@ impl Workbench {
                 .iter()
                 .map(|w| w.id.to_string())
                 .collect();
+            let parents: Vec<(String, String)> = store
+                .workspaces()
+                .iter()
+                .filter_map(|w| Some((w.id.to_string(), w.parent_id?.to_string())))
+                .collect();
             let owner = self
                 .state
                 .center
@@ -304,8 +376,8 @@ impl Workbench {
                 .flat_map(|pane| pane.items.iter())
                 .filter_map(session_of_item)
                 .find_map(|session| store.session(session))
-                .map(|session| session.workspace_id);
-            (known, store.home_workspace().map(|w| w.id), owner)
+                .map(|session| store.state().workspace_of(session.workspace_id));
+            (known, parents, store.home_workspace().map(|w| w.id), owner)
         };
         let mut changed = false;
         match self.state.workspace().map(str::to_owned) {
@@ -327,6 +399,9 @@ impl Workbench {
                     changed = true;
                 }
             }
+        }
+        for (project, workspace) in &parents {
+            changed |= self.state.merge_workspace(project, workspace);
         }
         let gone: Vec<String> = self
             .state
@@ -376,7 +451,7 @@ impl Workbench {
     }
 
     /// Asks for a folder with the system's open panel; `then` runs with the choice.
-    fn choose_folder(
+    pub(super) fn choose_folder(
         &mut self,
         prompt: &'static str,
         then: impl FnOnce(&mut Workbench, PathBuf, &mut Window, &mut Context<Workbench>) + 'static,
@@ -401,6 +476,33 @@ impl Workbench {
         .detach();
     }
 
+    /// Like [`Self::choose_folder`] for several folders at once; `then` runs with the choice
+    /// when it is not empty.
+    pub(super) fn choose_folders(
+        &mut self,
+        prompt: &'static str,
+        then: impl FnOnce(&mut Workbench, Vec<PathBuf>, &mut Window, &mut Context<Workbench>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some(prompt.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            if !paths.is_empty() {
+                this.update_in(cx, |this, window, cx| then(this, paths, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
     /// "Open Folder…": the system folder panel, then `workspace.open`.
     pub fn open_folder_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.choose_folder(
@@ -413,7 +515,7 @@ impl Workbench {
 
     // ---- workspace verbs ---------------------------------------------------------------------
 
-    fn workspace_info(&self, id: WorkspaceId, cx: &gpui::App) -> Option<WorkspaceInfo> {
+    pub(super) fn workspace_info(&self, id: WorkspaceId, cx: &gpui::App) -> Option<WorkspaceInfo> {
         self.sessions.read(cx).workspace(id).cloned()
     }
 
@@ -423,10 +525,11 @@ impl Workbench {
             .and_then(|id| self.workspace_info(id, cx))
     }
 
-    fn report_unit(
+    /// Shows "Cannot `what`: reason" when the request in `task` failed.
+    pub(super) fn report_unit<T: 'static>(
         &mut self,
         what: &'static str,
-        task: gpui::Task<Result<(), String>>,
+        task: gpui::Task<Result<T, String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -439,191 +542,6 @@ impl Workbench {
             }
         })
         .detach();
-    }
-
-    pub fn pin_workspace(
-        &mut self,
-        workspace: WorkspaceId,
-        pinned: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let task = self
-            .sessions
-            .update(cx, |store, cx| store.pin_workspace(workspace, pinned, cx));
-        self.report_unit(
-            if pinned {
-                "pin the workspace"
-            } else {
-                "unpin the workspace"
-            },
-            task,
-            window,
-            cx,
-        );
-    }
-
-    pub fn rename_workspace(
-        &mut self,
-        workspace: WorkspaceId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(info) = self.workspace_info(workspace, cx) else {
-            return;
-        };
-        self.open_prompt(
-            PromptSpec {
-                title: "Rename workspace",
-                message: "New name:",
-                initial: &info.name,
-                confirm_label: "Rename",
-            },
-            move |this, name, window, cx| {
-                let task = this.sessions.update(cx, |store, cx| {
-                    store.rename_workspace(workspace, name.trim().to_owned(), cx)
-                });
-                this.report_unit("rename the workspace", task, window, cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    pub fn add_workspace_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.choose_folder(
-            "Add",
-            move |this, path, window, cx| {
-                let task = this.sessions.update(cx, |store, cx| {
-                    store.add_workspace_root(workspace, path, cx)
-                });
-                this.report_unit("add the folder", task, window, cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    pub fn remove_workspace_folder(
-        &mut self,
-        workspace: WorkspaceId,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let task = self.sessions.update(cx, |store, cx| {
-            store.remove_workspace_root(workspace, path, cx)
-        });
-        self.report_unit("remove the folder", task, window, cx);
-    }
-
-    /// Closes a workspace without live sessions after asking; its project stays in the recent
-    /// list. Home and workspaces with live sessions cannot be closed.
-    pub fn close_workspace(
-        &mut self,
-        workspace: WorkspaceId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(info) = self.workspace_info(workspace, cx) else {
-            return;
-        };
-        if let Some(reason) = close_blocker(&info) {
-            self.set_notice(format!("Cannot close “{}”: {reason}", info.name), cx);
-            return;
-        }
-        self.open_confirm(
-            "Close workspace?",
-            format!(
-                "“{}” leaves the sidebar and its ended sessions are removed. The project stays in the recent projects (⌘O).",
-                info.name
-            ),
-            "Close",
-            move |this, window, cx| {
-                let task = this
-                    .sessions
-                    .update(cx, |store, cx| store.close_workspace(workspace, cx));
-                this.report_unit("close the workspace", task, window, cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    pub fn reveal_workspace(&mut self, workspace: WorkspaceId, cx: &mut Context<Self>) {
-        match self
-            .workspace_info(workspace, cx)
-            .and_then(|w| w.roots.first().cloned())
-        {
-            Some(root) => (self.daemon.reveal.clone())(&root, cx),
-            None => self.set_notice("This workspace has no folder", cx),
-        }
-    }
-
-    /// The workspace row's context menu: Pin / Unpin, Rename, Add Folder, Remove Folder, Close,
-    /// Reveal in Finder. Entries that do not apply are greyed out with their reason.
-    pub(crate) fn workspace_menu(&self, workspace: WorkspaceId, cx: &gpui::App) -> Vec<MenuEntry> {
-        let Some(info) = self.workspace_info(workspace, cx) else {
-            return Vec::new();
-        };
-        let (home, pinned) = (info.kind == WorkspaceKind::Home, info.pinned);
-        let mut entries = vec![
-            Self::entry(
-                if pinned { "Unpin" } else { "Pin" },
-                move |this, window, cx| this.pin_workspace(workspace, !pinned, window, cx),
-            ),
-            Self::entry("Rename…", move |this, window, cx| {
-                this.rename_workspace(workspace, window, cx);
-            }),
-        ];
-        if home {
-            entries.push(Self::disabled_entry("Add Folder… (Home has one folder)"));
-            entries.push(Self::disabled_entry("Remove Folder (Home has one folder)"));
-        } else {
-            entries.push(Self::entry("Add Folder…", move |this, window, cx| {
-                this.add_workspace_folder(workspace, window, cx);
-            }));
-            if info.roots.len() < 2 {
-                entries.push(Self::disabled_entry("Remove Folder (the only folder)"));
-            } else {
-                for root in &info.roots {
-                    let root = root.clone();
-                    let label = format!("Remove Folder “{}”", folder_name(&root));
-                    entries.push(Self::entry(label, move |this, window, cx| {
-                        this.remove_workspace_folder(workspace, root.clone(), window, cx);
-                    }));
-                }
-            }
-        }
-        match close_blocker(&info) {
-            Some(reason) => entries.push(Self::disabled_entry(format!("Close ({reason})"))),
-            None => entries.push(Self::entry("Close", move |this, window, cx| {
-                this.close_workspace(workspace, window, cx);
-            })),
-        }
-        entries.push(Self::entry("Reveal in Finder", move |this, _, cx| {
-            this.reveal_workspace(workspace, cx);
-        }));
-        entries
-    }
-
-    /// Opens the context menu of a workspace row.
-    pub fn show_workspace_menu(
-        &mut self,
-        workspace: WorkspaceId,
-        position: gpui::Point<gpui::Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let entries = self.workspace_menu(workspace, cx);
-        if !entries.is_empty() {
-            self.open_menu(position, entries, window, cx);
-        }
     }
 
     // ---- sorting and filters -----------------------------------------------------------------
@@ -649,13 +567,19 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Organizes the sidebar by workspaces or by projects and keeps it in `sidebar.organize`.
+    pub fn set_sidebar_organize(&mut self, mode: SidebarOrganize, cx: &mut Context<Self>) {
+        self.write_workspace_setting("sidebar.organize", toml::Value::String(mode.key().into()));
+        cx.notify();
+    }
+
     fn write_workspace_setting(&mut self, key: &str, value: toml::Value) {
         if let Err(err) = self.settings.write_user(key, value) {
             tracing::warn!("cannot save `{key}`: {err}");
         }
     }
 
-    /// The sort and filter menu of the sidebar header.
+    /// The sort, filter and organize menu of the sidebar header.
     pub(crate) fn sort_menu(&self) -> Vec<MenuEntry> {
         let settings = self.settings.get::<WorkspacesSettings>();
         let mut entries: Vec<MenuEntry> = WorkspaceSort::ALL
@@ -669,20 +593,20 @@ impl Workbench {
             })
             .collect();
         for (key, label, on) in [
-            ("hide_empty", "Hide Empty Workspaces", settings.hide_empty),
+            ("hide_empty", "Hide Empty Projects", settings.hide_empty),
             (
                 "hide_sleeping",
-                "Hide Sleeping Workspaces",
+                "Hide Sleeping Projects",
                 settings.hide_sleeping,
             ),
             (
                 "hide_cli_created",
-                "Hide CLI-Created Workspaces",
+                "Hide CLI-Created Projects",
                 settings.hide_cli_created,
             ),
             (
                 "always_show_active",
-                "Always Show the Active Workspace",
+                "Always Show Where You Are",
                 settings.always_show_active,
             ),
         ] {
@@ -690,6 +614,15 @@ impl Workbench {
                 this.toggle_workspace_filter(key, cx);
             });
             entry.checked = on;
+            entries.push(entry);
+        }
+        let organize = self.settings.get::<SidebarSettings>().organize;
+        for mode in [SidebarOrganize::Workspaces, SidebarOrganize::Projects] {
+            let mut entry =
+                Self::entry(format!("Organize: {}", mode.label()), move |this, _, cx| {
+                    this.set_sidebar_organize(mode, cx)
+                });
+            entry.checked = organize == mode;
             entries.push(entry);
         }
         entries
@@ -704,29 +637,6 @@ impl Workbench {
     ) {
         let entries = self.sort_menu();
         self.open_menu(position, entries, window, cx);
-    }
-
-    // ---- manual reordering -------------------------------------------------------------------
-
-    /// A workspace row was dropped onto another: `workspace.move` (manual order only).
-    pub fn drop_workspace(
-        &mut self,
-        dragged: WorkspaceId,
-        target: WorkspaceId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.settings.get::<WorkspacesSettings>().sort != WorkspaceSort::Manual {
-            return;
-        }
-        let before = order::reorder(self.sessions.read(cx).workspaces(), dragged, target);
-        let Some(before) = before else {
-            return;
-        };
-        let task = self
-            .sessions
-            .update(cx, |store, cx| store.move_workspace(dragged, before, cx));
-        self.report_unit("move the workspace", task, window, cx);
     }
 
     // ---- the picker (⌘O project picker, ⌘J jump palette) -------------------------------------
@@ -837,50 +747,141 @@ impl Workbench {
         picker.refilter();
     }
 
-    /// ⌘J: every workspace (hidden ones too) and every session; Enter shows it.
+    /// ⌘J: every workspace, project (hidden ones too) and session, in the sidebar's order;
+    /// Enter shows it. A workspace or project row shows its container's layout; a session its
+    /// tab.
     pub fn open_jump_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entries = {
-            let store = self.sessions.read(cx);
-            let settings = self.settings.get::<WorkspacesSettings>();
-            let sorted = order::sort(
-                store.workspaces(),
-                settings.sort,
-                &store.needs_you_by_workspace(),
-            );
-            let mut entries: Vec<PickerEntry> = sorted
-                .iter()
-                .map(|w| PickerEntry {
-                    icon: "▣".into(),
-                    title: w.name.clone().into(),
-                    detail: w
-                        .roots
-                        .first()
-                        .map(|root| tilde(root))
-                        .unwrap_or_default()
-                        .into(),
-                    action: PickerAction::Workspace(w.id),
-                    fixed: false,
-                })
-                .collect();
-            for workspace in &sorted {
-                for session in store
-                    .sessions()
-                    .iter()
-                    .filter(|s| s.workspace_id == workspace.id)
+        let entries = self.jump_entries(cx);
+        self.show_picker(PickerState::new(PickerKind::Jump, entries), window, cx);
+    }
+
+    /// The rows of the ⌘J palette.
+    fn jump_entries(&self, cx: &gpui::App) -> Vec<PickerEntry> {
+        use crate::sessions::tree::{self, Node, ProjectNode, folder_label, session_folder};
+        let store = self.sessions.read(cx);
+        let settings = self.settings.get::<WorkspacesSettings>();
+        let everything = WorkspacesSettings {
+            hide_empty: false,
+            hide_sleeping: false,
+            hide_cli_created: false,
+            ..(*settings).clone()
+        };
+        let sessions: Vec<&hutan_protocol::messages::SessionInfo> =
+            store.sessions().iter().collect();
+        let needs = store.needs_you_by_workspace();
+        let tree = tree::build(&tree::Inputs {
+            workspaces: store.workspaces(),
+            sessions: &sessions,
+            organize: self.settings.get::<SidebarSettings>().organize,
+            sort: settings.sort,
+            filters: &everything,
+            query: "",
+            active: [None, None],
+            needs: &needs,
+            session_matches: &|_| true,
+        });
+        let project_entry = |project: &ProjectNode, workspace: Option<&str>| {
+            let info = &project.info;
+            let icon = match info.kind {
+                WorkspaceKind::Home => "⌂",
+                _ if info
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.common_dir.is_some()) =>
                 {
+                    "▣"
+                }
+                _ => "▢",
+            };
+            let folder = project_root_of(info)
+                .map(|root| tilde(&root))
+                .unwrap_or_default();
+            PickerEntry {
+                icon: icon.into(),
+                title: info.name.clone().into(),
+                detail: match workspace {
+                    Some(workspace) => format!("{workspace} › {folder}"),
+                    None => folder,
+                }
+                .into(),
+                action: PickerAction::Workspace(info.id),
+                fixed: false,
+            }
+        };
+        let mut entries = Vec::new();
+        // Sessions follow the containers, grouped the way the sidebar lists them.
+        let mut session_rows: Vec<(String, &hutan_protocol::messages::SessionInfo)> = Vec::new();
+        let mut push_sessions =
+            |label: String, list: &'_ [hutan_protocol::messages::SessionInfo]| {
+                for session in list {
+                    if let Some(found) = store.session(session.id) {
+                        session_rows.push((label.clone(), found));
+                    }
+                }
+            };
+        for node in &tree.nodes {
+            match node {
+                Node::Workspace(workspace) => {
+                    let projects = workspace.projects.len();
                     entries.push(PickerEntry {
-                        icon: super::panels::kind_icon(session.kind).into(),
-                        title: session.title.clone().into(),
-                        detail: format!("{} · {}", workspace.name, session.command.join(" "))
-                            .into(),
-                        action: PickerAction::Session(session.id),
+                        icon: "▤".into(),
+                        title: workspace.info.name.clone().into(),
+                        detail: match projects {
+                            0 => "no projects".to_owned(),
+                            1 => "1 project".to_owned(),
+                            n => format!("{n} projects"),
+                        }
+                        .into(),
+                        action: PickerAction::Workspace(workspace.info.id),
                         fixed: false,
                     });
+                    for project in &workspace.projects {
+                        entries.push(project_entry(project, Some(&workspace.info.name)));
+                        push_sessions(
+                            format!("{} › {}", workspace.info.name, project.info.name),
+                            &project.sessions,
+                        );
+                    }
+                    push_sessions(workspace.info.name.clone(), &workspace.sessions);
                 }
+                Node::Project(project) => {
+                    let workspace = project
+                        .info
+                        .parent_id
+                        .and_then(|id| store.workspace(id))
+                        .map(|w| w.name.as_str());
+                    entries.push(project_entry(project, workspace));
+                    push_sessions(
+                        match workspace {
+                            Some(workspace) => format!("{workspace} › {}", project.info.name),
+                            None => project.info.name.clone(),
+                        },
+                        &project.sessions,
+                    );
+                }
+                Node::Home(home) => {
+                    entries.push(project_entry(home, None));
+                    push_sessions(home.info.name.clone(), &home.sessions);
+                }
+                Node::NoWorkspace => {}
             }
-            entries
-        };
-        self.show_picker(PickerState::new(PickerKind::Jump, entries), window, cx);
+        }
+        for (label, session) in session_rows {
+            let folder = session_folder(session)
+                .map(folder_label)
+                .unwrap_or_default();
+            let badge = crate::sessions::placement_badge(session)
+                .map(|badge| format!(" · {}", badge.text))
+                .unwrap_or_default();
+            entries.push(PickerEntry {
+                icon: super::panels::kind_icon(session.kind).into(),
+                title: session.title.clone().into(),
+                detail: format!("{label} · {folder}{badge} · {}", session.command.join(" ")).into(),
+                action: PickerAction::Session(session.id),
+                fixed: false,
+            });
+        }
+        entries
     }
 
     /// ⌘K "Review approvals": every pending permission request, oldest first; Enter shows the
@@ -1184,7 +1185,7 @@ impl Workbench {
 }
 
 /// Why `workspace` cannot be closed, if it cannot.
-fn close_blocker(workspace: &WorkspaceInfo) -> Option<String> {
+pub(super) fn close_blocker(workspace: &WorkspaceInfo) -> Option<String> {
     if workspace.kind == WorkspaceKind::Home {
         return Some("Home cannot be closed".to_owned());
     }
@@ -1192,5 +1193,54 @@ fn close_blocker(workspace: &WorkspaceInfo) -> Option<String> {
         0 => None,
         1 => Some("1 live session".to_owned()),
         n => Some(format!("{n} live sessions")),
+    }
+}
+
+/// The root of a project: its repository's main checkout, or its folder.
+pub(crate) fn project_root_of(info: &WorkspaceInfo) -> Option<PathBuf> {
+    info.project
+        .as_ref()
+        .map(|p| p.root.clone())
+        .or_else(|| info.roots.first().cloned())
+}
+
+/// The roots whose `.hutan/settings.toml` files layer over the user's settings for `container`
+/// (what is shown) and `project` (the one worked in, inside a workspace): `(workspace layer,
+/// project layer)`. A workspace's layer is its first project's root and Home's is its folder;
+/// a project in no workspace layers only its own file; the project layer is left out when it
+/// would read the file the workspace layer already reads.
+pub(crate) fn layer_roots(
+    container: Option<&WorkspaceInfo>,
+    project: Option<&WorkspaceInfo>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let Some(container) = container else {
+        return (None, None);
+    };
+    let (workspace, project) = match container.kind {
+        WorkspaceKind::Workspace => (
+            container.roots.first().cloned(),
+            project.and_then(project_root_of),
+        ),
+        WorkspaceKind::Project => (None, project_root_of(container)),
+        WorkspaceKind::Home => (container.roots.first().cloned(), None),
+    };
+    let project = project.filter(|root| Some(root) != workspace.as_ref());
+    (workspace, project)
+}
+
+/// [`layer_roots`] for the container a new session of `id` belongs to.
+pub(crate) fn layer_roots_of(
+    store: &crate::sessions::SessionsStore,
+    id: WorkspaceId,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    match store.workspace(id) {
+        Some(project) if project.kind == WorkspaceKind::Project => {
+            let parent = project.parent_id.and_then(|parent| store.workspace(parent));
+            match parent {
+                Some(parent) => layer_roots(Some(parent), Some(project)),
+                None => layer_roots(Some(project), None),
+            }
+        }
+        other => layer_roots(other, None),
     }
 }

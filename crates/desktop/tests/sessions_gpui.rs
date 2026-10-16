@@ -220,8 +220,8 @@ fn the_sessions_panel_lists_groups_and_filters(cx: &mut TestAppContext) {
         .expect("the sessions panel is drawn in the left dock");
 
     let titles = |cx: &mut VisualTestContext| panel.read_with(cx, |p, cx| p.visible_titles(cx));
-    // Grouped by workspace: the default workspace first, then `api`.
-    assert_eq!(titles(cx), ["alpha shell", "beta build", "gamma tests"]);
+    // The projects first (`api`, whose two sessions are listed under it), Home last.
+    assert_eq!(titles(cx), ["beta build", "gamma tests", "alpha shell"]);
 
     panel.update(cx, |p, cx| p.set_query("build", cx));
     assert_eq!(titles(cx), ["beta build"]);
@@ -727,13 +727,13 @@ fn the_settings_sheet_writes_values_and_keeps_comments(cx: &mut TestAppContext) 
 
     // Lists: add and remove items of `panels.sessions.row`.
     cx.dispatch_action(actions::OpenSettingsFor("panels.sessions".into()));
-    view.update(cx, |wb, cx| wb.sheet_remove_list_item("row", 4, cx));
+    view.update(cx, |wb, cx| wb.sheet_remove_list_item("row", 5, cx));
     view.update(cx, |wb, cx| wb.sheet_begin_edit("row", cx));
     cx.simulate_keystrokes("a g e enter");
     let row = view.read_with(cx, |wb, _| wb.sheet_value("row")).unwrap();
     assert_eq!(
         row,
-        serde_json::json!(["state", "kind", "title", "placement", "age"])
+        serde_json::json!(["state", "kind", "title", "folder", "placement", "age"])
     );
 
     // Order: move items up and down; the ends do nothing.
@@ -742,18 +742,18 @@ fn the_settings_sheet_writes_values_and_keeps_comments(cx: &mut TestAppContext) 
         |cx: &mut VisualTestContext| view.read_with(cx, |wb, _| wb.sheet_value("row")).unwrap();
     assert_eq!(
         row(cx),
-        serde_json::json!(["state", "title", "kind", "placement", "age"])
+        serde_json::json!(["state", "title", "kind", "folder", "placement", "age"])
     );
     view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 0, -1, cx));
-    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 4, 1, cx));
+    view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 5, 1, cx));
     assert_eq!(
         row(cx),
-        serde_json::json!(["state", "title", "kind", "placement", "age"])
+        serde_json::json!(["state", "title", "kind", "folder", "placement", "age"])
     );
     view.update(cx, |wb, cx| wb.sheet_move_list_item("row", 0, 1, cx));
     assert_eq!(
         row(cx),
-        serde_json::json!(["title", "state", "kind", "placement", "age"])
+        serde_json::json!(["title", "state", "kind", "folder", "placement", "age"])
     );
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("# my settings"), "{text}");
@@ -839,16 +839,22 @@ fn workspace_settings_apply_while_their_session_is_focused(cx: &mut TestAppConte
         view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
         Some(std::fs::canonicalize(&daemon.paths.default_home_folder).unwrap())
     );
+    assert_eq!(view.read_with(cx, |wb, _| wb.project_root().cloned()), None);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.terminal_view_settings().font_size),
         13.0
     );
 
+    // A project in no workspace layers only its own file.
     open_session(&view, cx, project.id);
     assert_eq!(
-        view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
+        view.read_with(cx, |wb, _| wb.project_root().cloned()),
         Some(std::fs::canonicalize(root.path()).unwrap()),
         "the project's folder is stored canonical"
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
+        None
     );
     wait_until(cx, "the workspace override", |cx| {
         view.read_with(cx, |wb, _| wb.terminal_view_settings().font_size) == 20.0

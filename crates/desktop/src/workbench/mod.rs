@@ -16,6 +16,7 @@ mod notify;
 pub mod palette;
 pub mod panels;
 pub mod persistence;
+mod projects;
 mod providers;
 pub mod registry;
 mod render;

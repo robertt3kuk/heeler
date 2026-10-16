@@ -249,6 +249,57 @@ async fn workspace_file_created_after_watching_started() {
 }
 
 #[tokio::test]
+async fn the_project_file_hot_reloads_above_the_workspace_file() {
+    let dir = TempDir::new().unwrap();
+    let store = SettingsStore::new(SettingsPaths::in_dir(dir.path().join("app")));
+    store.register::<Layout>();
+    let _guard = store.start_watching().unwrap();
+
+    let workspace = dir.path().join("workspace");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    write_file(
+        &workspace.join(".hutan/settings.toml"),
+        "[layout]\npreset = \"workspace\"\n",
+    );
+    store.set_workspace_root(Some(workspace));
+    store.set_project_root(Some(project.clone()));
+    assert_eq!(store.get::<Layout>().preset, "workspace");
+
+    // The project's file appears after watching started (its `.hutan` did not exist).
+    write_file(
+        &project.join(".hutan/settings.toml"),
+        "[layout]\npreset = \"focus\"\n",
+    );
+    until(&store, "project layer", || {
+        store.get::<Layout>().preset == "focus"
+    })
+    .await;
+
+    // Edits keep hot reloading.
+    write_file(
+        &project.join(".hutan/settings.toml"),
+        "[layout]\npreset = \"overview\"\n",
+    );
+    until(&store, "project edit", || {
+        store.get::<Layout>().preset == "overview"
+    })
+    .await;
+
+    // Removing the file falls back to the workspace layer.
+    std::fs::remove_file(project.join(".hutan/settings.toml")).unwrap();
+    until(&store, "project file removed", || {
+        store.get::<Layout>().preset == "workspace"
+    })
+    .await;
+
+    // Switching the project drops its layer.
+    store.set_project_root(None);
+    assert_eq!(store.get::<Layout>().preset, "workspace");
+}
+
+#[tokio::test]
 async fn dropping_the_guard_stops_reloading() {
     let (_dir, store, user) = fixture("[terminal]\nfont_size = 20\n");
     store.register::<Terminal>();

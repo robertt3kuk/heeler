@@ -287,7 +287,7 @@ fn sort_modes_order_the_workspace_rows_and_pins_stay_on_top(cx: &mut TestAppCont
     );
     assert_eq!(
         listed(&panel, cx),
-        ["delta", "Home", "alpha", "bravo", "charlie"]
+        ["delta", "alpha", "bravo", "charlie", "Home"]
     );
 
     set_sort(cx, WorkspaceSort::Recent);
@@ -345,10 +345,12 @@ fn the_sort_menu_lists_modes_and_filters_with_their_state(cx: &mut TestAppContex
             "Recent activity",
             "Attention first",
             "Name",
-            "Hide Empty Workspaces",
-            "Hide Sleeping Workspaces",
-            "Hide CLI-Created Workspaces",
-            "Always Show the Active Workspace",
+            "Hide Empty Projects",
+            "Hide Sleeping Projects",
+            "Hide CLI-Created Projects",
+            "Always Show Where You Are",
+            "Organize: Workspaces → Projects",
+            "Organize: Projects",
         ]
     );
     let checked: Vec<&str> = menu
@@ -360,8 +362,9 @@ fn the_sort_menu_lists_modes_and_filters_with_their_state(cx: &mut TestAppContex
         checked,
         [
             "Manual",
-            "Hide Empty Workspaces",
-            "Always Show the Active Workspace"
+            "Hide Empty Projects",
+            "Always Show Where You Are",
+            "Organize: Workspaces → Projects"
         ]
     );
 
@@ -393,29 +396,32 @@ fn dragging_a_row_moves_the_workspace_and_the_order_survives_a_daemon_restart(
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 4, 3);
     let panel = panel(&view, cx);
-    assert_eq!(listed(&panel, cx), ["Home", "a", "b", "c"]);
+    assert_eq!(listed(&panel, cx), ["a", "b", "c", "Home"]);
     let (a, c) = (id_of(&view, cx, "a"), id_of(&view, cx, "c"));
 
     // c dropped onto a takes a's place; the daemon stores the new order.
     let (from, to) = (row_center(&view, cx, c), row_center(&view, cx, a));
     drag(cx, from, to);
     wait_until(cx, "the move to reach the sidebar", |cx| {
-        listed(&panel, cx) == ["Home", "c", "a", "b"]
+        listed(&panel, cx) == ["c", "a", "b", "Home"]
     });
     assert_eq!(daemon_order(&daemon), ["Home", "c", "a", "b"]);
 
-    // Dropping onto Home puts it first below Home; Home itself never moves.
+    // b dropped onto c takes c's place (from below it lands before c).
     let b = id_of(&view, cx, "b");
-    let (from, to) = (
-        row_center(&view, cx, b),
-        row_center(&view, cx, home_of(&daemon).id),
-    );
+    let (from, to) = (row_center(&view, cx, b), row_center(&view, cx, c));
     drag(cx, from, to);
-    wait_until(cx, "b to move below Home", |cx| {
-        listed(&panel, cx) == ["Home", "b", "c", "a"]
+    wait_until(cx, "b to lead", |cx| {
+        listed(&panel, cx) == ["b", "c", "a", "Home"]
     });
+    assert_eq!(daemon_order(&daemon), ["Home", "b", "c", "a"]);
+
+    // Home closes the list, is no drop target and does not move.
     let home = home_of(&daemon).id;
     let (from, to) = (row_center(&view, cx, home), row_center(&view, cx, a));
+    drag(cx, from, to);
+    pump(cx, Duration::from_millis(300));
+    let (from, to) = (row_center(&view, cx, b), row_center(&view, cx, home));
     drag(cx, from, to);
     pump(cx, Duration::from_millis(300));
     assert_eq!(daemon_order(&daemon), ["Home", "b", "c", "a"]);
@@ -440,7 +446,7 @@ fn dragging_a_row_moves_the_workspace_and_the_order_survives_a_daemon_restart(
     });
     assert_eq!(daemon_order(&daemon), ["Home", "b", "c", "a"]);
     wait_until(cx, "the order after the restart", |cx| {
-        listed(&panel, cx) == ["Home", "b", "c", "a"]
+        listed(&panel, cx) == ["b", "c", "a", "Home"]
     });
     assert_eq!(names_of(&view, cx), ["Home", "b", "c", "a"]);
 }
@@ -471,7 +477,7 @@ fn a_pinned_workspace_reorders_only_among_the_pinned(cx: &mut TestAppContext) {
         })
     });
     let panel = panel(&view, cx);
-    assert_eq!(listed(&panel, cx), ["one", "two", "Home", "three"]);
+    assert_eq!(listed(&panel, cx), ["one", "two", "three", "Home"]);
 
     // An unpinned row dropped on a pinned one does nothing.
     let (from, to) = (
@@ -480,13 +486,13 @@ fn a_pinned_workspace_reorders_only_among_the_pinned(cx: &mut TestAppContext) {
     );
     drag(cx, from, to);
     pump(cx, Duration::from_millis(300));
-    assert_eq!(listed(&panel, cx), ["one", "two", "Home", "three"]);
+    assert_eq!(listed(&panel, cx), ["one", "two", "three", "Home"]);
 
     // Within the pinned section it reorders.
     let (from, to) = (row_center(&view, cx, two.id), row_center(&view, cx, one.id));
     drag(cx, from, to);
     wait_until(cx, "two to lead the pinned section", |cx| {
-        listed(&panel, cx) == ["two", "one", "Home", "three"]
+        listed(&panel, cx) == ["two", "one", "three", "Home"]
     });
 }
 
@@ -516,20 +522,20 @@ fn filters_hide_and_show_workspaces_and_the_box_narrows_by_name_and_path(cx: &mu
     });
     let panel = panel(&view, cx);
 
-    // Defaults: empty workspaces are hidden, Home never is.
-    assert_eq!(listed(&panel, cx), ["Home", "sleepy", "scripted", "busy"]);
+    // Defaults: empty projects are hidden, Home never is (and closes the list).
+    assert_eq!(listed(&panel, cx), ["sleepy", "scripted", "busy", "Home"]);
 
     cx.dispatch_action(actions::ToggleHideSleepingWorkspaces);
-    assert_eq!(listed(&panel, cx), ["Home", "scripted", "busy"]);
+    assert_eq!(listed(&panel, cx), ["scripted", "busy", "Home"]);
     cx.dispatch_action(actions::ToggleHideCliWorkspaces);
-    assert_eq!(listed(&panel, cx), ["Home", "busy"]);
+    assert_eq!(listed(&panel, cx), ["busy", "Home"]);
 
     // The active workspace stays listed whatever the filters say.
     open_session(&view, cx, ended.id);
     assert_eq!(active(&view, cx), Some(sleepy.id));
-    assert_eq!(listed(&panel, cx), ["Home", "sleepy", "busy"]);
+    assert_eq!(listed(&panel, cx), ["sleepy", "busy", "Home"]);
     open_session(&view, cx, live.id);
-    assert_eq!(listed(&panel, cx), ["Home", "busy"]);
+    assert_eq!(listed(&panel, cx), ["busy", "Home"]);
 
     // Everything off shows even the empty workspace; it is the daemon's order.
     cx.dispatch_action(actions::ToggleHideSleepingWorkspaces);
@@ -537,7 +543,7 @@ fn filters_hide_and_show_workspaces_and_the_box_narrows_by_name_and_path(cx: &mu
     cx.dispatch_action(actions::ToggleHideEmptyWorkspaces);
     assert_eq!(
         listed(&panel, cx),
-        ["Home", "empty", "sleepy", "scripted", "busy"]
+        ["empty", "sleepy", "scripted", "busy", "Home"]
     );
     let text = read_settings(&daemon);
     assert!(text.contains("hide_empty = false"), "{text}");
@@ -549,11 +555,11 @@ fn filters_hide_and_show_workspaces_and_the_box_narrows_by_name_and_path(cx: &mu
         wb.toggle_workspace_filter("always_show_active", cx)
     });
     open_session(&view, cx, ended.id);
-    assert_eq!(listed(&panel, cx), ["Home", "scripted", "busy"]);
+    assert_eq!(listed(&panel, cx), ["scripted", "busy", "Home"]);
     view.update_in(cx, |wb, _, cx| {
         wb.toggle_workspace_filter("always_show_active", cx)
     });
-    assert_eq!(listed(&panel, cx), ["Home", "sleepy", "scripted", "busy"]);
+    assert_eq!(listed(&panel, cx), ["sleepy", "scripted", "busy", "Home"]);
 
     // The filter box narrows by name and by path; a matching workspace shows its sessions.
     cx.dispatch_action(actions::ToggleHideSleepingWorkspaces);
@@ -746,7 +752,7 @@ fn the_jump_palette_reaches_hidden_workspaces_and_their_sessions(cx: &mut TestAp
     cx.dispatch_action(actions::ToggleHideSleepingWorkspaces);
     let panel = panel(&view, cx);
     // `ghost` is empty and `sleepy` sleeping: both are out of the sidebar.
-    assert_eq!(listed(&panel, cx), ["Home", "busy"]);
+    assert_eq!(listed(&panel, cx), ["busy", "Home"]);
 
     cx.simulate_keystrokes("cmd-j");
     assert_eq!(
@@ -772,7 +778,7 @@ fn the_jump_palette_reaches_hidden_workspaces_and_their_sessions(cx: &mut TestAp
     );
     cx.simulate_keystrokes("enter");
     assert_eq!(active(&view, cx), Some(ghost.id));
-    assert_eq!(listed(&panel, cx), ["Home", "ghost", "busy"]);
+    assert_eq!(listed(&panel, cx), ["ghost", "busy", "Home"]);
 
     // A session of another hidden workspace: its workspace is shown and its tab focused.
     cx.simulate_keystrokes("cmd-j");
@@ -981,7 +987,7 @@ fn workspace_settings_layer_over_user_settings_while_their_workspace_is_active(
 
     cx.dispatch_action(actions::OpenWorkspace(styled.id.to_string()));
     assert_eq!(
-        view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
+        view.read_with(cx, |wb, _| wb.project_root().cloned()),
         Some(root.clone())
     );
     wait_until(cx, "the override", |cx| font(&view, cx) == 20.0);
@@ -998,7 +1004,7 @@ fn workspace_settings_layer_over_user_settings_while_their_workspace_is_active(
     cx.dispatch_action(actions::OpenWorkspace(plain.id.to_string()));
     wait_until(cx, "the override to end", |cx| font(&view, cx) == 13.0);
     assert_ne!(
-        view.read_with(cx, |wb, _| wb.workspace_root().cloned()),
+        view.read_with(cx, |wb, _| wb.project_root().cloned()),
         Some(root.clone())
     );
     cx.dispatch_action(actions::OpenWorkspace(styled.id.to_string()));
@@ -1072,11 +1078,17 @@ fn menu_labels(view: &Entity<Workbench>, cx: &mut VisualTestContext) -> Vec<Stri
         .collect()
 }
 
+/// Opens a row's menu the way the sidebar does: through the window's dispatch.
 fn show_menu(view: &Entity<Workbench>, cx: &mut VisualTestContext, workspace: WorkspaceId) {
-    cx.dispatch_action(actions::ShowWorkspaceMenu(actions::WorkspaceMenuAt {
-        workspace: workspace.to_string(),
-        position: point(px(50.0), px(50.0)),
-    }));
+    view.update_in(cx, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(actions::ShowWorkspaceMenu(actions::WorkspaceMenuAt {
+                workspace: workspace.to_string(),
+                position: point(px(50.0), px(50.0)),
+            })),
+            cx,
+        );
+    });
     assert!(view.read_with(cx, |wb, _| wb.context_menu_entries().is_some()));
 }
 
@@ -1089,12 +1101,12 @@ fn run_entry(view: &Entity<Workbench>, cx: &mut VisualTestContext, label_prefix:
 }
 
 #[gpui::test]
-fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut TestAppContext) {
+fn the_project_and_workspace_menus_pin_rename_add_folders_and_close(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let mut folders = Folders::default();
     let proj = project(&daemon, &mut folders, "proj");
-    // Folders are added to (and removed from) a workspace — the user's container of projects,
-    // protocol 0.19; a project is one folder. This desktop lists both flat until M18-B.
+    // Folders are added to a workspace — the user's container of projects (protocol 0.19); a
+    // project is one folder.
     let shop = daemon.create_workspace("shop", &[]);
     let extra = folders.make("extra");
     let extra_too = folders.make("extra-too");
@@ -1102,29 +1114,34 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
     let live = sleeper(&daemon, &busy);
     let (view, cx) = open(cx, &daemon, None);
     wait_synced(&view, cx, 4, 1);
+    let panel = panel(&view, cx);
     let revealed: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = Default::default();
     view.update(cx, |wb, _| {
         let revealed = std::rc::Rc::clone(&revealed);
         wb.set_reveal_handler(move |path: &Path, _| revealed.borrow_mut().push(path.to_owned()));
     });
 
-    // A workspace with a live session cannot be closed; the entry says why.
+    // A project with a live session cannot be closed; the entry says why. In no workspace, it
+    // cannot leave one either.
     show_menu(&view, cx, busy.id);
     assert_eq!(
         menu_labels(&view, cx),
         [
-            "Pin",
             "Rename…",
-            "Add Folder…",
-            "Remove Folder (the only folder)",
-            "Close (1 live session)",
+            "Pin",
+            "Move to Workspace ▸",
+            "Remove from Workspace (in no workspace)",
             "Reveal in Finder",
+            "Close (1 live session)",
         ]
     );
     let disabled = view.read_with(cx, |wb, _| wb.context_menu_disabled());
     assert_eq!(
         disabled.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["Remove Folder (the only folder)", "Close (1 live session)"]
+        [
+            "Remove from Workspace (in no workspace)",
+            "Close (1 live session)"
+        ]
     );
     // Running a greyed-out entry only closes the menu.
     run_entry(&view, cx, "Close (");
@@ -1139,15 +1156,18 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
             .is_some_and(|n| n.contains("1 live session")),
     );
 
-    // Home has one folder and cannot be closed.
+    // Home has one folder: it can be pinned, renamed and revealed, nothing else.
     let home = home_of(&daemon);
     show_menu(&view, cx, home.id);
-    let labels = menu_labels(&view, cx);
-    assert!(
-        labels.contains(&"Close (Home cannot be closed)".to_owned()),
-        "{labels:?}"
+    assert_eq!(
+        menu_labels(&view, cx),
+        [
+            "Pin",
+            "Rename…",
+            "Add Folder… (Home has one folder)",
+            "Reveal in Finder"
+        ]
     );
-    assert!(labels.iter().any(|l| l.starts_with("Add Folder… (Home")));
     // Out of range: the menu only closes.
     view.update_in(cx, |wb, window, cx| {
         wb.run_menu_entry(usize::MAX, window, cx)
@@ -1166,7 +1186,7 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
         })
     });
     show_menu(&view, cx, proj.id);
-    assert_eq!(menu_labels(&view, cx)[0], "Unpin");
+    assert_eq!(menu_labels(&view, cx)[1], "Unpin");
     run_entry(&view, cx, "Unpin");
     wait_until(cx, "the unpin", |cx| {
         view.read_with(cx, |wb, cx| {
@@ -1177,17 +1197,49 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
         })
     });
 
-    // Rename.
+    // Rename edits the row in place (it is on screen: an empty project stays listed while it is
+    // the one shown); Escape leaves the name alone.
+    let renaming = |cx: &mut VisualTestContext| {
+        panel.read_with(cx, |p, _| {
+            p.renaming().map(|(id, text)| (id, text.to_owned()))
+        })
+    };
+    cx.dispatch_action(actions::OpenWorkspace(proj.id.to_string()));
+    draw(cx);
     show_menu(&view, cx, proj.id);
     run_entry(&view, cx, "Rename");
-    assert!(view.read_with(cx, |wb, _| wb.modal_open()));
-    view.update(cx, |wb, cx| wb.set_modal_input("project", cx));
-    view.update_in(cx, |wb, window, cx| wb.confirm_modal(window, cx));
+    draw(cx);
+    assert!(!view.read_with(cx, |wb, _| wb.modal_open()), "no dialog");
+    assert_eq!(renaming(cx), Some((proj.id, "proj".to_owned())));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(renaming(cx), None);
+    pump(cx, Duration::from_millis(200));
+    assert!(names_of(&view, cx).contains(&"proj".to_owned()));
+    // Enter sends the typed name.
+    show_menu(&view, cx, proj.id);
+    run_entry(&view, cx, "Rename");
+    draw(cx);
+    cx.simulate_keystrokes("backspace backspace backspace backspace");
+    cx.simulate_input("project");
+    assert_eq!(renaming(cx), Some((proj.id, "project".to_owned())));
+    cx.simulate_keystrokes("enter");
     wait_until(cx, "the new name", |cx| {
         names_of(&view, cx).contains(&"project".to_owned())
     });
+    assert_eq!(renaming(cx), None);
 
-    // Add Folder… through the system panel (to the workspace), twice, then remove one again.
+    // A workspace's menu; Add Folder… goes through the system panel, twice.
+    show_menu(&view, cx, shop.id);
+    assert_eq!(
+        menu_labels(&view, cx),
+        [
+            "Pin",
+            "Rename…",
+            "Add Folder…",
+            "Delete Workspace…",
+            "Reveal in Finder (no folders yet)"
+        ]
+    );
     for folder in [extra.clone(), extra_too.clone()] {
         show_menu(&view, cx, shop.id);
         run_entry(&view, cx, "Add Folder");
@@ -1202,17 +1254,20 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
                 .is_some_and(|w| w.roots.len() == 2)
         })
     });
-    show_menu(&view, cx, shop.id);
-    let labels = menu_labels(&view, cx);
-    assert_eq!(
-        labels
-            .iter()
-            .filter(|l| l.starts_with("Remove Folder"))
-            .count(),
-        2,
-        "{labels:?}"
-    );
-    run_entry(&view, cx, "Remove Folder “extra-too");
+    // A project leaves its workspace again through its own menu.
+    let too = view
+        .read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .workspaces()
+                .iter()
+                .find(|w| w.name.starts_with("extra-too"))
+                .map(|w| w.id)
+        })
+        .expect("the project of the second folder");
+    show_menu(&view, cx, too);
+    assert!(menu_labels(&view, cx).contains(&"Remove from Workspace".to_owned()));
+    run_entry(&view, cx, "Remove from Workspace");
     wait_until(cx, "the folder to go", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.sessions()
@@ -1239,7 +1294,7 @@ fn the_workspace_menu_pins_renames_adds_and_removes_folders_and_closes(cx: &mut 
     run_entry(&view, cx, "Close");
     assert!(view.read_with(cx, |wb, _| wb.modal_open()));
     view.update_in(cx, |wb, window, cx| wb.confirm_modal(window, cx));
-    wait_until(cx, "the workspace to close", |cx| {
+    wait_until(cx, "the project to close", |cx| {
         !names_of(&view, cx).contains(&"project".to_owned())
     });
     let recent: RecentProjects = daemon.call(Request::WorkspaceRecent(WorkspaceRecent {
@@ -1271,15 +1326,18 @@ fn every_workspace_command_is_in_the_palette(cx: &mut TestAppContext) {
         "Workspace: Pin / Unpin Active Workspace",
         "Workspace: Rename Active Workspace…",
         "Workspace: Add Folder to Active Workspace…",
-        "Workspace: Close Active Workspace",
+        "Workspace: New Workspace…",
+        "Workspace: Delete or Close Active Workspace",
         "Workspace: Reveal Active Workspace in Finder",
         "Workspace: Sort — Manual",
         "Workspace: Sort — Recent activity",
         "Workspace: Sort — Attention first",
         "Workspace: Sort — Name",
-        "Workspace: Toggle Hide Empty Workspaces",
-        "Workspace: Toggle Hide Sleeping Workspaces",
-        "Workspace: Toggle Hide CLI-Created Workspaces",
+        "Sidebar: Toggle Hide Empty Projects",
+        "Sidebar: Toggle Hide Sleeping Projects",
+        "Sidebar: Toggle Hide CLI-Created Projects",
+        "Sidebar: Organize by Workspaces",
+        "Sidebar: Organize by Projects",
     ] {
         assert!(titles.iter().any(|t| t == wanted), "missing `{wanted}`");
     }

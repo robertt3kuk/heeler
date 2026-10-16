@@ -44,7 +44,7 @@ pub use resources_model::{
     Item as ResourceItem, Line as ResourceLine, ProcessLine as ResourceProcessLine,
     SessionLine as ResourceSessionLine, Target as ResourceTarget,
 };
-pub use sessions::{DraggedWorkspace, SessionsPanel};
+pub use sessions::{DraggedProject, DraggedWorkspace, RowKind, SessionsPanel, SidebarRow};
 pub use status::{Tone as StatusTone, builtin_status_items, connection_label};
 
 /// A panel that renders its name and a short description.
@@ -96,7 +96,7 @@ pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
     registry.register(PanelSpec {
         id: "sessions".into(),
-        title: "Sessions".into(),
+        title: "Projects".into(),
         icon: "≣".into(),
         default_dock: DockPosition::Left,
         factory: Rc::new(|env, _window, cx| {

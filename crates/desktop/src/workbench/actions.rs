@@ -8,7 +8,7 @@
 use super::model::{Direction, DockPosition, Edge, LayoutPreset, PanelDest};
 use super::panels::{HistoryResume, HutanTarget};
 use super::registry::PanelRegistry;
-use crate::settings::WorkspaceSort;
+use crate::settings::{SidebarOrganize, WorkspaceSort};
 use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 use hutan_settings::keymap::{BindingSpec, KeymapLoad, format_keys};
 
@@ -77,6 +77,7 @@ actions!(
         RenameActiveWorkspace,
         AddFolderToWorkspace,
         CloseActiveWorkspace,
+        NewWorkspace,
         RevealWorkspace,
         ToggleHideEmptyWorkspaces,
         ToggleHideSleepingWorkspaces,
@@ -224,10 +225,21 @@ data_actions! {
     ShowWorkspaceMenu(WorkspaceMenuAt);
     /// Show the menu of workspace sort modes at this position.
     ShowSortMenu(gpui::Point<gpui::Pixels>);
-    /// Sort the sidebar's workspaces (`workspaces.sort`).
+    /// Sort the sidebar's workspaces and projects (`workspaces.sort`).
     SetWorkspaceSort(WorkspaceSort);
     /// A workspace row was dropped onto another one (manual reordering).
     MoveWorkspaceOnto(WorkspaceDrop);
+    /// Show the menu of the sidebar's "+" button at this position.
+    ShowPlusMenu(gpui::Point<gpui::Pixels>);
+    /// Show the context menu of a project row (and of the projects selected with it).
+    ShowProjectMenu(ProjectMenuAt);
+    /// A project row was dropped onto a workspace row, a project row, or the "No workspace"
+    /// area.
+    DropProjectOnto(ProjectDrop);
+    /// Organize the sidebar by workspaces or by projects (`sidebar.organize`).
+    SetSidebarOrganize(SidebarOrganize);
+    /// The inline rename of a workspace or project row was confirmed.
+    RenameWorkspaceTo(RenameTo);
     /// Resume a session found in the history index: its command in a new terminal session.
     ResumeHistoryHit(HistoryResume);
     /// Copy a resume command line to the clipboard.
@@ -245,11 +257,35 @@ pub struct WorkspaceMenuAt {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+/// Where to open the context menu of a project row, and the projects selected when it opened
+/// (project ids, the clicked one included).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ProjectMenuAt {
+    pub project: String,
+    pub selection: Vec<String>,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 /// A dragged workspace row and the row it was dropped on (workspace ids).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WorkspaceDrop {
     pub dragged: String,
     pub target: String,
+}
+
+/// A dragged project row and where it was dropped: on a workspace or project row (`target` is
+/// its id) or on the "No workspace" area (`None`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProjectDrop {
+    pub dragged: String,
+    pub target: Option<String>,
+}
+
+/// A workspace or project (`workspace` is its id) and the name the user typed for it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RenameTo {
+    pub workspace: String,
+    pub name: String,
 }
 
 /// A block of a session's terminal (`block` is the daemon's block id).
@@ -381,6 +417,7 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command("Daemon: Open Login Items", daemon::OpenLoginItems),
     ];
     out.extend([
+        command("Workspace: New Workspace…", NewWorkspace),
         command("Workspace: Open Project…", OpenProject),
         command("Workspace: Open Folder…", OpenFolder),
         command("Workspace: Jump to Workspace or Session…", OpenJump),
@@ -394,7 +431,10 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
             "Workspace: Add Folder to Active Workspace…",
             AddFolderToWorkspace,
         ),
-        command("Workspace: Close Active Workspace", CloseActiveWorkspace),
+        command(
+            "Workspace: Delete or Close Active Workspace",
+            CloseActiveWorkspace,
+        ),
         command(
             "Workspace: Reveal Active Workspace in Finder",
             RevealWorkspace,
@@ -408,16 +448,26 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
     }));
     out.extend([
         command(
-            "Workspace: Toggle Hide Empty Workspaces",
+            "Sidebar: Toggle Hide Empty Projects",
             ToggleHideEmptyWorkspaces,
         ),
         command(
-            "Workspace: Toggle Hide Sleeping Workspaces",
+            "Sidebar: Toggle Hide Sleeping Projects",
             ToggleHideSleepingWorkspaces,
         ),
         command(
-            "Workspace: Toggle Hide CLI-Created Workspaces",
+            "Sidebar: Toggle Hide CLI-Created Projects",
             ToggleHideCliWorkspaces,
+        ),
+    ]);
+    out.extend([
+        command(
+            "Sidebar: Organize by Workspaces",
+            SetSidebarOrganize(SidebarOrganize::Workspaces),
+        ),
+        command(
+            "Sidebar: Organize by Projects",
+            SetSidebarOrganize(SidebarOrganize::Projects),
         ),
     ]);
     out.push(command("History: Search History…", SearchHistory));

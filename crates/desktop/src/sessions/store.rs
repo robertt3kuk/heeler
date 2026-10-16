@@ -16,10 +16,11 @@ use hutan_core::{AgentObservation, ApprovalId, Epoch, SessionId, TerminalId, Wor
 use hutan_protocol::chat::{ApprovalInfo, ChatCreate};
 use hutan_protocol::messages::{
     RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
-    SessionResult, SessionSpec, TerminalSpec, WorkspaceInfo, WorkspaceKind, WorkspaceMove,
-    WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRecent, WorkspaceRef, WorkspaceRename,
-    WorkspaceRoot,
+    SessionResult, SessionSpec, TerminalSpec, WorkspaceCreate, WorkspaceInfo, WorkspaceKind,
+    WorkspaceMove, WorkspaceOpen, WorkspaceOpened, WorkspacePin, WorkspaceRecent, WorkspaceRef,
+    WorkspaceRename, WorkspaceRoot,
 };
+use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
 use hutan_protocol::worktree::{
     WorktreeCreate, WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeRemove,
     WorktreeRemoved,
@@ -76,8 +77,12 @@ pub struct SessionsStore {
     /// The session that had focus most recently; the inspector keeps showing it while a dock or
     /// panel has focus (clicking inside the inspector must not empty it).
     last_focused: Option<SessionId>,
-    /// The workspace the workbench shows (its layout, settings and new sessions).
+    /// The container the workbench shows (its layout, settings and new sessions): a workspace,
+    /// a project in no workspace, or Home.
     active_workspace: Option<WorkspaceId>,
+    /// The project within it the user is working in (the one of the focused session, or the one
+    /// they chose): its settings layer applies and new sessions start in it.
+    active_project: Option<WorkspaceId>,
     terminals: HashMap<SessionId, WeakEntity<TerminalSession>>,
     /// Sessions this desktop created or changed whose events have not reached `state` yet.
     recent: HashMap<SessionId, SessionInfo>,
@@ -169,6 +174,7 @@ impl SessionsStore {
             focused: None,
             last_focused: None,
             active_workspace: None,
+            active_project: None,
             terminals: HashMap::new(),
             recent: HashMap::new(),
             colors: None,
@@ -387,20 +393,36 @@ impl SessionsStore {
             .find(|w| w.kind == WorkspaceKind::Home)
     }
 
-    /// The workspace the workbench shows, when the daemon knows it.
+    /// The container the workbench shows, when the daemon knows it.
     pub fn active_workspace(&self) -> Option<&WorkspaceInfo> {
         self.active_workspace.and_then(|id| self.workspace(id))
     }
 
-    /// The id of the workspace the workbench shows, known or not.
+    /// The id of the container the workbench shows, known or not.
     pub fn active_workspace_id(&self) -> Option<WorkspaceId> {
         self.active_workspace
     }
 
-    /// Tells the panels which workspace the workbench shows.
-    pub fn set_active_workspace(&mut self, workspace: Option<WorkspaceId>, cx: &mut Context<Self>) {
-        if self.active_workspace != workspace {
+    /// The project the user is working in, when the daemon knows it.
+    pub fn active_project(&self) -> Option<&WorkspaceInfo> {
+        self.active_project.and_then(|id| self.workspace(id))
+    }
+
+    /// The id of the project the user is working in, known or not.
+    pub fn active_project_id(&self) -> Option<WorkspaceId> {
+        self.active_project
+    }
+
+    /// Tells the panels which container and project the workbench shows.
+    pub fn set_active(
+        &mut self,
+        workspace: Option<WorkspaceId>,
+        project: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_workspace != workspace || self.active_project != project {
             self.active_workspace = workspace;
+            self.active_project = project;
             cx.notify();
         }
     }
@@ -1001,25 +1023,56 @@ impl SessionsStore {
         self.call(request, |_: WorkspaceInfo| (), cx)
     }
 
-    pub fn remove_workspace_root(
-        &mut self,
-        workspace: WorkspaceId,
-        path: PathBuf,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<(), String>> {
-        let request = Request::WorkspaceRemoveRoot(WorkspaceRoot {
-            workspace_id: workspace,
-            path,
-        });
-        self.call(request, |_: WorkspaceInfo| (), cx)
-    }
-
     pub fn close_workspace(
         &mut self,
         workspace: WorkspaceId,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
         let request = Request::WorkspaceClose(WorkspaceRef {
+            workspace_id: workspace,
+        });
+        self.call(request, |_: serde_json::Value| (), cx)
+    }
+
+    /// `workspace.create`: a workspace holding the projects of `paths` (made when new) and the
+    /// existing `projects`.
+    pub fn create_workspace(
+        &mut self,
+        name: String,
+        paths: Vec<PathBuf>,
+        projects: Vec<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorkspaceInfo, String>> {
+        let request = Request::WorkspaceCreate(WorkspaceCreate {
+            name,
+            paths,
+            project_ids: projects,
+            created_by: None,
+        });
+        self.call(request, |created: WorkspaceInfo| created, cx)
+    }
+
+    /// `workspace.assign`: `project` into `workspace`, or out of its workspace when `None`.
+    pub fn assign_project(
+        &mut self,
+        project: WorkspaceId,
+        workspace: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorkspaceInfo, String>> {
+        let request = Request::WorkspaceAssign(WorkspaceAssign {
+            project_id: project,
+            workspace_id: workspace,
+        });
+        self.call(request, |assigned: WorkspaceInfo| assigned, cx)
+    }
+
+    /// `workspace.delete`: removes a workspace; its projects stay.
+    pub fn delete_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let request = Request::WorkspaceDelete(WorkspaceDelete {
             workspace_id: workspace,
         });
         self.call(request, |_: serde_json::Value| (), cx)

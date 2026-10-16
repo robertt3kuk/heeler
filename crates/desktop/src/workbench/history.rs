@@ -273,12 +273,17 @@ impl Workbench {
             cwd: start_dir.clone(),
             ..TerminalSpec::default()
         };
-        // The settings of the workspace the session will belong to.
-        let root = dir
-            .clone()
-            .or_else(|| target.as_ref().and_then(|w| w.roots.first().cloned()));
+        // The settings of the project the session will belong to: the folder's own when the
+        // daemon has to find (or make) its project first.
+        let (workspace_root, project_root) = match (&open, &target) {
+            (Some(dir), _) => (None, Some(dir.clone())),
+            (None, Some(target)) => {
+                super::workspaces::layer_roots_of(self.sessions.read(cx), target.id)
+            }
+            (None, None) => (None, None),
+        };
         self.settings
-            .get_for_workspace::<TerminalSettings>(root.as_deref())
+            .get_for_roots::<TerminalSettings>(workspace_root.as_deref(), project_root.as_deref())
             .apply_to_spec(&mut spec);
         let opening = open.map(|dir| {
             self.sessions

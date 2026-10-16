@@ -1,11 +1,12 @@
 //! Live sessions: the connection bridge, attention, shared terminal attachments, and the
-//! workspace ordering and filtering the sidebar uses.
+//! workspace ordering, filtering and tree the sidebar uses.
 
 pub mod agents;
 pub mod attention;
 mod placement;
 mod store;
 mod terminal;
+pub mod tree;
 pub mod workspaces;
 
 pub use agents::{AgentAttentionChanged, AgentBadge, BlockedNode};

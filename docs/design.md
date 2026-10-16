@@ -246,11 +246,12 @@ Rollups: session → workspace header → sidebar "Needs you" → status bar `at
 - Files (TOML, comments allowed):
   - user: `~/Library/Application Support/Hutan/settings.toml`
   - keymap: `~/Library/Application Support/Hutan/keymap.toml`
-  - workspace overrides: `<repo>/.hutan/settings.toml` (only keys marked workspace-overridable)
-- Precedence: built-in defaults < user < workspace < runtime toggles (e.g. density switch writes back to user file).
+  - workspace overrides: `<first project root>/.hutan/settings.toml` of the workspace shown (Home: its folder)
+  - project overrides: `<project root>/.hutan/settings.toml` of the project you work in (only keys marked workspace-overridable, in both files)
+- Precedence: built-in defaults < user < workspace < project < runtime toggles (e.g. density switch writes back to user file). A project outside any workspace layers only its own file; the project layer is left out when it would read the file the workspace layer reads.
 - Every component owns one namespace with a typed, documented schema; unknown keys warn, invalid values fall back to defaults with a visible error in the settings UI. Files hot-reload.
 - Settings UI (⌘,): generated from the schemas, searchable; each panel's gear (⚙) opens its own section.
-- `terminal` namespace, session start (B-1): `shell` (string; empty = the account's login shell) and `env` (table of strings, extra variables) are overridable per workspace; `<repo>/.hutan/settings.toml` `terminal.env` overrides the user's per variable. They are resolved for the workspace a new terminal starts in (its first root, which need not be the one on screen) and sent in `session.create` as `TerminalSpec.env` (`shell` as `SHELL`). Values are passed to the daemon and never logged or shown. Where the rest of the environment comes from: `daemon.toml` `[terminal] env_inherit` (`docs/architecture.md` § Session environment).
+- `terminal` namespace, session start (B-1): `shell` (string; empty = the account's login shell) and `env` (table of strings, extra variables) are overridable per workspace and per project; `terminal.env` of the workspace's first project and then of the project overrides the user's per variable. They are resolved for the project a new terminal starts in (which need not be the one on screen; a project outside any workspace: its own file alone) and sent in `session.create` as `TerminalSpec.env` (`shell` as `SHELL`). Values are passed to the daemon and never logged or shown. Where the rest of the environment comes from: `daemon.toml` `[terminal] env_inherit` (`docs/architecture.md` § Session environment).
 - Layout geometry the user drags (sizes, open tabs, split ratios) is **state**, saved in `desktop-state.json`; it becomes a **preset** in settings only when the user saves it.
 
 ```toml
@@ -285,10 +286,13 @@ right  = { panels = ["inspector", "agents"], size = 300, visible = true }
 bottom = { panels = ["resources"], size = 200, visible = false }
 status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
 
+[sidebar]
+organize = "workspaces"        # workspaces | projects (see Projects and workspaces)
+
 [panels.sessions]
 group_by = "workspace"         # workspace | state | none
 needs_you = true
-row = ["state", "kind", "title", "placement", "age"]
+row = ["state", "kind", "title", "folder", "placement", "age"]   # folder + placement are the row's second line
 
 [panels.inspector]
 tabs = ["approvals", "changes", "info"]
@@ -300,11 +304,11 @@ preview = "live"               # live | static | off
 sort = "attention"             # attention | recent | name
 
 [workspaces]
-sort = "manual"                # manual | recent | attention | name
-hide_empty = true              # hide workspaces without sessions
-hide_sleeping = false          # hide workspaces without a live session
-hide_cli_created = false       # hide workspaces the CLI or an agent created
-always_show_active = true      # the workspace you are in stays listed whatever the filters say
+sort = "manual"                # manual | recent | attention | name (applies within each level)
+hide_empty = true              # hide projects without sessions
+hide_sleeping = false          # hide projects without a live session
+hide_cli_created = false       # hide projects the CLI or an agent created
+always_show_active = true      # the project and workspace you are in stay listed whatever the filters say
 
 [history]
 sources = []                   # default source chips: hutan | claude | codex | omp (empty = all)
@@ -319,21 +323,21 @@ only_blocked = false           # list only blocked agents (and the ones above th
 scope = "active_workspace"     # active_workspace | all
 ```
 
-## Projects and workspaces (M12-B)
+## Projects and workspaces (M12-B, rewritten by M18-B)
 
-> **Being superseded (ADR 0014, M18).** The daemon now makes *projects* (a repository with all its worktrees, or a folder) from the folders sessions start in, next to the user's own *workspaces*, which contain projects (`docs/orchestration.md` § Projects and workspaces, protocol 0.19). The desktop below still lists every kind of container flat, as workspaces, until M18-B: the sidebar becomes workspaces → projects → sessions (or flat projects), each session row showing its title, its live folder (`SessionInfo.folder`, last two path parts) and its placement badge; a project drags onto a workspace (`workspace.assign`), and settings layer user < workspace < project. Everything below describes the M12-B desktop.
+The daemon owns three kinds of container (ADR 0014, `docs/orchestration.md` § Projects and workspaces, protocol 0.19): **projects** (a repository with all its worktrees, or a folder — made by the daemon from the folders sessions start in), the user's own **workspaces** (a name, a pin, an order; they contain projects), and **Home**. The desktop decides how to show them. The sidebar is the `sessions` panel, titled **Projects**.
 
-The daemon owns workspaces (protocol 0.6: kind, pin, order, activity, session counts, recent projects); the desktop decides how to show them. The sidebar (`sessions` panel, titled "Workspaces") lists them with their sessions.
-
-- **Rows**: `▾ ⌂ ★ NAME  ·····  ● 2  3` — chevron folds the sessions, `⌂` marks Home, `★` a pin, `● n` sessions that need you, then the session count (`live/total` when they differ). Click shows the workspace; right-click opens its menu; the active one is tinted.
-- **Sort** (header button `⇅ Manual ▾`, ⌘K, `workspaces.sort`): `manual` (drag order; Home leads the unpinned ones) · `recent` (last activity) · `attention` (most sessions that need you, then activity) · `name`. Pinned workspaces come first in every mode under a `PINNED` label; ties keep the daemon's order.
-- **Drag** a row onto another to reorder (manual only): it takes that row's slot within its group (pinned or not); onto Home it goes first below Home; Home itself does not move. The desktop sends `workspace.move`; the daemon stores the order.
-- **Filters** (`workspaces.*`, the same header menu, ⌘K): hide empty / sleeping / CLI-created workspaces. Home, pinned workspaces and (`always_show_active`) the active one are never hidden, and a session that needs you stays visible in "Needs you" whatever the filters say. The filter box matches names and folders (any word order); a workspace that matches lists all its sessions. Hidden workspaces stay reachable through ⌘J.
-- **Menu**: Pin/Unpin, Rename…, Add Folder… (system folder panel → `workspace.add_root`), Remove Folder “x” (when there are several roots), Close (greyed with the reason while sessions are live and for Home; asks first, the project stays in ⌘O), Reveal in Finder. Home has one folder, set in `daemon.toml`.
-- **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the workspace. **⌘J** lists every workspace and every session; Enter shows it.
-- **One layout per workspace** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the workspace you are in; switching parks them and brings the other one back exactly. A workspace seen for the first time starts with a single pane under your dock arrangement. Opening a session of another workspace (sidebar, ⌘J, attention, a restored tab) switches first. Terminals of parked workspaces are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the workspace of its first session (else Home); a workspace that vanishes hands the window to Home and its layout is dropped.
-- **Settings**: the first root of the active workspace layers `<root>/.hutan/settings.toml` over the user settings (hot-reloaded, also while it stays active), whether or not a session has focus. New sessions (⌘T, splits of a pane without a session) start in the active workspace, else in Home.
-- **Status bar**: the `workspace` item shows the active workspace; click opens ⌘J.
+- **Organize** (`sidebar.organize`, header menu `⇅`, ⌘K "Sidebar: Organize by …"): `workspaces` (default) lists the user's workspaces (`▾ ★ NAME ·· ● 2  3`: chevron folds, `★` a pin, `● n` sessions that need you, the session count — `live/total` when they differ) with their projects indented below (`◧` repository / `▭` folder, name, the same counts) and the sessions under each project; then a **No workspace** label with the projects that belong to none, then Home (`⌂`) with its sessions. `projects` is a flat list of projects (pinned first) with their sessions, Home last; a session started straight into a workspace sits under that workspace's own row there. "Needs you" stays on top in both. A search or filter that names a workspace lists everything in it.
+- **Session rows** take two lines: state dot, kind icon (`❯` terminal, `◆` agent, `✦` direct), title, agent badge, age; under them where the session is **now** (`SessionInfo.folder` — the shell's OSC 7 directory — else its start folder; the last two path parts, `muted`, the full path in the tooltip) and the **placement badge** (`main` or `wt <branch>`, a warning tint and `⚠` while another live agent works in the same checkout; the checkout's details in the tooltip). `panels.sessions.row` picks and orders the fields.
+- **Sort** (header button `⇅ Manual ▾`, ⌘K, `workspaces.sort`) applies within each level — workspaces among themselves, projects inside a workspace, the projects in no workspace: `manual` (drag order) · `recent` (last activity) · `attention` (most sessions that need you, then activity) · `name`. Pinned rows come first in every mode and level; ties keep the daemon's order. Sessions keep creation order.
+- **Drag** a row onto a row of the same level to reorder (manual only): it takes that row's slot within its group (pinned or not); the desktop sends `workspace.move`. **Drag a project onto a workspace** (or onto a project of another workspace) to put it there (`workspace.assign`); **drag it onto the "No workspace" label** — or onto a project in no workspace — to take it out. Home does not move and takes no drops. When the dragged project is part of a multi-selection, the whole selection moves.
+- **Filters** (`workspaces.*`, the same header menu, ⌘K): hide empty / sleeping / CLI-created **projects** (workspaces and their members always show, as in `hutan ws ls`). Home, pinned projects and (`always_show_active`) the one you are in are never hidden, and a session that needs you stays visible in "Needs you" whatever the filters say. The filter box matches workspace and project names and folders, session titles, commands, folders and badges (any word order); a workspace or project that matches lists all its sessions. Hidden projects stay reachable through ⌘J.
+- **Managing** (every change is a protocol 0.19 request): the header's **＋** menu — *New Workspace…* (a name; **Create**, or **Choose Folders…** to start with the projects of some folders: `workspace.create {name, paths?}`), *Open Folder…* (system panel → `workspace.open`, the project is shown), *Open Folder into Workspace ▸* (the same, then `workspace.assign`). **⌘-click** toggles a project in the selection and **⇧-click** selects the range from the last one clicked (neither opens it); right-click on a selected project → *New Workspace from Selection…* (`workspace.create {project_ids}`), *Move Selection to Workspace ▸*, *Remove Selection from Workspace*. **Workspace menu**: Pin/Unpin, Rename (inline: the name becomes a field, Enter or leaving it confirms, Escape cancels), Add Folder… (`workspace.add_root`), *Delete Workspace…* (asks, says that its projects and their sessions are kept and move to "No workspace"; `workspace.delete`), Reveal in Finder. **Project menu**: Rename (inline), Pin/Unpin, *Move to Workspace ▸* (the workspaces, or a new one), *Remove from Workspace*, Reveal in Finder, Close (greyed with the reason while sessions are live; asks first; the project stays in ⌘O). **Home menu**: Pin, Rename, Reveal; Home has one folder, set in `daemon.toml`.
+- **⌘O** lists "Open Folder…" and the recent projects (`workspace.recent`, ▣ open · ▢ closed) with a fuzzy filter; Enter runs `workspace.open` and shows the project (inside its workspace when it has one). **⌘J** lists every workspace, project (hidden ones included) and session in the sidebar's order — a project shows `workspace › folder`, a session `workspace › project · folder · badge · command`; Enter shows the container or the session's tab.
+- **One layout per container** (`desktop-state.json`: `active_workspace` + `parked`): the center pane tree, docks, zoom, focus and preset belong to the container you switch to — the workspace when the project is inside one, else the project, else Home — and every project of a workspace shares it. Switching parks the layout and brings the other one back exactly. A container seen for the first time starts with a single pane under your dock arrangement. Opening a session of another container (sidebar, ⌘J, attention, a restored tab) switches first. A project that joins a workspace hands its layout over (the workspace's own wins when it has one); one that leaves keeps the workspace's. Terminals of parked layouts are **detached**, so nothing outside the window renders or is acked; coming back re-attaches with a daemon snapshot (two terminals ≈ 70 ms in the GPUI test, polling included), which is why attached-but-hidden was not chosen. A layout saved before workspaces existed belongs to the container of its first session (else Home); a container that vanishes hands the window to Home and its layout is dropped.
+- **Settings**: user < workspace < project. The workspace layer is `<first project root>/.hutan/settings.toml` (Home: its folder), the project layer `<project root>/.hutan/settings.toml` of the **active project** — the project of the focused session, else the one last chosen in the sidebar (a workspace keeps the project chosen in it) — and a project in no workspace layers only its own. Both are hot-reloaded while they stay active, whether or not a session has focus (`crates/settings`: `set_workspace_root`, `set_project_root`, `get_for_roots`). Only workspace-overridable namespaces are read from either file (`terminal` today); the settings UI reports the rest.
+- **New sessions** (⌘T, splits of a pane without a session) start in the active project, else the first project of the active workspace, else in Home; they get the `terminal.shell` / `terminal.env` of that project's layers.
+- **Status bar**: the `workspace` item shows the active container; click opens ⌘J.
 
 ## History panel (M17-B)
 
@@ -453,8 +457,8 @@ Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait wit
 | Split right / down | ⌘D / ⌘⇧D |
 | Close tab (detach) / stop session | ⌘W / ⌘⇧W |
 | Toggle left / right / bottom dock | ⌘B / ⌘⌥B / ⌘⌥J |
-| Open project (recent projects, Open Folder…) | ⌘O |
-| Jump to any workspace or session, hidden ones included; `?` + words searches the session history | ⌘J |
+| Open a folder as a project (recent projects, Open Folder…) | ⌘O |
+| Jump to any workspace, project or session, hidden ones included; `?` + words searches the session history | ⌘J |
 | Overview | ⌘⇧O |
 | Previous / next prompt (highlights the block) | ⌘↑ / ⌘↓ |
 | Select / copy the current block's output | ⌘⇧A / ⌘⇧C |

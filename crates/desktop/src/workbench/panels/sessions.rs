@@ -1,15 +1,19 @@
-//! The `sessions` panel: the workspace list (sorted, pinned, filtered, draggable) with the
-//! sessions of each workspace under it, search, "Needs you", grouping, configurable rows,
-//! actions.
+//! The `sessions` panel ("Projects"): user workspaces → their projects → sessions, the projects
+//! in no workspace, then Home (or a flat list of projects, `sidebar.organize`); sorted, pinned,
+//! filtered and searched; "Needs you" on top; every session row shows its live folder and its
+//! placement badge. Workspaces and projects are managed here: the "+" menu, drag a project onto a
+//! workspace (or out, to "No workspace"), ⌘-click / ⇧-click to select projects, inline rename,
+//! context menus (`workbench/projects.rs` holds the verbs).
 
 use crate::theme::DensityExt as _;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::*, px,
 };
 use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
@@ -18,20 +22,27 @@ use super::common::{
     age_label, agent_badge, kind_icon, panel_header_with, placement, placement_badge, state_dot,
     tone_color,
 };
-use crate::sessions::workspaces as order;
-use crate::settings::{GroupBy, SessionsPanelSettings, WorkspaceSort, WorkspacesSettings};
+use crate::sessions::tree::{self, Node, ProjectNode, folder_label, session_folder};
+use crate::settings::{
+    GroupBy, SessionsPanelSettings, SidebarSettings, WorkspaceSort, WorkspacesSettings,
+};
 use crate::workbench::actions::{
-    MoveWorkspaceOnto, NewTerminal, OpenSession, OpenWorkspace, SessionMenuAt, ShowSessionMenu,
-    ShowSortMenu, ShowWorkspaceMenu, WorkspaceDrop, WorkspaceMenuAt,
+    DropProjectOnto, MoveWorkspaceOnto, NewTerminal, OpenFolder, OpenSession, OpenWorkspace,
+    ProjectDrop, ProjectMenuAt, RenameTo, RenameWorkspaceTo, SessionMenuAt, ShowPlusMenu,
+    ShowProjectMenu, ShowSessionMenu, ShowSortMenu, ShowWorkspaceMenu, WorkspaceDrop,
+    WorkspaceMenuAt,
 };
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
-use crate::workbench::style::UiStyle;
-use crate::workbench::ui::{self, Mascot, StyledExt as _};
+use crate::workbench::style::{TextTooltip, UiStyle};
+use crate::workbench::ui::{self, ButtonKind, Mascot, StyledExt as _};
 use crate::workbench::{BadgeSite, DragPreview, Region};
 
 /// Row refresh for the relative ages.
 const AGE_REFRESH: Duration = Duration::from_secs(30);
+
+/// Indent per level of the tree.
+const INDENT: f32 = 12.0;
 
 /// A workspace row being dragged to a new place (manual order).
 #[derive(Clone, Debug)]
@@ -40,11 +51,99 @@ pub struct DraggedWorkspace {
     pub label: SharedString,
 }
 
+/// A project row being dragged onto a workspace, a project, or the "No workspace" area.
+#[derive(Clone, Debug)]
+pub struct DraggedProject {
+    pub project: WorkspaceId,
+    pub label: SharedString,
+}
+
+/// What a listed row is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// "Needs you · 2", a state label.
+    Section,
+    Workspace,
+    Project,
+    Home,
+    /// The "No workspace" label above the projects that belong to none.
+    NoWorkspace,
+    Session,
+}
+
+/// A listed row as text (tests, inspection).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarRow {
+    pub kind: RowKind,
+    /// 0 at the top level; a project in a workspace is 1, its sessions 2.
+    pub depth: usize,
+    /// The name of a workspace, project or Home; the title of a session; the label of a
+    /// section.
+    pub title: String,
+    /// A project's root folder, or where a session is now (last two path parts).
+    pub folder: Option<String>,
+    /// A session's placement badge text (`main`, `wt <branch>`).
+    pub badge: Option<String>,
+    /// The badge is drawn as a warning: another live agent works in the same checkout.
+    pub shared: bool,
+    pub pinned: bool,
+    /// `3` or `1/3` (live/total) on a workspace, project or Home row.
+    pub count: Option<String>,
+    /// Sessions of the row (and under it) that need the user.
+    pub needs: usize,
+    /// The row of the container or project the window shows.
+    pub active: bool,
+    pub selected: bool,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SectionKey {
+    NeedsYou,
+    All,
+    State(String),
+}
+
+/// A workspace, project or Home row with what the layout decided about it.
+#[derive(Debug, Clone)]
+struct ContainerRow {
+    info: WorkspaceInfo,
+    depth: usize,
+    needs: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SessionRow {
+    info: SessionInfo,
+    depth: usize,
+    in_needs_you: bool,
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Section { key: SectionKey, title: String },
+    Container(ContainerRow),
+    NoWorkspace,
+    Session(Box<SessionRow>),
+}
+
+/// An inline rename in progress; losing focus confirms it.
+struct Renaming {
+    workspace: WorkspaceId,
+    text: String,
+    _blur: Subscription,
+}
+
 pub struct SessionsPanel {
     env: PanelEnv,
     query: String,
     search_focus: FocusHandle,
+    rename_focus: FocusHandle,
     collapsed: HashSet<WorkspaceId>,
+    /// Projects selected with ⌘-click / ⇧-click.
+    selection: Vec<WorkspaceId>,
+    anchor: Option<WorkspaceId>,
+    renaming: Option<Renaming>,
     _ages: Task<()>,
 }
 
@@ -71,7 +170,11 @@ impl SessionsPanel {
             env,
             query: String::new(),
             search_focus: cx.focus_handle(),
+            rename_focus: cx.focus_handle(),
             collapsed: HashSet::new(),
+            selection: Vec::new(),
+            anchor: None,
+            renaming: None,
             _ages: ages,
         }
     }
@@ -87,25 +190,284 @@ impl SessionsPanel {
         cx.notify();
     }
 
-    /// Titles of the rows currently listed, top to bottom (needs-you first).
+    /// Titles of the session rows currently listed, top to bottom (needs-you first).
     pub fn visible_titles(&self, cx: &gpui::App) -> Vec<String> {
-        let settings = self.env.settings.get::<SessionsPanelSettings>();
-        self.layout(&settings, cx)
+        self.visible_rows(cx)
             .into_iter()
-            .flat_map(|section| section.rows)
-            .map(|info| info.title)
+            .filter(|row| row.kind == RowKind::Session)
+            .map(|row| row.title)
             .collect()
     }
 
-    /// Names of the workspaces currently listed, top to bottom (pinned first), whatever
+    /// Names of the workspaces, projects and Home currently listed, top to bottom, whatever
     /// the mode orders them by.
     pub fn visible_workspaces(&self, cx: &gpui::App) -> Vec<String> {
-        let settings = self.env.settings.get::<SessionsPanelSettings>();
-        self.layout(&settings, cx)
+        self.visible_rows(cx)
             .into_iter()
-            .filter_map(|section| section.workspace.map(|w| w.name))
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    RowKind::Workspace | RowKind::Project | RowKind::Home
+                )
+            })
+            .map(|row| row.title)
             .collect()
     }
+
+    /// Every row currently listed, top to bottom.
+    pub fn visible_rows(&self, cx: &gpui::App) -> Vec<SidebarRow> {
+        let settings = self.env.settings.get::<SessionsPanelSettings>();
+        let store = self.env.sessions.read(cx);
+        let (active, project) = (store.active_workspace_id(), store.active_project_id());
+        self.layout(&settings, cx)
+            .iter()
+            .map(|entry| match entry {
+                Entry::Section { title, .. } => SidebarRow {
+                    kind: RowKind::Section,
+                    depth: 0,
+                    title: title.clone(),
+                    folder: None,
+                    badge: None,
+                    shared: false,
+                    pinned: false,
+                    count: None,
+                    needs: 0,
+                    active: false,
+                    selected: false,
+                    collapsed: false,
+                },
+                Entry::NoWorkspace => SidebarRow {
+                    kind: RowKind::NoWorkspace,
+                    depth: 0,
+                    title: "No workspace".to_owned(),
+                    folder: None,
+                    badge: None,
+                    shared: false,
+                    pinned: false,
+                    count: None,
+                    needs: 0,
+                    active: false,
+                    selected: false,
+                    collapsed: false,
+                },
+                Entry::Container(row) => SidebarRow {
+                    kind: match row.info.kind {
+                        WorkspaceKind::Workspace => RowKind::Workspace,
+                        WorkspaceKind::Project => RowKind::Project,
+                        WorkspaceKind::Home => RowKind::Home,
+                    },
+                    depth: row.depth,
+                    title: row.info.name.clone(),
+                    folder: (row.info.kind == WorkspaceKind::Project)
+                        .then(|| crate::workbench::workspaces::project_root_of(&row.info))
+                        .flatten()
+                        .map(|root| folder_label(&root)),
+                    badge: None,
+                    shared: false,
+                    pinned: row.info.pinned,
+                    count: count_text(&row.info),
+                    needs: row.needs,
+                    active: self.is_active(&row.info, active, project),
+                    selected: self.selection.contains(&row.info.id),
+                    collapsed: self.collapsed.contains(&row.info.id),
+                },
+                Entry::Session(row) => {
+                    let badge = crate::sessions::placement_badge(&row.info);
+                    SidebarRow {
+                        kind: RowKind::Session,
+                        depth: row.depth,
+                        title: row.info.title.clone(),
+                        folder: session_folder(&row.info).map(folder_label),
+                        shared: badge.as_ref().is_some_and(|b| b.shared),
+                        badge: badge.map(|b| b.text),
+                        pinned: false,
+                        count: None,
+                        needs: 0,
+                        active: false,
+                        selected: store.focused() == Some(row.info.id),
+                        collapsed: false,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `info`'s row is the one the window shows: the project the user works in, else the
+    /// container (a workspace without an active project of its own, Home, a project).
+    fn is_active(
+        &self,
+        info: &WorkspaceInfo,
+        container: Option<WorkspaceId>,
+        project: Option<WorkspaceId>,
+    ) -> bool {
+        match info.kind {
+            WorkspaceKind::Project => project == Some(info.id),
+            WorkspaceKind::Workspace => container == Some(info.id) && project.is_none(),
+            WorkspaceKind::Home => container == Some(info.id),
+        }
+    }
+
+    // ---- selection and rename -------------------------------------------------------------
+
+    /// The projects selected with ⌘-click and ⇧-click, in the order of the list.
+    pub fn selected_projects(&self) -> Vec<WorkspaceId> {
+        self.selection.clone()
+    }
+
+    /// Forgets the selection.
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.selection.is_empty() {
+            self.selection.clear();
+            cx.notify();
+        }
+    }
+
+    /// ⌘-click toggles `project` in the selection, ⇧-click selects the projects between the
+    /// last one clicked and `project`.
+    pub fn select_project(&mut self, project: WorkspaceId, range: bool, cx: &mut Context<Self>) {
+        let order = self.project_order(cx);
+        match (range, self.anchor.filter(|a| order.contains(a))) {
+            (true, Some(anchor)) => {
+                let (from, to) = (
+                    order.iter().position(|p| *p == anchor),
+                    order.iter().position(|p| *p == project),
+                );
+                if let (Some(from), Some(to)) = (from, to) {
+                    let (low, high) = (from.min(to), from.max(to));
+                    self.selection = order[low..=high].to_vec();
+                }
+            }
+            _ => {
+                if let Some(at) = self.selection.iter().position(|p| *p == project) {
+                    self.selection.remove(at);
+                } else {
+                    self.selection.push(project);
+                    self.selection
+                        .sort_by_key(|p| order.iter().position(|o| o == p));
+                }
+                self.anchor = Some(project);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The listed projects, top to bottom.
+    fn project_order(&self, cx: &gpui::App) -> Vec<WorkspaceId> {
+        let settings = self.env.settings.get::<SessionsPanelSettings>();
+        self.layout(&settings, cx)
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Container(row) if row.info.kind == WorkspaceKind::Project => {
+                    Some(row.info.id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Starts editing the name of `workspace`'s row in place; `false` when the row is not
+    /// listed. Enter confirms, Escape cancels, and so does moving focus elsewhere… which
+    /// confirms (the way Finder does).
+    pub fn begin_rename(
+        &mut self,
+        workspace: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(name) = self
+            .env
+            .sessions
+            .read(cx)
+            .workspace(workspace)
+            .map(|w| w.name.clone())
+        else {
+            return false;
+        };
+        let blur = cx.on_focus_out(&self.rename_focus, window, |this, _, window, cx| {
+            this.finish_rename(true, window, cx);
+        });
+        self.renaming = Some(Renaming {
+            workspace,
+            text: name,
+            _blur: blur,
+        });
+        cx.defer_in(window, |this, window, cx| {
+            if this.renaming.is_some() {
+                window.focus(&this.rename_focus, cx);
+            }
+        });
+        cx.notify();
+        true
+    }
+
+    /// The row being renamed and the text typed so far.
+    pub fn renaming(&self) -> Option<(WorkspaceId, &str)> {
+        self.renaming
+            .as_ref()
+            .map(|r| (r.workspace, r.text.as_str()))
+    }
+
+    /// Ends the inline rename: `confirm` sends the new name, else nothing changes.
+    fn finish_rename(&mut self, confirm: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(renaming) = self.renaming.take() else {
+            return;
+        };
+        let name = renaming.text.trim().to_owned();
+        let changed = self
+            .env
+            .sessions
+            .read(cx)
+            .workspace(renaming.workspace)
+            .is_none_or(|w| w.name != name);
+        // The workbench takes the focus back either way (an empty name only does that).
+        let name = if confirm && changed {
+            name
+        } else {
+            String::new()
+        };
+        window.dispatch_action(
+            Box::new(RenameWorkspaceTo(RenameTo {
+                workspace: renaming.workspace.to_string(),
+                name,
+            })),
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn on_rename_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &event.keystroke;
+        let paste = (ks.modifiers.platform && ks.key == "v")
+            .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
+            .flatten();
+        let Some(renaming) = &mut self.renaming else {
+            return;
+        };
+        match ks.key.as_str() {
+            "enter" => self.finish_rename(true, window, cx),
+            "escape" => self.finish_rename(false, window, cx),
+            "backspace" => {
+                renaming.text.pop();
+            }
+            _ => {
+                if let Some(text) = paste {
+                    renaming.text.push_str(&text);
+                } else if !ks.modifiers.platform
+                    && !ks.modifiers.control
+                    && !ks.modifiers.function
+                    && let Some(text) = &ks.key_char
+                {
+                    renaming.text.push_str(text);
+                } else {
+                    return;
+                }
+            }
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    // ---- the list -----------------------------------------------------------------------------
 
     fn matches(&self, info: &SessionInfo) -> bool {
         let query = self.query.trim().to_lowercase();
@@ -120,8 +482,7 @@ impl SessionsPanel {
             crate::sessions::placement_badge(info)
                 .map(|badge| badge.text)
                 .unwrap_or_default(),
-            info.cwd
-                .as_ref()
+            session_folder(info)
                 .map(|c| c.display().to_string())
                 .unwrap_or_default()
         )
@@ -129,90 +490,74 @@ impl SessionsPanel {
         query.split_whitespace().all(|word| haystack.contains(word))
     }
 
-    /// Sections in display order, after workspace filters, search and grouping.
-    fn layout(&self, settings: &SessionsPanelSettings, cx: &gpui::App) -> Vec<Section> {
+    /// Entries in display order, after the filters, the search and the grouping.
+    fn layout(&self, settings: &SessionsPanelSettings, cx: &gpui::App) -> Vec<Entry> {
         let store = self.env.sessions.read(cx);
         let ws_settings = self.env.settings.get::<WorkspacesSettings>();
-        let active = store.active_workspace_id();
+        let organize = self.env.settings.get::<SidebarSettings>().organize;
+        let (active, project) = (store.active_workspace_id(), store.active_project_id());
         let needs: Vec<SessionId> = store.needs_you();
         let attention = store.needs_you_by_workspace();
-        let sorted = order::sort(store.workspaces(), ws_settings.sort, &attention);
-        let shown: Vec<&WorkspaceInfo> = sorted
-            .into_iter()
-            .filter(|w| !order::hidden(w, &ws_settings, active))
-            .collect();
-        let workspace_of = |s: &SessionInfo| store.workspace(s.workspace_id);
-        // A session is listed when it matches the search itself or sits in a workspace whose
-        // name or folder does.
+        // A session is listed by the search when it matches itself or sits in a project or
+        // workspace whose name or folder does.
         let listed = |s: &SessionInfo| {
-            self.matches(s) || workspace_of(s).is_some_and(|w| order::matches_query(w, &self.query))
+            self.matches(s)
+                || store.workspace(s.workspace_id).is_some_and(|w| {
+                    crate::sessions::workspaces::matches_query(w, &self.query)
+                        || w.parent_id
+                            .and_then(|p| store.workspace(p))
+                            .is_some_and(|p| {
+                                crate::sessions::workspaces::matches_query(p, &self.query)
+                            })
+                })
         };
-        let visible: Vec<&SessionInfo> = store
+        let mut entries = Vec::new();
+        let (needing, rest): (Vec<&SessionInfo>, Vec<&SessionInfo>) = if settings.needs_you {
+            store
+                .sessions()
+                .iter()
+                .filter(|s| listed(s))
+                .partition(|s| needs.contains(&s.id))
+        } else {
+            (
+                Vec::new(),
+                store.sessions().iter().filter(|s| listed(s)).collect(),
+            )
+        };
+        // The sessions the tree decides about itself (it knows which containers the search
+        // matches); the ones "Needs you" took are not among them.
+        let in_tree: Vec<&SessionInfo> = store
             .sessions()
             .iter()
-            .filter(|s| listed(s))
-            .filter(|s| {
-                // Sessions that need the user stay visible whatever the filters say.
-                (settings.needs_you && needs.contains(&s.id))
-                    || shown.iter().any(|w| w.id == s.workspace_id)
-            })
+            .filter(|s| !(settings.needs_you && needs.contains(&s.id)))
             .collect();
-        let mut sections = Vec::new();
-        let (needing, rest): (Vec<&SessionInfo>, Vec<&SessionInfo>) = if settings.needs_you {
-            visible.into_iter().partition(|s| needs.contains(&s.id))
-        } else {
-            (Vec::new(), visible)
-        };
         if !needing.is_empty() {
-            sections.push(Section {
+            entries.push(Entry::Section {
                 key: SectionKey::NeedsYou,
                 title: format!("Needs you · {}", needing.len()),
-                rows: needing.into_iter().cloned().collect(),
-                workspace: None,
-                needs: 0,
             });
+            entries.extend(needing.into_iter().map(|info| {
+                Entry::Session(Box::new(SessionRow {
+                    info: info.clone(),
+                    depth: 0,
+                    in_needs_you: true,
+                }))
+            }));
         }
         match settings.group_by {
             GroupBy::None => {
                 if !rest.is_empty() {
-                    sections.push(Section {
+                    entries.push(Entry::Section {
                         key: SectionKey::All,
                         title: String::new(),
-                        rows: rest.into_iter().cloned().collect(),
-                        workspace: None,
-                        needs: 0,
                     });
-                }
-            }
-            GroupBy::Workspace => {
-                let searching = !self.query.trim().is_empty();
-                let mut pinned_label = false;
-                for workspace in shown {
-                    let rows: Vec<SessionInfo> = rest
-                        .iter()
-                        .filter(|s| s.workspace_id == workspace.id)
-                        .map(|s| (*s).clone())
-                        .collect();
-                    if searching && rows.is_empty() {
-                        continue;
-                    }
-                    if workspace.pinned && !pinned_label {
-                        pinned_label = true;
-                        sections.push(Section {
-                            key: SectionKey::Pinned,
-                            title: "Pinned".to_owned(),
-                            rows: Vec::new(),
-                            workspace: None,
-                            needs: 0,
-                        });
-                    }
-                    sections.push(Section {
-                        key: SectionKey::Workspace(workspace.id),
-                        title: workspace.name.clone(),
-                        rows,
-                        workspace: Some(workspace.clone()),
-                        needs: attention.get(&workspace.id).copied().unwrap_or(0),
-                    });
+                    entries.extend(rest.into_iter().map(|info| {
+                        Entry::Session(Box::new(SessionRow {
+                            info: info.clone(),
+                            depth: 0,
+                            in_needs_you: false,
+                        }))
+                    }));
                 }
             }
             GroupBy::State => {
@@ -224,22 +569,83 @@ impl SessionsPanel {
                     }
                 }
                 for label in labels {
-                    let rows: Vec<SessionInfo> = rest
+                    let rows: Vec<&&SessionInfo> = rest
                         .iter()
                         .filter(|s| store.presentation(s).label == label)
-                        .map(|s| (*s).clone())
                         .collect();
-                    sections.push(Section {
+                    entries.push(Entry::Section {
                         key: SectionKey::State(label.clone()),
                         title: format!("{label} · {}", rows.len()),
-                        rows,
-                        workspace: None,
-                        needs: 0,
                     });
+                    entries.extend(rows.into_iter().map(|info| {
+                        Entry::Session(Box::new(SessionRow {
+                            info: (*info).clone(),
+                            depth: 0,
+                            in_needs_you: false,
+                        }))
+                    }));
                 }
             }
+            GroupBy::Workspace => {
+                let query = self.query.clone();
+                let by_itself = |s: &SessionInfo| self.matches(s);
+                let built = tree::build(&tree::Inputs {
+                    workspaces: store.workspaces(),
+                    sessions: &in_tree,
+                    organize,
+                    sort: ws_settings.sort,
+                    filters: &ws_settings,
+                    query: &query,
+                    active: [active, project],
+                    needs: &attention,
+                    session_matches: &by_itself,
+                });
+                self.flatten(&built.nodes, &mut entries);
+            }
         }
-        sections
+        entries
+    }
+
+    /// The rows of the tree, honouring what the user folded.
+    fn flatten(&self, nodes: &[Node], entries: &mut Vec<Entry>) {
+        let session = |entries: &mut Vec<Entry>, list: &[SessionInfo], depth: usize| {
+            entries.extend(list.iter().map(|info| {
+                Entry::Session(Box::new(SessionRow {
+                    info: info.clone(),
+                    depth,
+                    in_needs_you: false,
+                }))
+            }));
+        };
+        let project = |entries: &mut Vec<Entry>, node: &ProjectNode, depth: usize| {
+            entries.push(Entry::Container(ContainerRow {
+                info: node.info.clone(),
+                depth,
+                needs: node.needs,
+            }));
+            if !self.collapsed.contains(&node.info.id) {
+                session(entries, &node.sessions, depth + 1);
+            }
+        };
+        for node in nodes {
+            match node {
+                Node::Workspace(workspace) => {
+                    entries.push(Entry::Container(ContainerRow {
+                        info: workspace.info.clone(),
+                        depth: 0,
+                        needs: workspace.needs,
+                    }));
+                    if !self.collapsed.contains(&workspace.info.id) {
+                        for node in &workspace.projects {
+                            project(entries, node, 1);
+                        }
+                        session(entries, &workspace.sessions, 1);
+                    }
+                }
+                Node::Project(node) | Node::Home(node) => project(entries, node, 0),
+                Node::NoWorkspace => entries.push(Entry::NoWorkspace),
+            }
+        }
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -259,24 +665,41 @@ impl SessionsPanel {
         cx.stop_propagation();
         cx.notify();
     }
+
+    /// A project row was dropped on `target` (a workspace or project row, or `None` for the "No
+    /// workspace" area); the whole selection moves when the row is part of it.
+    fn project_dropped(
+        &mut self,
+        dragged: &DraggedProject,
+        target: Option<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let projects = if self.selection.len() > 1 && self.selection.contains(&dragged.project) {
+            self.selection.clone()
+        } else {
+            vec![dragged.project]
+        };
+        for project in projects {
+            window.dispatch_action(
+                Box::new(DropProjectOnto(ProjectDrop {
+                    dragged: project.to_string(),
+                    target: target.map(|t| t.to_string()),
+                })),
+                cx,
+            );
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum SectionKey {
-    NeedsYou,
-    All,
-    Pinned,
-    Workspace(WorkspaceId),
-    State(String),
-}
-
-struct Section {
-    key: SectionKey,
-    title: String,
-    rows: Vec<SessionInfo>,
-    workspace: Option<WorkspaceInfo>,
-    /// Sessions of the workspace that need the user.
-    needs: usize,
+/// `3`, or `1/3` when only some of a row's sessions are live; nothing for a row without
+/// sessions.
+fn count_text(info: &WorkspaceInfo) -> Option<String> {
+    match (info.live_sessions, info.total_sessions) {
+        (_, 0) => None,
+        (live, total) if live == total => Some(total.to_string()),
+        (live, total) => Some(format!("{live}/{total}")),
+    }
 }
 
 impl Focusable for SessionsPanel {
@@ -291,14 +714,33 @@ impl Render for SessionsPanel {
         let (theme, tokens) = (style.theme, style.density.ui());
         let settings = self.env.settings.get::<SessionsPanelSettings>();
         let ws_settings = self.env.settings.get::<WorkspacesSettings>();
-        let sections = self.layout(&settings, cx);
-        let (focused, active) = {
+        let entries = self.layout(&settings, cx);
+        let (focused, active, active_project, only_home) = {
             let store = self.env.sessions.read(cx);
-            (store.focused(), store.active_workspace_id())
+            (
+                store.focused(),
+                store.active_workspace_id(),
+                store.active_project_id(),
+                store.sessions().is_empty()
+                    && store
+                        .workspaces()
+                        .iter()
+                        .all(|w| w.kind == WorkspaceKind::Home),
+            )
         };
+        // The selection and the rename only name rows that still exist.
+        {
+            let store = self.env.sessions.read(cx);
+            let before = self.selection.len();
+            self.selection.retain(|id| store.workspace(*id).is_some());
+            if self.selection.len() != before {
+                cx.notify();
+            }
+        }
         let searching = self.search_focus.is_focused(window);
         let hover = theme.surface_hover;
         let manual = ws_settings.sort == WorkspaceSort::Manual;
+        let hint_query = !self.query.trim().is_empty();
 
         let mut list = div()
             .id("sessions-list")
@@ -307,60 +749,98 @@ impl Render for SessionsPanel {
             .overflow_y_scroll()
             .flex()
             .flex_col();
-        if sections.is_empty() {
-            let empty = if self.query.trim().is_empty() {
-                "No sessions yet. ⌘T starts a terminal."
-            } else {
-                "Nothing matches the filter."
-            };
-            list = list
-                .child(ui::empty_state(Mascot::Empty, empty, None, &theme, &tokens).h(px(260.0)));
+        if entries.is_empty() {
+            list = list.child(
+                ui::empty_state(
+                    Mascot::Empty,
+                    if hint_query {
+                        "Nothing matches the filter."
+                    } else {
+                        "Nothing here yet. ⌘T starts a terminal."
+                    },
+                    None,
+                    &theme,
+                    &tokens,
+                )
+                .h(px(260.0)),
+            );
         }
-        for section in sections {
-            let workspace_id = section.workspace.as_ref().map(|w| w.id);
-            let collapsed = workspace_id.is_some_and(|w| self.collapsed.contains(&w));
-            let header_color = if section.key == SectionKey::NeedsYou {
-                theme.warning
-            } else {
-                theme.muted
-            };
-            if let Some(workspace) = &section.workspace {
-                list = list.child(self.render_workspace_header(
-                    workspace,
-                    section.rows.len(),
-                    section.needs,
-                    collapsed,
-                    active == Some(workspace.id),
-                    manual,
-                    cx,
-                ));
-            } else if !section.title.is_empty() {
-                list = list.child(
-                    div()
-                        .id(SharedString::from(format!("section-{:?}", section.key)))
-                        .flex()
-                        .items_center()
-                        .h(px(tokens.sidebar_row))
-                        .px(px(tokens.spacing * 2.0))
-                        .mt(px(tokens.spacing))
-                        .text_size(px(tokens.section_font_size))
-                        .medium()
-                        .text_color(header_color)
-                        .child(section.title.clone()),
-                );
+        let multi = self.selection.len() > 1;
+        for entry in &entries {
+            match entry {
+                Entry::Section { key, title } => {
+                    if title.is_empty() {
+                        continue;
+                    }
+                    let color = if *key == SectionKey::NeedsYou {
+                        theme.warning
+                    } else {
+                        theme.muted
+                    };
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("section-{key:?}")))
+                            .flex()
+                            .items_center()
+                            .h(px(tokens.sidebar_row))
+                            .px(px(tokens.spacing * 2.0))
+                            .mt(px(tokens.spacing))
+                            .text_size(px(tokens.section_font_size))
+                            .medium()
+                            .text_color(color)
+                            .child(title.clone()),
+                    );
+                }
+                Entry::NoWorkspace => list = list.child(self.render_no_workspace(cx)),
+                Entry::Container(row) => {
+                    let current = self.is_active(&row.info, active, active_project);
+                    let renaming = self
+                        .renaming
+                        .as_ref()
+                        .filter(|r| r.workspace == row.info.id)
+                        .map(|r| r.text.clone());
+                    list = list.child(self.render_container(
+                        row,
+                        self.collapsed.contains(&row.info.id),
+                        current,
+                        multi && self.selection.contains(&row.info.id),
+                        manual,
+                        renaming,
+                        cx,
+                    ));
+                }
+                Entry::Session(row) => {
+                    list = list.child(self.render_row(
+                        row,
+                        &settings,
+                        focused == Some(row.info.id),
+                        cx,
+                    ));
+                }
             }
-            if collapsed {
-                continue;
-            }
-            for info in &section.rows {
-                list = list.child(self.render_row(
-                    info,
-                    &settings,
-                    focused == Some(info.id),
-                    section.key == SectionKey::NeedsYou,
-                    cx,
-                ));
-            }
+        }
+        if only_home && !hint_query && !entries.is_empty() {
+            list = list.child(
+                ui::empty_state(
+                    Mascot::Empty,
+                    "No projects yet. Open a folder, or press ⌘T for a terminal.",
+                    Some(
+                        ui::button(
+                            "sessions-empty-open",
+                            "Open Folder…",
+                            ButtonKind::Secondary,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenFolder), cx))
+                        .into_any_element(),
+                    ),
+                    &theme,
+                    &tokens,
+                )
+                .h(px(260.0)),
+            );
         }
 
         let sort_button = div()
@@ -376,6 +856,21 @@ impl Render for SessionsPanel {
                 window.dispatch_action(Box::new(ShowSortMenu(event.position())), cx);
             })
             .child(format!("⇅ {} ▾", ws_settings.sort.label()))
+            .into_any_element();
+        let plus_button = div()
+            .id("sessions-plus")
+            .relative()
+            .px(px(tokens.spacing * 1.5))
+            .rounded(px(tokens.radius))
+            .cursor_pointer()
+            .text_color(theme.muted)
+            .hover(move |s| s.bg(hover).text_color(theme.fg))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|event, window, cx| {
+                window.dispatch_action(Box::new(ShowPlusMenu(event.position())), cx);
+            })
+            .child("＋")
+            .child(probe(&self.env.regions, Region::SidebarControl("plus")))
             .into_any_element();
 
         let search = div()
@@ -411,7 +906,7 @@ impl Render for SessionsPanel {
             .child(if self.query.is_empty() {
                 div()
                     .text_color(theme.faint)
-                    .child("⌕ Filter workspaces and sessions")
+                    .child("⌕ Filter projects and sessions")
             } else {
                 div().child(self.query.clone())
             });
@@ -439,9 +934,9 @@ impl Render for SessionsPanel {
             .text_size(px(tokens.font_size))
             .text_color(theme.fg)
             .child(panel_header_with(
-                "Workspaces",
+                "Projects",
                 "panels.sessions",
-                vec![sort_button],
+                vec![plus_button, sort_button],
                 cx,
             ))
             .child(search)
@@ -451,31 +946,102 @@ impl Render for SessionsPanel {
 }
 
 impl SessionsPanel {
-    /// `▾ ★ NAME  ······  ● 2  3`: click shows the workspace, the chevron folds its sessions,
-    /// right-click opens its menu, and (manual order) the row can be dragged to reorder.
+    /// The "No workspace" label above the projects that belong to none: a project dropped on
+    /// it leaves its workspace.
+    fn render_no_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
+        let style = UiStyle::get(cx);
+        let (theme, tokens) = (style.theme, style.density.ui());
+        let accent = theme.accent;
+        div()
+            .id("section-no-workspace")
+            .relative()
+            .flex()
+            .items_center()
+            .h(px(tokens.sidebar_row))
+            .px(px(tokens.spacing * 2.0))
+            .mt(px(tokens.spacing))
+            .text_size(px(tokens.section_font_size))
+            .medium()
+            .text_color(theme.muted)
+            .drag_over::<DraggedProject>(move |s, _, _, _| s.bg(accent.opacity(0.14)))
+            .on_drop(cx.listener(|this, dragged: &DraggedProject, window, cx| {
+                this.project_dropped(dragged, None, window, cx);
+            }))
+            .child("No workspace")
+            .child(probe(&self.env.regions, Region::NoWorkspace))
+            .into_any_element()
+    }
+
+    /// `▾ ★ NAME  ······  ● 2  3` for a workspace; `▾ ◧ ★ NAME …` for a project (repository or
+    /// folder), `▾ ⌂ Home …` for Home. Click shows it, the chevron folds its sessions,
+    /// right-click opens its menu, ⌘-click / ⇧-click select projects, and a row can be dragged:
+    /// a project onto a workspace (or "No workspace"), a workspace to reorder (manual order).
     #[allow(clippy::too_many_arguments)] // one call site; a struct would only rename them
-    fn render_workspace_header(
+    fn render_container(
         &self,
-        workspace: &WorkspaceInfo,
-        rows: usize,
-        needs: usize,
+        row: &ContainerRow,
         collapsed: bool,
-        active: bool,
-        draggable: bool,
+        current: bool,
+        selected: bool,
+        manual: bool,
+        renaming: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let (hover, accent) = (theme.surface_hover, theme.accent);
-        let id = workspace.id;
+        let info = &row.info;
+        let id = info.id;
+        let kind = info.kind;
         let id_text = id.to_string();
         let open_id = id_text.clone();
         let menu_id = id_text.clone();
         let drop_id = id_text.clone();
-        let count = if workspace.live_sessions as usize == rows || workspace.total_sessions == 0 {
-            rows.to_string()
-        } else {
-            format!("{}/{}", workspace.live_sessions, workspace.total_sessions)
+        let is_project = kind == WorkspaceKind::Project;
+        let icon = match kind {
+            WorkspaceKind::Home => Some("⌂"),
+            WorkspaceKind::Project => Some(
+                if info
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.common_dir.is_some())
+                {
+                    "◧"
+                } else {
+                    "▭"
+                },
+            ),
+            WorkspaceKind::Workspace => None,
+        };
+        let name: AnyElement = match renaming {
+            Some(text) => div()
+                .id(SharedString::from(format!("rename-{id_text}")))
+                .key_context("SidebarRename")
+                .track_focus(&self.rename_focus)
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.on_rename_key(event, window, cx);
+                }))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .h(px(tokens.sidebar_row - 6.0))
+                .px(px(tokens.spacing))
+                .rounded(px(tokens.radius))
+                .bg(theme.bg)
+                .border_1()
+                .border_color(accent)
+                .text_color(theme.fg)
+                .child(SharedString::from(text))
+                .child(div().w(px(1.0)).h(px(tokens.font_size)).bg(accent))
+                .into_any_element(),
+            None => div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(SharedString::from(info.name.clone()))
+                .into_any_element(),
         };
         let mut header = div()
             .id(SharedString::from(format!("workspace-{id_text}")))
@@ -485,51 +1051,119 @@ impl SessionsPanel {
             .gap(px(tokens.spacing))
             .h(px(tokens.sidebar_row))
             .mx(px(tokens.spacing * 1.5))
-            .px(px(tokens.spacing * 1.5))
+            .pl(px(tokens.spacing * 1.5 + row.depth as f32 * INDENT))
+            .pr(px(tokens.spacing * 1.5))
             .rounded(px(tokens.radius))
             .text_size(px(tokens.font_size))
             .medium()
-            .text_color(if active { theme.fg } else { theme.muted })
+            .text_color(if current || selected {
+                theme.fg
+            } else {
+                theme.muted
+            })
             .cursor_pointer()
-            .when(active, move |s| s.bg(theme.accent_soft))
-            .when(!active, move |s| s.hover(move |s| s.bg(hover)))
-            .on_click(cx.listener(move |_, _, window, cx| {
+            .when(current || selected, move |s| s.bg(theme.accent_soft))
+            .when(selected, move |s| s.border_1().border_color(accent))
+            .when(!(current || selected), move |s| {
+                s.hover(move |s| s.bg(hover))
+            })
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                let modifiers = event.modifiers();
+                if is_project && (modifiers.platform || modifiers.shift) {
+                    this.select_project(id, modifiers.shift && !modifiers.platform, cx);
+                    return;
+                }
+                if is_project {
+                    this.selection.clear();
+                    this.anchor = Some(id);
+                    cx.notify();
+                }
                 window.dispatch_action(Box::new(OpenWorkspace(open_id.clone())), cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |_, event: &MouseDownEvent, window, cx| {
-                    window.dispatch_action(
-                        Box::new(ShowWorkspaceMenu(WorkspaceMenuAt {
-                            workspace: menu_id.clone(),
-                            position: event.position,
-                        })),
-                        cx,
-                    );
-                }),
-            )
-            .drag_over::<DraggedWorkspace>(move |s, _, _, _| s.border_t_2().border_color(accent))
-            .on_drop(
-                cx.listener(move |_, dragged: &DraggedWorkspace, window, cx| {
-                    window.dispatch_action(
-                        Box::new(MoveWorkspaceOnto(WorkspaceDrop {
-                            dragged: dragged.workspace.to_string(),
-                            target: drop_id.clone(),
-                        })),
-                        cx,
-                    );
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if is_project {
+                        let selection = if this.selection.contains(&id) {
+                            this.selection.iter().map(ToString::to_string).collect()
+                        } else {
+                            vec![menu_id.clone()]
+                        };
+                        window.dispatch_action(
+                            Box::new(ShowProjectMenu(ProjectMenuAt {
+                                project: menu_id.clone(),
+                                selection,
+                                position: event.position,
+                            })),
+                            cx,
+                        );
+                    } else {
+                        window.dispatch_action(
+                            Box::new(ShowWorkspaceMenu(WorkspaceMenuAt {
+                                workspace: menu_id.clone(),
+                                position: event.position,
+                            })),
+                            cx,
+                        );
+                    }
                 }),
             );
-        if draggable {
-            let dragged = DraggedWorkspace {
-                workspace: id,
-                label: workspace.name.clone().into(),
-            };
-            header = header.on_drag(dragged, |dragged: &DraggedWorkspace, _, _, cx| {
-                let style = UiStyle::get(cx);
-                let label = dragged.label.clone();
-                cx.new(|_| DragPreview { label, style })
-            });
+        // What can be dropped on the row.
+        header = match kind {
+            WorkspaceKind::Workspace => header
+                .drag_over::<DraggedWorkspace>(move |s, _, _, _| {
+                    s.border_t_2().border_color(accent)
+                })
+                .drag_over::<DraggedProject>(move |s, _, _, _| s.bg(accent.opacity(0.14)))
+                .on_drop(
+                    cx.listener(move |_, dragged: &DraggedWorkspace, window, cx| {
+                        window.dispatch_action(
+                            Box::new(MoveWorkspaceOnto(WorkspaceDrop {
+                                dragged: dragged.workspace.to_string(),
+                                target: drop_id.clone(),
+                            })),
+                            cx,
+                        );
+                    }),
+                )
+                .on_drop(
+                    cx.listener(move |this, dragged: &DraggedProject, window, cx| {
+                        this.project_dropped(dragged, Some(id), window, cx);
+                    }),
+                ),
+            WorkspaceKind::Project => header
+                .drag_over::<DraggedProject>(move |s, _, _, _| s.border_t_2().border_color(accent))
+                .on_drop(
+                    cx.listener(move |this, dragged: &DraggedProject, window, cx| {
+                        this.project_dropped(dragged, Some(id), window, cx);
+                    }),
+                ),
+            WorkspaceKind::Home => header,
+        };
+        match kind {
+            WorkspaceKind::Workspace if manual => {
+                let dragged = DraggedWorkspace {
+                    workspace: id,
+                    label: info.name.clone().into(),
+                };
+                header = header.on_drag(dragged, |dragged: &DraggedWorkspace, _, _, cx| {
+                    let style = UiStyle::get(cx);
+                    let label = dragged.label.clone();
+                    cx.new(|_| DragPreview { label, style })
+                });
+            }
+            WorkspaceKind::Project => {
+                let dragged = DraggedProject {
+                    project: id,
+                    label: info.name.clone().into(),
+                };
+                header = header.on_drag(dragged, |dragged: &DraggedProject, _, _, cx| {
+                    let style = UiStyle::get(cx);
+                    let label = dragged.label.clone();
+                    cx.new(|_| DragPreview { label, style })
+                });
+            }
+            _ => {}
         }
         header
             .child(
@@ -546,42 +1180,35 @@ impl SessionsPanel {
                     }))
                     .child(if collapsed { "▸" } else { "▾" }),
             )
-            .when(workspace.kind == WorkspaceKind::Home, |s| {
-                s.child(div().flex_none().child("⌂"))
-            })
-            .when(workspace.pinned, |s| {
+            .children(icon.map(|icon| div().flex_none().child(icon)))
+            .when(info.pinned, |s| {
                 s.child(div().flex_none().text_color(theme.accent).child("★"))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(SharedString::from(workspace.name.clone())),
-            )
-            .when(needs > 0, |s| {
+            .child(name)
+            .when(row.needs > 0, |s| {
                 s.child(
                     div()
                         .flex_none()
                         .text_color(theme.warning)
-                        .child(format!("● {needs}")),
+                        .child(format!("● {}", row.needs)),
                 )
             })
-            .child(ui::counter(count, &theme, &tokens))
+            .children(count_text(info).map(|count| ui::counter(count, &theme, &tokens)))
             .child(probe(&self.env.regions, Region::WorkspaceRow(id)))
             .into_any_element()
     }
-}
 
-impl SessionsPanel {
+    /// Two lines: the state dot, kind icon, title, agent badge and age; under them the live
+    /// folder (last two path parts, `muted`, the full path in its tooltip) and the placement
+    /// badge. A session that needs you adds a third line with what it waits for.
     fn render_row(
         &self,
-        info: &SessionInfo,
+        row: &SessionRow,
         settings: &SessionsPanelSettings,
         selected: bool,
-        in_needs_you: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let info = &row.info;
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let presentation = self.env.sessions.read(cx).presentation(info);
@@ -598,6 +1225,7 @@ impl SessionsPanel {
             &self.env.regions,
             cx,
         );
+        let has = |field: &str| settings.row.iter().any(|f| f == field);
 
         let mut line = div()
             .flex()
@@ -623,32 +1251,6 @@ impl SessionsPanel {
                             .child(SharedString::from(info.title.clone())),
                     )
                     .children(badge.take()),
-                "placement" => match crate::sessions::placement_badge(info) {
-                    Some(badge) => line.child(placement_badge(
-                        &theme,
-                        &badge,
-                        BadgeSite::Row,
-                        info.id,
-                        &self.env.regions,
-                        cx,
-                    )),
-                    None => {
-                        let place = placement(info);
-                        if place.is_empty() {
-                            line
-                        } else {
-                            line.child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(80.0))
-                                    .truncate()
-                                    .text_size(px(tokens.secondary_font_size))
-                                    .text_color(theme.muted)
-                                    .child(SharedString::from(place)),
-                            )
-                        }
-                    }
-                },
                 "age" => line.child(
                     div()
                         .flex_none()
@@ -660,12 +1262,58 @@ impl SessionsPanel {
             };
         }
 
-        let mut row = div()
+        // Where the session is now, and which checkout it works in.
+        let folder = has("folder")
+            .then(|| session_folder(info).map(|path| (folder_label(path), path.to_path_buf())))
+            .flatten();
+        let placement = has("placement")
+            .then(|| crate::sessions::placement_badge(info))
+            .flatten();
+        let place_line = (folder.is_some() || placement.is_some()).then(|| {
+            let tip: Option<SharedString> = folder
+                .as_ref()
+                .map(|(_, path): &(String, PathBuf)| path.display().to_string().into());
+            div()
+                .flex()
+                .items_center()
+                .gap(px(tokens.spacing * 1.5))
+                .pl(px(tokens.spacing * 4.0))
+                .pb(px(tokens.spacing))
+                .text_size(px(tokens.secondary_font_size))
+                .children(folder.map(|(label, _)| {
+                    let element = div()
+                        .id(SharedString::from(format!("session-folder-{id}")))
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(label));
+                    match tip {
+                        Some(tip) => element
+                            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+                            .into_any_element(),
+                        None => element.into_any_element(),
+                    }
+                }))
+                .children(placement.map(|badge| {
+                    placement_badge(
+                        &theme,
+                        &badge,
+                        BadgeSite::Row,
+                        info.id,
+                        &self.env.regions,
+                        cx,
+                    )
+                }))
+        });
+
+        let mut element = div()
             .id(SharedString::from(format!("session-row-{id}")))
             .flex()
             .flex_col()
             .mx(px(tokens.spacing * 1.5))
-            .px(px(tokens.spacing * 1.5))
+            .pl(px(tokens.spacing * 1.5 + row.depth as f32 * INDENT))
+            .pr(px(tokens.spacing * 1.5))
             .rounded(px(tokens.radius))
             .cursor_pointer()
             .when(selected, move |s| s.bg(theme.accent_soft))
@@ -685,14 +1333,15 @@ impl SessionsPanel {
                     );
                 }),
             )
-            .child(line);
-        if in_needs_you {
+            .child(line)
+            .children(place_line);
+        if row.in_needs_you {
             let subtitle = if presentation.detail.is_empty() {
                 presentation.label.clone()
             } else {
                 format!("{} · {}", presentation.label, presentation.detail)
             };
-            row = row.child(
+            element = element.child(
                 div()
                     .pl(px(tokens.spacing * 4.0))
                     .pb(px(tokens.spacing))
@@ -701,6 +1350,6 @@ impl SessionsPanel {
                     .child(SharedString::from(subtitle)),
             );
         }
-        row.into_any_element()
+        element.into_any_element()
     }
 }

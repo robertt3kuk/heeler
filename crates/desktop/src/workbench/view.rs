@@ -115,8 +115,13 @@ pub enum Region {
     Tab(PaneId, usize),
     /// Panel tab `index` of a dock.
     DockTab(DockPosition, usize),
-    /// A workspace row of the sessions panel.
+    /// A container row (workspace, project or Home) of the sessions panel.
     WorkspaceRow(hutan_core::WorkspaceId),
+    /// The "No workspace" label of the sessions panel: where a project is dropped to leave its
+    /// workspace.
+    NoWorkspace,
+    /// A control of the sessions panel's header, by name (`plus`, `sort`).
+    SidebarControl(&'static str),
     /// A control of the history panel, by name (`search`, `enable`, `clear`, `rebuild`,
     /// `confirm`).
     History(&'static str),
@@ -284,7 +289,21 @@ pub struct Workbench {
     pub(crate) window_active: bool,
     pub(crate) rendered_terminals: std::collections::HashSet<(PaneId, SessionId)>,
     pub(crate) pruned: Vec<Entity<hutan_terminal_view::TerminalView>>,
+    /// The root whose `.hutan/settings.toml` is the workspace layer (the active workspace's
+    /// first project, or Home's folder).
     pub(crate) workspace_root: Option<PathBuf>,
+    /// The root whose `.hutan/settings.toml` is the project layer.
+    pub(crate) project_root: Option<PathBuf>,
+    /// The project the user last chose (a project row, a session): the active project while no
+    /// focused session says otherwise.
+    pub(crate) chosen_project: Option<hutan_core::WorkspaceId>,
+    /// The project last chosen inside each workspace, for when the window comes back to it.
+    pub(crate) remembered_projects: HashMap<hutan_core::WorkspaceId, hutan_core::WorkspaceId>,
+    /// The session that had focus when the active project was last derived from it.
+    pub(crate) focus_seen: Option<SessionId>,
+    /// The container the active project was last derived for: a focus change that comes with a
+    /// switch of container (the restored layout's focused tab) says nothing about the project.
+    pub(crate) synced_container: Option<hutan_core::WorkspaceId>,
     /// A workspace this window just opened whose events have not reached the store yet; it is
     /// shown anyway instead of falling back to Home.
     pub(crate) pending_workspace: Option<hutan_core::WorkspaceId>,
@@ -511,6 +530,11 @@ impl Workbench {
             rendered_terminals: std::collections::HashSet::new(),
             pruned: Vec::new(),
             workspace_root: None,
+            project_root: None,
+            chosen_project: None,
+            remembered_projects: HashMap::new(),
+            focus_seen: None,
+            synced_container: None,
             pending_workspace: None,
             picker: None,
             picker_search: None,

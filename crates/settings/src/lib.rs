@@ -2,10 +2,11 @@
 //! appearance/density tokens and terminal themes. No GPUI (ADR 0010).
 //!
 //! Layers, lowest to highest: built-in defaults (each [`Setting`]'s `Default`), user
-//! `settings.toml`, workspace `<root>/.hutan/settings.toml` (only for namespaces with
-//! [`Setting::WORKSPACE_OVERRIDABLE`]), runtime overrides. Tables merge deeply, arrays and scalars
-//! replace. Each namespace is then deserialized into its owner's type; an invalid result keeps the
-//! last good value and records a [`SettingsError`].
+//! `settings.toml`, workspace `<root>/.hutan/settings.toml` and project
+//! `<root>/.hutan/settings.toml` (both only for namespaces with
+//! [`Setting::WORKSPACE_OVERRIDABLE`]; the project layer wins), runtime overrides. Tables merge
+//! deeply, arrays and scalars replace. Each namespace is then deserialized into its owner's
+//! type; an invalid result keeps the last good value and records a [`SettingsError`].
 
 use schemars::JsonSchema;
 use serde::Serialize;

@@ -1,4 +1,4 @@
-//! The layered store: defaults < user < workspace < runtime, validated per namespace.
+//! The layered store: defaults < user < workspace < project < runtime, validated per namespace.
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,6 +147,7 @@ enum Kind {
     User,
     Keymap,
     Workspace,
+    Project,
 }
 
 /// One file on disk and its last accepted contents.
@@ -212,18 +213,20 @@ impl Layer {
                     false
                 }
             },
-            Kind::User | Kind::Workspace => match toml::from_str::<toml::Table>(&text) {
-                Ok(table) => {
-                    self.errors.clear();
-                    let changed = self.table != table;
-                    self.table = table;
-                    changed
+            Kind::User | Kind::Workspace | Kind::Project => {
+                match toml::from_str::<toml::Table>(&text) {
+                    Ok(table) => {
+                        self.errors.clear();
+                        let changed = self.table != table;
+                        self.table = table;
+                        changed
+                    }
+                    Err(e) => {
+                        self.errors = vec![syntax_error(&path, &text, &e)];
+                        false
+                    }
                 }
-                Err(e) => {
-                    self.errors = vec![syntax_error(&path, &text, &e)];
-                    false
-                }
-            },
+            }
         }
     }
 }
@@ -233,6 +236,8 @@ struct State {
     keymap: Layer,
     workspace: Layer,
     workspace_root: Option<PathBuf>,
+    project: Layer,
+    project_root: Option<PathBuf>,
     registry: BTreeMap<&'static str, Entry>,
     runtime: BTreeMap<&'static str, Value>,
     values: BTreeMap<&'static str, Computed>,
@@ -256,6 +261,7 @@ impl State {
         out.extend(self.user.errors.iter().cloned());
         out.extend(self.keymap.errors.iter().cloned());
         out.extend(self.workspace.errors.iter().cloned());
+        out.extend(self.project.errors.iter().cloned());
         out.extend(self.registration.iter().cloned());
         out.extend(self.derived.iter().cloned());
         out.extend(self.notes.values().flatten().cloned());
@@ -314,8 +320,9 @@ impl State {
         let mut derived = Vec::new();
 
         let namespaces: Vec<&'static str> = self.registry.keys().copied().collect();
-        self.coverage(&self.user, false, &mut derived);
-        self.coverage(&self.workspace, true, &mut derived);
+        self.coverage(&self.user, None, &mut derived);
+        self.coverage(&self.workspace, Some("workspace"), &mut derived);
+        self.coverage(&self.project, Some("project"), &mut derived);
 
         for namespace in namespaces {
             let Some(entry) = self.registry.get(namespace) else {
@@ -325,10 +332,12 @@ impl State {
             if let Some(v) = subtree(&self.user.table, namespace) {
                 layers.push((self.user.path.as_deref(), v));
             }
-            if entry.overridable
-                && let Some(v) = subtree(&self.workspace.table, namespace)
-            {
-                layers.push((self.workspace.path.as_deref(), v));
+            if entry.overridable {
+                for layer in [&self.workspace, &self.project] {
+                    if let Some(v) = subtree(&layer.table, namespace) {
+                        layers.push((layer.path.as_deref(), v));
+                    }
+                }
             }
             if let Some(v) = self.runtime.get(namespace) {
                 layers.push((None, v));
@@ -386,10 +395,11 @@ impl State {
         changed
     }
 
-    /// Keys of `layer` that no registered namespace claims, and (workspace) keys of namespaces
-    /// that may not be overridden per workspace.
-    fn coverage(&self, layer: &Layer, workspace: bool, out: &mut Vec<SettingsError>) {
-        self.walk("", &layer.table, layer.path.as_deref(), workspace, out);
+    /// Keys of `layer` that no registered namespace claims, and (`scope` is the name of an
+    /// overriding layer: `workspace` or `project`) keys of namespaces that may not be
+    /// overridden by it.
+    fn coverage(&self, layer: &Layer, scope: Option<&str>, out: &mut Vec<SettingsError>) {
+        self.walk("", &layer.table, layer.path.as_deref(), scope, out);
     }
 
     fn walk(
@@ -397,17 +407,19 @@ impl State {
         prefix: &str,
         table: &toml::Table,
         file: Option<&Path>,
-        workspace: bool,
+        scope: Option<&str>,
         out: &mut Vec<SettingsError>,
     ) {
         for (key, value) in table {
             let path = join(prefix, key);
             if let Some(entry) = self.registry.get(path.as_str()) {
-                if workspace && !entry.overridable {
+                if let Some(scope) = scope
+                    && !entry.overridable
+                {
                     out.push(SettingsError::error(
                         file,
                         path.clone(),
-                        format!("`{path}` cannot be overridden per workspace; ignored"),
+                        format!("`{path}` cannot be overridden per {scope}; ignored"),
                     ));
                 }
             } else if self.registry.keys().any(|ns| {
@@ -415,7 +427,7 @@ impl State {
                     .is_some_and(|r| r.starts_with('.'))
             }) {
                 match value {
-                    Value::Table(inner) => self.walk(&path, inner, file, workspace, out),
+                    Value::Table(inner) => self.walk(&path, inner, file, scope, out),
                     _ => out.push(SettingsError::error(file, path, "expected a table")),
                 }
             } else {
@@ -487,12 +499,13 @@ impl Shared {
         });
     }
 
-    /// Re-reads all three files and publishes whatever changed. Called by the watcher thread.
+    /// Re-reads all four files and publishes whatever changed. Called by the watcher thread.
     pub(crate) fn reload_from_disk(&self) {
         let mut state = self.state.write();
         state.user.refresh(Kind::User);
         let keymap_changed = state.keymap.refresh(Kind::Keymap);
         state.workspace.refresh(Kind::Workspace);
+        state.project.refresh(Kind::Project);
         let changed = state.recompute();
         self.commit(&mut state, changed, keymap_changed);
     }
@@ -506,7 +519,10 @@ impl Shared {
                 dirs.insert(parent.to_path_buf());
             }
         }
-        if let Some(root) = &state.workspace_root {
+        for root in [&state.workspace_root, &state.project_root]
+            .into_iter()
+            .flatten()
+        {
             let dot = root.join(".hutan");
             // `.hutan` may not exist yet; watch the root until it does (watch handler refilters).
             dirs.insert(if dot.is_dir() { dot } else { root.clone() });
@@ -546,6 +562,8 @@ impl SettingsStore {
             keymap: Layer::at(Some(paths.keymap)),
             workspace: Layer::at(None),
             workspace_root: None,
+            project: Layer::at(None),
+            project_root: None,
             registry: BTreeMap::new(),
             runtime: BTreeMap::new(),
             values: BTreeMap::new(),
@@ -606,19 +624,25 @@ impl SettingsStore {
             .ok()
     }
 
-    /// The value of `T` as it is for the workspace rooted at `root`: defaults, the user layer,
-    /// `<root>/.hutan/settings.toml` (read now, only for namespaces that may be overridden per
-    /// workspace), then the runtime layer. It does not touch the active workspace layer, so a
-    /// window can resolve settings for a workspace that is not the one it shows. `None`, an
-    /// unreadable or invalid workspace file, or a value that does not validate give
-    /// [`get`](Self::get) (the active workspace's value, or the last good one).
-    pub fn get_for_workspace<T: Setting>(&self, root: Option<&Path>) -> Arc<T> {
+    /// The value of `T` as it is for a workspace rooted at `workspace` and a project rooted at
+    /// `project`: defaults, the user layer, `<workspace>/.hutan/settings.toml`, then
+    /// `<project>/.hutan/settings.toml` (both read now, only for namespaces that may be
+    /// overridden per workspace), then the runtime layer. It does not touch the active layers,
+    /// so a window can resolve settings for a container that is not the one it shows. Both
+    /// `None`, an unreadable or invalid file, or a value that does not validate give
+    /// [`get`](Self::get) (the active value, or the last good one).
+    pub fn get_for_roots<T: Setting>(
+        &self,
+        workspace: Option<&Path>,
+        project: Option<&Path>,
+    ) -> Arc<T> {
         let active = self.get::<T>();
-        let Some(root) = root else {
+        if workspace.is_none() && project.is_none() {
             return active;
-        };
+        }
         let state = self.shared.state.read();
-        if state.workspace_root.as_deref() == Some(root) {
+        if state.workspace_root.as_deref() == workspace && state.project_root.as_deref() == project
+        {
             return active;
         }
         let Some(entry) = state.registry.get(T::NAMESPACE) else {
@@ -627,22 +651,22 @@ impl SettingsStore {
         if entry.type_id != TypeId::of::<T>() || !entry.overridable {
             return active;
         }
-        let workspace = match std::fs::read_to_string(workspace_file(root)) {
-            Ok(text) => match toml::from_str::<toml::Table>(&text) {
-                Ok(table) => table,
+        let mut files = Vec::new();
+        for root in [workspace, project].into_iter().flatten() {
+            match std::fs::read_to_string(workspace_file(root)) {
+                Ok(text) => match toml::from_str::<toml::Table>(&text) {
+                    Ok(table) => files.push(table),
+                    Err(_) => return active,
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return active,
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-            Err(_) => return active,
-        };
+            }
+        }
         let mut merged = entry.default.clone();
-        for layer in [
-            subtree(&state.user.table, T::NAMESPACE),
-            subtree(&workspace, T::NAMESPACE),
-            state.runtime.get(T::NAMESPACE),
-        ]
-        .into_iter()
-        .flatten()
+        for layer in std::iter::once(subtree(&state.user.table, T::NAMESPACE))
+            .chain(files.iter().map(|file| subtree(file, T::NAMESPACE)))
+            .chain(std::iter::once(state.runtime.get(T::NAMESPACE)))
+            .flatten()
         {
             deep_merge(&mut merged, layer);
         }
@@ -654,11 +678,27 @@ impl SettingsStore {
 
     /// Uses `<root>/.hutan/settings.toml` as the workspace layer (`None` removes it).
     pub fn set_workspace_root(&self, root: Option<PathBuf>) {
+        self.set_layer_root(root, false);
+    }
+
+    /// Uses `<root>/.hutan/settings.toml` as the project layer, above the workspace layer
+    /// (`None` removes it).
+    pub fn set_project_root(&self, root: Option<PathBuf>) {
+        self.set_layer_root(root, true);
+    }
+
+    fn set_layer_root(&self, root: Option<PathBuf>, project: bool) {
         {
             let mut state = self.shared.state.write();
-            state.workspace = Layer::at(root.as_deref().map(workspace_file));
-            state.workspace_root = root;
-            state.workspace.refresh(Kind::Workspace);
+            let (layer, kind) = if project {
+                state.project_root.clone_from(&root);
+                (&mut state.project, Kind::Project)
+            } else {
+                state.workspace_root.clone_from(&root);
+                (&mut state.workspace, Kind::Workspace)
+            };
+            *layer = Layer::at(root.as_deref().map(workspace_file));
+            layer.refresh(kind);
             let changed = state.recompute();
             self.shared.commit(&mut state, changed, false);
         }
