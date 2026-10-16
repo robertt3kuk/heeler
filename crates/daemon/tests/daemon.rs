@@ -678,6 +678,32 @@ async fn stale_socket_from_a_dead_daemon_is_replaced() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_whose_socket_is_deleted_or_replaced_stops_and_spares_the_new_file() {
+    // Deleted, as when its `HUTAN_HOME` is removed: unreachable, so it stops.
+    let t = TestDaemon::start_with(|c| c.socket_check_interval = Duration::from_millis(50)).await;
+    std::fs::remove_file(&t.paths.socket).unwrap();
+    timeout(WAIT, t.daemon.wait()).await.unwrap().unwrap();
+
+    // Replaced by another socket: it stops and leaves that file where it is.
+    let t = TestDaemon::start_with(|c| c.socket_check_interval = Duration::from_millis(50)).await;
+    std::fs::remove_file(&t.paths.socket).unwrap();
+    let other = StdUnixListener::bind(&t.paths.socket).unwrap();
+    timeout(WAIT, t.daemon.wait()).await.unwrap().unwrap();
+    assert!(t.paths.socket.exists(), "the other socket is not removed");
+    drop(other);
+
+    // A daemon whose socket stays put keeps running.
+    let t = TestDaemon::start_with(|c| c.socket_check_interval = Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client = t.connect().await;
+    client
+        .call::<DaemonStatusInfo>(Request::DaemonStatus(Empty {}))
+        .await
+        .unwrap();
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn socket_is_private_and_pending_calls_fail_when_the_daemon_stops() {
     use std::os::unix::fs::PermissionsExt;
 

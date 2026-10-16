@@ -87,6 +87,10 @@ pub struct DaemonConfig {
     /// How long `ui.run` and `ui.set_setting` wait for the desktop to answer (protocol 0.21;
     /// 5 s). Tests shorten it.
     pub ui_command_timeout: Duration,
+    /// How often the daemon checks that its socket is still its own (default 5 s): a daemon
+    /// whose socket was deleted (its `HUTAN_HOME` removed) or replaced can never be reached
+    /// again and stops instead of running forever. Tests shorten it.
+    pub socket_check_interval: Duration,
 }
 
 impl DaemonConfig {
@@ -103,6 +107,7 @@ impl DaemonConfig {
             login_shell: None,
             native: None,
             ui_command_timeout: Duration::from_millis(hutan_protocol::ui::COMMAND_TIMEOUT_MS),
+            socket_check_interval: SOCKET_CHECK_INTERVAL,
         }
     }
 }
@@ -173,8 +178,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         "binding {}",
         paths.socket.display()
     )))?;
-    // From here on the guard removes the socket on every exit path.
-    let socket_guard = SocketGuard(paths.socket.clone());
+    // From here on the guard removes the socket on every exit path (only while it is ours).
+    let socket_identity = socket_identity(&paths.socket);
+    let socket_guard = SocketGuard {
+        path: paths.socket.clone(),
+        identity: socket_identity,
+    };
     fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600)).map_err(
         DaemonError::io(format!("securing {}", paths.socket.display())),
     )?;
@@ -373,6 +382,12 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         _socket: socket_guard,
         _lock: lock,
     };
+    tokio::spawn(watch_socket(
+        paths.socket.clone(),
+        socket_identity,
+        config.socket_check_interval,
+        shutdown.clone(),
+    ));
     let task = tokio::spawn(accept_loop(listener, ctx, shutdown.clone(), held, storage));
     Ok(RunningDaemon {
         socket: paths.socket.clone(),
@@ -390,14 +405,68 @@ struct Held {
     _lock: File,
 }
 
+/// The default of [`DaemonConfig::socket_check_interval`].
+pub const SOCKET_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Device and inode of the socket file at `path`, when it is a socket.
+fn socket_identity(path: &Path) -> Option<(u64, u64)> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.file_type().is_socket())
+        .map(|meta| (meta.dev(), meta.ino()))
+}
+
+/// Stops the daemon once its socket is gone or another file took its place: nobody can
+/// connect to it any more (its home was deleted, or a successor bound the path), so staying
+/// up would only leak the process and its sessions.
+async fn watch_socket(
+    socket: PathBuf,
+    bound: Option<(u64, u64)>,
+    every: Duration,
+    shutdown: CancellationToken,
+) {
+    let Some(bound) = bound else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = sleep(every) => {}
+        }
+        let path = socket.clone();
+        let now = tokio::task::spawn_blocking(move || socket_identity(&path))
+            .await
+            .ok()
+            .flatten();
+        if now != Some(bound) {
+            warn!(
+                socket = %socket.display(),
+                "the socket is gone or was replaced; nobody can reach this daemon, stopping"
+            );
+            shutdown.cancel();
+            return;
+        }
+    }
+}
+
+/// Removes the daemon's socket when the daemon ends, unless the file at that path is no longer
+/// the one it bound (a successor's socket is left alone).
 #[derive(Debug)]
-struct SocketGuard(PathBuf);
+struct SocketGuard {
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
+}
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        match fs::remove_file(&self.0) {
-            Ok(()) => debug!(socket = %self.0.display(), "socket removed"),
-            Err(e) => warn!(socket = %self.0.display(), error = %e, "could not remove socket"),
+        if self.identity.is_none() || socket_identity(&self.path) != self.identity {
+            debug!(socket = %self.path.display(), "the socket is no longer ours; left alone");
+            return;
+        }
+        match fs::remove_file(&self.path) {
+            Ok(()) => debug!(socket = %self.path.display(), "socket removed"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(socket = %self.path.display(), error = %e, "could not remove socket"),
         }
     }
 }
