@@ -103,7 +103,7 @@ Exit demo: with the window closed, an agent finishing triggers a native notifica
 
 ## M8 — ACP, MCP, more harnesses
 - [x] M8-A ACP harness chats (OMP first-class, Claude Code) and accounts through harnesses (ADR 0015, protocol 0.17)
-- [ ] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
+- [x] M8-B Desktop: harness picker, accounts view, assistant backend per scope + toggle
 - [ ] M8-C Agent control surface (ADR 0016): UI commands and layout through the daemon, origin + approval policy, `hutan ui …`, `hutan mcp` passed to harness sessions
 - ACP client adapter (Claude Code, OpenCode, Gemini, OMP), `session/load` resume, MCP server config pass-through; Hutan as MCP server exposing its own control surface to agents.
 
@@ -150,7 +150,7 @@ Exit demo: run OMP with task subagents, Codex (app-server) with subagents, and C
 - Spike first: what OMP, Claude Code, Codex, OpenCode expose today (files, RPC, hooks) — evidence into `docs/spikes/`.
 
 ## M13-C — Resource manager
-- [x] M13-C Process trees and usage per session, stop/kill sessions and processes, interrupt agents and subagents (daemon + CLI); Resources panel after D-1
+- [x] M13-C Process trees and usage per session, stop/kill sessions and processes, interrupt agents and subagents (daemon + CLI); Resources panel (M13-D, merged)
 
 ## M14 — Embedded browser
 - Browser items/panels in the workbench (WKWebView hosted in a GPUI window region), address bar, back/forward, localhost previews, open-links-from-terminal (⌘-click) setting, agents can open URLs into it; spike on GPUI native view embedding first (ADR).
