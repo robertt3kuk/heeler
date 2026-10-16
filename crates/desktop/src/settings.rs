@@ -687,6 +687,55 @@ impl Setting for AgentsSettings {
     const NAMESPACE: &'static str = "agents";
 }
 
+/// What the resources panel sorts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourcesSort {
+    /// Busiest first.
+    #[default]
+    Cpu,
+    /// Largest resident memory first.
+    Memory,
+    /// A to Z.
+    Name,
+}
+
+impl ResourcesSort {
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ResourcesSort::Cpu => "cpu",
+            ResourcesSort::Memory => "memory",
+            ResourcesSort::Name => "name",
+        }
+    }
+}
+
+/// The `resources` namespace: the resources panel (processes per session, CPU and memory).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ResourcesSettings {
+    /// How often the daemon samples the process table while the panel is visible, in
+    /// milliseconds (at least 1000). Nothing is sampled while the panel is hidden.
+    pub interval_ms: u32,
+    /// `cpu`, `memory` or `name`: how sessions, and processes among their siblings, are ordered.
+    /// The column headers change it.
+    pub sort: ResourcesSort,
+}
+
+impl Default for ResourcesSettings {
+    fn default() -> Self {
+        Self {
+            interval_ms: 2000,
+            sort: ResourcesSort::Cpu,
+        }
+    }
+}
+
+impl Setting for ResourcesSettings {
+    const NAMESPACE: &'static str = "resources";
+}
+
 /// What closing the last window does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -812,6 +861,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<HistorySettings>();
     store.register::<ChatSettings>();
     store.register::<AgentsSettings>();
+    store.register::<ResourcesSettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -999,6 +1049,7 @@ mod tests {
             "history",
             "chat",
             "agents",
+            "resources",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

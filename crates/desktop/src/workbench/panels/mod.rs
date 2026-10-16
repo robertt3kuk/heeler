@@ -8,6 +8,9 @@ mod history;
 mod history_model;
 mod inspector;
 mod overview;
+mod resources;
+mod resources_feed;
+mod resources_model;
 mod sessions;
 mod status;
 
@@ -32,6 +35,16 @@ pub use history_model::{
 };
 pub use inspector::{BlockRow, InspectorPanel};
 pub use overview::OverviewPanel;
+pub use resources::{
+    Link as ResourcesLink, REFRESH_AFTER as RESOURCES_REFRESH, ResourcesPanel,
+    WATCH as RESOURCES_WATCH,
+};
+pub use resources_model::{
+    AgentLine as ResourceAgentLine, Command as ResourceCommand,
+    Confirmation as ResourceConfirmation, Fold as ResourceFold, Interrupt as ResourceInterrupt,
+    Item as ResourceItem, Line as ResourceLine, ProcessLine as ResourceProcessLine,
+    SessionLine as ResourceSessionLine, Target as ResourceTarget,
+};
 pub use sessions::{DraggedWorkspace, SessionsPanel};
 pub use status::{Tone as StatusTone, builtin_status_items, connection_label};
 
@@ -78,7 +91,8 @@ impl Render for PlaceholderPanel {
     }
 }
 
-/// `sessions`, `history`, `inspector`, `overview`, `agents`, `assistant`, `notifications`.
+/// `sessions`, `history`, `inspector`, `overview`, `agents`, `resources`, `assistant`,
+/// `notifications`.
 pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
     registry.register(PanelSpec {
@@ -129,6 +143,16 @@ pub fn builtin_panels() -> PanelRegistry {
         factory: Rc::new(|env, _window, cx| {
             let env = env.clone();
             AnyView::from(cx.new(|cx| AgentsPanel::new(env, cx)))
+        }),
+    });
+    registry.register(PanelSpec {
+        id: "resources".into(),
+        title: "Resources".into(),
+        icon: "◫".into(),
+        default_dock: DockPosition::Bottom,
+        factory: Rc::new(|env, _window, cx| {
+            let env = env.clone();
+            AnyView::from(cx.new(|cx| ResourcesPanel::new(env, cx)))
         }),
     });
     registry.register(PanelSpec {

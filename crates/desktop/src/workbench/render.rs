@@ -440,6 +440,24 @@ impl Workbench {
         .on_action(cx.listener(|this, _: &actions::ShowAgentMonitor, _, cx| {
             this.show_agent_monitor(cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::ShowResources, _, cx| {
+            this.show_resources(cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ToggleResources, _, cx| {
+            this.toggle_resources(cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ShowInResources, window, cx| {
+                if let Ok(session) = a.0.parse() {
+                    this.show_in_resources(session, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::ShowResourceMenu, window, cx| {
+                this.show_resource_menu(&a.0, window, cx);
+            }),
+        )
         .on_action(
             cx.listener(|this, _: &actions::ShowOnlyBlockedAgents, _, cx| {
                 this.show_only_blocked_agents(cx);

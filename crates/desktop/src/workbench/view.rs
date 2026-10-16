@@ -162,6 +162,16 @@ pub enum Region {
     MonitorFold(usize),
     /// A filter chip of the agent monitor (`finished`, `blocked`, `scope`).
     MonitorChip(&'static str),
+    /// Line `index` of the resources panel's table (the `hutand` row, sessions, processes and
+    /// agents, top to bottom).
+    ResourceRow(usize),
+    /// The `⋯` menu button of line `index` of the resources panel.
+    ResourceMenu(usize),
+    /// The fold control of line `index` of the resources panel.
+    ResourceFold(usize),
+    /// A control of the resources panel (`panel`, `filter`, `sort-cpu`, `sort-memory`,
+    /// `sort-name`).
+    ResourceControl(&'static str),
     /// The agent badge of a session at one of its places.
     AgentBadge(BadgeSite, SessionId),
     /// The placement badge (`main` / `wt <branch>`) of a session at one of its places.

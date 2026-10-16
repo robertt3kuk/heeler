@@ -163,9 +163,9 @@ Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: t
 
 | Preset | Left dock | Center | Right dock | Bottom dock | Use |
 |---|---|---|---|---|---|
-| `default` | sessions, history | pane tree | inspector, agents | hidden | daily work |
-| `focus` | hidden | pane tree, zoomed active pane | hidden | hidden | deep terminal work (layout C) |
-| `overview` | sessions, history | `overview` panel as the only center item | inspector, agents | hidden | many agents at once (layout B) |
+| `default` | sessions, history | pane tree | inspector, agents | `resources`, hidden | daily work |
+| `focus` | hidden | pane tree, zoomed active pane | hidden | `resources`, hidden | deep terminal work (layout C) |
+| `overview` | sessions, history | `overview` panel as the only center item | inspector, agents | `resources`, hidden | many agents at once (layout B) |
 
 ## Session pane header
 
@@ -282,7 +282,7 @@ preset = "default"
 [layout.presets.default]
 left   = { panels = ["sessions"],  size = 240, visible = true }
 right  = { panels = ["inspector", "agents"], size = 300, visible = true }
-bottom = { panels = [],            size = 200, visible = false }
+bottom = { panels = ["resources"], size = 200, visible = false }
 status_bar = { left = ["connection", "workspace", "sessions", "attention"], right = ["density", "theme", "palette_hint"] }
 
 [panels.sessions]
@@ -360,6 +360,18 @@ The `agents` panel (default: second tab of the right dock in `default`, `focus` 
 - **Badges**: a session's row in the sidebar, its tab and its overview card show `↳2` (subagents working or waiting for you) and `▲` (any node blocked); the tooltip says `2 subagents running` / `Blocked: reviewer`. Nothing is drawn while there is nothing to say.
 - **Attention**: a live session with a blocked node always needs the user (`SessionsStore::presentation` folds the tree over the session summary), so the sidebar's *Needs you*, ⌘⇧J, the workspace counts and the status bar's `attention` item include it. `SessionsStore` emits `AgentAttentionChanged { session_id, blocked_nodes }` when a node becomes blocked (not for what was already blocked when the window connected, not when one is resolved); M6 turns it into a macOS notification.
 
+## Resources panel (M13-D)
+
+The `resources` panel (default: the bottom dock, hidden, in every preset; ⌘K *Resources: Show Panel*, ⌥⌘R toggles it; movable like every panel) is the Activity Monitor of Hutan: what each live session runs and what it costs, over the resource manager of `docs/resources.md`. The daemon samples; the panel draws and sends the actions.
+
+- **Subscription**: `resources.subscribe` (`resources.interval_ms`, default 2000, at least 1000) on a connection of the panel's own, because the `resources.updated` stream belongs to the connection that asked for it. Every draw marks the panel as seen; a 500 ms watcher unsubscribes at the first look that finds it was not drawn (hidden dock, another tab, closed) and the next draw subscribes again, so a hidden panel costs the daemon nothing (it stops sampling with its last subscriber). The link retries with backoff when the daemon goes away (the panel says so) and says so when the daemon is older than protocol 0.18.
+- **Table**: a `hutand` row first, then one block per session that has a process: fold chevron, title, folder, placement badge (`main` / `wt <branch>`), and its totals in the same columns (processes, CPU, memory). Under it the process tree, indented by depth: name, PID, CPU % (a thin `accent_soft` bar, 100 % = full, more is clipped), memory (MB, GB from 10 000 MB), threads, command (one line, the full text in the tooltip). A process that an agent reported with `--pid` carries an `accent` dot and the node's label; agent nodes without a process of their own (a Codex subagent thread, an agent that reported no pid) are listed under the tree. A stopped or zombie process says so in a pill. Narrower than 520 px the threads and command columns are left out.
+- **Sort and filter**: the CPU, Memory and Name headers sort (`resources.sort`, default `cpu`: busiest first); a second click on the active header flips the order. Sessions are ordered by their totals (or title) and siblings inside a tree by the same key, so the tree stays a tree. The filter box matches names, command lines, pids, agent labels and the session's title, workspace and folder, case-insensitively: matches keep their ancestors, a session match keeps its whole tree; folds are ignored while filtering.
+- **Actions** (⋯ on a row, or right-click; the menu starts with *Open Session*): per process *Interrupt (SIGINT)*, *Terminate (SIGTERM)*, *Kill (SIGKILL)…*, *Stop (SIGSTOP)* (*Continue (SIGCONT)* while it is stopped); per session *Stop Session…* and *Kill Session…*; per agent node *Interrupt Agent* (the main agent: a chat's turn, or ^C in a terminal; a subagent that is a process: SIGINT, with *Interrupt Agent, Then Terminate* for SIGTERM two seconds later), greyed out with the reason for a subagent the harness cannot stop on its own (no process, and not a Codex thread). `…` asks first: Kill names the process and the descendants that keep running, Kill Session lists what dies (up to 12 names), Stop Session says SIGHUP then SIGKILL after 3 s; the rest go at once. The daemon's refusals (`forbidden`, `invalid_state`, `not_found`) appear on the row (`forbidden: …`; click to dismiss). A few hundred milliseconds after an action the panel asks for a fresh sample instead of waiting for the next one.
+- **Show in Resources**: an entry of the session context menu (sidebar, overview card, tab) reveals the panel, clears the filter, unfolds the session, highlights it (`accent_soft`) and scrolls to it; a session without a process says so.
+- **Empty states** (the mascot): nothing running (sleep), reading (thinking), no match for the filter, daemon too old (error), daemon unreachable (sleep).
+- **Settings** (`resources`): `interval_ms`, `sort`. Visual tokens only: `ui.rs` components, `accent`, `accent_soft`, `warning`, `danger`, `muted`.
+
 ## Terminal blocks (M10-C)
 
 The daemon indexes OSC 133 marks into blocks (protocol 0.5); the desktop draws them **over the single grid** — the grid, its columns and the PTY size never change, and `terminal.blocks = false` makes the terminal look exactly as without blocks (hot-reloaded).
@@ -436,6 +448,7 @@ Code: `crates/desktop/src/macos/` (the four system APIs, each behind a trait wit
 | New session (terminal) / new agent / new chat | ⌘T / ⌘⇧T / ⌘⌥T |
 | Open / focus the Assistant panel (OS-global registration is M6) | ⌥Space |
 | Jump to next "needs you" | ⌘⇧J |
+| Toggle the Resources panel | ⌘⌥R |
 | Tabs 1–9 in pane | ⌘1…⌘9 |
 | Split right / down | ⌘D / ⌘⇧D |
 | Close tab (detach) / stop session | ⌘W / ⌘⇧W |

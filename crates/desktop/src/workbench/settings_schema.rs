@@ -9,8 +9,8 @@ use serde_json::Value as Json;
 
 use crate::settings::{
     AgentsSettings, AppSettings, AssistantSettings, ChatSettings, HistorySettings,
-    InspectorPanelSettings, LayoutSettings, OverviewPanelSettings, SessionsPanelSettings,
-    TerminalSettings, WorkspacesSettings,
+    InspectorPanelSettings, LayoutSettings, OverviewPanelSettings, ResourcesSettings,
+    SessionsPanelSettings, TerminalSettings, WorkspacesSettings,
 };
 
 /// How a field is edited.
@@ -247,6 +247,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<HistorySettings>(),
         CatalogEntry::of::<ChatSettings>(),
         CatalogEntry::of::<AgentsSettings>(),
+        CatalogEntry::of::<ResourcesSettings>(),
         CatalogEntry::of::<AssistantSettings>(),
         CatalogEntry {
             namespace: "accounts",

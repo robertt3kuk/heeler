@@ -1,6 +1,6 @@
 # Resource manager: processes, usage, stop / kill / interrupt
 
-Roadmap M13 (slice M13-C, protocol 0.18, capability `resources`). An Activity-Monitor-like view of everything Hutan runs, and the ways to stop it: a whole session, one process inside it (a runaway build), an agent's turn, or a single subagent. Part of the control surface of ADR 0016: every action is a daemon request, so agents and the CLI reach it the same way (the policy for agent-originated mutations is M8-C's). No desktop panel yet; it follows the visual system (D-1).
+Roadmap M13 (slice M13-C, protocol 0.18, capability `resources`). An Activity-Monitor-like view of everything Hutan runs, and the ways to stop it: a whole session, one process inside it (a runaway build), an agent's turn, or a single subagent. Part of the control surface of ADR 0016: every action is a daemon request, so agents and the CLI reach it the same way (the policy for agent-originated mutations is M8-C's). The desktop's panel is described in `docs/design.md` § Resources panel (M13-D).
 
 Wire: `docs/protocol.md` § Resources. Code: `crates/terminal/src/procs.rs`, `crates/daemon/src/resources.rs`, `crates/protocol/src/resources.rs`, `crates/cli/src/commands/resources.rs`.
 

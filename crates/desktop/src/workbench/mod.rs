@@ -19,6 +19,7 @@ pub mod persistence;
 mod providers;
 pub mod registry;
 mod render;
+mod resources;
 pub mod settings_schema;
 mod settings_sheet;
 pub mod style;

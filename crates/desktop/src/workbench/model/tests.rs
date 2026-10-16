@@ -1109,7 +1109,7 @@ fn preset_places_unlisted_open_panels_in_first_pane() {
     state.open_panel(&PanelId::new("notifications"), DockPosition::Bottom);
     state.apply_preset(&LayoutPreset::default_preset());
     check(&state);
-    assert!(state.docks.bottom.panels.is_empty());
+    assert_eq!(state.docks.bottom.panels, vec![PanelId::new("resources")]);
     assert!(
         state
             .panes()

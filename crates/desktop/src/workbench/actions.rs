@@ -85,6 +85,8 @@ actions!(
         ReviewApprovals,
         ShowAgentMonitor,
         ShowOnlyBlockedAgents,
+        ShowResources,
+        ToggleResources,
         ManageProviders,
         ManageAccounts,
         SwitchChatModel,
@@ -162,6 +164,16 @@ pub struct AgentNodeAt {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+/// Where to open the context menu of a line of the resources panel: a session (no `pid`, no
+/// `node`), a process (`pid`) or an agent without a process of its own (`node`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ResourceMenuAt {
+    pub session: String,
+    pub pid: Option<u32>,
+    pub node: Option<String>,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 /// Where to open the context menu of a session.
 #[derive(Clone, PartialEq, Debug)]
 pub struct SessionMenuAt {
@@ -189,6 +201,11 @@ data_actions! {
     /// Show the context menu of an agent node of the monitor (Open session, Open transcript,
     /// Copy node id).
     ShowAgentNodeMenu(AgentNodeAt);
+    /// Show the context menu of a line of the resources panel (signals, stop / kill session,
+    /// interrupt agent).
+    ShowResourceMenu(ResourceMenuAt);
+    /// Reveal the resources panel with this session's processes in view.
+    ShowInResources(String);
     StopSessionById(String);
     RenameSessionById(String);
     RestartSessionById(String);
@@ -410,6 +427,8 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
         command("Agent: Interrupt Turn", chat::InterruptTurn),
         command("Agents: Show Monitor", ShowAgentMonitor),
         command("Agents: Show Only Blocked", ShowOnlyBlockedAgents),
+        command("Resources: Show Panel", ShowResources),
+        command("Resources: Toggle Panel", ToggleResources),
         command("Models: Manage Providers…", ManageProviders),
         command("Accounts…", ManageAccounts),
         command("Chat: Switch Model…", SwitchChatModel),
@@ -540,6 +559,7 @@ pub fn default_bindings() -> Vec<BindingSpec> {
         bind::<OpenJump>("cmd-j", None),
         bind::<OpenProject>("cmd-o", None),
         bind::<ToggleOverview>("cmd-shift-o", None),
+        bind::<ToggleResources>("cmd-alt-r", None),
         bind::<MinimizeWindow>("cmd-m", None),
         bind::<Quit>("cmd-q", None),
         bind::<FocusNeighborLeft>("cmd-alt-left", None),

@@ -690,6 +690,9 @@ impl Workbench {
             Self::entry("Stop…", move |this, window, cx| {
                 this.stop_session(session, window, cx);
             }),
+            Self::entry("Show in Resources", move |this, window, cx| {
+                this.show_in_resources(session, window, cx);
+            }),
             Self::entry("Copy Session ID", move |this, _, cx| {
                 this.copy_session_id(session, cx);
             }),
@@ -1048,6 +1051,9 @@ impl Workbench {
                     }),
                     Self::entry("Stop…", move |this, window, cx| {
                         this.stop_session(session, window, cx);
+                    }),
+                    Self::entry("Show in Resources", move |this, window, cx| {
+                        this.show_in_resources(session, window, cx);
                     }),
                     Self::entry("Copy Session ID", move |this, _, cx| {
                         this.copy_session_id(session, cx);

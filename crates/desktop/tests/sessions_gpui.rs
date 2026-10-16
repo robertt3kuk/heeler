@@ -269,6 +269,7 @@ fn the_sessions_panel_lists_groups_and_filters(cx: &mut TestAppContext) {
             "Rename…",
             "Restart",
             "Stop…",
+            "Show in Resources",
             "Copy Session ID"
         ]
     );

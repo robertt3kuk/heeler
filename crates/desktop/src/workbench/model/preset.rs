@@ -36,11 +36,12 @@ impl LayoutPreset {
         Docks {
             left,
             right,
-            bottom: Dock::new(&[], 200.0, false),
+            bottom: Dock::new(&["resources"], 200.0, false),
         }
     }
 
-    /// `sessions` and `history` left, `inspector` and `agents` right, bottom hidden, center untouched.
+    /// `sessions` and `history` left, `inspector` and `agents` right, `resources` in the hidden
+    /// bottom dock, center untouched.
     pub fn default_preset() -> Self {
         Self {
             name: Self::DEFAULT.to_owned(),
