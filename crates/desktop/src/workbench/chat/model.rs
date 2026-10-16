@@ -21,6 +21,7 @@ use tokio::sync::broadcast::error::RecvError;
 use super::chip::{Chip, compose};
 use super::context::{ContextChip, refused_by};
 use super::input::TextInput;
+use super::vim::{Options, Outcome, Vim};
 
 /// Pages of [`HISTORY_MAX_LIMIT`] events a reload reads at most to catch up with what happened
 /// while it was not listening.
@@ -64,6 +65,8 @@ pub struct ChatModel {
     /// How much of the journal's front is loaded.
     earlier: Earlier,
     input: TextInput,
+    /// Vim's modal state over `input` (idle unless `editor.vim_mode` is on).
+    vim: Vim,
     chips: Vec<Chip>,
     /// Structured context for the next message (assistant chats): the daemon reads it.
     context: Vec<ContextChip>,
@@ -162,6 +165,7 @@ impl ChatModel {
             status: LoadStatus::Loading,
             earlier: Earlier::default(),
             input: TextInput::new(),
+            vim: Vim::new(),
             chips: Vec::new(),
             context: Vec::new(),
             attachments: HashMap::new(),
@@ -281,6 +285,23 @@ impl ChatModel {
         &self.input
     }
 
+    pub fn vim(&self) -> &Vim {
+        &self.vim
+    }
+
+    /// Feeds a key to Vim's modal layer over the draft.
+    pub fn vim_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        options: Options,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let outcome =
+            crate::workbench::vim_ui::apply(&mut self.vim, &mut self.input, event, options, cx);
+        cx.notify();
+        outcome
+    }
+
     pub fn chips(&self) -> &[Chip] {
         &self.chips
     }
@@ -381,6 +402,7 @@ impl ChatModel {
             return false;
         }
         let draft = self.input.take();
+        self.vim.reset();
         let chips = std::mem::take(&mut self.chips);
         let context = std::mem::take(&mut self.context);
         let attachments = context.iter().map(|c| c.attachment.clone()).collect();

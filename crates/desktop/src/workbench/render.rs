@@ -228,6 +228,9 @@ impl Workbench {
             cx.listener(|_, _: &actions::MinimizeWindow, window, _| window.minimize_window()),
         )
         .on_action(cx.listener(|_, _: &actions::ZoomWindow, window, _| window.zoom_window()))
+        .on_action(cx.listener(|this, _: &actions::ToggleVimMode, _, cx| {
+            this.toggle_vim_mode(cx);
+        }))
         .on_action(cx.listener(|this, _: &actions::ToggleDensity, _, cx| {
             let next = this.density().toggled();
             this.set_density(next, cx);
@@ -636,6 +639,10 @@ impl Workbench {
             }),
         )
         .on_action(cx.listener(|this, _: &palette::Dismiss, window, cx| {
+            // With Vim mode on, the first Escape of a text field leaves Insert mode.
+            if this.overlay_vim_escape(cx) {
+                return;
+            }
             this.close_menu(window, cx);
             this.close_palette(window, cx);
             this.close_picker(window, cx);
@@ -1879,6 +1886,9 @@ impl Workbench {
                         .popover(&theme, &tokens)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if this.palette_vim_key(event, cx) {
+                                return;
+                            }
                             let keystroke = &event.keystroke;
                             if keystroke.key == "backspace" {
                                 this.palette_backspace(cx);
@@ -1909,12 +1919,21 @@ impl Workbench {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .child(div().text_color(theme.faint).child("› "))
-                                .child(palette.query.clone())
-                                .child(
-                                    div()
-                                        .w(px(1.0))
-                                        .h(px(tokens.font_size + 2.0))
-                                        .bg(theme.accent),
+                                .children(
+                                    match self.vim_text(&self.edits.palette, &palette.query) {
+                                        Some((text, pill)) => vec![
+                                            div().flex_1().min_w_0().child(text).into_any_element(),
+                                            pill.into_any_element(),
+                                        ],
+                                        None => vec![
+                                            palette.query.clone().into_any_element(),
+                                            div()
+                                                .w(px(1.0))
+                                                .h(px(tokens.font_size + 2.0))
+                                                .bg(theme.accent)
+                                                .into_any_element(),
+                                        ],
+                                    },
                                 ),
                         )
                         .children(rows)

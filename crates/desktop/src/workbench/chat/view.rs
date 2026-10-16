@@ -31,6 +31,7 @@ use crate::workbench::panels::{kind_icon, state_dot, tone_color};
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
+use crate::workbench::vim_ui::{self, Caret, CaretShape, VimConfig};
 
 pub(crate) type Regions = Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>;
 
@@ -48,7 +49,7 @@ pub struct ChatView {
     pub(super) session: SessionId,
     pub(super) model: Entity<ChatModel>,
     pub(super) sessions: Entity<SessionsStore>,
-    settings: SettingsStore,
+    pub(super) settings: SettingsStore,
     pub(super) regions: Regions,
     focus_handle: FocusHandle,
     pub(super) list: ListState,
@@ -319,6 +320,48 @@ impl ChatView {
         .detach();
     }
 
+    // ---- vim -------------------------------------------------------------------------------
+
+    /// The composer's Vim mode, `None` while `editor.vim_mode` is off.
+    pub fn vim_mode(&self, cx: &App) -> Option<super::vim::Mode> {
+        VimConfig::of(&self.settings)
+            .enabled
+            .then(|| self.model.read(cx).vim().mode())
+    }
+
+    /// The shape the composer's caret is drawn in under Vim mode: a block in Normal and Visual,
+    /// a bar in Insert; `None` while `editor.vim_mode` is off.
+    pub fn vim_caret(&self, cx: &App) -> Option<CaretShape> {
+        self.vim_mode(cx).map(CaretShape::of)
+    }
+
+    /// Gives the key to Vim's modal layer. In Insert mode the composer types for itself (only
+    /// Escape is Vim's); Normal and Visual keys are commands. `true` when the key is used up.
+    fn on_vim_key(
+        &mut self,
+        event: &KeyDownEvent,
+        config: VimConfig,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let options = config.options(false, true);
+        let outcome = self
+            .model
+            .update(cx, |model, cx| model.vim_key(event, options, cx));
+        if outcome == super::vim::Outcome::Handled {
+            return true;
+        }
+        let mods = &event.keystroke.modifiers;
+        let normal = self.model.read(cx).vim().mode() != super::vim::Mode::Insert;
+        if normal && event.keystroke.key == "enter" && !mods.platform {
+            // Enter is not a newline in Normal mode: it sends when it would send in Insert mode.
+            if self.settings.get::<ChatSettings>().send_on_enter && !mods.shift {
+                self.send(cx);
+            }
+            return true;
+        }
+        false
+    }
+
     // ---- keys ------------------------------------------------------------------------------
 
     fn edit(&mut self, change: impl FnOnce(&mut TextInput), cx: &mut Context<Self>) {
@@ -362,12 +405,32 @@ impl ChatView {
             }
         }
 
+        // Vim's modal layer: Normal and Visual keys are commands; Insert is typing as ever.
+        let vim = VimConfig::of(&self.settings);
+        if vim.enabled && self.on_vim_key(event, vim, cx) {
+            cx.stop_propagation();
+            return;
+        }
+
         if mods.platform {
             match key {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         self.edit(|input| input.insert(&text), cx);
                     }
+                }
+                "z" => {
+                    let shift = mods.shift;
+                    self.edit(
+                        |input| {
+                            if shift {
+                                input.redo();
+                            } else {
+                                input.undo();
+                            }
+                        },
+                        cx,
+                    );
                 }
                 "backspace" => self.edit(TextInput::delete_to_line_start, cx),
                 "left" => self.edit(TextInput::home, cx),
@@ -743,7 +806,10 @@ impl ChatView {
     /// The composer's text with the caret in it (when the view has focus), or the placeholder.
     fn input_text(&self, focused: bool, look: &Look, cx: &App) -> AnyElement {
         let theme = &look.theme;
-        let input = self.model.read(cx).input();
+        let model = self.model.read(cx);
+        let input = model.input();
+        // Vim's Normal and Visual modes draw the caret as a block over a character.
+        let block = VimConfig::of(&self.settings).enabled && model.vim().mode().block_caret();
         if input.is_empty() {
             let placeholder = div()
                 .text_color(theme.faint)
@@ -756,7 +822,18 @@ impl ChatView {
                 div()
                     .flex()
                     .items_center()
-                    .child(div().text_color(theme.accent).child(CARET))
+                    .child(if block {
+                        div()
+                            .w(px(look.tokens.font_size * 0.6))
+                            .h(px(look.tokens.font_size + 2.0))
+                            .bg(theme.accent)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .text_color(theme.accent)
+                            .child(CARET)
+                            .into_any_element()
+                    })
                     .child(placeholder)
                     .into_any_element()
             } else {
@@ -768,6 +845,9 @@ impl ChatView {
             return div()
                 .child(SharedString::from(text.to_owned()))
                 .into_any_element();
+        }
+        if block {
+            return vim_ui::block_text(text, &Caret::of(model.vim(), input), theme);
         }
         let (before, after) = text.split_at(input.cursor());
         let shown = format!("{before}{CARET}{after}");
@@ -815,6 +895,12 @@ impl ChatView {
         let supports_context = self.supports_context(cx);
         let mention_hint = self.render_mention_hint(look, cx);
         let attach_button = supports_context.then(|| self.render_attach_button(look, cx));
+        let vim_pill = VimConfig::of(&self.settings).enabled.then(|| {
+            let mode = self.model.read(cx).vim().mode();
+            vim_ui::mode_pill(mode, theme, tokens)
+                .relative()
+                .child(probe(&self.regions, Region::Chat("vim-mode")))
+        });
         let hint = if gate.running {
             "⌘. interrupts the turn".to_owned()
         } else if send_on_enter {
@@ -953,6 +1039,7 @@ impl ChatView {
                             .items_center()
                             .gap(px(tokens.spacing * 2.0))
                             .children(attach_button)
+                            .children(vim_pill)
                             .child(
                                 div()
                                     .flex_1()

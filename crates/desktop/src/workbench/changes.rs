@@ -22,6 +22,7 @@ use hutan_protocol::worktree::{
     WorktreeFileDiffRequest, WorktreeInfo, WorktreeMerge, WorktreeMerged, WorktreeRemove,
 };
 
+use super::chat::vim::{Outcome, Vim};
 use super::chat::{Look, TextInput, counts_of, diff_row};
 use super::panels::{edit_text, field_box, pill};
 use super::registry::PanelEnv;
@@ -29,6 +30,7 @@ use super::render::probe;
 use super::style::UiStyle;
 use super::ui::{self, StyledExt as _};
 use super::view::Region;
+use super::vim_ui::{self, VimConfig};
 use crate::theme::{DensityExt as _, Theme, Tokens};
 
 /// What a Changes view asks of the workbench.
@@ -79,6 +81,8 @@ enum Listing {
 struct MergeForm {
     strategy: MergeStrategy,
     message: TextInput,
+    /// Vim's modal state over the message (`editor.vim_mode`).
+    vim: Vim,
     running: bool,
     error: Option<String>,
     conflicts: Vec<String>,
@@ -396,6 +400,7 @@ impl ChangesView {
             self.merge = Some(MergeForm {
                 strategy: MergeStrategy::Merge,
                 message: TextInput::new(),
+                vim: Vim::new(),
                 running: false,
                 error: None,
                 conflicts: Vec::new(),
@@ -545,14 +550,32 @@ impl ChangesView {
     }
 
     fn on_message_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let vim = VimConfig::of(&self.env.settings);
         match event.keystroke.key.as_str() {
-            "escape" => self.close_merge(cx),
+            "escape" => {
+                // Under Vim mode the first Escape leaves Insert (or Visual); Normal mode closes.
+                if vim.enabled
+                    && let Some(form) = &mut self.merge
+                    && vim_ui::apply(
+                        &mut form.vim,
+                        &mut form.message,
+                        event,
+                        vim.options(false, true),
+                        cx,
+                    ) == Outcome::Handled
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                self.close_merge(cx);
+            }
             "enter" if event.keystroke.modifiers.platform => self.confirm_merge(cx),
             _ => {
                 let Some(form) = &mut self.merge else {
                     return;
                 };
-                if !edit_text(&mut form.message, event, true, cx) {
+                if !edit_text(&mut form.message, &mut form.vim, vim, event, true, cx) {
                     return;
                 }
                 cx.notify();
@@ -789,6 +812,7 @@ impl ChangesView {
             );
         }
         let focused = self.message_focus.is_focused(window);
+        let vim = VimConfig::of(&self.env.settings).enabled;
         let mut body = div()
             .flex()
             .flex_col()
@@ -818,6 +842,7 @@ impl ChangesView {
                 field_box(
                     "changes-message",
                     &form.message,
+                    vim.then_some(&form.vim),
                     "Commit message (empty: git's own)",
                     focused,
                     true,

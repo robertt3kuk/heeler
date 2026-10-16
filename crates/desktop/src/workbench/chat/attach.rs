@@ -25,11 +25,13 @@ use super::context::{
 use super::input::TextInput;
 use super::markdown_view::Look;
 use super::view::ChatView;
+use super::vim::{Mode, Outcome, Vim};
 use super::widgets::{ButtonKind, button};
 use crate::workbench::panels::{HISTORY_DEBOUNCE, hit_title, source_label};
 use crate::workbench::render::probe;
 use crate::workbench::ui::StyledExt as _;
 use crate::workbench::view::Region;
+use crate::workbench::vim_ui::{self, VimConfig};
 
 /// Blocks listed under a terminal (the newest ones).
 const BLOCKS_SHOWN: u32 = 12;
@@ -60,6 +62,8 @@ pub(super) struct Attaching {
     pub(super) stage: Stage,
     /// The field of the form: lines of recent output, a filter or query, a path, a query.
     pub(super) arg: TextInput,
+    /// Vim's modal state over `arg` (`editor.vim_mode`).
+    pub(super) vim: Vim,
     pub(super) turns: u32,
     pub(super) hits: u32,
     /// The terminal whose blocks are listed.
@@ -76,6 +80,7 @@ impl Attaching {
     fn new(stage: Stage) -> Self {
         Self {
             stage,
+            vim: Vim::new(),
             arg: TextInput::new(),
             turns: DEFAULT_TURNS,
             hits: DEFAULT_HITS,
@@ -544,12 +549,47 @@ impl ChatView {
         let key = keystroke.key.as_str();
         let plain = !mods.platform && !mods.control && !mods.alt && !mods.function;
         if plain && key == "escape" {
+            // Under Vim mode the first Escape of the form's field leaves Insert (or Visual).
+            let vim = VimConfig::of(&self.settings);
+            if vim.enabled
+                && matches!(stage, Stage::Form(_))
+                && let Some(attaching) = &mut self.attach
+                && vim_ui::apply(
+                    &mut attaching.vim,
+                    &mut attaching.arg,
+                    event,
+                    vim.options(true, true),
+                    cx,
+                ) == Outcome::Handled
+            {
+                cx.notify();
+                return true;
+            }
             self.close_attach(cx);
             return true;
         }
         let Stage::Form(_) = stage else {
             return false;
         };
+        let vim = VimConfig::of(&self.settings);
+        if vim.enabled
+            && let Some(attaching) = &mut self.attach
+            && attaching.vim.mode() != Mode::Insert
+        {
+            // Normal and Visual mode: the keys are Vim's commands; Enter and the keys it has
+            // no use for fall through to the form's own.
+            if vim_ui::apply(
+                &mut attaching.vim,
+                &mut attaching.arg,
+                event,
+                vim.options(true, true),
+                cx,
+            ) == Outcome::Handled
+            {
+                self.arg_changed(cx);
+                return true;
+            }
+        }
         let edit = |this: &mut Self, change: &dyn Fn(&mut TextInput), cx: &mut Context<Self>| {
             if let Some(attaching) = &mut this.attach {
                 change(&mut attaching.arg);
@@ -564,6 +604,20 @@ impl ChatView {
                     };
                     let line = text.replace(['\n', '\r'], " ");
                     edit(self, &|input| input.insert(&line), cx);
+                }
+                "z" => {
+                    let shift = mods.shift;
+                    edit(
+                        self,
+                        &|input| {
+                            if shift {
+                                input.redo();
+                            } else {
+                                input.undo();
+                            }
+                        },
+                        cx,
+                    );
                 }
                 "backspace" => edit(self, &TextInput::delete_to_line_start, cx),
                 "left" => edit(self, &TextInput::home, cx),
@@ -687,8 +741,17 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn field_text(&self, input: &TextInput, placeholder: &str, look: &Look) -> AnyElement {
+    fn field_text(
+        &self,
+        input: &TextInput,
+        vim: Option<&Vim>,
+        placeholder: &str,
+        look: &Look,
+    ) -> AnyElement {
         let theme = &look.theme;
+        if let Some(vim) = vim.filter(|vim| vim.mode().block_caret()) {
+            return vim_ui::block_text(input.text(), &vim_ui::Caret::of(vim, input), &look.theme);
+        }
         if input.is_empty() {
             return div()
                 .flex()
@@ -927,12 +990,15 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (theme, tokens) = (&look.theme, &look.tokens);
-        let (arg, error, expanded, blocks_state) = {
+        let (arg, vim_state, error, expanded, blocks_state) = {
             let Some(attaching) = &self.attach else {
                 return div().into_any_element();
             };
             (
                 attaching.arg.clone(),
+                VimConfig::of(&self.settings)
+                    .enabled
+                    .then(|| attaching.vim.clone()),
                 attaching.error.clone(),
                 attaching.expanded,
                 match &attaching.blocks {
@@ -956,13 +1022,26 @@ impl ChatView {
         let field = div()
             .id("chat-attach-field")
             .relative()
+            .flex()
+            .items_center()
+            .gap(px(tokens.spacing))
             .px(px(tokens.spacing * 2.0))
             .py(px(tokens.spacing))
             .rounded(px(tokens.radius))
             .bg(theme.bg)
             .border_1()
             .border_color(theme.border)
-            .child(self.field_text(&arg, placeholder, look))
+            .child(div().flex_1().min_w_0().child(self.field_text(
+                &arg,
+                vim_state.as_ref(),
+                placeholder,
+                look,
+            )))
+            .children(
+                vim_state
+                    .as_ref()
+                    .map(|vim| vim_ui::mode_pill(vim.mode(), theme, tokens)),
+            )
             .child(probe(&self.regions, Region::Attach("field")));
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut footer: Vec<AnyElement> = Vec::new();

@@ -675,6 +675,7 @@ impl Workbench {
         self.palette = None;
         self.context_menu = None;
         self.picker = Some(state);
+        self.edits.picker.reset();
         window.focus(&self.picker_focus, cx);
         cx.notify();
     }
@@ -1148,6 +1149,9 @@ impl Workbench {
                         .p(px(tokens.spacing * 2.0))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if this.picker_vim_key(event, cx) {
+                                return;
+                            }
                             let keystroke = &event.keystroke;
                             if keystroke.key == "backspace" {
                                 this.picker_backspace(cx);
@@ -1177,13 +1181,20 @@ impl Workbench {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .child(div().text_color(theme.muted).child(format!("{prompt} ")))
-                                .child(picker.query.clone())
-                                .child(
-                                    div()
-                                        .w(px(1.0))
-                                        .h(px(tokens.font_size + 2.0))
-                                        .bg(theme.accent),
-                                ),
+                                .children(match self.vim_text(&self.edits.picker, &picker.query) {
+                                    Some((text, pill)) => vec![
+                                        div().flex_1().min_w_0().child(text).into_any_element(),
+                                        pill.into_any_element(),
+                                    ],
+                                    None => vec![
+                                        picker.query.clone().into_any_element(),
+                                        div()
+                                            .w(px(1.0))
+                                            .h(px(tokens.font_size + 2.0))
+                                            .bg(theme.accent)
+                                            .into_any_element(),
+                                    ],
+                                }),
                         )
                         .children(rows)
                         .when_some(hint, |s, hint| {

@@ -13,6 +13,7 @@ mod input;
 mod markdown_view;
 mod model;
 mod view;
+pub mod vim;
 mod widgets;
 
 pub(crate) use cards::{counts_of, diff_row};
@@ -25,4 +26,5 @@ pub use input::TextInput;
 pub use markdown_view::Look;
 pub use model::{ChatModel, LoadStatus};
 pub use view::{ChatView, KEY_CONTEXT};
+pub use vim::Vim;
 pub use widgets::{ButtonKind, button};

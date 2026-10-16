@@ -8,7 +8,7 @@ use hutan_settings::{AppearanceSettings, Setting, SettingsStore};
 use serde_json::Value as Json;
 
 use crate::settings::{
-    AgentsSettings, AppSettings, AssistantSettings, ChatSettings, HistorySettings,
+    AgentsSettings, AppSettings, AssistantSettings, ChatSettings, EditorSettings, HistorySettings,
     InspectorPanelSettings, IntegrationsSettings, KeymapSettings, LayoutSettings,
     OverviewPanelSettings, ResourcesSettings, SessionsPanelSettings, TasksSettings,
     TerminalSettings, WorkspacesSettings,
@@ -248,6 +248,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<WorkspacesSettings>(),
         CatalogEntry::of::<HistorySettings>(),
         CatalogEntry::of::<ChatSettings>(),
+        CatalogEntry::of::<EditorSettings>(),
         CatalogEntry::of::<AgentsSettings>(),
         CatalogEntry::of::<ResourcesSettings>(),
         CatalogEntry::of::<TasksSettings>(),

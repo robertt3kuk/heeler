@@ -134,6 +134,8 @@ impl Workbench {
             fields,
         });
         window.focus(&self.sheet_focus, cx);
+        self.edits.sheet_query.reset();
+        self.edits.sheet_value.reset();
         if selected == "models" {
             self.refresh_providers(cx);
         }
@@ -156,6 +158,10 @@ impl Workbench {
 
     /// Escape: cancels an edit or a dropdown first, then closes the sheet.
     pub(crate) fn sheet_dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Under Vim mode the first Escape of a text field leaves Insert mode.
+        if self.sheet_vim_escape(cx) {
+            return;
+        }
         let Some(sheet) = &mut self.sheet else {
             return;
         };
@@ -164,6 +170,27 @@ impl Workbench {
         } else {
             self.close_settings(window, cx);
         }
+    }
+
+    /// Escape in the sheet's text fields under Vim mode: `true` when Vim used it.
+    fn sheet_vim_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.vim_config().enabled {
+            return false;
+        }
+        let Some(sheet) = &self.sheet else {
+            return false;
+        };
+        if sheet.dropdown.is_some() {
+            return false;
+        }
+        let used = match &sheet.edit {
+            Some(edit) => self.edits.sheet_value.escape(&edit.text),
+            None => self.edits.sheet_query.escape(&sheet.query),
+        };
+        if used {
+            cx.notify();
+        }
+        used
     }
 
     pub fn select_settings_namespace(&mut self, namespace: &str, cx: &mut Context<Self>) {
@@ -358,6 +385,7 @@ impl Workbench {
             FieldKind::StringList => (String::new(), true),
             _ => return,
         };
+        self.edits.sheet_value.reset();
         if let Some(sheet) = &mut self.sheet {
             sheet.dropdown = None;
             sheet.edit = Some(Edit {
@@ -445,7 +473,10 @@ impl Workbench {
 
     fn sheet_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
-        if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
+        let config = self.vim_config();
+        if !config.enabled
+            && (ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function)
+        {
             return;
         }
         let Some(sheet) = &mut self.sheet else {
@@ -455,6 +486,29 @@ impl Workbench {
             if sheet.edit.is_some() {
                 self.sheet_commit_edit(cx);
             }
+            return;
+        }
+        if config.enabled {
+            // Vim owns the typing: Insert, Normal and Visual edit the focused text box.
+            let was_query = sheet.edit.is_none();
+            match &mut sheet.edit {
+                Some(edit) => {
+                    edit.error = None;
+                    self.edits
+                        .sheet_value
+                        .key(&mut edit.text, event, config, true, cx);
+                }
+                None => {
+                    self.edits
+                        .sheet_query
+                        .key(&mut sheet.query, event, config, true, cx);
+                }
+            }
+            if was_query {
+                let query = sheet.query.clone();
+                self.set_settings_query(&query, cx);
+            }
+            cx.notify();
             return;
         }
         let was_query = sheet.edit.is_none();
@@ -549,6 +603,16 @@ impl Workbench {
             self.start_at_login_status(),
         );
         let editing = sheet.edit.clone();
+        let vim_value = std::cell::RefCell::new(
+            editing
+                .as_ref()
+                .and_then(|e| self.vim_text(&self.edits.sheet_value, &e.text)),
+        );
+        let vim_query = if editing.is_none() {
+            self.vim_text(&self.edits.sheet_query, &sheet.query)
+        } else {
+            None
+        };
         let dropdown = sheet.dropdown.clone();
         let message = sheet.message.clone();
         let query = sheet.query.clone();
@@ -746,10 +810,28 @@ impl Workbench {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.sheet_begin_edit(&k, cx);
                                     }))
-                                    .child(SharedString::from(text))
-                                    .when(active.is_some(), |s| {
-                                        s.child(div().w(px(1.0)).h(px(tokens.font_size)).bg(accent))
-                                    }),
+                                    .children(
+                                        match active.and_then(|_| vim_value.borrow_mut().take()) {
+                                            Some((text, pill)) => {
+                                                vec![text, pill.into_any_element()]
+                                            }
+                                            None => {
+                                                let mut shown = vec![
+                                                    SharedString::from(text).into_any_element(),
+                                                ];
+                                                if active.is_some() {
+                                                    shown.push(
+                                                        div()
+                                                            .w(px(1.0))
+                                                            .h(px(tokens.font_size))
+                                                            .bg(accent)
+                                                            .into_any_element(),
+                                                    );
+                                                }
+                                                shown
+                                            }
+                                        },
+                                    ),
                             )
                             .when_some(error, |s, error| {
                                 s.child(
@@ -838,8 +920,18 @@ impl Workbench {
                                         accent
                                     })
                                     .min_w(px(80.0))
-                                    .child(SharedString::from(edit.text.clone()))
-                                    .child(div().w(px(1.0)).h(px(tokens.font_size)).bg(accent))
+                                    .children(match vim_value.borrow_mut().take() {
+                                        Some((text, pill)) => vec![text, pill.into_any_element()],
+                                        None => vec![
+                                            SharedString::from(edit.text.clone())
+                                                .into_any_element(),
+                                            div()
+                                                .w(px(1.0))
+                                                .h(px(tokens.font_size))
+                                                .bg(accent)
+                                                .into_any_element(),
+                                        ],
+                                    })
                                     .into_any_element(),
                                 None => button(
                                     SharedString::from(format!("add-{key}")),
@@ -975,10 +1067,21 @@ impl Workbench {
                     cx.notify();
                 }
             }))
-            .child(if query.is_empty() {
-                div().text_color(theme.faint).child("⌕ Search settings")
-            } else {
-                div().child(SharedString::from(query.clone()))
+            .child(match vim_query {
+                Some((text, pill)) => div()
+                    .flex()
+                    .items_center()
+                    .w_full()
+                    .child(div().flex_1().min_w_0().child(text))
+                    .child(pill)
+                    .into_any_element(),
+                None if query.is_empty() => div()
+                    .text_color(theme.faint)
+                    .child("⌕ Search settings")
+                    .into_any_element(),
+                None => div()
+                    .child(SharedString::from(query.clone()))
+                    .into_any_element(),
             });
 
         Some(

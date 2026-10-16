@@ -38,10 +38,12 @@ use crate::settings::{ResourcesSettings, ResourcesSort};
 use crate::theme::{DensityExt as _, Theme, Tokens};
 use crate::workbench::Region;
 use crate::workbench::actions::{ResourceMenuAt, ShowResourceMenu};
+use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
+use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 
 /// How often the panel checks that it is still drawn; the subscription ends at the first check
 /// that finds it was not.
@@ -93,6 +95,8 @@ pub struct ResourcesPanel {
     /// The opposite of the sort setting's order (a second click on the active header).
     reversed: bool,
     filter: String,
+    /// Vim state of the filter field (`editor.vim_mode`).
+    filter_edit: FieldEdit,
     filter_focus: FocusHandle,
     folds: HashSet<Fold>,
     errors: HashMap<Target, String>,
@@ -157,6 +161,7 @@ impl ResourcesPanel {
             samples: 0,
             reversed: false,
             filter: String::new(),
+            filter_edit: FieldEdit::new(),
             filter_focus: cx.focus_handle(),
             folds: HashSet::new(),
             errors: HashMap::new(),
@@ -568,6 +573,17 @@ impl ResourcesPanel {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let vim = VimConfig::of(&self.env.settings);
+        if vim.enabled {
+            let mut text = self.filter.clone();
+            if self.filter_edit.key(&mut text, event, vim, true, cx) == Outcome::Handled {
+                self.set_filter(&text, cx);
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            // Escape in Normal mode clears the filter below, as ever.
+        }
         let ks = &event.keystroke;
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
             return;
@@ -1212,13 +1228,30 @@ impl Render for ResourcesPanel {
                     });
                 }),
             )
-            .child(if self.filter.is_empty() {
-                div()
-                    .text_color(theme.faint)
-                    .child("⌕ Filter by process, command or session")
-            } else {
-                div().child(SharedString::from(self.filter.clone()))
-            })
+            .children(
+                match vim_ui::field_content(
+                    &self.env.settings,
+                    &self.filter_edit,
+                    &self.filter,
+                    &theme,
+                    &tokens,
+                )
+                .filter(|_| filter_focused)
+                {
+                    Some(content) => content,
+                    None if self.filter.is_empty() => vec![
+                        div()
+                            .text_color(theme.faint)
+                            .child("⌕ Filter by process, command or session")
+                            .into_any_element(),
+                    ],
+                    None => vec![
+                        div()
+                            .child(SharedString::from(self.filter.clone()))
+                            .into_any_element(),
+                    ],
+                },
+            )
             .child(probe(&self.env.regions, Region::ResourceControl("filter")));
 
         let columns = div()

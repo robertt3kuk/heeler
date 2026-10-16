@@ -29,9 +29,11 @@ use crate::settings::{TasksScope, TasksSettings};
 use crate::theme::{DensityExt as _, Theme, Tokens, reduce_motion};
 use crate::workbench::actions::{Notify, OpenSession, ReviewTaskChanges};
 use crate::workbench::chat::TextInput;
+use crate::workbench::chat::vim::{Outcome, Vim};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
+use crate::workbench::vim_ui::{self, VimConfig};
 use crate::workbench::{Region, style::UiStyle};
 
 /// How often the elapsed times refresh while the panel is drawn and a task runs.
@@ -64,6 +66,8 @@ struct Form {
     prompt: TextInput,
     command: TextInput,
     branch: TextInput,
+    /// Vim's modal state over the field being typed in (`editor.vim_mode`).
+    vim: Vim,
     after: BTreeSet<TaskId>,
     worktree: bool,
     run: RunChoice,
@@ -80,6 +84,7 @@ impl Form {
             prompt: TextInput::new(),
             command: TextInput::new(),
             branch: TextInput::new(),
+            vim: Vim::new(),
             after: BTreeSet::new(),
             worktree: false,
             run: RunChoice::Terminal,
@@ -97,6 +102,17 @@ impl Form {
             FormField::Command => &mut self.command,
             FormField::Branch => &mut self.branch,
         }
+    }
+
+    /// The modal state and the text of `field`.
+    fn vim_and_input(&mut self, field: FormField) -> (&mut Vim, &mut TextInput) {
+        let input = match field {
+            FormField::Title => &mut self.title,
+            FormField::Prompt => &mut self.prompt,
+            FormField::Command => &mut self.command,
+            FormField::Branch => &mut self.branch,
+        };
+        (&mut self.vim, input)
     }
 
     /// The fields the form shows now, in order.
@@ -496,8 +512,24 @@ impl TasksPanel {
     ) {
         let ks = &event.keystroke;
         let multiline = field == FormField::Prompt;
+        let vim = VimConfig::of(&self.env.settings);
         match ks.key.as_str() {
-            "escape" => self.close_form(cx),
+            "escape" => {
+                // Under Vim mode the first Escape leaves Insert (or Visual); Normal mode closes.
+                if vim.enabled
+                    && let Some(form) = &mut self.form
+                {
+                    let (state, input) = form.vim_and_input(field);
+                    if vim_ui::apply(state, input, event, vim.options(!multiline, true), cx)
+                        == Outcome::Handled
+                    {
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
+                self.close_form(cx);
+            }
             "tab" => {
                 let Some(form) = &mut self.form else {
                     return;
@@ -510,6 +542,7 @@ impl TasksPanel {
                     fields[(at + 1) % fields.len()]
                 };
                 form.field = next;
+                form.vim.reset();
                 self.focus_wanted = Some(next);
                 cx.notify();
             }
@@ -518,7 +551,8 @@ impl TasksPanel {
                 let Some(form) = &mut self.form else {
                     return;
                 };
-                if !edit_text(form.input_mut(field), event, multiline, cx) {
+                let (state, input) = form.vim_and_input(field);
+                if !edit_text(input, state, vim, event, multiline, cx) {
                     return;
                 }
                 form.error = None;
@@ -530,6 +564,9 @@ impl TasksPanel {
 
     fn focus_field(&mut self, field: FormField, cx: &mut Context<Self>) {
         if let Some(form) = &mut self.form {
+            if form.field != field {
+                form.vim.reset();
+            }
             form.field = field;
         }
         self.focus_wanted = Some(field);
@@ -998,6 +1035,9 @@ impl TasksPanel {
         let Some(form) = &self.form else {
             return div().into_any_element();
         };
+        let vim = VimConfig::of(&self.env.settings)
+            .enabled
+            .then_some(&form.vim);
         let label = |text: &'static str| ui::section_label(text, theme, tokens);
         let field = |which: FormField,
                      input: &TextInput,
@@ -1009,6 +1049,7 @@ impl TasksPanel {
             field_box(
                 SharedString::from(format!("tasks-field-{}", which.key())),
                 input,
+                vim,
                 placeholder,
                 focused,
                 multiline,

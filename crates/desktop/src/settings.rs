@@ -1,6 +1,6 @@
 //! The desktop's settings namespaces (design.md § Settings): `app`, `terminal`, `layout`,
 //! `panels.sessions`, `panels.inspector`, `panels.overview`, `workspaces`, `history`, `chat`,
-//! `agents`.
+//! `editor`, `agents`.
 //! `appearance` lives in `hutan-settings`.
 //!
 //! Numbers are `f64` so values read back from TOML and the schema defaults stay free of `f32`
@@ -703,6 +703,33 @@ impl Setting for ChatSettings {
     const NAMESPACE: &'static str = "chat";
 }
 
+/// The `editor` namespace: how Hutan's text inputs (the chat composer, the palette, prompts and
+/// the other single-line fields) edit. Terminals are not text inputs: programs there do their
+/// own thing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct EditorSettings {
+    /// Vim's modal editing (Normal, Insert, Visual) in text inputs. Fields open in Insert; Escape
+    /// goes to Normal, and a second Escape does what it always did (closes the palette, …).
+    pub vim_mode: bool,
+    /// Yanks and deletes in Vim mode also go to the system clipboard, and `p` pastes from it.
+    /// Off, they use a register private to the field.
+    pub vim_use_system_clipboard: bool,
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            vim_mode: false,
+            vim_use_system_clipboard: true,
+        }
+    }
+}
+
+impl Setting for EditorSettings {
+    const NAMESPACE: &'static str = "editor";
+}
+
 /// Which sessions the agent monitor lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1076,6 +1103,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<SidebarSettings>();
     store.register::<HistorySettings>();
     store.register::<ChatSettings>();
+    store.register::<EditorSettings>();
     store.register::<AgentsSettings>();
     store.register::<ResourcesSettings>();
     store.register::<TasksSettings>();
@@ -1313,6 +1341,7 @@ mod tests {
             "workspaces",
             "history",
             "chat",
+            "editor",
             "agents",
             "resources",
             "tasks",

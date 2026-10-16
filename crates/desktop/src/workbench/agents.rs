@@ -317,6 +317,7 @@ impl Workbench {
             agent_chosen,
         });
         window.focus(&self.agent_focus, cx);
+        self.edits.agent.reset();
         if direct {
             self.refresh_providers(cx);
             cx.notify();
@@ -749,6 +750,10 @@ impl Workbench {
                         .p(px(tokens.spacing * 2.0))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                            if this.agent_vim_key(event, cx) {
+                                cx.stop_propagation();
+                                return;
+                            }
                             let Some(picker) = &mut this.agent_picker else {
                                 return;
                             };
@@ -815,11 +820,23 @@ impl Workbench {
                         })
                         .child(section("Model"))
                         .child(
-                            div().child(SharedString::from(if picker.model_query.is_empty() {
-                                "Type to filter models".to_owned()
-                            } else {
-                                format!("Filter: {}", picker.model_query)
-                            })),
+                            match self.vim_text(&self.edits.agent, &picker.model_query) {
+                                Some((text, pill)) => div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(tokens.spacing))
+                                    .child("Filter:")
+                                    .child(div().flex_1().min_w_0().child(text))
+                                    .child(pill)
+                                    .into_any_element(),
+                                None => div()
+                                    .child(SharedString::from(if picker.model_query.is_empty() {
+                                        "Type to filter models".to_owned()
+                                    } else {
+                                        format!("Filter: {}", picker.model_query)
+                                    }))
+                                    .into_any_element(),
+                            },
                         )
                         .child(
                             div()

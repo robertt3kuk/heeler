@@ -1,5 +1,8 @@
 //! The composer's text: a string with a cursor, edited by the keys a multi-line text field
-//! answers to. No GPUI; the view feeds it keystrokes.
+//! answers to, with an undo history. No GPUI; the view feeds it keystrokes.
+
+/// Most undo steps kept.
+const HISTORY_MAX: usize = 200;
 
 /// A multi-line text and a caret between two of its characters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -7,6 +10,45 @@ pub struct TextInput {
     text: String,
     /// Byte offset, always on a character boundary.
     cursor: usize,
+    history: History,
+}
+
+/// What one edit does, to decide whether it joins the undo step before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    /// Typed characters: a run of them undoes in one step.
+    Typing,
+    /// Backspaces: a run of them undoes in one step.
+    Backspacing,
+    /// Anything else: a step of its own.
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snapshot {
+    text: String,
+    cursor: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct History {
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// The kind of the last edit and where its caret ended up: the next edit of the same kind
+    /// starting there joins its step.
+    last: Option<(EditKind, usize)>,
+    /// Edits are being grouped by the caller (one step for all of them).
+    grouped: bool,
+}
+
+impl History {
+    fn push(&mut self, snapshot: Snapshot) {
+        self.redo.clear();
+        self.undo.push(snapshot);
+        if self.undo.len() > HISTORY_MAX {
+            self.undo.remove(0);
+        }
+    }
 }
 
 impl TextInput {
@@ -28,24 +70,47 @@ impl TextInput {
 
     /// Replaces the text; the caret goes to its end.
     pub fn set(&mut self, text: &str) {
+        if self.text != text {
+            self.note(EditKind::Other);
+        }
         self.text = text.to_owned();
         self.cursor = self.text.len();
+        self.settle(EditKind::Other);
+    }
+
+    /// Replaces the text without leaving an undo step: the history starts over. For text that
+    /// changed behind the input's back (a field that mirrors a string somebody else edits).
+    pub fn reset_to(&mut self, text: &str) {
+        self.text = text.to_owned();
+        self.cursor = self.text.len();
+        self.history = History::default();
     }
 
     pub fn clear(&mut self) {
+        if !self.text.is_empty() {
+            self.note(EditKind::Other);
+        }
         self.text.clear();
         self.cursor = 0;
+        self.settle(EditKind::Other);
     }
 
-    /// Takes the text out, leaving the input empty.
+    /// Takes the text out, leaving the input empty and its history forgotten (the text is gone,
+    /// there is nothing to undo into).
     pub fn take(&mut self) -> String {
         self.cursor = 0;
+        self.history = History::default();
         std::mem::take(&mut self.text)
     }
 
     pub fn insert(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.note(EditKind::Typing);
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();
+        self.settle(EditKind::Typing);
     }
 
     /// Removes the bytes `range` (character boundaries inside the text; anything else is
@@ -56,22 +121,138 @@ impl TextInput {
             && self.text.is_char_boundary(range.start)
             && self.text.is_char_boundary(range.end)
         {
+            if range.start < range.end {
+                self.note(EditKind::Other);
+            }
             self.text.drain(range.clone());
             self.cursor = range.start;
+            self.settle(EditKind::Other);
         }
+    }
+
+    /// Replaces the bytes `range` (character boundaries inside the text; anything else is
+    /// ignored) with `text` and puts the caret after it.
+    pub fn replace_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        if range.start <= range.end
+            && range.end <= self.text.len()
+            && self.text.is_char_boundary(range.start)
+            && self.text.is_char_boundary(range.end)
+        {
+            if range.start < range.end || !text.is_empty() {
+                self.note(EditKind::Other);
+            }
+            self.text.replace_range(range.clone(), text);
+            self.cursor = range.start + text.len();
+            self.settle(EditKind::Other);
+        }
+    }
+
+    /// Puts the caret at byte offset `at`, or at the nearest character boundary before it.
+    pub fn set_cursor(&mut self, at: usize) {
+        let mut at = at.min(self.text.len());
+        while !self.text.is_char_boundary(at) {
+            at -= 1;
+        }
+        self.cursor = at;
     }
 
     pub fn backspace(&mut self) {
         if let Some(prev) = self.prev_boundary(self.cursor) {
+            self.note(EditKind::Backspacing);
             self.text.drain(prev..self.cursor);
             self.cursor = prev;
+            self.settle(EditKind::Backspacing);
         }
     }
 
     pub fn delete(&mut self) {
         if let Some(next) = self.next_boundary(self.cursor) {
+            self.note(EditKind::Other);
             self.text.drain(self.cursor..next);
+            self.settle(EditKind::Other);
         }
+    }
+
+    // ---- undo ------------------------------------------------------------------------------
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+        }
+    }
+
+    /// Called before an edit: opens an undo step unless the edit continues the last one.
+    fn note(&mut self, kind: EditKind) {
+        if self.history.grouped {
+            return;
+        }
+        let continues = kind != EditKind::Other && self.history.last == Some((kind, self.cursor));
+        if !continues {
+            let snapshot = self.snapshot();
+            self.history.push(snapshot);
+        }
+    }
+
+    /// Called after an edit.
+    fn settle(&mut self, kind: EditKind) {
+        if !self.history.grouped {
+            self.history.last = Some((kind, self.cursor));
+        }
+    }
+
+    /// Starts a group: every edit until [`end_group`](Self::end_group) undoes in one step.
+    pub fn begin_group(&mut self) {
+        if !self.history.grouped {
+            let snapshot = self.snapshot();
+            self.history.push(snapshot);
+            self.history.grouped = true;
+            self.history.last = None;
+        }
+    }
+
+    /// Ends the group; a group that changed nothing leaves no step behind.
+    pub fn end_group(&mut self) {
+        if self.history.grouped {
+            self.history.grouped = false;
+            self.history.last = None;
+            if self
+                .history
+                .undo
+                .last()
+                .is_some_and(|step| step.text == self.text)
+            {
+                self.history.undo.pop();
+            }
+        }
+    }
+
+    /// Undoes the last step; `false` when there is none.
+    pub fn undo(&mut self) -> bool {
+        self.history.grouped = false;
+        self.history.last = None;
+        let Some(step) = self.history.undo.pop() else {
+            return false;
+        };
+        let current = self.snapshot();
+        self.history.redo.push(current);
+        self.text = step.text;
+        self.cursor = step.cursor;
+        true
+    }
+
+    /// Redoes the last undone step; `false` when there is none.
+    pub fn redo(&mut self) -> bool {
+        self.history.grouped = false;
+        self.history.last = None;
+        let Some(step) = self.history.redo.pop() else {
+            return false;
+        };
+        let current = self.snapshot();
+        self.history.undo.push(current);
+        self.text = step.text;
+        self.cursor = step.cursor;
+        true
     }
 
     pub fn left(&mut self) {
@@ -121,8 +302,12 @@ impl TextInput {
     /// Deletes from the start of the previous word to the caret (⌥⌫).
     pub fn delete_word_back(&mut self) {
         let start = self.word_start(self.cursor);
-        self.text.drain(start..self.cursor);
-        self.cursor = start;
+        if start < self.cursor {
+            self.note(EditKind::Other);
+            self.text.drain(start..self.cursor);
+            self.cursor = start;
+            self.settle(EditKind::Other);
+        }
     }
 
     /// Deletes from the caret to the start of its line (⌘⌫).
@@ -131,8 +316,10 @@ impl TextInput {
         if start == self.cursor {
             self.backspace();
         } else {
+            self.note(EditKind::Other);
             self.text.drain(start..self.cursor);
             self.cursor = start;
+            self.settle(EditKind::Other);
         }
     }
 
@@ -319,5 +506,74 @@ mod tests {
         assert_eq!(i.take(), "hello");
         assert!(i.is_empty());
         assert_eq!(i.cursor(), 0);
+    }
+
+    #[test]
+    fn typing_and_backspacing_undo_in_runs() {
+        let mut i = TextInput::new();
+        i.insert("a");
+        i.insert("b");
+        i.insert("c");
+        i.backspace();
+        i.backspace();
+        assert_eq!(i.text(), "a");
+        assert!(i.undo());
+        assert_eq!(i.text(), "abc", "the backspaces were one step");
+        assert!(i.undo());
+        assert_eq!(i.text(), "", "the typing was one step");
+        assert!(!i.undo());
+        assert!(i.redo());
+        assert_eq!(i.text(), "abc");
+        assert!(i.redo());
+        assert_eq!(i.text(), "a");
+        assert!(!i.redo());
+    }
+
+    #[test]
+    fn a_new_edit_drops_the_redo_steps_and_movement_splits_typing() {
+        let mut i = input("ab");
+        i.insert("c");
+        i.left();
+        i.left();
+        i.insert("X");
+        assert_eq!(i.text(), "aXbc");
+        assert!(i.undo());
+        assert_eq!(i.text(), "abc");
+        i.insert("!");
+        assert!(!i.redo(), "the undone step is gone");
+    }
+
+    #[test]
+    fn a_group_undoes_in_one_step_and_an_empty_group_leaves_none() {
+        let mut i = TextInput::new();
+        i.reset_to("one two");
+        i.begin_group();
+        i.remove_range(0..3);
+        i.insert("1");
+        i.end_group();
+        assert_eq!(i.text(), "1 two");
+        i.begin_group();
+        i.end_group();
+        assert!(i.undo());
+        assert_eq!(i.text(), "one two");
+        assert_eq!(i.cursor(), 7, "the caret is where it was before the group");
+        assert!(!i.undo(), "the empty group left nothing behind");
+    }
+
+    #[test]
+    fn the_history_is_bounded_and_take_forgets_it() {
+        let mut i = TextInput::new();
+        for n in 0..(HISTORY_MAX + 50) {
+            i.set(&n.to_string());
+        }
+        let mut steps = 0;
+        while i.undo() {
+            steps += 1;
+        }
+        assert_eq!(steps, HISTORY_MAX);
+        let mut i = input("x");
+        i.insert("y");
+        i.take();
+        assert!(!i.undo());
     }
 }

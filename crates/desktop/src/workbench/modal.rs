@@ -159,6 +159,7 @@ impl Workbench {
         self.picker = None;
         self.context_menu = None;
         self.modal = Some(modal);
+        self.edits.modal.reset();
         window.focus(&self.modal_focus, cx);
         cx.notify();
     }
@@ -270,6 +271,12 @@ impl Workbench {
             checkbox: stored.checkbox.clone(),
             on_confirm: Rc::clone(&stored.on_confirm),
         };
+        // A secret is never drawn from the raw text and is typed as ever; other prompts follow Vim.
+        let vim_input = stored
+            .input
+            .as_deref()
+            .filter(|_| !stored.secure_input)
+            .and_then(|text| self.vim_text(&self.edits.modal, text));
         let theme = self.theme;
         let tokens = self.density.ui();
         let button = |id: &'static str, label: SharedString, kind: ui::ButtonKind| {
@@ -303,6 +310,9 @@ impl Workbench {
                         .text_size(px(tokens.font_size))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if this.modal_vim_key(event, cx) {
+                                return;
+                            }
                             let keystroke = &event.keystroke;
                             let paste = (keystroke.modifiers.platform && keystroke.key == "v")
                                 .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
@@ -332,6 +342,9 @@ impl Workbench {
                             this.confirm_modal(window, cx);
                         }))
                         .on_action(cx.listener(|this, _: &modal_actions::Cancel, window, cx| {
+                            if this.modal_vim_escape(cx) {
+                                return;
+                            }
                             this.close_modal(window, cx);
                         }))
                         .child(
@@ -340,7 +353,7 @@ impl Workbench {
                                 .child(modal.title.clone()),
                         )
                         .child(div().text_color(theme.muted).child(modal.message.clone()))
-                        .when_some(modal.input.clone(), |s, input| {
+                        .when_some(modal.input.clone(), move |s, input| {
                             s.child(
                                 div()
                                     .flex()
@@ -351,13 +364,20 @@ impl Workbench {
                                     .bg(theme.bg)
                                     .border_1()
                                     .border_color(theme.accent)
-                                    .child(SharedString::from(input))
-                                    .child(
-                                        div()
-                                            .w(px(1.0))
-                                            .h(px(tokens.font_size + 2.0))
-                                            .bg(theme.accent),
-                                    ),
+                                    .children(match vim_input {
+                                        Some((text, pill)) => vec![
+                                            div().flex_1().min_w_0().child(text).into_any_element(),
+                                            pill.into_any_element(),
+                                        ],
+                                        None => vec![
+                                            SharedString::from(input).into_any_element(),
+                                            div()
+                                                .w(px(1.0))
+                                                .h(px(tokens.font_size + 2.0))
+                                                .bg(theme.accent)
+                                                .into_any_element(),
+                                        ],
+                                    }),
                             )
                         })
                         .when_some(modal.checkbox.clone(), |s, checkbox| {

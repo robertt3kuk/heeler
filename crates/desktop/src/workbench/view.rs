@@ -390,6 +390,8 @@ pub struct Workbench {
     pub(crate) integrations: super::integrations::IntegrationControl,
     pub(crate) harness_install: super::harness_install::HarnessInstallControl,
     pub(crate) palette: Option<PaletteState>,
+    /// Vim state of the text fields of the overlays below (`editor.vim_mode`).
+    pub(crate) edits: super::vim_ui::OverlayEdits,
     pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) modal: Option<Modal>,
     pub(crate) sheet: Option<SettingsSheet>,
@@ -633,6 +635,7 @@ impl Workbench {
                 options.package_runner,
             ),
             palette: None,
+            edits: super::vim_ui::OverlayEdits::default(),
             context_menu: None,
             modal: None,
             sheet: None,
@@ -1097,6 +1100,7 @@ impl Workbench {
         let mut state = PaletteState::default();
         state.refilter(self.commands.iter().map(|c| c.title.as_ref()));
         self.palette = Some(state);
+        self.edits.palette.reset();
         self.context_menu = None;
         self.picker = None;
         window.focus(&self.palette_focus, cx);

@@ -32,10 +32,12 @@ use crate::workbench::actions::{
     ShowProjectMenu, ShowSessionMenu, ShowSortMenu, ShowWorkspaceMenu, WorkspaceDrop,
     WorkspaceMenuAt,
 };
+use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
 use crate::workbench::ui::{self, ButtonKind, Mascot, StyledExt as _};
+use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 use crate::workbench::{BadgeSite, DragPreview, Region};
 
 /// Row refresh for the relative ages.
@@ -137,6 +139,9 @@ struct Renaming {
 pub struct SessionsPanel {
     env: PanelEnv,
     query: String,
+    /// Vim state of the filter field and of the rename field (`editor.vim_mode`).
+    query_edit: FieldEdit,
+    rename_edit: FieldEdit,
     search_focus: FocusHandle,
     rename_focus: FocusHandle,
     collapsed: HashSet<WorkspaceId>,
@@ -169,6 +174,8 @@ impl SessionsPanel {
         Self {
             env,
             query: String::new(),
+            query_edit: FieldEdit::new(),
+            rename_edit: FieldEdit::new(),
             search_focus: cx.focus_handle(),
             rename_focus: cx.focus_handle(),
             collapsed: HashSet::new(),
@@ -386,6 +393,7 @@ impl SessionsPanel {
         let blur = cx.on_focus_out(&self.rename_focus, window, |this, _, window, cx| {
             this.finish_rename(true, window, cx);
         });
+        self.rename_edit.reset();
         self.renaming = Some(Renaming {
             workspace,
             text: name,
@@ -437,6 +445,19 @@ impl SessionsPanel {
 
     fn on_rename_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
+        let vim = VimConfig::of(&self.env.settings);
+        if vim.enabled
+            && let Some(renaming) = &mut self.renaming
+            && self
+                .rename_edit
+                .key(&mut renaming.text, event, vim, true, cx)
+                == Outcome::Handled
+        {
+            // Enter and Escape in Normal mode fall through to the code below.
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let paste = (ks.modifiers.platform && ks.key == "v")
             .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
             .flatten();
@@ -650,6 +671,19 @@ impl SessionsPanel {
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
+        let vim = VimConfig::of(&self.env.settings);
+        if vim.enabled {
+            if self.query_edit.key(&mut self.query, event, vim, true, cx) == Outcome::Handled {
+                cx.stop_propagation();
+                cx.notify();
+            } else if event.keystroke.key == "escape" {
+                // Escape in Normal mode clears the filter, as ever.
+                self.query.clear();
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
             return;
         }
@@ -903,13 +937,26 @@ impl Render for SessionsPanel {
                     });
                 }),
             )
-            .child(if self.query.is_empty() {
-                div()
-                    .text_color(theme.faint)
-                    .child("⌕ Filter projects and sessions")
-            } else {
-                div().child(self.query.clone())
-            });
+            .children(
+                match vim_ui::field_content(
+                    &self.env.settings,
+                    &self.query_edit,
+                    &self.query,
+                    &theme,
+                    &tokens,
+                )
+                .filter(|_| searching)
+                {
+                    Some(content) => content,
+                    None if self.query.is_empty() => vec![
+                        div()
+                            .text_color(theme.faint)
+                            .child("⌕ Filter projects and sessions")
+                            .into_any_element(),
+                    ],
+                    None => vec![div().child(self.query.clone()).into_any_element()],
+                },
+            );
 
         let new_session = div()
             .id("sessions-new")
@@ -1033,8 +1080,25 @@ impl SessionsPanel {
                 .border_1()
                 .border_color(accent)
                 .text_color(theme.fg)
-                .child(SharedString::from(text))
-                .child(div().w(px(1.0)).h(px(tokens.font_size)).bg(accent))
+                .children(
+                    match vim_ui::field_content(
+                        &self.env.settings,
+                        &self.rename_edit,
+                        &text,
+                        &theme,
+                        &tokens,
+                    ) {
+                        Some(content) => content,
+                        None => vec![
+                            SharedString::from(text).into_any_element(),
+                            div()
+                                .w(px(1.0))
+                                .h(px(tokens.font_size))
+                                .bg(accent)
+                                .into_any_element(),
+                        ],
+                    },
+                )
                 .into_any_element(),
             None => div()
                 .flex_1()

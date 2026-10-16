@@ -33,6 +33,7 @@ pub mod style;
 mod terminals;
 pub mod ui;
 mod view;
+pub mod vim_ui;
 mod workspaces;
 mod worktrees;
 

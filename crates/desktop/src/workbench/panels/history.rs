@@ -31,10 +31,12 @@ use crate::workbench::Region;
 use crate::workbench::actions::{
     CopyHistoryCommand, OpenHistoryHit, OpenSettingsFor, ResumeHistoryHit, RevealHistoryFile,
 };
+use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
 use crate::workbench::ui;
+use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 
 /// How often the index status is read while indexing settles after Enable or Rebuild.
 const SETTLE_POLL: Duration = Duration::from_millis(500);
@@ -74,6 +76,8 @@ pub struct HistoryPanel {
     env: PanelEnv,
     search_focus: FocusHandle,
     query: String,
+    /// Vim state of the search field (`editor.vim_mode`).
+    query_edit: FieldEdit,
     filters: Filters,
     index: Index,
     results: Results,
@@ -142,6 +146,7 @@ impl HistoryPanel {
             env,
             search_focus: cx.focus_handle(),
             query: String::new(),
+            query_edit: FieldEdit::new(),
             filters,
             index: Index::Unknown,
             results: Results::Idle,
@@ -562,6 +567,16 @@ impl HistoryPanel {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = VimConfig::of(&self.env.settings);
+        if vim.enabled {
+            let mut query = self.query.clone();
+            if self.query_edit.key(&mut query, event, vim, true, cx) == Outcome::Handled {
+                self.set_query(&query, cx);
+                cx.stop_propagation();
+                return;
+            }
+            // Enter, ↑ ↓ and Escape in Normal mode are the panel's own: they follow.
+        }
         let ks = &event.keystroke;
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
             return;
@@ -900,13 +915,26 @@ impl HistoryPanel {
                     });
                 }),
             )
-            .child(if self.query.is_empty() {
-                div()
-                    .text_color(theme.faint)
-                    .child("⌕ Search sessions, commands, transcripts")
-            } else {
-                div().child(self.query.clone())
-            })
+            .children(
+                match vim_ui::field_content(
+                    &self.env.settings,
+                    &self.query_edit,
+                    &self.query,
+                    theme,
+                    tokens,
+                )
+                .filter(|_| searching_field)
+                {
+                    Some(content) => content,
+                    None if self.query.is_empty() => vec![
+                        div()
+                            .text_color(theme.faint)
+                            .child("⌕ Search sessions, commands, transcripts")
+                            .into_any_element(),
+                    ],
+                    None => vec![div().child(self.query.clone()).into_any_element()],
+                },
+            )
             .child(probe(&self.env.regions, Region::History("search")));
 
         let mut list = div()
