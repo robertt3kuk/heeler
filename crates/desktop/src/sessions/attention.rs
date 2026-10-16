@@ -215,13 +215,19 @@ pub fn present(info: &SessionInfo, unread: Option<Unread>) -> Presentation {
                 },
             }
         }
-        SessionState::Failed { reason } => Presentation {
-            label: "failed".into(),
-            detail: reason.clone(),
-            tone: Tone::Error,
-            filled: unread.is_some(),
-            needs_you: unread.is_some(),
-        },
+        // An assistant that could not start says so in the Assistant panel, which offers Retry
+        // and another backend; it is not a session the user went away from.
+        SessionState::Failed { reason } => {
+            let looked_after =
+                unread.is_some() && !info.chat.as_ref().is_some_and(|chat| chat.is_assistant());
+            Presentation {
+                label: "failed".into(),
+                detail: reason.clone(),
+                tone: Tone::Error,
+                filled: looked_after,
+                needs_you: looked_after,
+            }
+        }
         SessionState::Stopped => Presentation {
             label: "stopped".into(),
             detail: String::new(),
@@ -415,6 +421,30 @@ mod tests {
         assert_eq!(classify(&waiting, 0), Some(AttentionKind::Blocked));
         assert_eq!(classify(&idle, 1), Some(AttentionKind::Approval));
         assert_eq!(classify(&failed, 1), Some(AttentionKind::Approval));
+    }
+
+    #[test]
+    fn an_assistant_that_failed_to_start_is_not_in_needs_you_but_a_failed_chat_is() {
+        let failed = || SessionState::Failed {
+            reason: "agent request `session/new` failed".into(),
+        };
+        let chat_failed = present(&chat(failed(), false, 0), Some(Unread::Failed));
+        assert!(chat_failed.needs_you);
+        assert_eq!(classify(&chat_failed, 0), Some(AttentionKind::Failed));
+
+        let mut assistant = chat(failed(), false, 0);
+        if let Some(c) = assistant.chat.as_mut() {
+            c.assistant = true;
+        }
+        let shown = present(&assistant, Some(Unread::Failed));
+        assert_eq!(shown.label, "failed", "the row still says what happened");
+        assert!(!shown.needs_you);
+        assert_eq!(classify(&shown, 0), None, "no badge for it either");
+        assert_eq!(
+            classify(&shown, 1),
+            Some(AttentionKind::Approval),
+            "a pending approval always counts"
+        );
     }
 
     #[test]
