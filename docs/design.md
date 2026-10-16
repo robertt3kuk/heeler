@@ -163,9 +163,9 @@ Left dock: `sessions` panel (vibrancy) with `history` as a second tab. Center: t
 
 | Preset | Left dock | Center | Right dock | Bottom dock | Use |
 |---|---|---|---|---|---|
-| `default` | sessions, history | pane tree | inspector, agents | `resources`, hidden | daily work |
+| `default` | sessions, history | pane tree | inspector, agents, tasks | `resources`, hidden | daily work |
 | `focus` | hidden | pane tree, zoomed active pane | hidden | `resources`, hidden | deep terminal work (layout C) |
-| `overview` | sessions, history | `overview` panel as the only center item | inspector, agents | `resources`, hidden | many agents at once (layout B) |
+| `overview` | sessions, history | `overview` panel as the only center item | inspector, agents, tasks | `resources`, hidden | many agents at once (layout B) |
 
 ## Session pane header
 
@@ -375,6 +375,20 @@ The `resources` panel (default: the bottom dock, hidden, in every preset; ⌘K *
 - **Show in Resources**: an entry of the session context menu (sidebar, overview card, tab) reveals the panel, clears the filter, unfolds the session, highlights it (`accent_soft`) and scrolls to it; a session without a process says so.
 - **Empty states** (the mascot): nothing running (sleep), reading (thinking), no match for the filter, daemon too old (error), daemon unreachable (sleep).
 - **Settings** (`resources`): `interval_ms`, `sort`. Visual tokens only: `ui.rs` components, `accent`, `accent_soft`, `warning`, `danger`, `muted`.
+## Tasks panel (M7-C)
+
+The `tasks` panel (default: third tab of the right dock in `default` and `overview`; movable like every panel) draws the daemon's tasks (`docs/orchestration.md` § Tasks) as a dependency tree. The daemon owns tasks; the panel sends `task.*` requests and draws what `task.updated` / `task.removed` say.
+
+- **Tree**: every task once, under the dependency it waits for last (the others read `also after …`), dependencies before dependants, roots oldest first. Row: state glyph and color from the theme — `○` todo (muted), `◎` ready (accent), `▶` running (accent, pulses once a second; steady under Reduce Motion), `◆` blocked (warning), `✓` done (success), `✗` failed (error), `⊘` cancelled (muted) — the title, the state name, and a second line with the placement badge (`main` / `wt <branch>`), the run (`shell`, `$ command`, `codex chat`, `omp chat`), `auto`, the elapsed time (running time, or how long it took; ticks once a second only while the panel is drawn and a listed task runs) and the outcome (`(exited 3)`). Done and cancelled rows are dimmed.
+- **Click** a row: select it and focus its last session's tab. The selected row shows its actions, exactly the ones the daemon accepts in that state: *Start* (ready), *Done* (everything but done and cancelled), *Cancel* (todo, ready, running, blocked), *Reset* (failed, done, cancelled), *Delete* (not while running); *Changes* opens the Changes view (`docs/orchestration.md` § Review and merge) of the checkout it ran in. Deleting a task others wait for asks first: the daemon's refusal names them, *Delete them too* repeats it with `cascade`.
+- **+ New task** (header, or ⌘K *Tasks: New Task…*, which reveals the panel): an inline form — title, prompt (multi-line), *Run* (Terminal with a command, empty for a login shell; Codex chat; omp chat — offered only when the daemon has `harness.acp`), *Where* (Main checkout / New worktree with a branch, empty for `task/<slug>`), *After* (every task of the workspace as a checklist), *Start automatically when ready*. Create sends `task.create`; the form closes on success and shows the daemon's reason otherwise. Tab and ⇧Tab move between fields, ⌘↩ (↩ in a single-line field) creates, Esc closes.
+- **Filters**: chips at the top toggle `tasks.show_done` (done and cancelled rows; failed ones always stay, and tasks that waited for a hidden one move up as roots) and `tasks.scope` (`workspace` — the window's — or `all`).
+- **Empty state**: the mascot, a sentence and *+ New task*; "Nothing matches the filters." with the success mascot when only the filters hide tasks; a note when disconnected or when the daemon predates tasks.
+- **Commands** (⌘K): *Tasks: New Task…*, *Tasks: Show Panel*, *Worktree: Review Changes…* (a picker of the checkouts of the workspace's repositories, main checkouts included).
+
+### Changes view
+
+A center tab per checkout (title `Changes · <branch>`): the header names the branch and what it is compared against (`against main (merge base 5b1c0f3)`), the file and line totals, *With uncommitted* (toggles `include_uncommitted`), *Refresh* and *Merge into main…*. Left, the file list: status letter (A/M/D/R, colored), path (`old → new` for a rename), `+n −m` or `binary`; right, the selected file's unified diff in the mono font, drawn with the chat's diff rows (`hutan_chat_view::diff` parsing, theme colors), one collapsible block per hunk (`▾`/`▸`, a folded hunk says how many lines it hides), 500 lines per file at most, a note when a patch was cut at 2 MiB. Read-only. *Merge into main…* (worktrees with a branch only) opens a card: strategy (Merge commit / Squash / Rebase), the commit message (not for rebase), Merge / Cancel. A refusal stays in the card — the daemon's reason, and for a conflict the files with `⚠` — and changes nothing; success shows a toast (`Merged feature/x into main (9d8c7b6)`) and a card offering *Remove worktree and branch* (`worktree.remove` with `delete_branch`, forced only when the worktree still has uncommitted changes that were not merged, as the button says) or *Keep*; removing closes the tab.
 
 ## Terminal blocks (M10-C)
 

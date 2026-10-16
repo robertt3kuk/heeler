@@ -1,6 +1,6 @@
 # Orchestration: projects, worktrees, session placement and tasks
 
-Roadmap M7 and M18: automatic projects and user workspaces (slice M18-A, protocol 0.19, capability `projects.auto`; § Projects and workspaces below), worktrees and placement (slice M7-A, protocol 0.14, capability `worktree`) and tasks with dependencies (slice M7-B, protocol 0.16, capability `task`; § Tasks below). Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
+Roadmap M7 and M18: automatic projects and user workspaces (slice M18-A, protocol 0.19, capability `projects.auto`; § Projects and workspaces below), worktrees and placement (slice M7-A, protocol 0.14, capability `worktree`) tasks with dependencies (slice M7-B, protocol 0.16, capability `task`; § Tasks below), and review, merge and the Tasks panel (slice M7-C, protocol 0.22, capability `worktree.review`; § Review and merge, § Tasks panel). Vision: placement is the user's choice — the repository's main checkout (one agent, quick fixes) or a git worktree (isolated parallel work); Hutan never forces a worktree, and it warns when two live agents write to the same checkout.
 
 Wire details: `docs/protocol.md` § Worktrees and placement. Code: `crates/daemon/src/{worktrees,placement}.rs` (daemon), `crates/protocol/src/worktree.rs` (DTOs), `crates/cli/src/commands/worktrees.rs` (CLI), `crates/desktop/src/workbench/worktrees.rs` and `crates/desktop/src/sessions/placement.rs` (desktop).
 
@@ -90,7 +90,7 @@ Sessions belong to a **project** without anyone opening one; the user's own **wo
 
 ## Tasks
 
-Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a workspace: a title, an optional prompt, the tasks it depends on, where it runs (the main checkout or a worktree) and what it runs (a terminal command, or a chat with Codex, or with OMP or Claude Code over ACP). Tasks are daemon state in SQLite (migration 7: `tasks`, `task_deps`, `task_sessions`); the desktop panel is M7-C. Wire details: `docs/protocol.md` § Tasks. Code: `crates/core/src/task.rs` (no I/O: states, readiness, cycles, ordering, the start queue), `crates/daemon/src/tasks.rs`, `crates/cli/src/commands/tasks.rs`.
+Slice M7-B (protocol 0.16, capability `task`). A task is a unit of work in a workspace: a title, an optional prompt, the tasks it depends on, where it runs (the main checkout or a worktree) and what it runs (a terminal command, or a chat with Codex, or with OMP or Claude Code over ACP). Tasks are daemon state in SQLite (migration 7: `tasks`, `task_deps`, `task_sessions`); the desktop panel is § Tasks panel. Wire details: `docs/protocol.md` § Tasks. Code: `crates/core/src/task.rs` (no I/O: states, readiness, cycles, ordering, the start queue), `crates/daemon/src/tasks.rs`, `crates/cli/src/commands/tasks.rs`.
 
 ### Life of a task
 
@@ -121,6 +121,19 @@ hutan task rm TASK [--cascade]
 
 `crates/core/src/task.rs` (state machine, readiness, cycles, order, scheduling with a limit), `crates/storage` (migration, round trip, cascade), `crates/daemon/tests/tasks.rs` (CRUD, refused cycles and cascade, main and worktree starts, finish detection for exit codes, agent idle/failed, chat turns, auto start within the limit, restart, intents), `crates/cli/tests/tasks.rs` (the commands end to end), golden fixtures `crates/protocol/tests/fixtures/v0/*task*`.
 
+## Review and merge
+
+Slice M7-C (protocol 0.22, capability `worktree.review`). Wire details: `docs/protocol.md` § Worktree review and merge. Code: `crates/daemon/src/worktrees/review.rs`, `crates/cli/src/commands/worktrees.rs`, `crates/desktop/src/workbench/{changes,review}.rs`.
+
+- **`worktree.diff` / `worktree.file_diff`** (read-only): what a checkout changed against the merge base of its base branch (default: the repository's default branch) and `HEAD` — its commits, plus staged, unstaged and untracked changes (togglable). Files are listed `added | modified | deleted | renamed` with `+/−` counts; one file's unified diff is fetched on demand. Output is bounded (2 MiB per file, 20 MiB and 5000 files per diff) and flagged when cut; binary files are flagged. git runs with `--no-ext-diff --no-textconv --no-color`, no pager, no prompts, under a timeout; nothing is written to the repository.
+- **`worktree.merge {path, into?, strategy, message?}`** runs in the repository's **main checkout** and never pushes. `merge` makes a merge commit (`--no-ff`), `squash` one commit with the branch's changes, `rebase` replays the branch onto the target in its own worktree and fast-forwards the target. It is refused — with nothing changed — when the main checkout is dirty (untracked files count), when `into` is not the branch the main checkout has checked out (the message names what it has, and where `into` is if another worktree holds it), when a merge or rebase is already in progress there, when there is nothing to merge, for a detached HEAD, and, for `rebase`, when the worktree has uncommitted changes or live sessions. A conflict aborts cleanly (`merge --abort`, `reset --merge`, `rebase --abort`) and the error names the files (`data.conflicts`). The answer carries the new commit and `source_dirty`. Removing the worktree afterwards is the client's offer: `worktree.remove {delete_branch: true}`.
+- **CLI**: `hutan wt diff <path|branch> [--base REF] [--committed] [--stat]` prints the patch (or `A/M/D/R path +n -m` lines); `hutan wt merge <path|branch> [--into BRANCH] [--squash | --rebase] [-m MSG]` prints what happened and the command that removes the worktree. A conflict prints the reason and one `conflict: <file>` line per file, exit 1. `--json` prints the daemon's answer (`wt diff` adds `patch`).
+- **Tests**: `crates/daemon/tests/worktree_review.rs` (temporary repositories: commits plus uncommitted edits, rename, binary, untracked, ignored, truncation per file and in total, a hostile `diff.external`/textconv that must not run, the three merge strategies, every refusal, conflicts with a clean abort for each strategy), `crates/cli/tests/worktree_review.rs`, golden fixtures `*worktree_diff*`, `*worktree_file_diff*`, `*worktree_merge*`, `*worktree_merged*`.
+
+## Tasks panel
+
+The `tasks` panel (default: third tab of the right dock next to Agents; movable; settings namespace `tasks`) draws the daemon's tasks (`task.list`, `task.updated`, `task.removed`; the store lists once per connection and follows the events) as a dependency tree: see `docs/design.md` § Tasks panel for rows, actions, the new-task form and filters. The Changes view is a center tab (`ItemRef::Changes`, one per checkout) reached from a task row's **Changes** button, the placement badge's menu of a session row (*Review Changes…*, *Copy Checkout Path*), a session's context menu, or ⌘K *Worktree: Review Changes…*; its header has *Merge into main…* (strategy and message; a refusal stays in the form with its files) and, after a success, *Remove worktree and branch*. Tests: `crates/desktop/tests/tasks_gpui.rs`, `crates/desktop/src/sessions/tasks.rs`.
+
 ## Not here
 
-Merging a worktree back, diff review, a worktrees panel and a tasks panel (M7-C). Remote repositories and fetching are never done by these requests.
+Remote repositories, fetching and pushing are never done by these requests; resolving conflicts (the merge is aborted and the files listed, the user resolves them in a checkout), a worktrees panel.

@@ -1760,6 +1760,69 @@ fn requests() -> Vec<(&'static str, Request)> {
                 enter: true,
             }),
         ),
+        (
+            "worktree_diff",
+            Request::WorktreeDiff(WorktreeDiffRequest {
+                path: "/work/repo-wt/feature-login".into(),
+                base: Some("main".into()),
+                include_uncommitted: false,
+            }),
+        ),
+        (
+            "worktree_diff_minimal",
+            Request::WorktreeDiff(WorktreeDiffRequest {
+                path: "/work/repo-wt/feature-login".into(),
+                base: None,
+                include_uncommitted: true,
+            }),
+        ),
+        (
+            "worktree_file_diff",
+            Request::WorktreeFileDiff(WorktreeFileDiffRequest {
+                path: "/work/repo-wt/feature-login".into(),
+                file: "src/login.rs".into(),
+                old_path: Some("src/signin.rs".into()),
+                base: Some("main".into()),
+                include_uncommitted: false,
+            }),
+        ),
+        (
+            "worktree_file_diff_minimal",
+            Request::WorktreeFileDiff(WorktreeFileDiffRequest {
+                path: "/work/repo-wt/feature-login".into(),
+                file: "src/login.rs".into(),
+                old_path: None,
+                base: None,
+                include_uncommitted: true,
+            }),
+        ),
+        (
+            "worktree_merge",
+            Request::WorktreeMerge(WorktreeMerge {
+                path: "/work/repo-wt/feature-login".into(),
+                into: Some("main".into()),
+                strategy: MergeStrategy::Squash,
+                message: Some("Add login".into()),
+            }),
+        ),
+        (
+            "worktree_merge_minimal",
+            Request::WorktreeMerge(WorktreeMerge {
+                path: "/work/repo-wt/feature-login".into(),
+                into: None,
+                strategy: MergeStrategy::Merge,
+                message: None,
+            }),
+        ),
+        (
+            "worktree_merge_rebase",
+            Request::WorktreeMerge(WorktreeMerge {
+                path: "/work/repo-wt/feature-login".into(),
+                into: None,
+                strategy: MergeStrategy::Rebase,
+                message: None,
+            }),
+        ),
     ]
 }
 
@@ -3070,6 +3133,128 @@ fn responses_match_fixtures() {
                 },
             )
             .unwrap(),
+        ),
+        (
+            "worktree_diff",
+            ControlMessage::ok(
+                27,
+                &WorktreeDiff {
+                    base: "main".into(),
+                    merge_base: "5b1c0f3e8f6d2a4c7b9e0d1f2a3b4c5d6e7f8091".into(),
+                    files: vec![
+                        DiffFile {
+                            path: "src/login.rs".into(),
+                            old_path: Some("src/signin.rs".into()),
+                            status: DiffStatus::Renamed,
+                            additions: 12,
+                            deletions: 3,
+                            binary: false,
+                        },
+                        DiffFile {
+                            path: "assets/logo.png".into(),
+                            old_path: None,
+                            status: DiffStatus::Added,
+                            additions: 0,
+                            deletions: 0,
+                            binary: true,
+                        },
+                        DiffFile {
+                            path: "old.txt".into(),
+                            old_path: None,
+                            status: DiffStatus::Deleted,
+                            additions: 0,
+                            deletions: 7,
+                            binary: false,
+                        },
+                        DiffFile {
+                            path: "README.md".into(),
+                            old_path: None,
+                            status: DiffStatus::Modified,
+                            additions: 1,
+                            deletions: 1,
+                            binary: false,
+                        },
+                    ],
+                    patch_truncated: true,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_diff_empty",
+            ControlMessage::ok(
+                28,
+                &WorktreeDiff {
+                    base: "main".into(),
+                    merge_base: "5b1c0f3e8f6d2a4c7b9e0d1f2a3b4c5d6e7f8091".into(),
+                    files: vec![],
+                    patch_truncated: false,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_file_diff",
+            ControlMessage::ok(
+                29,
+                &WorktreeFileDiff {
+                    patch: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n".into(),
+                    truncated: false,
+                    binary: false,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_file_diff_truncated_binary",
+            ControlMessage::ok(
+                30,
+                &WorktreeFileDiff {
+                    patch: "Binary files /dev/null and b/assets/logo.png differ\n".into(),
+                    truncated: true,
+                    binary: true,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_merged",
+            ControlMessage::ok(
+                31,
+                &WorktreeMerged {
+                    commit: "9d8c7b6a5f4e3d2c1b0a99887766554433221100".into(),
+                    target: "main".into(),
+                    branch: "feature/login".into(),
+                    strategy: MergeStrategy::Squash,
+                    source_dirty: true,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_merged_clean",
+            ControlMessage::ok(
+                32,
+                &WorktreeMerged {
+                    commit: "9d8c7b6a5f4e3d2c1b0a99887766554433221100".into(),
+                    target: "main".into(),
+                    branch: "feature/login".into(),
+                    strategy: MergeStrategy::Merge,
+                    source_dirty: false,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "error_worktree_merge_conflict",
+            ControlMessage::err(
+                33,
+                ErrorBody {
+                    code: ErrorCode::Conflict,
+                    message: "merging `feature/login` into `main` conflicts in 2 file(s): a.txt, src/lib.rs; nothing was changed".into(),
+                    data: Some(serde_json::json!({"conflicts": ["a.txt", "src/lib.rs"]})),
+                },
+            ),
         ),
         (
             "worktree_removed",

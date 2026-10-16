@@ -3,6 +3,7 @@
 pub mod actions;
 pub(crate) mod agents;
 mod assistant;
+mod changes;
 pub mod chat;
 mod daemon;
 mod daemon_popover;
@@ -22,6 +23,7 @@ pub mod registry;
 mod remote;
 mod render;
 mod resources;
+mod review;
 pub mod settings_schema;
 mod settings_sheet;
 pub mod style;
@@ -32,6 +34,7 @@ mod workspaces;
 mod worktrees;
 
 pub use agents::{AgentPicker, CODEX, Models};
+pub use changes::{ChangesEvent, ChangesView, hunk_ranges};
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use harnesses::{Detection, HARNESSES, Harness, HarnessDirectory, Listing};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};

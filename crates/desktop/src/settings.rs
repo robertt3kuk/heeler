@@ -757,6 +757,27 @@ impl ResourcesSort {
     }
 }
 
+/// Which tasks the Tasks panel lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TasksScope {
+    /// Only tasks of the workspace the window shows.
+    #[default]
+    Workspace,
+    /// The tasks of every workspace.
+    All,
+}
+
+impl TasksScope {
+    /// The value in `settings.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            TasksScope::Workspace => "workspace",
+            TasksScope::All => "all",
+        }
+    }
+}
+
 /// The `resources` namespace: the resources panel (processes per session, CPU and memory).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -778,8 +799,32 @@ impl Default for ResourcesSettings {
     }
 }
 
+/// The `tasks` namespace: what the Tasks panel lists (`docs/design.md` § Tasks panel).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct TasksSettings {
+    /// List tasks that are done or cancelled. Off, they are hidden and the tasks that waited
+    /// for them move up (failed tasks always stay).
+    pub show_done: bool,
+    /// `workspace` or `all`.
+    pub scope: TasksScope,
+}
+
+impl Default for TasksSettings {
+    fn default() -> Self {
+        Self {
+            show_done: true,
+            scope: TasksScope::Workspace,
+        }
+    }
+}
+
 impl Setting for ResourcesSettings {
     const NAMESPACE: &'static str = "resources";
+}
+
+impl Setting for TasksSettings {
+    const NAMESPACE: &'static str = "tasks";
 }
 
 /// What closing the last window does.
@@ -909,6 +954,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<ChatSettings>();
     store.register::<AgentsSettings>();
     store.register::<ResourcesSettings>();
+    store.register::<TasksSettings>();
 }
 
 /// Panels use this for `PanelId` lookups without importing the model.
@@ -1097,6 +1143,7 @@ mod tests {
             "chat",
             "agents",
             "resources",
+            "tasks",
         ] {
             assert!(
                 schema["namespaces"][ns].is_object(),

@@ -740,7 +740,10 @@ fn dragging_a_panel_tab_to_a_pane_and_to_another_dock(cx: &mut TestAppContext) {
     let target = bounds(&view, cx, Region::Pane(pane));
     drag(cx, center_of(tab), center_of(target));
     let s = state(&view, cx);
-    assert_eq!(s.docks.right.panels, vec![PanelId::new("agents")]);
+    assert_eq!(
+        s.docks.right.panels,
+        vec![PanelId::new("agents"), PanelId::new("tasks")]
+    );
     assert!(
         s.pane(pane)
             .unwrap()
@@ -834,7 +837,11 @@ fn right_click_menus_list_the_documented_entries(cx: &mut TestAppContext) {
     );
     assert_eq!(
         state(&view, cx).docks.right.panels,
-        vec![PanelId::new("inspector"), PanelId::new("agents")]
+        vec![
+            PanelId::new("inspector"),
+            PanelId::new("agents"),
+            PanelId::new("tasks")
+        ]
     );
 
     // "Close" on the center tab menu.

@@ -461,6 +461,30 @@ impl Connection {
         client.ui_command_result(result).await
     }
 
+    /// True while connected to a daemon that advertised capability `task`
+    /// ([`Client::supports_tasks`]); false when disconnected.
+    pub fn supports_tasks(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_tasks())
+    }
+
+    /// True while connected to a daemon that advertised capability `harness.acp`
+    /// ([`Client::supports_harness_chat`]); false when disconnected.
+    pub fn supports_harness_chat(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_harness_chat())
+    }
+
+    /// True while connected to a daemon that advertised capability `worktree.review`
+    /// ([`Client::supports_worktree_review`]); false when disconnected.
+    pub fn supports_worktree_review(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_worktree_review())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

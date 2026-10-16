@@ -1,4 +1,5 @@
-//! Git worktrees (protocol 0.14, capability `worktree`): `worktree.create`, `.list`, `.remove`.
+//! Git worktrees (protocol 0.14, capability `worktree`): `worktree.create`, `.list`, `.remove`;
+//! review and merge (protocol 0.21, capability `worktree.review`) in [`review`].
 //!
 //! git is the source of truth. Worktrees are discovered with `git worktree list --porcelain -z`
 //! in the main checkout of every repository the workspace's roots belong to; Hutan remembers
@@ -31,11 +32,16 @@ use crate::placement;
 use crate::projects;
 use crate::registry::{RegistryHandle, log_write, now_ms};
 
+mod review;
+
 /// Reads (list, status, rev-parse) finish well within this, even in a large repository.
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// `worktree add` checks a whole tree out and `worktree remove` deletes one.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// A merge or rebase rewrites the files of a checkout (and runs no hooks).
+const WORKTREE_MERGE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The worktree service: git on one side, the registry (workspaces, sessions) and storage on
 /// the other.
@@ -534,16 +540,20 @@ fn git_failed(what: &str, output: &GitOutput) -> ErrorBody {
     invalid_state(format!("git {what} failed: {}", output.message()))
 }
 
-/// Runs `git args` in `cwd`: no terminal prompt, no optional locks (a status must not rewrite
-/// the index under a running agent), English messages, the caller's `GIT_*` location variables
-/// ignored. Killed when it outlives `limit`.
-async fn run_git(cwd: &Path, args: &[&OsStr], limit: Duration) -> Result<GitOutput, ErrorBody> {
+/// `git args` in `cwd` as a command: no terminal prompt, no optional locks (a status must not
+/// rewrite the index under a running agent), no editor or pager, English messages, the caller's
+/// `GIT_*` location variables ignored, stdin closed. Killed when dropped.
+fn git_command(cwd: &Path, args: &[&OsStr]) -> Command {
     let mut command = Command::new("git");
     command
         .current_dir(cwd)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
+        .env("GIT_MERGE_AUTOEDIT", "no")
+        .env("GIT_PAGER", "cat")
         .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -555,31 +565,41 @@ async fn run_git(cwd: &Path, args: &[&OsStr], limit: Duration) -> Result<GitOutp
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    command
+}
+
+/// What running git failed with, before it printed anything: not installed, cannot start, or
+/// outlived `limit`.
+fn git_unavailable(error: &std::io::Error) -> ErrorBody {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        ErrorBody::new(
+            ErrorCode::Internal,
+            "git is not installed (no `git` on the daemon's PATH)",
+        )
+    } else {
+        ErrorBody::new(ErrorCode::Internal, format!("could not run git: {error}"))
+    }
+}
+
+fn git_timed_out(args: &[&OsStr], limit: Duration) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::Internal,
+        format!(
+            "git {} timed out after {}s",
+            args.first()
+                .map_or_else(String::new, |a| a.to_string_lossy().into_owned()),
+            limit.as_secs()
+        ),
+    )
+}
+
+/// Runs `git args` in `cwd` (see [`git_command`]). Killed when it outlives `limit`.
+async fn run_git(cwd: &Path, args: &[&OsStr], limit: Duration) -> Result<GitOutput, ErrorBody> {
+    let mut command = git_command(cwd, args);
     let output = match tokio::time::timeout(limit, command.output()).await {
         Ok(Ok(output)) => output,
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ErrorBody::new(
-                ErrorCode::Internal,
-                "git is not installed (no `git` on the daemon's PATH)",
-            ));
-        }
-        Ok(Err(error)) => {
-            return Err(ErrorBody::new(
-                ErrorCode::Internal,
-                format!("could not run git: {error}"),
-            ));
-        }
-        Err(_) => {
-            return Err(ErrorBody::new(
-                ErrorCode::Internal,
-                format!(
-                    "git {} timed out after {}s",
-                    args.first()
-                        .map_or_else(String::new, |a| a.to_string_lossy().into_owned()),
-                    limit.as_secs()
-                ),
-            ));
-        }
+        Ok(Err(error)) => return Err(git_unavailable(&error)),
+        Err(_) => return Err(git_timed_out(args, limit)),
     };
     Ok(GitOutput {
         stdout: output.stdout,

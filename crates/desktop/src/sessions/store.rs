@@ -12,7 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use hutan_client::{Connection, ConnectionState, Notice, StoreState};
 use hutan_core::agent::ModelInfo;
-use hutan_core::{AgentObservation, ApprovalId, Epoch, SessionId, TerminalId, WorkspaceId};
+use hutan_core::{
+    AgentObservation, ApprovalId, Epoch, SessionId, Task as DaemonTask, TaskId, TerminalId,
+    WorkspaceId,
+};
 use hutan_protocol::chat::{ApprovalInfo, ChatCreate};
 use hutan_protocol::messages::{
     RecentProject, RecentProjects, Request, SessionCreate, SessionInfo, SessionRef, SessionRename,
@@ -21,8 +24,13 @@ use hutan_protocol::messages::{
     WorkspaceRename, WorkspaceRoot,
 };
 use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
+use hutan_protocol::task::{
+    TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
+    TaskStarted, TaskUpdate,
+};
 use hutan_protocol::worktree::{
-    WorktreeCreate, WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeRemove,
+    WorktreeCreate, WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff, WorktreeFileDiffRequest,
+    WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeMerge, WorktreeMerged, WorktreeRemove,
     WorktreeRemoved,
 };
 use hutan_terminal_view::DefaultColors;
@@ -32,6 +40,7 @@ use super::agents::{self, AgentAttentionChanged, AgentBadge};
 use super::attention::{
     AttentionEntry, AttentionKind, AttentionTracker, Presentation, Unread, classify, present,
 };
+use super::tasks::TaskBook;
 use super::terminal::TerminalSession;
 
 /// Notifications that arrive this soon after (re)connecting are replays of what happened before
@@ -108,6 +117,10 @@ pub struct SessionsStore {
     focus_task: Option<(u64, Task<()>)>,
     /// The session of the Assistant panel while the panel has the focus.
     assistant_focused: Option<SessionId>,
+    /// The daemon's tasks (`task.list`, then `task.updated` / `task.removed`).
+    tasks: TaskBook,
+    /// The `task.list` in flight; dropped (cancelled) with the connection.
+    tasks_loading: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -186,6 +199,8 @@ impl SessionsStore {
             focus_sent: None,
             focus_task: None,
             assistant_focused: None,
+            tasks: TaskBook::default(),
+            tasks_loading: None,
             _tasks: vec![state_task, notice_task],
         }
     }
@@ -199,8 +214,12 @@ impl SessionsStore {
         } else if !connected {
             // Notices that arrive while (re)connecting replay what happened meanwhile.
             self.connected_since = None;
+            self.tasks_loading = None;
         }
         self.state = latest;
+        if connected && !was_connected {
+            self.load_tasks(cx);
+        }
         if connected {
             self.attention
                 .observe(self.state.epoch, &self.state.sessions);
@@ -333,13 +352,18 @@ impl SessionsStore {
             | Notice::NotifyIntent { .. }
             // The desktop lists worktrees when a command asks for them.
             | Notice::WorktreesChanged { .. }
-            // The tasks panel is M7-C's.
-            | Notice::TaskUpdated { .. }
-            | Notice::TaskRemoved { .. }
             // The resources panel listens for itself.
             | Notice::ResourcesUpdated { .. }
             // `workbench/remote.rs` follows `Connection::notices` itself.
             | Notice::UiCommand { .. } => {}
+            Notice::TaskUpdated { task } => {
+                self.tasks.updated((**task).clone());
+                cx.notify();
+            }
+            Notice::TaskRemoved { id } => {
+                self.tasks.removed(*id);
+                cx.notify();
+            }
             // A login or logout session of a harness ended: whoever lists the accounts asks
             // again.
             Notice::AccountsChanged { harness } => cx.emit(AccountsChanged {
@@ -889,7 +913,130 @@ impl SessionsStore {
         })
     }
 
+    // ---- tasks -----------------------------------------------------------------------------
+
+    /// The daemon's tasks as this window knows them.
+    pub fn tasks(&self) -> &TaskBook {
+        &self.tasks
+    }
+
+    /// Asks for the tasks of every workspace; events that arrive meanwhile win over the answer.
+    fn load_tasks(&mut self, cx: &mut Context<Self>) {
+        if !self.connection.supports_tasks() {
+            return;
+        }
+        self.tasks.start_loading();
+        let listing = self.call(
+            Request::TaskList(TaskListRequest::default()),
+            |list: TaskList| list.tasks,
+            cx,
+        );
+        self.tasks_loading = Some(cx.spawn(async move |this, cx| {
+            let Ok(listed) = listing.await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.tasks.merge_listed(listed);
+                this.tasks_loading = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// `task.create`.
+    pub fn create_task(
+        &self,
+        request: TaskCreate,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<DaemonTask, String>> {
+        self.call(
+            Request::TaskCreate(request),
+            |created: TaskResult| created.task,
+            cx,
+        )
+    }
+
+    /// `task.update` (a state change, or fields).
+    pub fn update_task(
+        &self,
+        request: TaskUpdate,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<DaemonTask, String>> {
+        self.call(
+            Request::TaskUpdate(request),
+            |updated: TaskResult| updated.task,
+            cx,
+        )
+    }
+
+    /// `task.delete`: the ids that went.
+    pub fn delete_task(
+        &self,
+        id: TaskId,
+        cascade: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<TaskId>, String>> {
+        self.call(
+            Request::TaskDelete(TaskDelete { id, cascade }),
+            |deleted: TaskDeleted| deleted.removed,
+            cx,
+        )
+    }
+
+    /// `task.start`.
+    pub fn start_task(
+        &self,
+        id: TaskId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<TaskStarted, String>> {
+        self.call(Request::TaskStart(TaskRef { id }), |started| started, cx)
+    }
+
     // ---- worktree commands -----------------------------------------------------------------
+
+    /// `worktree.diff`: what a checkout changed against its base.
+    pub fn worktree_diff(
+        &self,
+        request: WorktreeDiffRequest,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeDiff, String>> {
+        self.call(Request::WorktreeDiff(request), |diff| diff, cx)
+    }
+
+    /// `worktree.file_diff`: the patch of one changed file.
+    pub fn worktree_file_diff(
+        &self,
+        request: WorktreeFileDiffRequest,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeFileDiff, String>> {
+        self.call(Request::WorktreeFileDiff(request), |diff| diff, cx)
+    }
+
+    /// `worktree.merge`. The error text carries git's reason; for a conflict the files follow
+    /// it, one per line after `conflict:`.
+    pub fn merge_worktree(
+        &self,
+        request: WorktreeMerge,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeMerged, String>> {
+        let connection = self.connection.clone();
+        cx.background_spawn(async move {
+            connection
+                .call::<WorktreeMerged>(Request::WorktreeMerge(request))
+                .await
+                .map_err(|error| match &error {
+                    hutan_client::ClientError::Remote(body) => {
+                        let mut text = body.message.clone();
+                        for file in hutan_protocol::worktree::conflict_files(body) {
+                            text.push_str(&format!("\nconflict: {file}"));
+                        }
+                        text
+                    }
+                    other => other.to_string(),
+                })
+        })
+    }
 
     /// `worktree.list`: the worktrees of the repositories of `workspace`.
     pub fn list_worktrees(
@@ -900,6 +1047,15 @@ impl SessionsStore {
         let request = Request::WorktreeList(WorktreeListRequest {
             workspace_id: Some(workspace),
         });
+        self.call(request, |list: WorktreeList| list.worktrees, cx)
+    }
+
+    /// `worktree.list` for every workspace.
+    pub fn list_all_worktrees(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<WorktreeInfo>, String>> {
+        let request = Request::WorktreeList(WorktreeListRequest { workspace_id: None });
         self.call(request, |list: WorktreeList| list.worktrees, cx)
     }
 

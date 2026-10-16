@@ -181,6 +181,26 @@ pub enum Region {
     AgentBadge(BadgeSite, SessionId),
     /// The placement badge (`main` / `wt <branch>`) of a session at one of its places.
     PlacementBadge(BadgeSite, SessionId),
+    /// A control of the tasks panel, by name (`new`, `chip-done`, `chip-scope`, `form-title`,
+    /// `form-prompt`, `form-command`, `form-branch`, `form-create`, `form-cancel`, `form-auto`,
+    /// `run-terminal`, `run-codex`, `run-omp`, `place-main`, `place-worktree`, `cascade-yes`,
+    /// `cascade-no`, `empty-new`).
+    Tasks(&'static str),
+    /// Row `index` of the tasks panel's tree, top to bottom.
+    TaskRow(usize),
+    /// An action button of row `index` of the tasks panel (`start`, `done`, `cancel`, `reset`,
+    /// `delete`, `changes`).
+    TaskAction(usize, &'static str),
+    /// Entry `index` of the new-task form's "After" list.
+    TaskDep(usize),
+    /// A control of the Changes view, by name (`toggle`, `refresh`, `merge`, `merge-confirm`,
+    /// `merge-cancel`, `strategy-merge`, `strategy-squash`, `strategy-rebase`, `message`,
+    /// `remove`, `keep`).
+    Changes(&'static str),
+    /// File `index` of the Changes view's list, top to bottom.
+    ChangesFile(usize),
+    /// Hunk header `index` of the shown file's diff, top to bottom.
+    ChangesHunk(usize),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -326,6 +346,9 @@ pub struct Workbench {
     pub(crate) sheet: Option<SettingsSheet>,
     pub(crate) resizing: Option<Resizing>,
     pub(crate) panel_views: HashMap<PanelId, AnyView>,
+    /// The Changes view of every checkout a tab shows (see `review.rs`), by directory.
+    pub(crate) changes_views: HashMap<String, Entity<super::changes::ChangesView>>,
+    pub(crate) changes_subscriptions: Vec<Subscription>,
     pub(crate) notice: Option<SharedString>,
     pub(crate) last_title: String,
     pub(crate) regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
@@ -560,6 +583,8 @@ impl Workbench {
             sheet: None,
             resizing: None,
             panel_views: HashMap::new(),
+            changes_views: HashMap::new(),
+            changes_subscriptions: Vec::new(),
             notice: None,
             last_title: String::new(),
             regions,
@@ -701,6 +726,19 @@ impl Workbench {
                 self.panels.title(panel),
             ),
             ItemRef::Placeholder { title } => ("▫".into(), title.clone().into()),
+            ItemRef::Changes { path } => (
+                "±".into(),
+                match self.changes_views.get(path) {
+                    Some(view) => view.read(cx).title().into(),
+                    None => format!(
+                        "Changes · {}",
+                        std::path::Path::new(path)
+                            .file_name()
+                            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned())
+                    )
+                    .into(),
+                },
+            ),
         }
     }
 

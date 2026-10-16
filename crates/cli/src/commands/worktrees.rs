@@ -1,4 +1,4 @@
-//! `hutan wt new|ls|rm` and the worktree step of `hutan new --worktree`.
+//! `hutan wt new|ls|rm|diff|merge` and the worktree step of `hutan new --worktree`.
 
 use std::path::{Path, PathBuf};
 
@@ -6,14 +6,16 @@ use hutan_client::Client;
 use hutan_core::WorkspaceId;
 use hutan_protocol::messages::{CreatedBy, Request, WorkspaceKind, WorkspaceOpen, WorkspaceOpened};
 use hutan_protocol::worktree::{
-    WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeRemove,
+    DiffFile, DiffStatus, MergeStrategy, WorktreeCreate, WorktreeCreated, WorktreeDiff,
+    WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeInfo, WorktreeList, WorktreeMerge,
+    WorktreeMerged, WorktreeRemove, conflict_files,
 };
 use serde_json::json;
 
 use super::Ctx;
 use super::sessions::with_source;
 use super::workspaces::workspace_target;
-use crate::args::{WtCommand, WtLsArgs, WtNewArgs, WtRmArgs};
+use crate::args::{WtCommand, WtDiffArgs, WtLsArgs, WtMergeArgs, WtNewArgs, WtRmArgs};
 use crate::error::CliError;
 
 /// Where `hutan new --worktree` starts its session.
@@ -28,7 +30,121 @@ impl Ctx {
             WtCommand::New(args) => self.wt_new(args).await,
             WtCommand::Ls(args) => self.wt_ls(args).await,
             WtCommand::Rm(args) => self.wt_rm(args).await,
+            WtCommand::Diff(args) => self.wt_diff(args).await,
+            WtCommand::Merge(args) => self.wt_merge(args).await,
         }
+    }
+
+    /// The worktree `target` names among those of the workspace the command is scoped to.
+    async fn wt_target(
+        &self,
+        client: &Client,
+        target: &str,
+        workspace: Option<String>,
+    ) -> Result<WorktreeInfo, CliError> {
+        let scope = self.wt_scope(client, workspace).await?.map(|s| s.0);
+        let list = client
+            .worktree_list(scope)
+            .await
+            .map_err(|e| self.fail(e))?;
+        resolve_worktree(&list, target, &std::env::current_dir()?).cloned()
+    }
+
+    async fn wt_diff(&self, args: WtDiffArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let target = self
+            .wt_target(&client, &args.target, args.workspace)
+            .await?;
+        let include_uncommitted = !args.committed;
+        let diff = client
+            .worktree_diff(WorktreeDiffRequest {
+                path: target.path.clone(),
+                base: args.base.clone(),
+                include_uncommitted,
+            })
+            .await
+            .map_err(|e| self.fail(e))?;
+        let mut patch = String::new();
+        let mut cut: Vec<&str> = Vec::new();
+        if !args.stat {
+            for file in &diff.files {
+                let one = client
+                    .worktree_file_diff(WorktreeFileDiffRequest {
+                        path: target.path.clone(),
+                        file: file.path.clone(),
+                        old_path: file.old_path.clone(),
+                        base: args.base.clone(),
+                        include_uncommitted,
+                    })
+                    .await
+                    .map_err(|e| self.fail(e))?;
+                if one.truncated {
+                    cut.push(&file.path);
+                }
+                patch.push_str(&one.patch);
+                if one.truncated && !patch.ends_with('\n') {
+                    patch.push('\n');
+                }
+            }
+        }
+        if !self.json && !cut.is_empty() {
+            eprintln!("note: the patch of {} is cut at 2 MiB", cut.join(", "));
+        }
+        if !self.json && diff.patch_truncated && cut.is_empty() {
+            eprintln!("note: the diff is larger than the daemon shows (20 MiB or 5000 files)");
+        }
+        let json = json!({
+            "path": target.path,
+            "base": diff.base,
+            "merge_base": diff.merge_base,
+            "files": diff.files,
+            "patch_truncated": diff.patch_truncated,
+            "patch": (!args.stat).then_some(&patch),
+        });
+        self.print(&json, || {
+            if args.stat {
+                stat_text(&diff)
+            } else {
+                patch.trim_end_matches('\n').to_owned()
+            }
+        })
+    }
+
+    async fn wt_merge(&self, args: WtMergeArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let target = self
+            .wt_target(&client, &args.target, args.workspace)
+            .await?;
+        let strategy = match (args.squash, args.rebase) {
+            (true, _) => MergeStrategy::Squash,
+            (_, true) => MergeStrategy::Rebase,
+            _ => MergeStrategy::Merge,
+        };
+        let merged = client
+            .worktree_merge(WorktreeMerge {
+                path: target.path.clone(),
+                into: args.into,
+                strategy,
+                message: args.message,
+            })
+            .await
+            .map_err(|e| self.fail_merge(e))?;
+        self.print(&merged, || merged_text(&target, &merged))
+    }
+
+    /// A refused merge: for a conflict the files are listed one per line after the reason.
+    fn fail_merge(&self, error: hutan_client::ClientError) -> CliError {
+        if let hutan_client::ClientError::Remote(body) = &error {
+            let files = conflict_files(body);
+            if !files.is_empty() {
+                let mut message = body.message.clone();
+                for file in files {
+                    message.push_str(&format!("\n  conflict: {file}"));
+                }
+                return CliError::Failed(message);
+            }
+        }
+        self.fail(error)
     }
 
     async fn wt_new(&self, args: WtNewArgs) -> Result<(), CliError> {
@@ -269,6 +385,74 @@ fn reusable<'a>(
             Err(CliError::Usage(message))
         }
     }
+}
+
+/// `git diff --stat`-like lines: path, `+adds -dels`, and a summary.
+fn stat_text(diff: &WorktreeDiff) -> String {
+    if diff.files.is_empty() {
+        return format!("no changes against {}", diff.base);
+    }
+    let name = |file: &DiffFile| match (&file.old_path, file.status) {
+        (Some(old), DiffStatus::Renamed) => format!("{old} => {}", file.path),
+        _ => file.path.clone(),
+    };
+    let width = diff
+        .files
+        .iter()
+        .map(|f| name(f).chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines: Vec<String> = diff
+        .files
+        .iter()
+        .map(|file| {
+            let status = match file.status {
+                DiffStatus::Added => 'A',
+                DiffStatus::Modified => 'M',
+                DiffStatus::Deleted => 'D',
+                DiffStatus::Renamed => 'R',
+            };
+            let counts = if file.binary {
+                "binary".to_owned()
+            } else {
+                format!("+{} -{}", file.additions, file.deletions)
+            };
+            format!("{status} {:<width$}  {counts}", name(file))
+        })
+        .collect();
+    let additions: u64 = diff.files.iter().map(|f| u64::from(f.additions)).sum();
+    let deletions: u64 = diff.files.iter().map(|f| u64::from(f.deletions)).sum();
+    lines.push(format!(
+        "{} file(s) changed, {additions} insertion(s)(+), {deletions} deletion(s)(-) against {}",
+        diff.files.len(),
+        diff.base
+    ));
+    lines.join("\n")
+}
+
+fn merged_text(source: &WorktreeInfo, merged: &WorktreeMerged) -> String {
+    let how = match merged.strategy {
+        MergeStrategy::Merge => "merged",
+        MergeStrategy::Squash => "squash-merged",
+        MergeStrategy::Rebase => "rebased and merged",
+    };
+    let mut text = format!(
+        "{how} {} into {} ({})",
+        merged.branch,
+        merged.target,
+        merged.commit.chars().take(7).collect::<String>()
+    );
+    if merged.source_dirty {
+        text.push_str(&format!(
+            "\n{} still has uncommitted changes, which are not part of the merge",
+            source.path.display()
+        ));
+    }
+    text.push_str(&format!(
+        "\nremove it with `hutan wt rm {} --delete-branch`",
+        source.path.display()
+    ));
+    text
 }
 
 fn branch_text(worktree: &WorktreeInfo) -> String {

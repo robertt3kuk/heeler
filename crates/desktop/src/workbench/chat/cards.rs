@@ -905,6 +905,11 @@ impl ChatView {
 // ---- pieces without state -------------------------------------------------------------------
 
 fn counts(diff: &FileDiff, look: &Look) -> AnyElement {
+    counts_of(diff.added, diff.removed, look)
+}
+
+/// `+3 −1` in the diff colors.
+pub(crate) fn counts_of(added: usize, removed: usize, look: &Look) -> AnyElement {
     let (theme, tokens) = (&look.theme, &look.tokens);
     div()
         .flex()
@@ -914,19 +919,19 @@ fn counts(diff: &FileDiff, look: &Look) -> AnyElement {
         .child(
             div()
                 .text_color(theme.success)
-                .child(SharedString::from(format!("+{}", diff.added))),
+                .child(SharedString::from(format!("+{added}"))),
         )
         .child(
             div()
                 .text_color(theme.danger)
-                .child(SharedString::from(format!("−{}", diff.removed))),
+                .child(SharedString::from(format!("−{removed}"))),
         )
         .into_any_element()
 }
 
-/// A unified diff: line numbers, a sign and the text; additions and removals tinted
-/// green and red.
-fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
+/// One line of a unified diff: the old and the new line number, a sign and the text; additions
+/// and removals tinted green and red, hunk headers in the accent.
+pub(crate) fn diff_row(line: &DiffLine, look: &Look) -> gpui::Div {
     let (theme, tokens) = (&look.theme, &look.tokens);
     let number = |n: Option<u32>| {
         div()
@@ -939,29 +944,33 @@ fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
                 n.map_or(String::new(), |n| n.to_string()),
             ))
     };
-    let row = |line: &DiffLine| {
-        let (sign, tint, text_color) = match line.kind {
-            LineKind::Add => ("+", Some(theme.success.opacity(0.16)), theme.fg),
-            LineKind::Remove => ("−", Some(theme.danger.opacity(0.16)), theme.fg),
-            LineKind::Context => (" ", None, theme.fg),
-            LineKind::Hunk => ("", Some(theme.accent.opacity(0.10)), theme.muted),
-            LineKind::Note => ("", None, theme.muted),
-        };
-        let shown = if matches!(line.kind, LineKind::Hunk) {
-            line.text.clone()
-        } else {
-            line.text.replace('\t', "    ")
-        };
-        div()
-            .flex()
-            .min_w_full()
-            .when_some(tint, |s, tint| s.bg(tint))
-            .text_color(text_color)
-            .child(number(line.old))
-            .child(number(line.new))
-            .child(div().flex_none().w(px(tokens.font_size)).child(sign))
-            .child(div().flex_none().child(SharedString::from(shown)))
+    let (sign, tint, text_color) = match line.kind {
+        LineKind::Add => ("+", Some(theme.success.opacity(0.16)), theme.fg),
+        LineKind::Remove => ("−", Some(theme.danger.opacity(0.16)), theme.fg),
+        LineKind::Context => (" ", None, theme.fg),
+        LineKind::Hunk => ("", Some(theme.accent.opacity(0.10)), theme.muted),
+        LineKind::Note => ("", None, theme.muted),
     };
+    let shown = if matches!(line.kind, LineKind::Hunk) {
+        line.text.clone()
+    } else {
+        line.text.replace('\t', "    ")
+    };
+    div()
+        .flex()
+        .min_w_full()
+        .when_some(tint, |s, tint| s.bg(tint))
+        .text_color(text_color)
+        .child(number(line.old))
+        .child(number(line.new))
+        .child(div().flex_none().w(px(tokens.font_size)).child(sign))
+        .child(div().flex_none().child(SharedString::from(shown)))
+}
+
+/// A unified diff: line numbers, a sign and the text; additions and removals tinted
+/// green and red.
+fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
+    let (theme, tokens) = (&look.theme, &look.tokens);
     let shown = diff.lines.len().min(MAX_LINES);
     let hidden = diff.lines.len() - shown;
     div()
@@ -975,7 +984,12 @@ fn diff_view(diff: &FileDiff, look: &Look, ids: &mut Ids) -> AnyElement {
         .text_size(px(tokens.font_size - 0.5))
         .whitespace_nowrap()
         .py(px(tokens.spacing))
-        .children(diff.lines.iter().take(shown).map(row))
+        .children(
+            diff.lines
+                .iter()
+                .take(shown)
+                .map(|line| diff_row(line, look)),
+        )
         .when(hidden > 0, |s| {
             s.child(
                 div()

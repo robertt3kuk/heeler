@@ -94,6 +94,9 @@ actions!(
         OpenAssistant,
         NewTerminalInWorktree,
         RemoveWorktree,
+        NewTask,
+        ShowTasksPanel,
+        ReviewChanges,
     ]
 );
 
@@ -248,6 +251,14 @@ data_actions! {
     OpenHistoryHit(HutanTarget);
     /// Reveal the transcript file of a history hit of another tool in Finder.
     RevealHistoryFile(String);
+    /// Show a line in the workbench's notice area (panels report results with it).
+    Notify(String);
+    /// Open the Changes view of the checkout a task runs in (the task's id).
+    ReviewTaskChanges(String);
+    /// Show the menu of a session's placement badge (Review Changes…, Copy checkout path).
+    ShowPlacementMenu(SessionMenuAt);
+    /// Open the Changes view of the checkout at this path (a worktree or a main checkout).
+    ReviewChangesAt(String);
 }
 
 /// Where to open the context menu of a workspace.
@@ -489,6 +500,11 @@ pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: boo
     out.extend([
         command("Worktree: New Terminal in Worktree…", NewTerminalInWorktree),
         command("Worktree: Remove…", RemoveWorktree),
+        command("Worktree: Review Changes…", ReviewChanges),
+    ]);
+    out.extend([
+        command("Tasks: New Task…", NewTask),
+        command("Tasks: Show Panel", ShowTasksPanel),
     ]);
     out.extend([
         command(

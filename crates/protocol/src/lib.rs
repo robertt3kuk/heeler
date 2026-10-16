@@ -8,6 +8,8 @@
 //!   `projects.auto`).
 //! - [`ui`]: the agent control surface: action catalog, layout, `ui.run` (protocol 0.21,
 //!   capability `control`).
+//! - [`worktree`] also carries `worktree.diff`, `.file_diff` and `.merge` (protocol 0.22, capability
+//!   `worktree.review`).
 //! - [`task`]: tasks with dependencies (protocol 0.16, capability `task`).
 //! - [`chat`] also carries provenance and mid-stream partials (protocol 0.15, capability
 //!   `chat.provenance`); [`history`] hits carry their origin (path, terminal and block).
@@ -54,7 +56,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 21,
+    minor: 22,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

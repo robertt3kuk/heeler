@@ -52,8 +52,9 @@ use hutan_protocol::ui::{
     UiRan, UiRun, UiSetSetting, UiTarget,
 };
 use hutan_protocol::worktree::{
-    WorktreeCreate, WorktreeCreated, WorktreeInfo, WorktreeList, WorktreeListRequest,
-    WorktreeRemove, WorktreeRemoved,
+    WorktreeCreate, WorktreeCreated, WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff,
+    WorktreeFileDiffRequest, WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeMerge,
+    WorktreeMerged, WorktreeRemove, WorktreeRemoved,
 };
 use hutan_protocol::{
     ControlMessage, ErrorBody, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION,
@@ -109,6 +110,8 @@ pub(crate) const PROJECTS_CAPABILITY: &str = "projects.auto";
 /// Capability for `ui.*`, `session.send_text`, the `ui.command` event and `ClientInfo.origin`
 /// (protocol 0.21).
 pub(crate) const CONTROL_CAPABILITY: &str = "control";
+/// Capability for `worktree.diff`, `worktree.file_diff` and `worktree.merge` (protocol 0.22).
+pub(crate) const WORKTREE_REVIEW_CAPABILITY: &str = "worktree.review";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -130,6 +133,7 @@ const CAPABILITIES: &[&str] = &[
     PROJECTS_CAPABILITY,
     ASSISTANT_BACKEND_CAPABILITY,
     CONTROL_CAPABILITY,
+    WORKTREE_REVIEW_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -659,6 +663,35 @@ impl Client {
             .call(Request::WorkspaceDelete(WorkspaceDelete { workspace_id }))
             .await?;
         Ok(())
+    }
+
+    /// True when the daemon advertised capability `worktree.review` (protocol 0.22).
+    pub fn supports_worktree_review(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == WORKTREE_REVIEW_CAPABILITY)
+    }
+
+    /// The files a checkout changed against its base (`worktree.diff`).
+    pub async fn worktree_diff(
+        &self,
+        req: WorktreeDiffRequest,
+    ) -> Result<WorktreeDiff, ClientError> {
+        self.call(Request::WorktreeDiff(req)).await
+    }
+
+    /// The unified diff of one changed file (`worktree.file_diff`).
+    pub async fn worktree_file_diff(
+        &self,
+        req: WorktreeFileDiffRequest,
+    ) -> Result<WorktreeFileDiff, ClientError> {
+        self.call(Request::WorktreeFileDiff(req)).await
+    }
+
+    /// Merges a worktree's branch into the main checkout's branch (`worktree.merge`).
+    pub async fn worktree_merge(&self, req: WorktreeMerge) -> Result<WorktreeMerged, ClientError> {
+        self.call(Request::WorktreeMerge(req)).await
     }
 
     /// True when the daemon advertised capability `task` (protocol 0.16).

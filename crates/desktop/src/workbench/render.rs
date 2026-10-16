@@ -367,6 +367,30 @@ impl Workbench {
                 this.open_worktree_remove_picker(window, cx);
             }),
         )
+        .on_action(cx.listener(|this, _: &actions::NewTask, window, cx| {
+            this.new_task(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ShowTasksPanel, _, cx| {
+            this.show_tasks_panel(cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ReviewChanges, window, cx| {
+            this.open_review_picker(window, cx);
+        }))
+        .on_action(cx.listener(|this, a: &actions::Notify, _, cx| {
+            this.set_notice(a.0.clone(), cx);
+        }))
+        .on_action(
+            cx.listener(|this, a: &actions::ReviewTaskChanges, window, cx| {
+                if let Ok(task) = a.0.parse() {
+                    this.review_task_changes(task, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::ReviewChangesAt, window, cx| {
+                this.open_changes(std::path::PathBuf::from(&a.0), window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::NewAgent, window, cx| {
             this.new_agent(window, cx);
         }))
@@ -553,7 +577,15 @@ impl Workbench {
         .on_action(
             cx.listener(|this, a: &actions::ShowSessionMenu, window, cx| {
                 if let Ok(id) = a.0.session.parse() {
-                    let entries = this.session_menu(id);
+                    let entries = this.session_menu(id, cx);
+                    this.open_menu(a.0.position, entries, window, cx);
+                }
+            }),
+        )
+        .on_action(
+            cx.listener(|this, a: &actions::ShowPlacementMenu, window, cx| {
+                if let Ok(id) = a.0.session.parse() {
+                    let entries = this.placement_menu(id, cx);
                     this.open_menu(a.0.position, entries, window, cx);
                 }
             }),
@@ -1599,6 +1631,10 @@ impl Workbench {
             .into_any_element(),
             ItemRef::Terminal { session } => self.render_terminal_item(pane, session, window, cx),
             ItemRef::Chat { session } => self.render_chat_item(pane, session, cx),
+            ItemRef::Changes { path } => {
+                let view = self.changes_view(path, cx);
+                div().size_full().child(view).into_any_element()
+            }
         }
     }
 

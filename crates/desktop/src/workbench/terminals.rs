@@ -670,8 +670,8 @@ impl Workbench {
     }
 
     /// Context menu of a session (sessions panel, overview card, tab).
-    pub(crate) fn session_menu(&self, session: SessionId) -> Vec<MenuEntry> {
-        vec![
+    pub(crate) fn session_menu(&self, session: SessionId, cx: &gpui::App) -> Vec<MenuEntry> {
+        let mut entries = vec![
             Self::entry("Open", move |this, window, cx| {
                 this.open_session(session, window, cx);
             }),
@@ -696,7 +696,11 @@ impl Workbench {
             Self::entry("Copy Session ID", move |this, _, cx| {
                 this.copy_session_id(session, cx);
             }),
-        ]
+        ];
+        if let Some(review) = self.review_entry(session, cx) {
+            entries.insert(entries.len() - 1, review);
+        }
+        entries
     }
 
     // ---- attention & focus ------------------------------------------------------------------

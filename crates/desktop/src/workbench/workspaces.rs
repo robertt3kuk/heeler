@@ -47,6 +47,8 @@ pub enum PickerKind {
     Approvals,
     /// ⌘K "Worktree: Remove…": the removable worktrees of the active workspace.
     Worktrees,
+    /// ⌘K "Worktree: Review Changes…": the checkouts of the active workspace's repositories.
+    Changes,
 }
 
 /// What confirming a picker row does.
@@ -54,6 +56,8 @@ pub enum PickerKind {
 pub(crate) enum PickerAction {
     OpenFolder,
     RemoveWorktree(super::worktrees::WorktreeChoice),
+    /// Show the Changes view of this checkout.
+    ReviewChanges(PathBuf),
     OpenProject(PathBuf),
     Workspace(WorkspaceId),
     Session(SessionId),
@@ -130,7 +134,10 @@ impl PickerState {
     pub fn history_query(&self) -> Option<&str> {
         match self.kind {
             PickerKind::Jump => self.query.strip_prefix('?').map(str::trim),
-            PickerKind::Projects | PickerKind::Approvals | PickerKind::Worktrees => None,
+            PickerKind::Projects
+            | PickerKind::Approvals
+            | PickerKind::Worktrees
+            | PickerKind::Changes => None,
         }
     }
 
@@ -982,6 +989,7 @@ impl Workbench {
             PickerAction::RemoveWorktree(choice) => {
                 self.confirm_remove_worktree(choice, window, cx);
             }
+            PickerAction::ReviewChanges(path) => self.open_changes(path, window, cx),
             PickerAction::OpenProject(path) => self.open_project_path(path, window, cx),
             PickerAction::Workspace(workspace) => self.switch_workspace(workspace, window, cx),
             PickerAction::Session(session) => self.open_session(session, window, cx),
@@ -1060,7 +1068,7 @@ impl Workbench {
             picker.matches.is_empty(),
             picker.loading,
         ) {
-            (_, _, true) if picker.kind == PickerKind::Worktrees => {
+            (_, _, true) if matches!(picker.kind, PickerKind::Worktrees | PickerKind::Changes) => {
                 Some("Loading worktrees…".into())
             }
             (_, _, true) => Some("Loading recent projects…".into()),
@@ -1095,6 +1103,13 @@ impl Workbench {
                     "No worktree matches".into()
                 })
             }
+            (false, true, false) if picker.kind == PickerKind::Changes => {
+                Some(if picker.entries.is_empty() {
+                    "No checkouts to review".into()
+                } else {
+                    "No checkout matches".into()
+                })
+            }
             (false, true, false) => Some("Nothing matches".into()),
             (false, false, false) => None,
         };
@@ -1104,6 +1119,7 @@ impl Workbench {
             (PickerKind::Jump, false) => "Jump to ›",
             (PickerKind::Approvals, _) => "Review approvals ›",
             (PickerKind::Worktrees, _) => "Remove worktree ›",
+            (PickerKind::Changes, _) => "Review changes of ›",
         };
 
         Some(

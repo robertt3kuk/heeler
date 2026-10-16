@@ -181,10 +181,22 @@ impl Docks {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemRef {
-    Terminal { session: String },
-    Chat { session: String },
-    Panel { panel: PanelId },
-    Placeholder { title: String },
+    Terminal {
+        session: String,
+    },
+    Chat {
+        session: String,
+    },
+    Panel {
+        panel: PanelId,
+    },
+    Placeholder {
+        title: String,
+    },
+    /// The Changes view of a checkout (a worktree or a main checkout), by its directory.
+    Changes {
+        path: String,
+    },
 }
 
 impl ItemRef {
@@ -192,6 +204,10 @@ impl ItemRef {
         ItemRef::Placeholder {
             title: title.into(),
         }
+    }
+
+    pub fn changes(path: impl Into<String>) -> Self {
+        ItemRef::Changes { path: path.into() }
     }
 
     pub fn panel(id: &str) -> Self {

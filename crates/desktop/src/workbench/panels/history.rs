@@ -608,7 +608,7 @@ impl Focusable for HistoryPanel {
 
 // ---- rendering --------------------------------------------------------------------------------
 
-pub(super) fn pill(
+pub(crate) fn pill(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     active: bool,

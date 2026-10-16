@@ -5,6 +5,7 @@ pub mod agents;
 pub mod attention;
 mod placement;
 mod store;
+pub mod tasks;
 mod terminal;
 pub mod tree;
 pub mod workspaces;

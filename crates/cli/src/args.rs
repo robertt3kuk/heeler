@@ -307,6 +307,13 @@ pub enum WtCommand {
     /// Remove a worktree; refuses the main one, one with live sessions, and one with uncommitted
     /// changes unless --force
     Rm(WtRmArgs),
+    /// Show what a worktree changed against its base branch: its commits since they diverged,
+    /// plus uncommitted changes (a unified diff, or --stat)
+    Diff(WtDiffArgs),
+    /// Merge a worktree's branch into the main checkout's branch (a local commit; never
+    /// pushes); refuses a dirty main checkout, a target that is not checked out there, and
+    /// conflicts (which are aborted and listed)
+    Merge(WtMergeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -349,6 +356,44 @@ pub struct WtRmArgs {
     /// reported
     #[arg(long)]
     pub delete_branch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct WtDiffArgs {
+    /// The worktree's path, or its branch (see `hutan wt ls`); the main checkout works too
+    pub target: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// Compare against this branch or commit (default: the repository's default branch)
+    #[arg(long, value_name = "REF")]
+    pub base: Option<String>,
+    /// Only what is committed: leave out staged, unstaged and untracked changes
+    #[arg(long)]
+    pub committed: bool,
+    /// Print the changed files with their line counts instead of the patch
+    #[arg(long)]
+    pub stat: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct WtMergeArgs {
+    /// The worktree's path, or its branch (see `hutan wt ls`)
+    pub target: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// Merge into this branch, which the main checkout must have checked out (default: the
+    /// repository's default branch)
+    #[arg(long, value_name = "BRANCH")]
+    pub into: Option<String>,
+    /// One commit with the branch's changes instead of a merge commit
+    #[arg(long, conflicts_with = "rebase")]
+    pub squash: bool,
+    /// Rebase the branch onto the target, then fast-forward the target (linear history)
+    #[arg(long)]
+    pub rebase: bool,
+    /// The commit message (merge and squash)
+    #[arg(short = 'm', long, value_name = "MSG", conflicts_with = "rebase")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

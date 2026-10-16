@@ -35,7 +35,10 @@ use crate::resources::{
 use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskUpdate};
 use crate::tree::{AgentTreeRequest, NodeReport};
 use crate::ui::{SessionSendText, UiCommandResult, UiPublish, UiRun, UiSetSetting, UiTarget};
-use crate::worktree::{Placement, WorktreeCreate, WorktreeListRequest, WorktreeRemove};
+use crate::worktree::{
+    Placement, WorktreeCreate, WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeListRequest,
+    WorktreeMerge, WorktreeRemove,
+};
 
 /// Parameterless request body; encoded as `{}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -241,6 +244,18 @@ pub enum Request {
     /// Capability `worktree`: remove a worktree; answered with `WorktreeRemoved`.
     #[serde(rename = "worktree.remove")]
     WorktreeRemove(WorktreeRemove),
+    /// Capability `worktree.review` (protocol 0.22): the files a checkout changed against its
+    /// base; answered with `WorktreeDiff`. Read-only.
+    #[serde(rename = "worktree.diff")]
+    WorktreeDiff(WorktreeDiffRequest),
+    /// Capability `worktree.review`: the unified diff of one file; answered with
+    /// `WorktreeFileDiff`. Read-only.
+    #[serde(rename = "worktree.file_diff")]
+    WorktreeFileDiff(WorktreeFileDiffRequest),
+    /// Capability `worktree.review`: merge a worktree's branch into the main checkout's branch;
+    /// answered with `WorktreeMerged`.
+    #[serde(rename = "worktree.merge")]
+    WorktreeMerge(WorktreeMerge),
     /// Capability `task` (protocol 0.16): a new task; answered with `TaskResult`.
     #[serde(rename = "task.create")]
     TaskCreate(TaskCreate),

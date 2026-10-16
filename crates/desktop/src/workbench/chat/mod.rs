@@ -15,6 +15,7 @@ mod model;
 mod view;
 mod widgets;
 
+pub(crate) use cards::{counts_of, diff_row};
 pub use chip::{Chip, cut_to};
 pub use context::{
     ContextChip, DEFAULT_HITS, DEFAULT_LINES, DEFAULT_TURNS, Mention, MentionKind, find_mention,

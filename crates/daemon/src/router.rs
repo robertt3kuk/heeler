@@ -316,6 +316,9 @@ impl Router {
             Request::WorktreeCreate(req) => ok(&self.worktrees.create(req).await?),
             Request::WorktreeList(req) => ok(&self.worktrees.list(req).await?),
             Request::WorktreeRemove(req) => ok(&self.worktrees.remove(req).await?),
+            Request::WorktreeDiff(req) => ok(&self.worktrees.diff(req).await?),
+            Request::WorktreeFileDiff(req) => ok(&self.worktrees.file_diff(req).await?),
+            Request::WorktreeMerge(req) => ok(&self.worktrees.merge(req).await?),
             Request::TaskCreate(req) => ok(&TaskResult {
                 task: self.tasks.create(req).await?,
             }),

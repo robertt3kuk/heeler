@@ -1,0 +1,1 @@
+{"error":{"code":"conflict","data":{"conflicts":["a.txt","src/lib.rs"]},"message":"merging `feature/login` into `main` conflicts in 2 file(s): a.txt, src/lib.rs; nothing was changed"},"id":33}

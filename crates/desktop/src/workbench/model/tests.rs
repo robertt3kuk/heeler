@@ -157,7 +157,11 @@ fn default_state_is_valid() {
     );
     assert_eq!(
         state.docks.right.panels,
-        vec![PanelId::new("inspector"), PanelId::new("agents")]
+        vec![
+            PanelId::new("inspector"),
+            PanelId::new("agents"),
+            PanelId::new("tasks")
+        ]
     );
     assert!(!state.docks.bottom.visible);
     assert_eq!(state.panes().len(), 1);
@@ -524,7 +528,10 @@ fn panel_moves_between_docks_and_reveals_target() {
         )
         .unwrap();
     check(&state);
-    assert_eq!(state.docks.right.panels, vec![PanelId::new("agents")]);
+    assert_eq!(
+        state.docks.right.panels,
+        vec![PanelId::new("agents"), PanelId::new("tasks")]
+    );
     assert_eq!(state.docks.right.active, Some(PanelId::new("agents")));
     assert_eq!(
         state.docks.bottom.panels,
@@ -583,7 +590,10 @@ fn panel_drop_into_new_split_from_dock() {
         .unwrap();
     check(&state);
     assert_eq!(state.panes().len(), 2);
-    assert_eq!(state.docks.right.panels, vec![PanelId::new("agents")]);
+    assert_eq!(
+        state.docks.right.panels,
+        vec![PanelId::new("agents"), PanelId::new("tasks")]
+    );
 }
 
 #[test]

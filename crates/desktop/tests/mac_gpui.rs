@@ -316,6 +316,10 @@ fn a_registration_the_system_refuses_is_reported_and_the_setting_goes_back(
     let fakes3 = Fakes::new();
     fakes3.login.set_status(LoginItemStatus::Enabled);
     fakes3.login.fail_unregister("busy");
+    // The window above still watches the file and answers a change to it (it tries to register
+    // and writes `false` back); let it do that before the next window reads the file.
+    write_settings(&daemon, "[app]\nkeep_running = true\n");
+    pump_for(cx, Duration::from_millis(600));
     write_settings(&daemon, "[app]\nkeep_running = true\n");
     close_window(cx);
     drop(view);

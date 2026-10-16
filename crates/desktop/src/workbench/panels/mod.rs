@@ -12,6 +12,7 @@ mod resources;
 mod resources_model;
 mod sessions;
 mod status;
+mod tasks;
 
 use super::model::DockPosition;
 use super::registry::{PanelRegistry, PanelSpec};
@@ -26,6 +27,8 @@ use std::rc::Rc;
 pub use agents::{AgentsPanel, RowView, SectionView, TICK as AGENTS_TICK};
 pub use assistant::{AssistantPanel, Choice as AssistantChoice, Failure, Opened, ScopeKey};
 pub use common::{age_label, agent_badge, kind_icon, placement_badge, state_dot, tone_color};
+pub(crate) use common::{edit_text, field_box};
+pub(crate) use history::pill;
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};
 pub use history_model::{
     BlockTarget, DEBOUNCE as HISTORY_DEBOUNCE, Filters as HistoryFilters, HistoryResume,
@@ -46,6 +49,7 @@ pub use resources_model::{
 };
 pub use sessions::{DraggedProject, DraggedWorkspace, RowKind, SessionsPanel, SidebarRow};
 pub use status::{Tone as StatusTone, builtin_status_items, connection_label};
+pub use tasks::{CascadeAsk, FormField as TaskFormField, TICK as TASKS_TICK, TasksPanel};
 
 /// A panel that renders its name and a short description.
 #[derive(Debug)]
@@ -90,7 +94,7 @@ impl Render for PlaceholderPanel {
     }
 }
 
-/// `sessions`, `history`, `inspector`, `overview`, `agents`, `resources`, `assistant`,
+/// `sessions`, `history`, `inspector`, `overview`, `agents`, `resources`, `tasks`, `assistant`,
 /// `notifications`.
 pub fn builtin_panels() -> PanelRegistry {
     let mut registry = PanelRegistry::new();
@@ -152,6 +156,16 @@ pub fn builtin_panels() -> PanelRegistry {
         factory: Rc::new(|env, _window, cx| {
             let env = env.clone();
             AnyView::from(cx.new(|cx| ResourcesPanel::new(env, cx)))
+        }),
+    });
+    registry.register(PanelSpec {
+        id: "tasks".into(),
+        title: "Tasks".into(),
+        icon: "☑".into(),
+        default_dock: DockPosition::Right,
+        factory: Rc::new(|env, _window, cx| {
+            let env = env.clone();
+            AnyView::from(cx.new(|cx| TasksPanel::new(env, cx)))
         }),
     });
     registry.register(PanelSpec {

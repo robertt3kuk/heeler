@@ -4,8 +4,9 @@ use crate::theme::DensityExt as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, AppContext as _, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
+    AnyElement, App, AppContext as _, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::*,
+    px,
 };
 use hutan_core::{SessionId, SessionKind};
 use hutan_protocol::messages::SessionInfo;
@@ -14,8 +15,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::sessions::{AgentBadge, PlacementBadge, Presentation, Tone};
-use crate::theme::Theme;
-use crate::workbench::actions::OpenSettingsFor;
+use crate::theme::{Theme, Tokens};
+use crate::workbench::actions::{OpenSettingsFor, SessionMenuAt, ShowPlacementMenu};
+use crate::workbench::chat::TextInput;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
 use crate::workbench::{BadgeSite, Region};
@@ -117,7 +119,18 @@ pub fn placement_badge(
         .bg(color.opacity(if badge.shared { 0.14 } else { 0.0 }))
         .text_size(px(tokens.secondary_font_size))
         .text_color(color)
+        .cursor_pointer()
         .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |event, window, cx| {
+            window.dispatch_action(
+                Box::new(ShowPlacementMenu(SessionMenuAt {
+                    session: session.to_string(),
+                    position: event.position(),
+                })),
+                cx,
+            );
+        })
         .child(SharedString::from(text))
         .child(probe(regions, Region::PlacementBadge(site, session)))
         .into_any_element()
@@ -144,6 +157,97 @@ pub fn placement(info: &SessionInfo) -> String {
         }
         None => String::new(),
     }
+}
+
+/// Applies a key press to a text field: characters, ⌘V, Backspace, Delete, ←, →, Home, End and
+/// (in a multi-line field) Enter. `true` when the text or the caret changed; keys the field does
+/// not answer to (Tab, Escape, ⌘ shortcuts, Enter in a single line) are left alone.
+pub fn edit_text(input: &mut TextInput, event: &KeyDownEvent, multiline: bool, cx: &App) -> bool {
+    let ks = &event.keystroke;
+    if ks.modifiers.platform {
+        if ks.key == "v"
+            && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+        {
+            let text = if multiline {
+                text
+            } else {
+                text.replace(['\r', '\n'], " ")
+            };
+            input.insert(&text);
+            return true;
+        }
+        return false;
+    }
+    if ks.modifiers.control || ks.modifiers.function {
+        return false;
+    }
+    match ks.key.as_str() {
+        "backspace" => input.backspace(),
+        "delete" => input.delete(),
+        "left" => input.left(),
+        "right" => input.right(),
+        "home" => input.home(),
+        "end" => input.end(),
+        "enter" if multiline => input.insert("\n"),
+        _ => match &ks.key_char {
+            Some(text) if !text.chars().any(char::is_control) => input.insert(text),
+            _ => return false,
+        },
+    }
+    true
+}
+
+/// A text field's box: the text with a caret while `focused`, or the dim `placeholder` while it
+/// is empty. The caller adds the id's click, focus tracking and key handler.
+pub fn field_box(
+    id: impl Into<SharedString>,
+    input: &TextInput,
+    placeholder: &str,
+    focused: bool,
+    multiline: bool,
+    theme: &Theme,
+    tokens: &Tokens,
+) -> gpui::Stateful<gpui::Div> {
+    let text = input.text();
+    let cursor = input.cursor().min(text.len());
+    let (before, after) = text.split_at(cursor);
+    let mut content = div().flex().flex_wrap().items_center().min_w_0();
+    if text.is_empty() && !focused {
+        content = content.child(
+            div()
+                .text_color(theme.faint)
+                .child(SharedString::from(placeholder.to_owned())),
+        );
+    } else {
+        content = content
+            .child(SharedString::from(before.to_owned()))
+            .when(focused, |s| {
+                s.child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(tokens.font_size + 2.0))
+                        .bg(theme.accent),
+                )
+            })
+            .child(SharedString::from(after.to_owned()));
+    }
+    div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .min_h(px(tokens.sidebar_row))
+        .when(multiline, |s| {
+            s.min_h(px(tokens.sidebar_row * 2.5)).items_start()
+        })
+        .px(px(tokens.spacing * 2.0))
+        .py(px(tokens.spacing / 2.0))
+        .rounded(px(tokens.radius))
+        .bg(theme.bg)
+        .border_1()
+        .border_color(if focused { theme.accent } else { theme.border })
+        .text_color(theme.fg)
+        .cursor_text()
+        .child(content)
 }
 
 pub fn now_ms() -> u64 {
