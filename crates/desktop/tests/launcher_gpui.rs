@@ -197,6 +197,14 @@ fn region(view: &Entity<Workbench>, cx: &VisualTestContext, region: Region) -> b
     view.read_with(cx, |wb, _| wb.region_bounds(region).is_some())
 }
 
+fn bounds_of(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    target: Region,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    view.read_with(cx, |wb, _| wb.region_bounds(target))
+}
+
 fn click(view: &Entity<Workbench>, cx: &mut VisualTestContext, target: Region) {
     wait_until(cx, &format!("{target:?} to be drawn"), |cx| {
         region(view, cx, target)
@@ -644,18 +652,35 @@ fn a_harness_that_is_logged_out_is_disabled_with_log_in(cx: &mut TestAppContext)
         assert_eq!(of("claude").readiness, Readiness::NeedsLogin);
         assert!(!of("claude").enabled());
     });
-    // It cannot be picked…
-    view.update(cx, |wb, cx| {
-        wb.launcher_choose_agent(LaunchAgent::Harness("claude".into()), cx);
-    });
+    // …and clicking it says why below the row and offers Log in…, which starts the harness's own
+    // flow in a terminal. Nothing is offered between the choices.
+    draw(cx);
+    assert!(!region(
+        &view,
+        cx,
+        Region::LauncherChoice("login", "claude")
+    ));
+    let before: Vec<_> = ["omp", "claude", "codex"]
+        .iter()
+        .map(|id| bounds_of(&view, cx, Region::LauncherChoice("agent", id)).unwrap())
+        .collect();
+    click(&view, cx, Region::LauncherChoice("agent", "claude"));
+    draw(cx);
+    // It cannot be picked: the sheet stays on OMP.
     assert_eq!(
         view.read_with(cx, |wb, _| wb.launcher().unwrap().agent().clone()),
         LaunchAgent::Harness("omp".into())
     );
-    // …and offers Log in…, which starts the harness's own flow in a terminal.
-    draw(cx);
     assert!(region(&view, cx, Region::LauncherChoice("login", "claude")));
     assert!(!region(&view, cx, Region::LauncherChoice("login", "omp")));
+    let after: Vec<_> = ["omp", "claude", "codex"]
+        .iter()
+        .map(|id| bounds_of(&view, cx, Region::LauncherChoice("agent", id)).unwrap())
+        .collect();
+    assert_eq!(before, after, "the agent choices did not move");
+    let action = bounds_of(&view, cx, Region::LauncherChoice("login", "claude")).unwrap();
+    let lowest = after.iter().map(|b| b.bottom()).max().unwrap();
+    assert!(action.top() >= lowest, "Log in… sits below the row");
     click(&view, cx, Region::LauncherChoice("login", "claude"));
     wait_until(cx, "the login session to be shown", |cx| {
         view.read_with(cx, |wb, cx| {
@@ -692,6 +717,15 @@ fn a_harness_that_is_not_installed_is_disabled_with_install(cx: &mut TestAppCont
             ..LauncherPreset::default()
         },
     );
+    // The choices as they are drawn before any harness has reported anything.
+    draw(cx);
+    let choices = |view: &Entity<Workbench>, cx: &VisualTestContext| -> Vec<_> {
+        ["omp", "claude", "codex"]
+            .iter()
+            .map(|id| bounds_of(view, cx, Region::LauncherChoice("agent", id)).unwrap())
+            .collect()
+    };
+    let initial = choices(&view, cx);
     wait_until(cx, "Claude Code to be found missing", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.launcher_harness_choices(cx)
@@ -704,20 +738,38 @@ fn a_harness_that_is_not_installed_is_disabled_with_install(cx: &mut TestAppCont
         choices.iter().any(|h| h.id == "omp" && h.enabled())
             && !choices.iter().find(|h| h.id == "claude").unwrap().enabled()
     }));
-    view.update(cx, |wb, cx| {
-        wb.launcher_choose_agent(LaunchAgent::Harness("claude".into()), cx);
-    });
+    draw(cx);
+    // Nothing is offered until the user asks about Claude Code, and the choices have not moved.
+    assert!(!region(
+        &view,
+        cx,
+        Region::LauncherChoice("install", "claude")
+    ));
+    assert_eq!(
+        initial,
+        choices(&view, cx),
+        "the agent choices keep their bounds when Claude Code is found missing"
+    );
+    // A missing harness cannot be picked; asking about it says why below the row.
+    click(&view, cx, Region::LauncherChoice("agent", "claude"));
+    draw(cx);
     assert_eq!(
         view.read_with(cx, |wb, _| wb.launcher().unwrap().agent().clone()),
         LaunchAgent::Harness("omp".into()),
         "a missing harness cannot be picked"
     );
-    draw(cx);
     assert!(region(
         &view,
         cx,
         Region::LauncherChoice("install", "claude")
     ));
+    let after = choices(&view, cx);
+    assert_eq!(initial, after, "Install… does not push the choices around");
+    let action = bounds_of(&view, cx, Region::LauncherChoice("install", "claude")).unwrap();
+    assert!(
+        action.top() >= after.iter().map(|b| b.bottom()).max().unwrap(),
+        "Install… sits below the row"
+    );
     // Install… asks the package registry first; it never installs before the user confirms.
     click(&view, cx, Region::LauncherChoice("install", "claude"));
     wait_until(cx, "the install to be looked at", |cx| {
@@ -1200,9 +1252,30 @@ fn the_first_chat_with_a_prompt_asks_once_per_agent_and_model(cx: &mut TestAppCo
     assert!(launcher_open(&view, cx));
     assert!(env.tasks().is_empty());
 
-    // Yes sends it, and OMP on this model is not asked about again.
+    // "Don't ask again for this model" starts unticked: the protection stays until the user
+    // chooses to drop it.
     click(&view, cx, Region::Launcher("start"));
     assert!(confirm_shown(&view, cx));
+    assert!(
+        !view.read_with(cx, |wb, _| wb
+            .launcher()
+            .unwrap()
+            .confirm()
+            .unwrap()
+            .remember),
+        "the opt-out is off by default"
+    );
+    // Yes with the box ticked sends it, and OMP on this model is not asked about again.
+    click(&view, cx, Region::Launcher("confirm-remember"));
+    assert!(
+        view.read_with(cx, |wb, _| wb
+            .launcher()
+            .unwrap()
+            .confirm()
+            .unwrap()
+            .remember),
+        "a click ticks it"
+    );
     click(&view, cx, Region::Launcher("confirm-start"));
     wait_until(cx, "the first chat", |_| {
         env.task("First prompt")
@@ -1232,8 +1305,7 @@ fn the_first_chat_with_a_prompt_asks_once_per_agent_and_model(cx: &mut TestAppCo
     });
     click(&view, cx, Region::Launcher("start"));
     assert!(confirm_shown(&view, cx), "Claude Code was never confirmed");
-    // Not remembering asks again next time.
-    click(&view, cx, Region::Launcher("confirm-remember"));
+    // Not ticking the box asks again next time.
     click(&view, cx, Region::Launcher("confirm-start"));
     wait_until(cx, "the third chat", |_| {
         env.task("Third prompt")

@@ -759,6 +759,7 @@ impl ChatView {
             &chip,
             crate::workbench::view::BadgeSite::Tab,
             session,
+            false,
             &self.regions,
             cx,
         );

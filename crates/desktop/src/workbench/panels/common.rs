@@ -147,15 +147,35 @@ pub fn recovery_chip(
     chip: &hutan_client::recovery::Chip,
     site: BadgeSite,
     session: SessionId,
+    compact: bool,
     regions: &Rc<RefCell<HashMap<Region, gpui::Bounds<gpui::Pixels>>>>,
     cx: &App,
 ) -> AnyElement {
     let tokens = UiStyle::get(cx).density.ui();
-    let tip = SharedString::from(chip.detail.clone());
     let color = match chip.tone {
         hutan_client::recovery::ChipTone::Info => theme.accent,
         hutan_client::recovery::ChipTone::Warn => theme.warning,
     };
+    if compact {
+        // A glyph instead of a word, so a sidebar full of restarted sessions keeps their titles
+        // readable; the tooltip has the word and the sentence.
+        let tip = SharedString::from(format!("{}: {}", chip.label, chip.detail));
+        let glyph = match chip.tone {
+            hutan_client::recovery::ChipTone::Info => "↻",
+            hutan_client::recovery::ChipTone::Warn => "⚠",
+        };
+        return div()
+            .id(SharedString::from(format!("recovery-chip-{session}")))
+            .relative()
+            .flex_none()
+            .text_size(px(tokens.secondary_font_size))
+            .text_color(color)
+            .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+            .child(glyph)
+            .child(probe(regions, Region::RecoveryChip(site, session)))
+            .into_any_element();
+    }
+    let tip = SharedString::from(chip.detail.clone());
     div()
         .id(SharedString::from(format!("recovery-chip-{session}")))
         .relative()

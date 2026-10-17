@@ -1266,9 +1266,9 @@ impl ChangesView {
     /// Draws diff line `at` of `file` into `block`, with what hangs below it: the comments that
     /// end there and the comment box.
     #[allow(clippy::too_many_arguments)] // the diff row and everything it is drawn from
-    pub(super) fn review_line(
+    pub(super) fn review_line<E: ParentElement>(
         &self,
-        mut block: gpui::Div,
+        mut block: E,
         anchors: &Anchors,
         file: &str,
         at: usize,
@@ -1276,7 +1276,7 @@ impl ChangesView {
         look: &Look,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> E {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let span = self
             .review
@@ -1287,7 +1287,7 @@ impl ChangesView {
         let selected = span.is_some_and(|(a, b)| a <= at && at <= b);
         let tail = selected && span.is_some_and(|(_, b)| b == at) && self.review.draft.is_none();
         let numbered = !matches!(line.kind, LineKind::Hunk | LineKind::Note);
-        let mut row = div().relative().child(diff_row(line, look));
+        let mut row = div().relative().min_w_full().child(diff_row(line, look));
         if selected {
             row = row.child(
                 div()
@@ -1355,10 +1355,18 @@ impl ChangesView {
             .as_ref()
             .is_some_and(|d| d.editing.is_none() && d.file == file && d.to == at);
         for id in anchors.last.get(&at).into_iter().flatten() {
-            block = block.child(self.render_comment_or_box(*id, anchors, look, window, cx));
+            block = block.child(
+                div()
+                    .min_w_full()
+                    .child(self.render_comment_or_box(*id, anchors, look, window, cx)),
+            );
         }
         if draft_here {
-            block = block.child(self.render_comment_box(None, look, window, cx));
+            block = block.child(
+                div()
+                    .min_w_full()
+                    .child(self.render_comment_box(None, look, window, cx)),
+            );
         }
         block
     }

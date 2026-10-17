@@ -123,6 +123,9 @@ fn unix_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// From this many sessions on, restart chips are icons and the restart summary is one row.
+pub const LARGE_SIDEBAR: usize = 30;
+
 pub struct SessionsStore {
     connection: Connection,
     state: Arc<StoreState>,
@@ -505,6 +508,12 @@ impl SessionsStore {
 
     pub fn sessions(&self) -> &[SessionInfo] {
         &self.state.sessions
+    }
+
+    /// Whether the sidebar lists so many sessions that restart chips and the restart summary
+    /// shrink to keep the rows readable (`LARGE_SIDEBAR`).
+    pub fn large_sidebar(&self) -> bool {
+        self.state.sessions.len() >= LARGE_SIDEBAR
     }
 
     pub fn workspaces(&self) -> &[WorkspaceInfo] {

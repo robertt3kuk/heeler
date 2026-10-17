@@ -1979,6 +1979,7 @@ impl Workbench {
                 let disabled = entry.disabled;
                 div()
                     .id(id(format!("menu-row-{i}")))
+                    .relative()
                     .flex()
                     .items_center()
                     .gap(px(tokens.spacing))
@@ -1998,6 +1999,7 @@ impl Workbench {
                             .child(if entry.checked { "✓" } else { "" }),
                     )
                     .child(entry.label)
+                    .child(probe(&self.regions, Region::MenuEntry(i)))
                     .into_any_element()
             })
             .collect();

@@ -760,13 +760,18 @@ impl ChangesView {
                     .flex_col()
                     .gap(px(tokens.spacing))
                     .child(
+                        // Commit all… wraps under the sentence in a narrow pane instead of
+                        // being pushed out of it.
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
-                            .gap(px(tokens.spacing * 2.0))
+                            .gap_x(px(tokens.spacing * 2.0))
+                            .gap_y(px(tokens.spacing))
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w(px(tokens.font_size * 14.0))
                                     .medium()
                                     .text_color(theme.warning)
                                     .child(SharedString::from(head))

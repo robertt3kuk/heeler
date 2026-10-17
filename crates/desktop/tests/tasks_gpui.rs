@@ -1319,6 +1319,87 @@ fn the_changes_toolbar_wraps_so_every_action_stays_inside_a_narrow_window(cx: &m
 }
 
 #[gpui::test]
+fn a_narrow_changes_view_folds_the_files_into_a_strip_and_keeps_the_diff_and_commit_all(
+    cx: &mut TestAppContext,
+) {
+    let env = Env::new();
+    let (_task, wt) = awaiting_task(&env, "Fix login");
+    // An uncommitted edit with a line far wider than any pane.
+    let long = "x".repeat(400);
+    fs::write(wt.join("a.txt"), format!("one\n{long}\nthree\nfour\n")).unwrap();
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the scope", |cx| {
+        changes.read_with(cx, |c, _| c.has_uncommitted() && c.selected().is_some())
+    });
+    let bounds = |view: &Entity<Workbench>, cx: &VisualTestContext, what: Region| {
+        view.read_with(cx, |wb, _| wb.region_bounds(what))
+    };
+
+    // 900 px with both docks visible: the reported case.
+    cx.simulate_resize(gpui::size(gpui::px(900.0), gpui::px(800.0)));
+    for what in [Region::Changes("diff"), Region::Changes("commit-all")] {
+        wait_until(cx, "a narrow layout", |cx| {
+            region(&view, cx, what).is_some()
+        });
+    }
+    draw(cx);
+    let pane = bounds(&view, cx, Region::Center).expect("the center is drawn");
+    let root = bounds(&view, cx, Region::Changes("root")).expect("the view is drawn");
+    assert!(root.size.width < gpui::px(720.0), "{root:?} is narrow");
+    // The file list is a strip: no rows until it is unfolded.
+    wait_until(cx, "the strip", |cx| {
+        bounds(&view, cx, Region::Changes("files-toggle")).is_some()
+    });
+    assert!(bounds(&view, cx, Region::ChangesFile(0)).is_none());
+    // The diff has the whole width, with its text, and Commit all… is inside the pane.
+    let diff = bounds(&view, cx, Region::Changes("diff")).unwrap();
+    assert!(
+        diff.size.width >= root.size.width - gpui::px(2.0),
+        "the diff has the full width: {diff:?} in {root:?}"
+    );
+    wait_until(cx, "the first hunk", |cx| {
+        bounds(&view, cx, Region::ChangesHunk(0)).is_some()
+    });
+    let hunk = bounds(&view, cx, Region::ChangesHunk(0)).unwrap();
+    assert!(
+        hunk.size.width > gpui::px(200.0) && hunk.right() <= pane.right(),
+        "diff text is readable: {hunk:?}"
+    );
+    let commit = bounds(&view, cx, Region::Changes("commit-all")).unwrap();
+    assert!(
+        commit.left() >= pane.left() && commit.right() <= pane.right(),
+        "Commit all… stays visible: {commit:?} in {pane:?}"
+    );
+    // Long lines scroll sideways instead of widening or clipping the pane.
+    assert!(
+        changes.read_with(cx, |c, _| c.diff_scroll_width()) > 100.0,
+        "the 400-column line can be scrolled to"
+    );
+
+    // The strip unfolds into the list; choosing a file shows it and folds the list again.
+    click(&view, cx, Region::Changes("files-toggle"));
+    wait_until(cx, "the list", |cx| {
+        bounds(&view, cx, Region::ChangesFile(1)).is_some()
+    });
+    assert!(changes.read_with(cx, |c, _| c.files_open()));
+    let second = changes.read_with(cx, |c, _| c.files()[1].path.clone());
+    click(&view, cx, Region::ChangesFile(1));
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.selected().map(str::to_owned)),
+        Some(second)
+    );
+    assert!(!changes.read_with(cx, |c, _| c.files_open()));
+
+    // Wide again: the list sits beside the diff and there is no strip.
+    cx.simulate_resize(gpui::size(gpui::px(1800.0), gpui::px(800.0)));
+    wait_until(cx, "the wide layout", |cx| {
+        bounds(&view, cx, Region::ChangesFile(0)).is_some()
+            && bounds(&view, cx, Region::Changes("files-toggle")).is_none()
+    });
+}
+
+#[gpui::test]
 fn requesting_changes_sends_the_note_and_cancel_leaves_the_task_alone(cx: &mut TestAppContext) {
     let env = Env::new();
     let (task, wt) = awaiting_task(&env, "Fix login");

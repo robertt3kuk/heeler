@@ -299,6 +299,9 @@ impl Workbench {
     /// Moves focus to whatever the focused pane shows now.
     pub(crate) fn rescue_orphaned_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else {
+            // Nothing holds the keyboard: actions panels dispatch (row menus, …) start from the
+            // focused element, and without one they would never reach the workbench.
+            self.focus_root(window, cx);
             return;
         };
         let orphaned = self.terminals.iter().any(|(key, item)| {
@@ -918,6 +921,7 @@ impl Workbench {
             &chip,
             crate::workbench::BadgeSite::Tab,
             id,
+            false,
             &self.regions,
             cx,
         );

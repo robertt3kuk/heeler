@@ -30,6 +30,7 @@ impl Workbench {
     /// Puts the summary up (the store says a restart left something unacknowledged).
     pub(crate) fn show_recovery_summary(&mut self, cx: &mut Context<Self>) {
         self.recovery_open = true;
+        self.recovery_review = false;
         cx.notify();
     }
 
@@ -37,6 +38,7 @@ impl Workbench {
     pub(crate) fn close_recovery_summary(&mut self, cx: &mut Context<Self>) {
         if self.recovery_open {
             self.recovery_open = false;
+            self.recovery_review = false;
             cx.notify();
         }
     }
@@ -94,6 +96,76 @@ impl Workbench {
         let tokens = self.density.ui();
         let hover = theme.surface_hover;
         let regions = self.regions.clone();
+
+        // 30 or more sessions: one row, "39 sessions recovered — Review", until reviewed.
+        if self.sessions.read(cx).large_sidebar() && !self.recovery_review {
+            let warn = summary.rows.iter().any(|r| r.chip.tone == ChipTone::Warn);
+            let total = summary.rows.len();
+            return Some(
+                div()
+                    .id("recovery-summary")
+                    .key_context("RecoverySummary")
+                    .absolute()
+                    .right(px(12.0))
+                    .bottom(px(tokens.status_bar + 8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 3.0))
+                    .popover(&theme, &tokens)
+                    .px(px(tokens.spacing * 4.0))
+                    .py(px(tokens.spacing * 2.0))
+                    .text_size(px(tokens.font_size))
+                    .text_color(if warn {
+                        tone_color(&theme, Tone::Warning)
+                    } else {
+                        theme.fg
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .id("recovery-headline")
+                            .tooltip(time_tooltip(summary.restarted_at_ms))
+                            .child(SharedString::from(format!(
+                                "{total} sessions recovered — {}",
+                                summary.counts
+                            ))),
+                    )
+                    .child(
+                        ui::button(
+                            "recovery-review",
+                            "Review",
+                            ui::ButtonKind::Secondary,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.recovery_review = true;
+                            cx.notify();
+                        }))
+                        .child(probe(&regions, Region::Recovery("review"))),
+                    )
+                    .child(
+                        ui::button(
+                            "recovery-dismiss-all",
+                            "Dismiss all",
+                            ui::ButtonKind::Ghost,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.ack_recovery(None, cx);
+                            this.close_recovery_summary(cx);
+                        }))
+                        .child(probe(&regions, Region::Recovery("dismiss-all"))),
+                    )
+                    .child(probe(&regions, Region::Recovery("sheet")))
+                    .into_any_element(),
+            );
+        }
 
         let rows: Vec<AnyElement> = summary
             .rows

@@ -263,13 +263,13 @@ impl Workbench {
                 .flex_wrap()
                 .items_center()
                 .gap(px(tokens.spacing * 2.0));
-            let mut status: Vec<AnyElement> = Vec::new();
             for harness in self.launcher_harness_choices(cx) {
                 let hid = harness.id;
                 let selected = launcher.agent == LaunchAgent::Harness(hid.to_owned());
                 let enabled = harness.enabled();
-                let mut item = div().flex().items_center().gap(px(tokens.spacing));
-                item = item.child(
+                // The choices keep their order and place whatever the harnesses report: what a
+                // harness needs (Install…, Log in…) is said below the row, never inside it.
+                agents = agents.child(
                     ui::choice(
                         id(format!("launch-agent-{hid}")),
                         harness.name,
@@ -285,51 +285,6 @@ impl Workbench {
                     }))
                     .child(probe(&self.regions, Region::LauncherChoice("agent", hid))),
                 );
-                let action: Option<(&'static str, &'static str)> = match &harness.readiness {
-                    Readiness::NeedsInstall(_) => self
-                        .harness_install_available()
-                        .then_some(("install", "Install…")),
-                    Readiness::NeedsLogin => {
-                        directory.startable(hid).then_some(("login", "Log in…"))
-                    }
-                    _ => None,
-                };
-                // Only the chosen agent says why it cannot start: another harness's
-                // installation or login problem is not this start's.
-                let why = if selected {
-                    readiness_note(harness.name, &harness.readiness)
-                } else {
-                    None
-                };
-                if let Some((key, text)) = action {
-                    item = item.child(
-                        ui::button(
-                            id(format!("launch-{key}-{hid}")),
-                            text,
-                            ButtonKind::Secondary,
-                            true,
-                            &theme,
-                            &tokens,
-                        )
-                        .relative()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            if key == "install" {
-                                window.dispatch_action(
-                                    Box::new(super::actions::InstallHarness(hid.to_owned())),
-                                    cx,
-                                );
-                            } else {
-                                this.launcher = None;
-                                this.account_flow(hid, None, true, window, cx);
-                            }
-                        }))
-                        .child(probe(&self.regions, Region::LauncherChoice(key, hid))),
-                    );
-                }
-                if let Some(why) = why {
-                    status.push(note(why, theme.warning).into_any_element());
-                }
-                agents = agents.child(item);
             }
             if kind == LaunchKind::Chat {
                 for (at, provider) in self.providers.providers.iter().enumerate() {
@@ -375,7 +330,51 @@ impl Workbench {
                 .flex_col()
                 .gap(px(tokens.spacing))
                 .child(agents);
-            for line in status {
+            if let Some(harness) = self.launcher_readiness_target(cx)
+                && let Some(why) = readiness_note(harness.name, &harness.readiness)
+            {
+                let hid = harness.id;
+                let action: Option<(&'static str, &'static str)> = match &harness.readiness {
+                    Readiness::NeedsInstall(_) => self
+                        .harness_install_available()
+                        .then_some(("install", "Install…")),
+                    Readiness::NeedsLogin => {
+                        directory.startable(hid).then_some(("login", "Log in…"))
+                    }
+                    _ => None,
+                };
+                let mut line = div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(tokens.spacing * 2.0))
+                    .child(note(why, theme.warning))
+                    .child(probe(&self.regions, Region::Launcher("agent-status")));
+                if let Some((key, text)) = action {
+                    line = line.child(
+                        ui::button(
+                            id(format!("launch-{key}-{hid}")),
+                            text,
+                            ButtonKind::Secondary,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if key == "install" {
+                                window.dispatch_action(
+                                    Box::new(super::actions::InstallHarness(hid.to_owned())),
+                                    cx,
+                                );
+                            } else {
+                                this.launcher = None;
+                                this.account_flow(hid, None, true, window, cx);
+                            }
+                        }))
+                        .child(probe(&self.regions, Region::LauncherChoice(key, hid))),
+                    );
+                }
                 body = body.child(line);
             }
             agent_rows.push(

@@ -246,6 +246,8 @@ pub enum Region {
     /// A control of the resources panel (`panel`, `filter`, `sort-cpu`, `sort-memory`,
     /// `sort-name`).
     ResourceControl(&'static str),
+    /// Entry `index` of the open context menu, top to bottom.
+    MenuEntry(usize),
     /// The chip a restarted session wears (`respawned`, `resumed`, `interrupted`, `not
     /// restarted`) at one of its places.
     RecoveryChip(BadgeSite, SessionId),
@@ -459,6 +461,8 @@ pub struct Workbench {
     pub(crate) notice: Option<SharedString>,
     /// The restart summary is on screen (`recovery_summary.rs`).
     pub(crate) recovery_open: bool,
+    /// A large sidebar's one-row summary was opened into the full list ("Review").
+    pub(crate) recovery_review: bool,
     pub(crate) last_title: String,
     pub(crate) regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
     state_path: Option<PathBuf>,
@@ -745,6 +749,7 @@ impl Workbench {
             changes_subscriptions: Vec::new(),
             notice: None,
             recovery_open: false,
+            recovery_review: false,
             last_title: String::new(),
             regions,
             state_path: options.state_path,

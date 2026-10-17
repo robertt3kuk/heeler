@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, Context, EventEmitter, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, prelude::*, px,
+    MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, prelude::*, px,
 };
 use hutan_chat_view::diff::{self, FileDiff, LineKind, MAX_LINES};
 use hutan_protocol::worktree::{
@@ -41,6 +41,10 @@ use super::ui::{self, StyledExt as _};
 use super::view::Region;
 use super::vim_ui::{self, VimConfig};
 use crate::theme::{DensityExt as _, Theme, Tokens};
+
+/// Below this width the view stacks: the file list becomes a strip above the diff, so the diff
+/// and the scope card keep the whole width (N6).
+const NARROW_BELOW: f32 = 720.0;
 
 /// What a Changes view asks of the workbench.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +137,13 @@ pub struct ChangesView {
     /// Line selection, review comments and the Review tray (RC-1).
     review: tray::Review,
     delivery: delivery::Delivery,
+    /// The file strip of a narrow view is unfolded into the list of files.
+    files_open: bool,
+    /// Horizontal scroll of the diff, for lines wider than the pane.
+    diff_x: ScrollHandle,
+    /// The width the view was last painted at (the workbench clears the shared regions before it
+    /// draws, so the view keeps its own).
+    width: std::rc::Rc<std::cell::Cell<Option<gpui::Pixels>>>,
 }
 
 impl EventEmitter<ChangesEvent> for ChangesView {}
@@ -171,6 +182,9 @@ impl ChangesView {
             canonical,
             review: tray::Review::new(comments, cx),
             delivery: delivery::Delivery::new(cx),
+            files_open: false,
+            diff_x: ScrollHandle::new(),
+            width: std::rc::Rc::default(),
         };
         cx.observe(&view.env.sessions, |_, _, cx| cx.notify())
             .detach();
@@ -368,8 +382,33 @@ impl ChangesView {
         }
         self.review.selection = None;
         self.selected = Some(file.to_owned());
+        self.files_open = false;
         self.load_patch(file, cx);
         cx.notify();
+    }
+
+    /// Whether the last frame was narrower than [`NARROW_BELOW`]: the layout that frame's
+    /// width asks for (wide until the first one has been painted).
+    fn narrow(&self) -> bool {
+        self.width
+            .get()
+            .is_some_and(|width| width < px(NARROW_BELOW))
+    }
+
+    /// Unfolds or folds the file strip of a narrow view.
+    pub fn toggle_files(&mut self, cx: &mut Context<Self>) {
+        self.files_open = !self.files_open;
+        cx.notify();
+    }
+
+    /// Whether the narrow view shows the whole list of files.
+    pub fn files_open(&self) -> bool {
+        self.files_open
+    }
+
+    /// How far the diff can scroll sideways: 0 while every line fits.
+    pub fn diff_scroll_width(&self) -> f32 {
+        f32::from(self.diff_x.max_offset().x)
     }
 
     fn load_patch(&mut self, file: &str, cx: &mut Context<Self>) {
@@ -671,8 +710,10 @@ impl Render for ChangesView {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let look = Look::of(cx);
+        let narrow = self.narrow();
 
         let mut root = div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -683,6 +724,7 @@ impl Render for ChangesView {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_review_key(event, window, cx);
             }))
+            .child(self.size_probe(narrow))
             .child(self.render_header(&theme, &tokens, window, cx))
             .children(self.render_delivery(&theme, &tokens, window, cx));
         if let Some(tray) = self.render_review_tray(&theme, &tokens, cx) {
@@ -727,11 +769,20 @@ impl Render for ChangesView {
             )
             .flex_1()
             .into_any_element(),
+            // A narrow view stacks: the files are a strip above a diff that has the whole width.
+            Listing::Ready(_) if narrow => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.render_file_strip(&theme, &tokens, cx))
+                .child(self.render_patch(&look, window, cx))
+                .into_any_element(),
             Listing::Ready(_) => div()
                 .flex_1()
                 .min_h_0()
                 .flex()
-                .child(self.render_files(&theme, &tokens, cx))
+                .child(self.render_files(&theme, &tokens, true, cx))
                 .child(self.render_patch(&look, window, cx))
                 .into_any_element(),
         })
@@ -1103,7 +1154,122 @@ impl ChangesView {
             .into_any_element()
     }
 
-    fn render_files(&self, theme: &Theme, tokens: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+    /// Records the view's painted bounds (what [`ChangesView::narrow`] reads next frame) and asks
+    /// for another frame when the width crossed [`NARROW_BELOW`] since the layout was built.
+    fn size_probe(&self, narrow: bool) -> impl IntoElement {
+        let regions = std::rc::Rc::clone(&self.env.regions);
+        let width = std::rc::Rc::clone(&self.width);
+        canvas(
+            |bounds, _, _| bounds,
+            move |_, bounds, window, _| {
+                regions.borrow_mut().insert(Region::Changes("root"), bounds);
+                width.set(Some(bounds.size.width));
+                if (bounds.size.width < px(NARROW_BELOW)) != narrow {
+                    // The layout was built for the other width: build it again.
+                    window.refresh();
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+
+    /// The narrow view's file list: the selected file as one row that unfolds into the list.
+    fn render_file_strip(
+        &self,
+        theme: &Theme,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let look = Look::of(cx);
+        let files = self.files();
+        let current = self
+            .selected
+            .as_deref()
+            .and_then(|path| files.iter().position(|f| f.path == path));
+        let mut strip = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .border_b_1()
+            .border_color(theme.border);
+        let hover = theme.surface_hover;
+        let label = current
+            .and_then(|at| files.get(at))
+            .map_or_else(|| "Choose a file".to_owned(), |f| f.path.clone());
+        let (mark, color) = current
+            .and_then(|at| files.get(at))
+            .map_or(("", theme.muted), |f| status_mark(f.status, theme));
+        let counts = current.and_then(|at| files.get(at)).map(|f| {
+            if f.binary {
+                div()
+                    .flex_none()
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.muted)
+                    .child("binary")
+                    .into_any_element()
+            } else {
+                counts_of(f.additions as usize, f.deletions as usize, &look)
+            }
+        });
+        strip = strip.child(
+            div()
+                .id("changes-files-toggle")
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(tokens.spacing * 1.5))
+                .mx(px(tokens.spacing))
+                .my(px(tokens.spacing / 2.0))
+                .px(px(tokens.spacing * 1.5))
+                .h(px(tokens.sidebar_row))
+                .rounded(px(tokens.radius))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx)))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.muted)
+                        .child(if self.files_open { "▴" } else { "▾" }),
+                )
+                .child(div().flex_none().w(px(12.0)).text_color(color).child(mark))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(tokens.secondary_font_size))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!(
+                            "{} of {}",
+                            current.map_or(0, |at| at + 1),
+                            files.len()
+                        ))),
+                )
+                .children(counts)
+                .child(probe(&self.env.regions, Region::Changes("files-toggle"))),
+        );
+        if self.files_open {
+            strip = strip.child(self.render_files(theme, tokens, false, cx));
+        }
+        strip.into_any_element()
+    }
+
+    fn render_files(
+        &self,
+        theme: &Theme,
+        tokens: &Tokens,
+        wide: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let look = Look::of(cx);
         let hover = theme.surface_hover;
         let mut list = div()
@@ -1111,12 +1277,15 @@ impl ChangesView {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(tokens.font_size * 24.0))
-            .h_full()
             .overflow_y_scroll()
-            .border_r_1()
             .border_color(theme.border)
             .py(px(tokens.spacing));
+        list = if wide {
+            list.w(px(tokens.font_size * 24.0)).h_full().border_r_1()
+        } else {
+            // Unfolded under the strip: the whole width, at most eight rows tall.
+            list.w_full().max_h(px(tokens.sidebar_row * 8.0))
+        };
         for (index, file) in self.files().iter().enumerate() {
             let (mark, color) = status_mark(file.status, theme);
             let selected = self.selected.as_deref() == Some(file.path.as_str());
@@ -1171,7 +1340,7 @@ impl ChangesView {
             .relative()
             .flex_1()
             .min_w_0()
-            .h_full()
+            .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.review.scroll)
             .on_mouse_down(
@@ -1219,9 +1388,16 @@ impl ChangesView {
                 }
                 let ranges = hunk_ranges(diff);
                 let mut drawn = 0usize;
+                // Long lines scroll sideways inside the block, not out of the pane.
                 let mut block = div()
+                    .id("changes-diff-block")
+                    .overflow_x_scroll()
+                    .track_scroll(&self.diff_x)
                     .flex()
                     .flex_col()
+                    // Rows are as wide as their text (and at least as the block): that is what
+                    // gives the block something to scroll.
+                    .items_start()
                     .rounded(px(tokens.radius))
                     .border_1()
                     .border_color(theme.border)
@@ -1239,6 +1415,7 @@ impl ChangesView {
                             .id(SharedString::from(format!("changes-hunk-{hunk}")))
                             .relative()
                             .flex()
+                            .min_w_full()
                             .items_center()
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| this.toggle_hunk(hunk, cx)))

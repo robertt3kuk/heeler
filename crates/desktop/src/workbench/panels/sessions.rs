@@ -1506,12 +1506,14 @@ impl SessionsPanel {
             &self.env.regions,
             cx,
         );
+        let compact_chips = self.env.sessions.read(cx).large_sidebar();
         let mut recovery = hutan_client::recovery::chip(info).map(|chip| {
             recovery_chip(
                 &theme,
                 &chip,
                 BadgeSite::Row,
                 info.id,
+                compact_chips,
                 &self.env.regions,
                 cx,
             )

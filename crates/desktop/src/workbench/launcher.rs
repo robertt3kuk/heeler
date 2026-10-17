@@ -183,6 +183,9 @@ pub struct Launcher {
     pub(crate) agent: LaunchAgent,
     /// The user picked the agent: what the daemon finds installed no longer moves it.
     pub(crate) agent_chosen: bool,
+    /// A harness the user clicked that cannot be started yet: the line below the Agent row
+    /// explains it (and offers Install… or Log in…) while the sheet stays on `agent`.
+    pub(crate) agent_peek: Option<String>,
     /// The model of a chat; none: the harness's own default.
     pub(crate) model: Option<String>,
     /// The row whose choices are open: ↑ ↓ change its value only then (↩ or Space opens it, Esc
@@ -649,6 +652,27 @@ impl Workbench {
         readiness_note(choice.name, &choice.readiness)
     }
 
+    /// The harness the line below the Agent row is about: the one the user clicked that cannot be
+    /// started, else the agent the sheet is set to when it cannot be started (its readiness
+    /// changed after it was picked). `None` when nothing needs saying. The row of choices itself
+    /// never changes with it.
+    pub fn launcher_readiness_target(&self, cx: &gpui::App) -> Option<HarnessChoice> {
+        let launcher = self.launcher.as_ref()?;
+        if !launcher.kind.is_agent() {
+            return None;
+        }
+        let choices = self.launcher_harness_choices(cx);
+        let unready = |id: &str| choices.iter().find(|h| h.id == id && !h.enabled()).cloned();
+        launcher
+            .agent_peek
+            .as_deref()
+            .and_then(unready)
+            .or_else(|| match &launcher.agent {
+                LaunchAgent::Harness(id) => unready(id),
+                LaunchAgent::Direct(_) => None,
+            })
+    }
+
     /// The name of the agent the sheet is set to ("OMP", "Direct · Ollama").
     fn launcher_agent_name(&self) -> String {
         match self.launcher.as_ref().map(|l| &l.agent) {
@@ -881,6 +905,7 @@ impl Workbench {
             kind,
             agent,
             agent_chosen: preset.direct,
+            agent_peek: None,
             model,
             open_row: None,
             prompt: TextInput::new(),
@@ -1091,6 +1116,12 @@ impl Workbench {
                     .iter()
                     .any(|h| h.id == id && h.enabled());
                 if !ready {
+                    // It cannot be started, but the user is asking about it: the line below the
+                    // Agent row says why and offers the way out.
+                    if let Some(launcher) = &mut self.launcher {
+                        launcher.agent_peek = Some(id.clone());
+                    }
+                    cx.notify();
                     return;
                 }
             }
@@ -1105,6 +1136,7 @@ impl Workbench {
         if let Some(launcher) = &mut self.launcher {
             launcher.agent = agent;
             launcher.agent_chosen = true;
+            launcher.agent_peek = None;
             launcher.model = None;
             if launcher.open_row == Some(LauncherStop::Model) {
                 launcher.open_row = None;
@@ -1538,7 +1570,7 @@ impl Workbench {
         if let Some(launcher) = &mut self.launcher {
             launcher.confirm = Some(StartConfirm {
                 and_new,
-                remember: true,
+                remember: false,
                 target,
             });
         }

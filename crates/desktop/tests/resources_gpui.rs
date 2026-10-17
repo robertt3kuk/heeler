@@ -829,3 +829,90 @@ fn nothing_running_lists_only_the_daemon_and_a_later_session_appears(cx: &mut Te
         session_line(l, id).is_none()
     });
 }
+
+const PROCESS_MENU: [&str; 5] = [
+    "Open Session",
+    "Interrupt (SIGINT)",
+    "Terminate (SIGTERM)",
+    "Kill (SIGKILL)…",
+    "Stop (SIGSTOP)",
+];
+
+/// The row's `⋯` and a right-click open the menu; Kill asks first and Cancel leaves the process.
+fn menu_and_kill_question(
+    view: &Entity<Workbench>,
+    cx: &mut VisualTestContext,
+    index: usize,
+    victim: u32,
+    what: &str,
+) {
+    click(view, cx, Region::ResourceMenu(index));
+    draw(cx);
+    assert_eq!(menu(view, cx), PROCESS_MENU, "{what}: the ⋯ button");
+    // Pressing it again, or another gesture, replaces the menu rather than eating the click.
+    right_click(view, cx, Region::ResourceRow(index));
+    draw(cx);
+    assert_eq!(menu(view, cx), PROCESS_MENU, "{what}: right-click");
+    // The menu is painted: its entries have places on screen.
+    for entry in 0..PROCESS_MENU.len() {
+        assert!(
+            region(view, cx, Region::MenuEntry(entry)).is_some(),
+            "{what}: entry {entry} is drawn"
+        );
+    }
+    run_entry(view, cx, "Kill (SIGKILL)");
+    draw(cx);
+    let text = modal_text(view, cx);
+    assert!(
+        text.contains("sleep") && text.contains(&victim.to_string()),
+        "{what}: {text}"
+    );
+    view.update_in(cx, |wb, window, cx| wb.close_modal(window, cx));
+    pause(cx, 300);
+    assert!(alive(victim), "{what}: cancelling kills nothing");
+}
+
+#[gpui::test]
+fn the_row_menu_opens_from_the_button_and_right_click_in_the_dock_and_as_a_tab(
+    cx: &mut TestAppContext,
+) {
+    let daemon = TestDaemon::start();
+    let tree = daemon.sh_titled("tree", TREE);
+    let (view, cx) = open(cx, &daemon);
+    let panel = show(&view, cx);
+    let all = wait_lines(&panel, cx, "two sleeps", |l| {
+        processes(l, tree.id, "sleep").len() == 2
+    });
+    let (index, victim) = processes(&all, tree.id, "sleep")[0];
+
+    // In the bottom dock, with the filter box holding the keyboard.
+    click(&view, cx, Region::ResourceControl("filter"));
+    pause(cx, 100);
+    menu_and_kill_question(&view, cx, index, victim, "dock, filter focused");
+
+    // With a terminal tab holding the keyboard.
+    view.update_in(cx, |wb, window, cx| wb.open_session(tree.id, window, cx));
+    draw(cx);
+    pause(cx, 300);
+    draw(cx);
+    menu_and_kill_question(&view, cx, index, victim, "dock, terminal focused");
+
+    // With nothing holding it: the action still reaches the workbench.
+    cx.update(|window, cx| window.blur(cx));
+    draw(cx);
+    menu_and_kill_question(&view, cx, index, victim, "dock, nothing focused");
+
+    // As a tab in the center.
+    view.update(cx, |wb, cx| {
+        wb.edit_layout(cx, |s| {
+            s.move_panel(
+                &hutan_desktop::workbench::model::PanelId::new("resources"),
+                hutan_desktop::workbench::model::PanelDest::Center,
+            )
+            .unwrap();
+        })
+    });
+    draw(cx);
+    menu_and_kill_question(&view, cx, index, victim, "center tab");
+    kill_session(&daemon, tree.id);
+}

@@ -452,3 +452,44 @@ fn the_chat_header_says_the_turn_was_interrupted_and_retries_it(cx: &mut TestApp
             && bounds(&view, cx, Region::Chat("recovery")).is_none()
     });
 }
+
+#[gpui::test]
+fn a_large_sidebar_shows_restart_chips_as_icons_and_the_summary_as_one_row(
+    cx: &mut TestAppContext,
+) {
+    let mut daemon = TestDaemon::start();
+    let ids: Vec<SessionId> = (0..31)
+        .map(|_| daemon.create_session(&["cat"], None).id)
+        .collect();
+    let (view, cx) = open(cx, &daemon, ids.len());
+    restart(&view, cx, &mut daemon);
+    wait_until(cx, "the summary", |cx| summary_open(&view, cx));
+
+    // One row: how many came back, with Review and Dismiss all; no list yet.
+    wait_until(cx, "the one-row summary", |cx| {
+        bounds(&view, cx, Region::Recovery("review")).is_some()
+    });
+    assert!(bounds(&view, cx, Region::RecoveryRow(0, "open")).is_none());
+    let headline = view
+        .read_with(cx, |wb, cx| wb.sessions().read(cx).recovery_summary())
+        .unwrap()
+        .counts;
+    assert!(headline.starts_with("31 sessions"), "{headline}");
+
+    // The chips of the rows that are on screen are icons with a tooltip, not words.
+    let chip = ids
+        .iter()
+        .find_map(|id| bounds(&view, cx, Region::RecoveryChip(BadgeSite::Row, *id)))
+        .expect("a restarted row is on screen");
+    assert!(
+        chip.size.width < gpui::px(24.0),
+        "a compact chip is a glyph: {chip:?}"
+    );
+
+    // Review brings the list back.
+    click(&view, cx, Region::Recovery("review"));
+    wait_until(cx, "the list", |cx| {
+        bounds(&view, cx, Region::RecoveryRow(0, "open")).is_some()
+    });
+    ack(&daemon, None);
+}
