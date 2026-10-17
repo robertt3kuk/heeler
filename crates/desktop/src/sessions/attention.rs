@@ -643,6 +643,7 @@ mod tests {
             sandbox: hutan_core::SandboxMode::WorkspaceWrite,
             turn_active,
             pending_approvals: pending,
+            pending_questions: 0,
             provider_id: None,
             agent_session_id: None,
             assistant: false,

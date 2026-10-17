@@ -496,7 +496,10 @@ impl Transcript {
             .filter(|q| q.state == QuestionState::Pending)
             .map(|q| {
                 (
-                    self.question_entry.get(&q.id).copied().unwrap_or(usize::MAX),
+                    self.question_entry
+                        .get(&q.id)
+                        .copied()
+                        .unwrap_or(usize::MAX),
                     q,
                 )
             })
@@ -840,11 +843,7 @@ impl Transcript {
                 outcome,
                 decided_by,
             } => {
-                self.resolve_question(
-                    *question_id,
-                    QuestionState::of(outcome),
-                    decided_by.clone(),
-                );
+                self.resolve_question(*question_id, QuestionState::of(outcome), decided_by.clone());
             }
             AgentEventKind::Plan {
                 explanation,

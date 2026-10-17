@@ -159,8 +159,7 @@ impl QuestionForm {
                     if text.is_empty() {
                         continue;
                     }
-                    let parsed = text
-                        .parse::<i64>()
+                    text.parse::<i64>()
                         .map(Value::from)
                         .ok()
                         .or_else(|| {
@@ -170,8 +169,7 @@ impl QuestionForm {
                                 .and_then(serde_json::Number::from_f64)
                                 .map(Value::Number)
                         })
-                        .ok_or_else(|| format!("{} must be a number", field.label))?;
-                    parsed
+                        .ok_or_else(|| format!("{} must be a number", field.label))?
                 }
                 (_, Input::Text(text)) => Value::String(text.text().to_owned()),
                 (_, Input::Boolean(on)) => Value::Bool(*on),
