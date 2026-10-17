@@ -20,7 +20,7 @@ cask "hutan" do
               executable:   "/usr/bin/pkill",
               args:         [
                 "-TERM", "-u", Process.uid.to_s, "-f",
-                "^#{Regexp.escape("#{appdir}/Hutan.app/Contents/MacOS/hutand")}([[:space:]]|$)",
+                "^#{Regexp.escape("#{appdir}/Hutan.app/Contents/MacOS/hutand")}([[:space:]]|$)"
               ],
               must_succeed: false,
             }
