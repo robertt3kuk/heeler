@@ -67,6 +67,7 @@ const NAMESPACES: &[(&str, &str)] = &[
     ("tasks", "Tasks"),
     ("assistant", "Assistant"),
     ("integrations", "Agent Integrations"),
+    ("launcher", "Start Sheet"),
     ("accounts", "Accounts"),
     ("models", "Models"),
 ];
@@ -468,8 +469,15 @@ const FIELDS: &[FieldText] = &[
     field(
         "integrations",
         "auto_install",
-        "Install agent hooks automatically",
-        "When Hutan starts, adds its hooks to Codex, Claude Code and OMP, for each one that is installed and not yet connected. Only Hutan's own entries are written, and the files are backed up first. The hooks do nothing outside a Hutan session. Turning this off stops future installs but removes nothing; use “hutan integration uninstall” to remove them.",
+        "Keep agent hooks installed on every start",
+        "Off by default: Hutan never writes into an agent's own configuration unless you asked. When on, each time Hutan starts it adds its hooks to Codex, Claude Code and OMP, for each one that is installed and not yet connected (~/.codex, ~/.claude, ~/.omp/agent, even with a custom HUTAN_HOME). Only Hutan's own entries are written, and the files are backed up first. The hooks do nothing outside a Hutan session. Turning this off stops future installs but removes nothing; use “hutan integration uninstall” to remove them.",
+    ),
+    // ---- the Start sheet ----
+    field(
+        "launcher",
+        "confirm_agent_start",
+        "Ask before an agent chat sends its prompt",
+        "The first time you start an agent chat with a prompt on a given agent and model, the Start sheet asks before it sends the prompt (it spends model usage). “Don't ask again for this model” remembers the choice per model. Turn this off to start at once. Plain terminals, commands and queued chats never ask.",
     ),
 ];
 
