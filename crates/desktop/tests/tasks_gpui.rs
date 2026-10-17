@@ -18,12 +18,15 @@ use hutan_core::{
     TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
 };
 use hutan_desktop::sessions::attention::Tone;
-use hutan_desktop::sessions::tasks::{RunChoice, TaskAction, TaskRowView};
+use hutan_desktop::sessions::launch::LaunchKind;
+use hutan_desktop::sessions::tasks::{TaskAction, TaskRowView};
 use hutan_desktop::settings::TasksSettings;
 use hutan_desktop::workbench::actions;
 use hutan_desktop::workbench::model::ItemRef;
-use hutan_desktop::workbench::panels::{TaskFormField, TasksPanel};
-use hutan_desktop::workbench::{ChangesView, CleanupDefault, DeliveryForm, Region, Workbench};
+use hutan_desktop::workbench::panels::TasksPanel;
+use hutan_desktop::workbench::{
+    ChangesView, CleanupDefault, DeliveryForm, LaunchWhere, LauncherField, Region, Workbench,
+};
 use hutan_protocol::messages::Request;
 use hutan_protocol::task::{
     TaskCreate, TaskList, TaskListRequest, TaskRef, TaskResult, TaskReview, TaskReviewed,
@@ -337,8 +340,13 @@ fn an_empty_panel_shows_the_mascot_and_offers_a_new_task(cx: &mut TestAppContext
         region(&view, cx, Region::Tasks("empty-new")).is_some()
     });
     assert!(rows(&panel, cx).is_empty());
+    // "+ New task" is the Start… sheet on "Queue as task", in the project of the panel.
     click(&view, cx, Region::Tasks("empty-new"));
-    assert!(panel.read_with(cx, |p, _| p.form_open()));
+    view.read_with(cx, |wb, _| {
+        let launcher = wb.launcher().expect("the Start… sheet");
+        assert!(launcher.queue());
+        assert_eq!(launcher.project(), Some(env.workspace));
+    });
 }
 
 #[gpui::test]
@@ -357,17 +365,18 @@ fn the_palette_has_the_task_and_review_commands(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_palette_command_opens_the_form_in_the_panel(cx: &mut TestAppContext) {
+fn the_palette_command_opens_the_start_sheet_on_queue(cx: &mut TestAppContext) {
     let env = Env::new();
     let (view, cx) = open(cx, &env);
     cx.dispatch_action(actions::NewTask);
     draw(cx);
-    let panel = view
-        .read_with(cx, |wb, _| wb.panel::<TasksPanel>("tasks"))
-        .expect("the panel is revealed");
-    assert!(panel.read_with(cx, |p, _| p.form_open()));
-    wait_until(cx, "the title field", |cx| {
-        region(&view, cx, Region::Tasks("form-title")).is_some()
+    view.read_with(cx, |wb, _| {
+        let launcher = wb.launcher().expect("the Start… sheet");
+        assert!(launcher.queue());
+        assert_eq!(launcher.project(), Some(env.workspace));
+    });
+    wait_until(cx, "the prompt field", |cx| {
+        region(&view, cx, Region::Launcher("prompt")).is_some()
     });
 }
 
@@ -510,10 +519,10 @@ fn clicking_a_row_focuses_the_session_of_its_task(cx: &mut TestAppContext) {
     });
 }
 
-// The form ------------------------------------------------------------------------------------
+// The Start… sheet ---------------------------------------------------------------------------
 
 #[gpui::test]
-fn the_form_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut TestAppContext) {
+fn the_sheet_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut TestAppContext) {
     let env = Env::new();
     let build = env.plain("Build", &[]);
     let lint = env.plain("Lint", &[]);
@@ -522,34 +531,45 @@ fn the_form_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut T
     wait_rows(&panel, cx, "two rows", 2);
 
     click(&view, cx, Region::Tasks("new"));
-    assert!(panel.read_with(cx, |p, _| p.form_open()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_some()));
 
-    // An empty form says what is missing.
-    click(&view, cx, Region::Tasks("form-create"));
+    // An empty command says what is missing.
+    view.update(cx, |wb, cx| wb.launcher_set_kind(LaunchKind::Command, cx));
+    click(&view, cx, Region::Launcher("start"));
     assert_eq!(
-        panel.read_with(cx, |p, _| p.form_error().map(str::to_owned)),
-        Some("A task needs a title.".to_owned())
+        view.read_with(cx, |wb, _| wb
+            .launcher()
+            .unwrap()
+            .error()
+            .map(str::to_owned)),
+        Some("Type the command to run.".to_owned())
     );
 
     // Fill it in with the controls and the keyboard.
-    click(&view, cx, Region::Tasks("form-title"));
-    cx.simulate_input("Ship it");
-    draw(cx);
-    panel.update(cx, |p, cx| {
-        p.set_field(TaskFormField::Prompt, "Cut the release", cx);
-        p.set_run(RunChoice::Terminal, cx);
-    });
-    click(&view, cx, Region::Tasks("form-command"));
+    click(&view, cx, Region::Launcher("command"));
     cx.simulate_input("cargo build --release");
-    click(&view, cx, Region::Tasks("place-worktree"));
-    click(&view, cx, Region::Tasks("form-branch"));
-    cx.simulate_input("release/1.0");
-    click(&view, cx, Region::TaskDep(0));
-    click(&view, cx, Region::TaskDep(1));
-    click(&view, cx, Region::TaskDep(0)); // un-tick the first again
-    click(&view, cx, Region::Tasks("form-auto"));
-    assert_eq!(panel.read_with(cx, |p, _| p.form_dependencies()), [lint.id]);
-    click(&view, cx, Region::Tasks("form-create"));
+    click(&view, cx, Region::Launcher("title"));
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Title, "Ship it", cx);
+    });
+    click(&view, cx, Region::LauncherChoice("where", "new"));
+    click(&view, cx, Region::Launcher("branch"));
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Branch, "release/1.0", cx);
+    });
+    view.update(cx, |wb, cx| {
+        wb.launcher_toggle_more(cx);
+        wb.launcher_toggle_after(build.id, cx);
+        wb.launcher_toggle_after(lint.id, cx);
+        wb.launcher_toggle_after(build.id, cx); // un-tick the first again
+    });
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher().unwrap().after()),
+        [lint.id]
+    );
+    // "+ New task" opened the sheet on Queue as task.
+    assert!(view.read_with(cx, |wb, _| wb.launcher().unwrap().queue()));
+    click(&view, cx, Region::Launcher("start"));
 
     wait_until(cx, "the task to exist", |_| {
         env.tasks().iter().any(|t| t.title == "Ship it")
@@ -560,14 +580,13 @@ fn the_form_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut T
         .find(|t| t.title == "Ship it")
         .unwrap();
     assert_eq!(created.depends_on, [lint.id]);
-    assert_eq!(created.prompt.as_deref(), Some("Cut the release"));
     assert!(created.auto_start);
     assert_eq!(
         created.placement,
         TaskPlacement {
             kind: TaskPlacementKind::Worktree,
             branch: Some("release/1.0".into()),
-            base: None
+            base: Some("main".into()),
         }
     );
     assert_eq!(
@@ -576,9 +595,9 @@ fn the_form_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut T
             argv: vec!["cargo".into(), "build".into(), "--release".into()]
         })
     );
-    // The form closed and the new row is in the tree under Lint, with its badge.
-    wait_until(cx, "the form to close and the row to appear", |cx| {
-        panel.read_with(cx, |p, _| !p.form_open()) && rows(&panel, cx).len() == 3
+    // The sheet closed and the new row is in the tree under Lint, with its badge.
+    wait_until(cx, "the sheet to close and the row to appear", |cx| {
+        view.read_with(cx, |wb, _| wb.launcher().is_none()) && rows(&panel, cx).len() == 3
     });
     let ship = rows(&panel, cx)
         .into_iter()
@@ -586,26 +605,29 @@ fn the_form_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut T
         .unwrap();
     assert_eq!(ship.depth, 1);
     assert_eq!(ship.placement, "wt release/1.0");
-    let _ = build;
 }
 
 #[gpui::test]
-fn the_form_offers_a_chat_run_that_needs_a_prompt(cx: &mut TestAppContext) {
+fn the_sheet_asks_for_a_prompt_and_shows_the_daemons_refusal(cx: &mut TestAppContext) {
     let env = Env::new();
     let (view, cx) = open(cx, &env);
-    let panel = show_panel(&view, cx);
+    let _panel = show_panel(&view, cx);
     click(&view, cx, Region::Tasks("empty-new"));
-    wait_until(cx, "the run choices", |cx| {
-        region(&view, cx, Region::Tasks("run-codex")).is_some()
+    wait_until(cx, "the agent choices", |cx| {
+        region(&view, cx, Region::LauncherChoice("agent", "codex")).is_some()
     });
-    // omp chats are offered when the daemon runs the ACP harnesses (this one does).
-    assert!(region(&view, cx, Region::Tasks("run-omp")).is_some());
-    assert!(region(&view, cx, Region::Tasks("run-claude")).is_some());
+    // omp and Claude Code chats are offered next to Codex.
+    assert!(region(&view, cx, Region::LauncherChoice("agent", "omp")).is_some());
+    assert!(region(&view, cx, Region::LauncherChoice("agent", "claude")).is_some());
 
-    panel.update(cx, |p, cx| p.set_field(TaskFormField::Title, "Review", cx));
-    click(&view, cx, Region::Tasks("run-codex"));
-    click(&view, cx, Region::Tasks("form-create"));
-    let error = panel.read_with(cx, |p, _| p.form_error().map(str::to_owned));
+    // A chat needs its first message.
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Title, "Review", cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    let error = view.read_with(cx, |wb, _| {
+        wb.launcher().unwrap().error().map(str::to_owned)
+    });
     assert!(
         error
             .as_deref()
@@ -614,30 +636,32 @@ fn the_form_offers_a_chat_run_that_needs_a_prompt(cx: &mut TestAppContext) {
     );
     assert!(env.tasks().is_empty(), "nothing was sent");
 
-    // The daemon's own refusal comes back in the form: it takes no branch with a space in it.
-    panel.update(cx, |p, cx| {
-        p.set_run(RunChoice::Terminal, cx);
-        p.set_worktree(true, cx);
-        p.set_field(TaskFormField::Branch, "bad branch name", cx);
+    // The daemon's own refusal comes back in the sheet: it takes no branch with a space in it.
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_kind(LaunchKind::Command, cx);
+        wb.launcher_set_field(LauncherField::Command, "true", cx);
+        wb.launcher_set_place(LaunchWhere::NewWorktree, cx);
+        wb.launcher_set_field(LauncherField::Branch, "bad branch name", cx);
     });
-    click(&view, cx, Region::Tasks("form-create"));
-    wait_until(cx, "the daemon's refusal in the form", |cx| {
-        panel.read_with(cx, |p, _| {
-            p.form_error()
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the daemon's refusal in the sheet", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.launcher()
+                .and_then(|l| l.error().map(str::to_owned))
                 .is_some_and(|e| e.contains("is not a valid branch"))
         })
     });
-    assert!(panel.read_with(cx, |p, _| p.form_open()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_some()));
     assert!(env.tasks().is_empty(), "nothing was created");
 
-    // Fixing the branch lets it through.
-    panel.update(cx, |p, cx| {
-        p.set_field(TaskFormField::Branch, "review/it", cx);
+    // Fixing the branch lets it through; "+ New task" queues it.
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Branch, "review/it", cx);
     });
-    click(&view, cx, Region::Tasks("form-create"));
+    click(&view, cx, Region::Launcher("start"));
     wait_until(cx, "the task to be created", |_| !env.tasks().is_empty());
-    wait_until(cx, "the form to close", |cx| {
-        panel.read_with(cx, |p, _| !p.form_open())
+    wait_until(cx, "the sheet to close", |cx| {
+        view.read_with(cx, |wb, _| wb.launcher().is_none())
     });
 }
 
@@ -1063,7 +1087,7 @@ fn the_panel_requires_a_daemon_that_knows_tasks_and_a_connection(cx: &mut TestAp
         .unwrap();
     assert!(panel.read_with(cx, |p, cx| p.rows(0, cx).is_empty()));
     click_no_effect(&view, cx);
-    assert!(!panel.read_with(cx, |p, _| p.form_open()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_none()));
 }
 
 fn click_no_effect(view: &Entity<Workbench>, cx: &mut VisualTestContext) {

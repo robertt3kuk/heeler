@@ -1149,13 +1149,28 @@ impl SessionsStore {
         )
     }
 
-    /// `task.start`.
+    /// `task.start`. The session is remembered until its events arrive, so the window can show
+    /// it at once.
     pub fn start_task(
-        &self,
+        &mut self,
         id: TaskId,
         cx: &mut Context<Self>,
     ) -> Task<Result<TaskStarted, String>> {
-        self.call(Request::TaskStart(TaskRef { id }), |started| started, cx)
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let started = connection
+                .call::<TaskStarted>(Request::TaskStart(TaskRef { id }))
+                .await
+                .map_err(|e| e.to_string())?;
+            let remembered = started.session.clone();
+            this.update(cx, |this, _| {
+                if !this.state.sessions.iter().any(|s| s.id == remembered.id) {
+                    this.recent.insert(remembered.id, remembered);
+                }
+            })
+            .ok();
+            Ok(started)
+        })
     }
 
     /// `task.review`: accept a done task, or ask for changes (the note goes to its chat).

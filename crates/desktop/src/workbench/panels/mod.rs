@@ -51,7 +51,7 @@ pub use resources_model::{
 };
 pub use sessions::{DraggedProject, DraggedWorkspace, RowKind, SessionsPanel, SidebarRow};
 pub use status::{Tone as StatusTone, builtin_status_items, connection_label};
-pub use tasks::{CascadeAsk, FormField as TaskFormField, TICK as TASKS_TICK, TasksPanel};
+pub use tasks::{CascadeAsk, TICK as TASKS_TICK, TasksPanel};
 
 /// A panel that renders its name and a short description.
 #[derive(Debug)]

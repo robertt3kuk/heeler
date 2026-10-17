@@ -1,4 +1,4 @@
-//! Workbench behavior around agent chats (M4.4): chat tabs, the ⌘⇧T new-agent picker, global
+//! Workbench behavior around agent chats (M4.4): chat tabs, the Switch model dialog, global
 //! approvals, and "Send to agent" from terminal blocks.
 //!
 //! A chat tab is a [`ChatView`] per `(pane, session)` over one [`ChatModel`] per session, held
@@ -7,7 +7,6 @@
 //! the agent process.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use gpui::{
     AnyElement, AppContext as _, Context, ElementId, Entity, Focusable as _, InteractiveElement,
@@ -15,18 +14,17 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use hutan_core::agent::ModelInfo;
-use hutan_core::{ApprovalId, SessionId, WorkspaceId};
+use hutan_core::{ApprovalId, SessionId};
 use hutan_protocol::blocks::BlockPart;
-use hutan_protocol::chat::ChatCreate;
 use hutan_protocol::messages::SessionInfo;
 
 use super::actions::palette;
 use super::chat::{ButtonKind, ChatModel, ChatView, Chip, ContextChip, Look, button, cut_to};
-use super::harnesses::{self, Detection, HARNESSES};
+use super::harnesses::{self, HARNESSES};
+use super::launcher::LauncherPreset;
 use super::model::{FocusTarget, ItemRef, PaneId};
 use super::panels::AssistantPanel;
 use super::render::probe;
-use super::review::FirstMessage;
 use super::terminals::session_of_item;
 use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
@@ -43,29 +41,24 @@ pub enum Models {
     Failed(String),
 }
 
-/// The ⌘⇧T dialog: which harness (or direct model) and model a new chat starts with, and where.
+/// The Switch model dialog of a running chat: the models its harness (or, for a direct chat,
+/// its provider) offers. Starting an agent is the Start… sheet (`launcher.rs`).
 #[derive(Debug, Clone)]
 pub struct AgentPicker {
     pub models: Models,
     /// Index into the models that are shown (the hidden ones are not).
     pub selected: usize,
-    pub workspace: Option<WorkspaceId>,
-    pub cwd: Option<PathBuf>,
-    /// `chat.create` is in flight.
+    /// `chat.set_model` is in flight.
     pub creating: bool,
     pub error: Option<String>,
     pub provider_id: Option<String>,
     pub model_query: String,
-    pub system_prompt: Option<String>,
-    pub switch_session: Option<SessionId>,
+    /// The chat whose model the dialog switches.
+    pub switch_session: SessionId,
     pub direct: bool,
-    /// The harness a new chat starts with (`omp`, `claude` or `codex`); the harness of the chat
-    /// when the dialog switches a model. A direct chat has none (`provider_id` says what).
+    /// The harness of the chat (`omp`, `claude`); a direct chat has none (`provider_id` says
+    /// what).
     pub agent: String,
-    /// The user picked the harness: what the daemon finds installed no longer moves it.
-    pub agent_chosen: bool,
-    /// Sent to the new chat as its first message (a review from the Changes view).
-    pub first_message: Option<FirstMessage>,
 }
 
 impl AgentPicker {
@@ -97,14 +90,7 @@ impl AgentPicker {
     pub fn chosen(&self) -> Option<&ModelInfo> {
         self.shown().get(self.selected).copied()
     }
-
-    /// Whether the harness offers no model to choose from, so that a chat starts with the
-    /// harness's own default.
-    pub fn offers_no_model(&self) -> bool {
-        self.provider_id.is_none()
-            && self.switch_session.is_none()
-            && matches!(&self.models, Models::Ready(models) if models.iter().all(|m| m.hidden))
-    }
+    // A harness that offers no model never reaches the dialog: its chat keeps its default.
 }
 
 impl Workbench {
@@ -247,43 +233,44 @@ impl Workbench {
         div().size_full().child(view).into_any_element()
     }
 
-    // ---- new agent -------------------------------------------------------------------------
+    // ---- Start… and the Switch model dialog --------------------------------------------------
 
-    /// The open new-agent dialog, if any.
+    /// The open Switch model dialog, if any.
     pub fn agent_picker(&self) -> Option<&AgentPicker> {
         self.agent_picker.as_ref()
     }
 
-    /// ⌘⇧T: asks which agent and model to start, in the active workspace.
+    /// ⌘⇧T and ⌘K "Start Agent or Task…": the Start… sheet in the project in focus.
     pub fn new_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_agent_picker(false, window, cx);
+        self.open_launcher(LauncherPreset::default(), window, cx);
     }
 
+    /// ⌘K "Chat: New Direct Chat…": the Start… sheet on a direct model.
     pub fn new_direct_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_agent_picker(true, window, cx);
+        self.open_launcher(
+            LauncherPreset {
+                direct: true,
+                ..LauncherPreset::default()
+            },
+            window,
+            cx,
+        );
     }
 
-    fn open_agent_picker(&mut self, direct: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_agent_picker_for(direct, None, window, cx);
-    }
-
-    fn open_agent_picker_for(
+    /// The dialog that switches the model of a running chat: `agent` is its harness, none for a
+    /// direct chat (which can change provider too).
+    fn open_model_switch_dialog(
         &mut self,
-        direct: bool,
-        switch: Option<(SessionId, String)>,
+        session: SessionId,
+        agent: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (connected, supported, workspace, cwd) = {
+        let (connected, supported) = {
             let store = self.sessions.read(cx);
-            let workspace = self.target_workspace(store);
             (
                 store.connection_state() == hutan_client::ConnectionState::Connected,
                 store.connection().supports_chat(),
-                workspace.map(|w| w.id),
-                workspace
-                    .and_then(|w| w.roots.first().cloned())
-                    .or_else(std::env::home_dir),
             )
         };
         if !connected {
@@ -300,42 +287,27 @@ impl Workbench {
         self.palette = None;
         self.picker = None;
         self.context_menu = None;
-        let (agent, switch_session, agent_chosen) = match switch {
-            Some((session, agent)) => (agent, Some(session), true),
-            None => (self.default_harness(cx), None, false),
-        };
+        self.launcher = None;
+        let direct = agent.is_none();
         self.agent_picker = Some(AgentPicker {
             models: Models::Loading,
             selected: 0,
-            workspace,
-            cwd,
             creating: false,
             error: None,
             provider_id: None,
             model_query: String::new(),
-            system_prompt: None,
-            switch_session,
+            switch_session: session,
             direct,
-            agent,
-            agent_chosen,
-            first_message: None,
+            agent: agent.unwrap_or_default(),
         });
         window.focus(&self.agent_focus, cx);
         self.edits.agent.reset();
         if direct {
             self.refresh_providers(cx);
-            cx.notify();
-            return;
+        } else {
+            self.load_harness_models(cx);
         }
-        // What is installed and logged in, and the models of the harness shown first.
-        if switch_session.is_none() {
-            self.refresh_accounts(cx);
-        }
-        self.load_harness_models(cx);
         cx.notify();
-        if switch_session.is_none() {
-            self.refresh_providers(cx);
-        }
     }
 
     /// The model dialog of a running harness chat (OMP, Claude Code): the models its harness
@@ -347,18 +319,28 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_agent_picker_for(false, Some((session, agent)), window, cx);
+        self.open_model_switch_dialog(session, Some(agent), window, cx);
+    }
+
+    /// The model dialog of a running direct chat: provider and model.
+    pub(crate) fn open_direct_model_switch(
+        &mut self,
+        session: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_model_switch_dialog(session, None, window, cx);
     }
 
     /// Whether the daemon can start chats with `harness`: Codex always, the ACP harnesses when
     /// it advertises them.
-    fn harness_available(&self, harness: &str, cx: &gpui::App) -> bool {
+    pub(crate) fn harness_available(&self, harness: &str, cx: &gpui::App) -> bool {
         harness == CODEX || self.sessions.read(cx).connection().supports_harness_chat()
     }
 
-    /// The harness a picker preselects: the first of OMP, Claude Code, Codex that the daemon
-    /// can run and has not found missing.
-    fn default_harness(&self, cx: &gpui::App) -> String {
+    /// The harness the Start… sheet preselects before it knows what is installed: the first of
+    /// OMP, Claude Code, Codex that the daemon can run and has not found missing.
+    pub(crate) fn default_harness(&self, cx: &gpui::App) -> String {
         let directory = self.env.harnesses.read(cx);
         HARNESSES
             .iter()
@@ -367,7 +349,7 @@ impl Workbench {
             .to_owned()
     }
 
-    /// Asks the shown harness for its models (the picker follows the directory's answer).
+    /// Asks the harness of the open Switch model dialog for its models.
     fn load_harness_models(&mut self, cx: &mut Context<Self>) {
         let Some(picker) = &mut self.agent_picker else {
             return;
@@ -383,49 +365,15 @@ impl Workbench {
             .update(cx, |directory, cx| directory.load_models(&agent, cx));
     }
 
-    /// Picks the harness a new chat starts with (a click on its row). One the daemon cannot
-    /// find or run is not pickable.
-    pub fn agent_picker_choose_agent(&mut self, agent: &str, cx: &mut Context<Self>) {
-        if !self.harness_available(agent, cx) || !self.env.harnesses.read(cx).startable(agent) {
-            return;
-        }
-        let Some(picker) = &mut self.agent_picker else {
-            return;
-        };
-        if picker.creating || picker.switch_session.is_some() {
-            return;
-        }
-        picker.agent = agent.to_owned();
-        picker.agent_chosen = true;
-        picker.direct = false;
-        picker.provider_id = None;
-        picker.error = None;
-        picker.model_query.clear();
-        self.load_harness_models(cx);
-        cx.notify();
-    }
-
-    /// What the directory learned (accounts, models) reaches the open picker: the preselected
-    /// harness follows what is installed until the user picks one, and the model list is the
-    /// shown harness's.
+    /// What the directory learned (accounts, models) reaches the open Start… sheet and the
+    /// Switch model dialog.
     pub(crate) fn on_harnesses_changed(&mut self, cx: &mut Context<Self>) {
         self.auto_install_step(cx);
+        self.launcher_on_harnesses_changed(cx);
         let Some(picker) = &self.agent_picker else {
             return;
         };
         if picker.direct || picker.provider_id.is_some() {
-            return;
-        }
-        let preselect = (!picker.agent_chosen && picker.switch_session.is_none())
-            .then(|| self.default_harness(cx));
-        if let Some(agent) = preselect
-            && picker.agent != agent
-        {
-            if let Some(picker) = &mut self.agent_picker {
-                picker.agent = agent;
-            }
-            self.load_harness_models(cx);
-            cx.notify();
             return;
         }
         let models = self.env.harnesses.read(cx).models(&picker.agent).cloned();
@@ -472,7 +420,7 @@ impl Workbench {
         }
     }
 
-    /// Starts the chat the dialog describes and shows it.
+    /// Switches the chat to the model the dialog shows.
     pub fn agent_picker_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(picker) = &mut self.agent_picker else {
             return;
@@ -480,88 +428,14 @@ impl Workbench {
         if picker.creating {
             return;
         }
-        let model = picker.chosen().map(|m| m.id.clone());
-        // A harness that offers no model starts with its own default.
-        if model.is_none() && !picker.offers_no_model() {
-            return;
-        }
-        let Some(cwd) = picker.cwd.clone() else {
+        let Some(model) = picker.chosen().map(|m| m.id.clone()) else {
             return;
         };
         picker.creating = true;
         picker.error = None;
-        if let Some(session) = picker.switch_session {
-            let provider_id = picker.provider_id.clone();
-            let Some(model) = model else {
-                picker.creating = false;
-                return;
-            };
-            self.confirm_model_switch(session, provider_id, model, window, cx);
-            return;
-        }
-        let request = ChatCreate {
-            workspace_id: picker.workspace,
-            cwd,
-            agent: if picker.provider_id.is_some() {
-                "direct".to_owned()
-            } else {
-                picker.agent.clone()
-            },
-            model,
-            approval_policy: None,
-            sandbox: None,
-            title: None,
-            mode: None,
-            provider_id: picker.provider_id.clone(),
-            system_prompt: picker.system_prompt.clone(),
-        };
-        let first = picker.first_message.clone();
-        let task = self
-            .sessions
-            .update(cx, |store, cx| store.create_chat(request, cx));
-        cx.spawn_in(window, async move |this, cx| match task.await {
-            Ok(info) => {
-                this.update_in(cx, |this, window, cx| {
-                    this.agent_picker = None;
-                    this.open_session(info.id, window, cx);
-                })
-                .ok();
-                if let Some(FirstMessage { text, handoff }) = first {
-                    let sending = this.update(cx, |this, cx| {
-                        this.sessions.update(cx, |store, cx| {
-                            store.chat_send(info.id, text, Vec::new(), cx)
-                        })
-                    });
-                    let sent = match sending {
-                        Ok(sending) => sending.await,
-                        Err(_) => return,
-                    };
-                    this.update(cx, |this, cx| match sent {
-                        Ok(()) => {
-                            if let Some(handoff) = handoff {
-                                this.review_handed_off(&handoff, &info.title, cx);
-                            }
-                        }
-                        Err(error) => {
-                            this.set_notice(format!("The review was not sent: {error}"), cx);
-                        }
-                    })
-                    .ok();
-                }
-            }
-            Err(error) => {
-                this.update(cx, |this, cx| {
-                    if let Some(picker) = &mut this.agent_picker {
-                        picker.creating = false;
-                        picker.error = Some(error);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
-        cx.notify();
+        let provider_id = picker.provider_id.clone();
+        let session = picker.switch_session;
+        self.confirm_model_switch(session, provider_id, model, window, cx);
     }
 
     pub(crate) fn render_agent_picker(
@@ -574,89 +448,31 @@ impl Workbench {
         let tokens = self.density.ui();
         let hover = theme.surface_hover;
         let look = Look::of(cx);
-        let directory = self.env.harnesses.read(cx);
-        let agents: Vec<AnyElement> = HARNESSES
-            .iter()
-            .map(|harness| {
-                let id = harness.id;
-                let detection = directory.detection(id);
-                let available = self.harness_available(id, cx);
-                let pickable =
-                    available && !matches!(detection, Detection::NotFound(_)) && !picker.creating;
-                let selected = !picker.direct && picker.provider_id.is_none() && picker.agent == id;
-                let (state, state_color) = match (&detection, available) {
-                    (_, false) => ("needs a newer hutand", theme.warning),
-                    (Detection::Installed, _) => ("installed", theme.success),
-                    (Detection::NotFound(_), _) => ("not found", theme.warning),
-                    (Detection::Checking, _) => ("checking…", theme.muted),
-                    (Detection::Unknown, _) => ("unknown", theme.muted),
-                };
-                // Installed: which providers it is logged in to. Missing: how to install it.
-                let detail = match (&detection, available) {
-                    (_, false) => {
-                        "Restart hutand (Daemon → Restart) to run the version of this app."
-                            .to_owned()
-                    }
-                    (Detection::NotFound(how), _) => how.clone(),
-                    _ => harnesses::login_summary(directory, id),
-                };
-                div()
-                    .id(ElementId::from(SharedString::from(format!("agent-{id}"))))
-                    .relative()
-                    .flex()
-                    .items_start()
-                    .gap(px(tokens.spacing * 2.0))
-                    .py(px(tokens.spacing))
-                    .px(px(tokens.spacing * 2.0))
-                    .rounded(px(tokens.radius))
-                    .when(selected, |s| s.bg(theme.accent_soft))
-                    .when(pickable, |s| {
-                        s.cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.agent_picker_choose_agent(id, cx);
-                            }))
-                    })
-                    .when(!pickable && !picker.creating, |s| s.opacity(0.6))
-                    .child(div().w(px(14.0)).text_color(theme.muted).child("◆"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().medium().child(SharedString::from(harness.name)))
-                            .child(
-                                div()
-                                    .text_color(theme.muted)
-                                    .text_size(px(tokens.secondary_font_size))
-                                    .child(SharedString::from(detail)),
-                            ),
+        // A direct chat can move to another provider; a harness chat keeps its harness.
+        let providers: Vec<AnyElement> = if picker.direct {
+            self.providers
+                .providers
+                .iter()
+                .map(|provider| {
+                    let id = provider.id.clone();
+                    let selected = picker.provider_id.as_deref() == Some(id.as_str());
+                    button(
+                        format!("agent-provider-{id}"),
+                        format!("Direct model · {}", provider.name),
+                        ButtonKind::Secondary,
+                        !picker.creating,
+                        &look,
                     )
-                    .child(ui::pill(state, state_color, &tokens))
-                    .child(probe(&self.regions, Region::AgentHarness(id)))
+                    .when(selected, |s| s.bg(theme.accent_soft))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.choose_direct_provider(&id, cx)),
+                    )
                     .into_any_element()
-            })
-            .collect();
-        let providers: Vec<AnyElement> = self
-            .providers
-            .providers
-            .iter()
-            .map(|provider| {
-                let id = provider.id.clone();
-                let selected = picker.provider_id.as_deref() == Some(id.as_str());
-                button(
-                    format!("agent-provider-{id}"),
-                    format!("Direct model · {}", provider.name),
-                    ButtonKind::Secondary,
-                    !picker.creating,
-                    &look,
-                )
-                .when(selected, |s| s.bg(theme.accent_soft))
-                .on_click(cx.listener(move |this, _, _, cx| this.choose_direct_provider(&id, cx)))
-                .into_any_element()
-            })
-            .collect();
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let shown = picker.shown();
         let mut models: Vec<AnyElement> = Vec::new();
         let mut group: Option<Option<String>> = None;
@@ -720,28 +536,18 @@ impl Workbench {
             );
         }
         let note: Option<(SharedString, gpui::Hsla)> = match (&picker.models, &picker.error) {
-            (_, Some(error)) => Some((format!("Could not start: {error}").into(), theme.danger)),
+            (_, Some(error)) => Some((format!("Could not switch: {error}").into(), theme.danger)),
             (Models::Loading, _) => Some(("Loading the models…".into(), theme.muted)),
             (Models::Failed(error), _) => Some((
                 format!("Could not list the models: {error}").into(),
                 theme.danger,
-            )),
-            (Models::Ready(_), _) if picker.offers_no_model() => Some((
-                "The harness offers no model to choose: it starts with its own default.".into(),
-                theme.muted,
             )),
             (Models::Ready(_), _) if picker.shown().is_empty() => {
                 Some(("The agent offers no models.".into(), theme.muted))
             }
             _ => None,
         };
-        let can_start = (picker.chosen().is_some() || picker.offers_no_model())
-            && picker.cwd.is_some()
-            && !picker.creating;
-        let cwd = picker
-            .cwd
-            .as_ref()
-            .map_or_else(|| "no folder".to_owned(), |cwd| cwd.display().to_string());
+        let can_start = picker.chosen().is_some() && !picker.creating;
         let section = |text: &'static str| {
             div()
                 .px(px(tokens.spacing * 2.0))
@@ -816,35 +622,9 @@ impl Workbench {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(if picker.switch_session.is_some() {
-                                    "Switch model"
-                                } else if picker.direct {
-                                    "New direct chat"
-                                } else {
-                                    "New agent"
-                                }),
+                                .child("Switch model"),
                         )
-                        .when(picker.switch_session.is_none(), |s| {
-                            s.child(section("Agent")).children(agents)
-                        })
                         .children(providers)
-                        .when(self.providers.providers.is_empty(), |s| {
-                            s.child(
-                                button(
-                                    "agent-manage-models",
-                                    "Direct model · Add a provider…",
-                                    ButtonKind::Secondary,
-                                    true,
-                                    &look,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.agent_picker = None;
-                                        this.open_models_settings(window, cx);
-                                    },
-                                )),
-                            )
-                        })
                         .child(section("Model"))
                         .child(
                             match self.vim_text(&self.edits.agent, &picker.model_query) {
@@ -878,61 +658,6 @@ impl Workbench {
                                 .text_color(*color)
                                 .child(text.clone())
                         }))
-                        .children(
-                            note.as_ref()
-                                .and_then(|(text, _)| {
-                                    crate::harness_install::harness_of_missing(text)
-                                })
-                                .filter(|_| self.harness_install_available())
-                                .map(|harness| {
-                                    div().px(px(tokens.spacing * 2.0)).child(
-                                        button(
-                                            "agent-install-harness",
-                                            "Install…",
-                                            ButtonKind::Secondary,
-                                            true,
-                                            &look,
-                                        )
-                                        .on_click(
-                                            move |_, window, cx| {
-                                                window.dispatch_action(
-                                                    Box::new(super::actions::InstallHarness(
-                                                        harness.to_owned(),
-                                                    )),
-                                                    cx,
-                                                );
-                                            },
-                                        ),
-                                    )
-                                }),
-                        )
-                        .child(section("Folder"))
-                        .child(
-                            div()
-                                .px(px(tokens.spacing * 2.0))
-                                .truncate()
-                                .text_color(theme.muted)
-                                .child(SharedString::from(cwd)),
-                        )
-                        .when(
-                            picker.provider_id.is_some() && picker.switch_session.is_none(),
-                            |s| {
-                                s.child(
-                                    button(
-                                        "agent-system-prompt",
-                                        "System prompt…",
-                                        ButtonKind::Secondary,
-                                        true,
-                                        &look,
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, window, cx| {
-                                            this.edit_chat_system_prompt(window, cx)
-                                        },
-                                    )),
-                                )
-                            },
-                        )
                         .child(
                             div()
                                 .flex()
@@ -957,11 +682,9 @@ impl Workbench {
                                     button(
                                         "agent-start",
                                         if picker.creating {
-                                            "Starting…"
-                                        } else if picker.switch_session.is_some() {
-                                            "Switch ↩"
+                                            "Switching…"
                                         } else {
-                                            "Start ↩"
+                                            "Switch ↩"
                                         },
                                         ButtonKind::Primary,
                                         can_start,

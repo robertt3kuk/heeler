@@ -126,6 +126,7 @@ impl Workbench {
                     return;
                 }
                 this.providers.loading = false;
+                this.launcher_on_providers_changed(cx);
                 if this
                     .agent_picker
                     .as_ref()
@@ -592,30 +593,6 @@ impl Workbench {
         cx.notify();
     }
 
-    pub fn edit_chat_system_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let initial = self
-            .agent_picker
-            .as_ref()
-            .and_then(|p| p.system_prompt.clone())
-            .unwrap_or_default();
-        self.open_prompt(
-            PromptSpec {
-                title: "System prompt",
-                message: "Optional instructions for this direct chat",
-                initial: &initial,
-                confirm_label: "Use",
-            },
-            |this, text, window, cx| {
-                if let Some(picker) = &mut this.agent_picker {
-                    picker.system_prompt = Some(text);
-                }
-                window.focus(&this.agent_focus, cx);
-            },
-            window,
-            cx,
-        );
-    }
-
     pub fn open_model_switch(
         &mut self,
         session: SessionId,
@@ -645,10 +622,7 @@ impl Workbench {
             );
             return;
         }
-        self.new_direct_chat(window, cx);
-        if let Some(picker) = &mut self.agent_picker {
-            picker.switch_session = Some(session);
-        }
+        self.open_direct_model_switch(session, window, cx);
     }
 
     pub(crate) fn confirm_model_switch(

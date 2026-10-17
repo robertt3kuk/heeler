@@ -32,6 +32,7 @@ use crate::workbench::actions::{
     ShowProjectMenu, ShowSessionMenu, ShowSortMenu, ShowWorkspaceMenu, WorkspaceDrop,
     WorkspaceMenuAt,
 };
+use crate::workbench::actions::{LauncherOpen, OpenLauncher};
 use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
@@ -906,6 +907,21 @@ impl Render for SessionsPanel {
             .child("＋")
             .child(probe(&self.env.regions, Region::SidebarControl("plus")))
             .into_any_element();
+        let start_button = div()
+            .id("sessions-start")
+            .relative()
+            .px(px(tokens.spacing * 1.5))
+            .rounded(px(tokens.radius))
+            .cursor_pointer()
+            .text_color(theme.accent)
+            .hover(move |s| s.bg(theme.accent_soft))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(OpenLauncher(LauncherOpen::default())), cx);
+            })
+            .child("▶ Start")
+            .child(probe(&self.env.regions, Region::SidebarControl("start")))
+            .into_any_element();
 
         let search = div()
             .id("sessions-search")
@@ -983,7 +999,7 @@ impl Render for SessionsPanel {
             .child(panel_header_with(
                 "Projects",
                 "panels.sessions",
-                vec![plus_button, sort_button],
+                vec![start_button, plus_button, sort_button],
                 cx,
             ))
             .child(search)
@@ -1204,6 +1220,8 @@ impl SessionsPanel {
                 ),
             WorkspaceKind::Home => header,
         };
+        let group = SharedString::from(format!("ws-row-{id_text}"));
+        header = header.group(group.clone());
         match kind {
             WorkspaceKind::Workspace if manual => {
                 let dragged = DraggedWorkspace {
@@ -1258,6 +1276,39 @@ impl SessionsPanel {
                 )
             })
             .children(count_text(info).map(|count| ui::counter(count, &theme, &tokens)))
+            .when(
+                matches!(kind, WorkspaceKind::Project | WorkspaceKind::Home),
+                |s| {
+                    let start_id = id_text.clone();
+                    s.child(
+                        div()
+                            .id(SharedString::from(format!("workspace-start-{id_text}")))
+                            .relative()
+                            .flex_none()
+                            .px(px(tokens.spacing))
+                            .rounded(px(tokens.radius))
+                            .cursor_pointer()
+                            .text_size(px(tokens.secondary_font_size))
+                            .text_color(theme.accent)
+                            .opacity(if current { 1.0 } else { 0.0 })
+                            .group_hover(group.clone(), |s| s.opacity(1.0))
+                            .hover(move |s| s.bg(theme.accent_soft))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(OpenLauncher(LauncherOpen {
+                                        project: Some(start_id.clone()),
+                                        queue: false,
+                                    })),
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            })
+                            .child("▶")
+                            .child(probe(&self.env.regions, Region::ProjectStart(id))),
+                    )
+                },
+            )
             .child(probe(&self.env.regions, Region::WorkspaceRow(id)))
             .into_any_element()
     }

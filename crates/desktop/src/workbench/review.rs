@@ -9,8 +9,8 @@ use hutan_core::TaskId;
 use hutan_core::TaskPlacementKind;
 
 use super::changes::{ChangesEvent, ChangesView};
-use super::model::{ItemRef, PanelId};
-use super::panels::TasksPanel;
+use super::launcher::LauncherPreset;
+use super::model::ItemRef;
 use super::view::{MenuEntry, Workbench};
 use super::workspaces::{PickerAction, PickerEntry, PickerKind, PickerState, tilde};
 use hutan_protocol::worktree::WorktreeInfo;
@@ -24,29 +24,22 @@ pub struct ReviewHandoff {
     pub comments: Vec<u64>,
 }
 
-/// What a new agent is told first, and which review it came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstMessage {
-    pub text: String,
-    pub handoff: Option<ReviewHandoff>,
-}
-
 impl Workbench {
     /// "Tasks: Show Panel".
     pub(crate) fn show_tasks_panel(&mut self, cx: &mut Context<Self>) {
         self.open_panel("tasks", cx);
     }
 
-    /// "Tasks: New Task…": reveals the panel and opens its form.
+    /// "Tasks: New Task…": the Start… sheet on "Queue as task" in the project in focus.
     pub(crate) fn new_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_panel("tasks", cx);
-        let id = PanelId::new("tasks");
-        if let Some(panel) = self
-            .panel_view(&id, window, cx)
-            .and_then(|view| view.downcast::<TasksPanel>().ok())
-        {
-            panel.update(cx, |panel, cx| panel.open_form(cx));
-        }
+        self.open_launcher(
+            LauncherPreset {
+                queue: true,
+                ..LauncherPreset::default()
+            },
+            window,
+            cx,
+        );
     }
 
     /// "Review Changes…" for the checkout `session` works in; none outside git.
@@ -142,24 +135,6 @@ impl Workbench {
         self.changes_subscriptions.push(subscription);
         self.changes_views.insert(path.to_owned(), view.clone());
         view
-    }
-
-    /// "Start a new agent with these comments" of a Changes view: the new-agent dialog on the
-    /// checkout `cwd`; once its chat exists, `text` is its first message and the comments of
-    /// `handoff` count as sent.
-    pub(crate) fn start_agent_with(
-        &mut self,
-        cwd: PathBuf,
-        text: String,
-        handoff: Option<ReviewHandoff>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.new_agent(window, cx);
-        if let Some(picker) = &mut self.agent_picker {
-            picker.cwd = Some(cwd);
-            picker.first_message = Some(FirstMessage { text, handoff });
-        }
     }
 
     /// The new agent of a review has its first message: the comments are sent.

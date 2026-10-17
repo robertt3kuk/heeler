@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod attention;
+pub mod launch;
 mod placement;
 mod store;
 pub mod tasks;

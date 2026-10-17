@@ -89,6 +89,7 @@ impl Render for Workbench {
         let palette = self.render_palette(window, cx);
         let picker = self.render_picker(window, cx);
         let agent_picker = self.render_agent_picker(window, cx);
+        let launcher = self.render_launcher(window, cx);
         let menu = self.render_context_menu(cx);
         let modal = self.render_modal(cx);
         let daemon_popover = self.render_daemon_popover(cx);
@@ -155,6 +156,7 @@ impl Render for Workbench {
         .children(palette)
         .children(picker)
         .children(agent_picker)
+        .children(launcher)
         .children(menu)
         .children(sheet)
         .children(setup)
@@ -411,6 +413,9 @@ impl Workbench {
         )
         .on_action(cx.listener(|this, _: &actions::NewTask, window, cx| {
             this.new_task(window, cx);
+        }))
+        .on_action(cx.listener(|this, a: &actions::OpenLauncher, window, cx| {
+            this.open_launcher_from(a.0.clone(), window, cx);
         }))
         .on_action(cx.listener(|this, _: &actions::ShowTasksPanel, _, cx| {
             this.show_tasks_panel(cx);
@@ -1427,7 +1432,7 @@ impl Workbench {
                     "No open items — ⌘T for a new tab, {} for commands",
                     palette_key(window)
                 ),
-                None,
+                Some(self.empty_start_button(&theme, &tokens)),
                 &theme,
                 &tokens,
             )
@@ -1687,9 +1692,9 @@ impl Workbench {
             ItemRef::Placeholder { title } => ui::empty_state(
                 Mascot::Empty,
                 format!(
-                    "{title}. Open a session from the sessions panel, or press ⌘T for a new terminal."
+                    "{title}. Start an agent here, open a session from the sessions panel, or press ⌘T for a new terminal."
                 ),
-                None,
+                Some(self.empty_start_button(&theme, &tokens)),
                 &theme,
                 &tokens,
             )
@@ -1701,6 +1706,32 @@ impl Workbench {
                 div().size_full().child(view).into_any_element()
             }
         }
+    }
+
+    /// The "▶ Start…" button of an empty pane or project: the Start… sheet in the project in
+    /// focus.
+    fn empty_start_button(
+        &self,
+        theme: &crate::theme::Theme,
+        tokens: &crate::theme::Tokens,
+    ) -> AnyElement {
+        ui::button(
+            "pane-empty-start",
+            "▶ Start…",
+            ui::ButtonKind::Primary,
+            true,
+            theme,
+            tokens,
+        )
+        .relative()
+        .on_click(|_, window, cx| {
+            window.dispatch_action(
+                Box::new(actions::OpenLauncher(actions::LauncherOpen::default())),
+                cx,
+            );
+        })
+        .child(probe(&self.regions, Region::Launcher("empty-start")))
+        .into_any_element()
     }
 
     pub(crate) fn placeholder_body(&self, text: String, _cx: &mut Context<Self>) -> AnyElement {

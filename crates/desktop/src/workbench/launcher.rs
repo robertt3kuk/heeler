@@ -1,0 +1,1803 @@
+//! The Start… launcher (S-1): one sheet that starts an agent or a task in a project. It is opened
+//! from a project row's ▶, the sidebar header, ⌘⇧T, ⌘K "Start Agent or Task…", the Tasks panel's
+//! "New task" and the empty states, and every start is a task: `task.create` (+ `task.start`
+//! for "Start now"; "Queue as task" leaves it to the scheduler). Only a direct model chat has no
+//! task (`TaskRun::Chat` does not run `direct`): it goes through `chat.create`.
+//!
+//! This file holds the sheet's state and behavior; `launcher_ui.rs` draws it. Fields, in Tab
+//! order: Project, What, Agent, Model, Command, Prompt, Where (+ Branch, Base), Title, More
+//! (After, System prompt), Start now / Queue. ⌘↩ starts, ⌥⌘↩ starts and keeps the sheet open
+//! for the next one.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use gpui::{Context, KeyDownEvent, Window};
+use hutan_core::agent::ModelInfo;
+use hutan_core::{TaskId, WorkspaceId};
+use hutan_protocol::chat::ChatCreate;
+use hutan_protocol::messages::{WorkspaceInfo, WorkspaceKind};
+use hutan_protocol::worktree::{WorktreeCreate, WorktreeInfo};
+
+use super::agents::Models;
+use super::chat::TextInput;
+use super::chat::vim::Outcome;
+use super::harnesses::{self, Detection, HARNESSES};
+use super::palette::fuzzy_score;
+use super::panels::edit_text;
+use super::view::Workbench;
+use super::vim_ui::VimConfig;
+use super::workspaces::project_root_of;
+use crate::sessions::launch::{
+    LaunchKind, LaunchPlace, LaunchValues, branch_for_title, build_create, title_from_prompt,
+};
+use crate::sessions::tasks::{TaskFilters, tree_rows};
+use hutan_protocol::task::TaskCreate;
+
+/// Where the sheet's keyboard focus is; Tab walks the visible ones top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LauncherStop {
+    Project,
+    What,
+    Agent,
+    Model,
+    Command,
+    Prompt,
+    Where,
+    Branch,
+    Base,
+    Title,
+    /// The "More" header: folds the options below it.
+    More,
+    /// The "After" list (tasks this one waits for), under More.
+    After,
+    /// The system prompt of a direct chat, under More.
+    System,
+    /// Start now / Queue as task.
+    Mode,
+}
+
+/// A text field of the sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherField {
+    Project,
+    Prompt,
+    Title,
+    Branch,
+    Base,
+    Command,
+    System,
+}
+
+/// What a chat talks to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchAgent {
+    /// `omp`, `claude` or `codex`.
+    Harness(String),
+    /// A model provider (`provider.list`); empty until the providers are listed.
+    Direct(String),
+}
+
+/// Where the new session works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchWhere {
+    Main,
+    NewWorktree,
+    /// The worktree that has this branch.
+    Existing(String),
+}
+
+/// The worktrees of the chosen project, as `worktree.list` told.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WorktreeList {
+    #[default]
+    Loading,
+    Ready(Vec<WorktreeInfo>),
+    Failed(String),
+}
+
+/// What opens the sheet with: every entry point is a preset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LauncherPreset {
+    /// The project; none: the one in focus.
+    pub project: Option<WorkspaceId>,
+    /// A checkout the session works in (the main checkout or a worktree of the project).
+    pub checkout: Option<PathBuf>,
+    pub prompt: Option<String>,
+    pub kind: Option<LaunchKind>,
+    /// Start with a direct model chat.
+    pub direct: bool,
+    /// Start with "Queue as task".
+    pub queue: bool,
+    /// The review (comments of a Changes view) whose text is the prompt: its comments count as
+    /// sent once the agent has started with it.
+    pub handoff: Option<super::review::ReviewHandoff>,
+}
+
+/// How ready a harness is for what the sheet is about to start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Readiness {
+    /// The accounts have not been listed yet.
+    Checking,
+    Ready,
+    /// The daemon could not find it; the text says how to install it.
+    NeedsInstall(String),
+    /// It is installed and its login says logged out.
+    NeedsLogin,
+    /// The daemon does not run harness chats (it is older than this app).
+    NeedsNewerDaemon,
+}
+
+/// A harness of the Agent row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessChoice {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub readiness: Readiness,
+}
+
+impl HarnessChoice {
+    pub fn enabled(&self) -> bool {
+        self.readiness == Readiness::Ready
+    }
+}
+
+/// The open sheet.
+#[derive(Debug)]
+pub struct Launcher {
+    pub(crate) project: Option<WorkspaceId>,
+    pub(crate) project_query: TextInput,
+    pub(crate) project_sel: usize,
+    pub(crate) kind: LaunchKind,
+    pub(crate) agent: LaunchAgent,
+    /// The user picked the agent: what the daemon finds installed no longer moves it.
+    pub(crate) agent_chosen: bool,
+    /// The model of a chat; none: the harness's own default.
+    pub(crate) model: Option<String>,
+    pub(crate) model_open: bool,
+    pub(crate) prompt: TextInput,
+    pub(crate) title: TextInput,
+    pub(crate) branch: TextInput,
+    pub(crate) base: TextInput,
+    pub(crate) command: TextInput,
+    pub(crate) system: TextInput,
+    /// The user typed the title / branch / base: they no longer follow the prompt / title / repo.
+    pub(crate) title_edited: bool,
+    pub(crate) branch_edited: bool,
+    pub(crate) base_edited: bool,
+    /// Vim's modal state over the field being typed in (`editor.vim_mode`).
+    pub(crate) vim: crate::workbench::chat::vim::Vim,
+    pub(crate) place: LaunchWhere,
+    pub(crate) worktrees: WorktreeList,
+    /// Counts the worktree lists asked for; an older answer is dropped.
+    pub(crate) worktree_requests: u64,
+    /// A checkout the preset asked for, chosen as soon as the worktrees are known.
+    pub(crate) wanted_checkout: Option<PathBuf>,
+    pub(crate) more_open: bool,
+    pub(crate) after: BTreeSet<TaskId>,
+    pub(crate) after_cursor: usize,
+    pub(crate) queue: bool,
+    pub(crate) handoff: Option<super::review::ReviewHandoff>,
+    pub(crate) stop: LauncherStop,
+    pub(crate) error: Option<String>,
+    pub(crate) starting: bool,
+}
+
+impl Launcher {
+    pub fn project(&self) -> Option<WorkspaceId> {
+        self.project
+    }
+
+    pub fn kind(&self) -> LaunchKind {
+        self.kind
+    }
+
+    pub fn agent(&self) -> &LaunchAgent {
+        &self.agent
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    pub fn prompt(&self) -> &str {
+        self.prompt.text()
+    }
+
+    pub fn title(&self) -> &str {
+        self.title.text()
+    }
+
+    pub fn branch(&self) -> &str {
+        self.branch.text()
+    }
+
+    pub fn base(&self) -> &str {
+        self.base.text()
+    }
+
+    pub fn command(&self) -> &str {
+        self.command.text()
+    }
+
+    pub fn place(&self) -> &LaunchWhere {
+        &self.place
+    }
+
+    pub fn worktrees(&self) -> &WorktreeList {
+        &self.worktrees
+    }
+
+    pub fn queue(&self) -> bool {
+        self.queue
+    }
+
+    pub fn after(&self) -> Vec<TaskId> {
+        self.after.iter().copied().collect()
+    }
+
+    pub fn stop(&self) -> LauncherStop {
+        self.stop
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn starting(&self) -> bool {
+        self.starting
+    }
+
+    pub fn more_open(&self) -> bool {
+        self.more_open
+    }
+
+    pub fn is_direct(&self) -> bool {
+        matches!(self.agent, LaunchAgent::Direct(_))
+    }
+
+    /// The worktrees git lists besides the main checkout, with a branch to name them by.
+    pub fn existing_worktrees(&self) -> Vec<&WorktreeInfo> {
+        match &self.worktrees {
+            WorktreeList::Ready(list) => list
+                .iter()
+                .filter(|w| !w.main && !w.prunable && w.branch.is_some())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The main checkout of the project's repository, when the project is one.
+    pub fn main_worktree(&self) -> Option<&WorktreeInfo> {
+        match &self.worktrees {
+            WorktreeList::Ready(list) => list.iter().find(|w| w.main),
+            _ => None,
+        }
+    }
+
+    /// The branch the main checkout is on: what a new worktree starts from.
+    pub fn current_branch(&self) -> Option<&str> {
+        self.main_worktree().and_then(|w| w.branch.as_deref())
+    }
+
+    /// The worktree the chosen place is.
+    pub fn chosen_worktree(&self) -> Option<&WorktreeInfo> {
+        match &self.place {
+            LaunchWhere::Main => self.main_worktree(),
+            LaunchWhere::NewWorktree => None,
+            LaunchWhere::Existing(branch) => self
+                .existing_worktrees()
+                .into_iter()
+                .find(|w| w.branch.as_deref() == Some(branch.as_str())),
+        }
+    }
+
+    fn input_mut(&mut self, field: LauncherField) -> &mut TextInput {
+        self.vim_and_input(field).1
+    }
+
+    /// The modal state and the text of `field`, borrowed together.
+    fn vim_and_input(
+        &mut self,
+        field: LauncherField,
+    ) -> (&mut crate::workbench::chat::vim::Vim, &mut TextInput) {
+        let input = match field {
+            LauncherField::Project => &mut self.project_query,
+            LauncherField::Prompt => &mut self.prompt,
+            LauncherField::Title => &mut self.title,
+            LauncherField::Branch => &mut self.branch,
+            LauncherField::Base => &mut self.base,
+            LauncherField::Command => &mut self.command,
+            LauncherField::System => &mut self.system,
+        };
+        (&mut self.vim, input)
+    }
+
+    /// The text field a stop types into.
+    fn field_of(stop: LauncherStop) -> Option<LauncherField> {
+        Some(match stop {
+            LauncherStop::Project => LauncherField::Project,
+            LauncherStop::Prompt => LauncherField::Prompt,
+            LauncherStop::Title => LauncherField::Title,
+            LauncherStop::Branch => LauncherField::Branch,
+            LauncherStop::Base => LauncherField::Base,
+            LauncherStop::Command => LauncherField::Command,
+            LauncherStop::System => LauncherField::System,
+            _ => return None,
+        })
+    }
+
+    /// The branch and base follow the title and the repository until the user types them.
+    fn follow(&mut self) {
+        if !self.branch_edited {
+            let branch = branch_for_title(self.title.text());
+            self.branch.set(&branch);
+        }
+    }
+
+    /// The title follows the first line of the prompt until the user types it.
+    fn follow_prompt(&mut self) {
+        if !self.title_edited {
+            let title = title_from_prompt(self.prompt.text());
+            self.title.set(&title);
+        }
+        self.follow();
+    }
+
+    /// A command has no prompt: its title follows the command line.
+    fn follow_command(&mut self) {
+        if !self.title_edited {
+            let title = title_from_prompt(self.command.text());
+            self.title.set(&title);
+        }
+        self.follow();
+    }
+
+    /// The task the sheet describes (the harness's `agent_name` names an untitled one).
+    pub fn create_request(
+        &self,
+        workspace: WorkspaceId,
+        agent_name: &str,
+    ) -> Result<TaskCreate, String> {
+        build_create(workspace, &self.values(), agent_name)
+    }
+
+    fn values(&self) -> LaunchValues {
+        LaunchValues {
+            kind: self.kind,
+            agent: match &self.agent {
+                LaunchAgent::Harness(id) => id.clone(),
+                LaunchAgent::Direct(_) => String::new(),
+            },
+            title: self.title.text().to_owned(),
+            prompt: self.prompt.text().to_owned(),
+            command: self.command.text().to_owned(),
+            place: match &self.place {
+                LaunchWhere::Main => LaunchPlace::Main,
+                LaunchWhere::NewWorktree => LaunchPlace::NewWorktree {
+                    branch: self.branch.text().to_owned(),
+                    base: self.base.text().to_owned(),
+                },
+                LaunchWhere::Existing(branch) => LaunchPlace::Existing {
+                    branch: branch.clone(),
+                },
+            },
+            after: self.after.iter().copied().collect(),
+            queue: self.queue,
+        }
+    }
+}
+
+/// A project the sheet can start in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectChoice {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub root: Option<PathBuf>,
+}
+
+impl Workbench {
+    // ---- read access -----------------------------------------------------------------------
+
+    /// The open Start… sheet.
+    pub fn launcher(&self) -> Option<&Launcher> {
+        self.launcher.as_ref()
+    }
+
+    /// The projects the sheet offers: projects, Home, and workspaces that hold no project.
+    pub fn launcher_projects(&self, cx: &gpui::App) -> Vec<ProjectChoice> {
+        let store = self.sessions.read(cx);
+        store
+            .workspaces()
+            .iter()
+            .filter(|w| match w.kind {
+                WorkspaceKind::Project | WorkspaceKind::Home => true,
+                WorkspaceKind::Workspace => store.state().projects_in(w.id).next().is_none(),
+            })
+            .map(|w| ProjectChoice {
+                id: w.id,
+                name: w.name.clone(),
+                root: project_root_of(w),
+            })
+            .collect()
+    }
+
+    /// The projects matching the sheet's project query, best first.
+    pub fn launcher_project_matches(&self, cx: &gpui::App) -> Vec<ProjectChoice> {
+        let Some(launcher) = &self.launcher else {
+            return Vec::new();
+        };
+        let query = launcher.project_query.text().to_owned();
+        let mut scored: Vec<(i32, usize, ProjectChoice)> = self
+            .launcher_projects(cx)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(at, project)| {
+                let haystack = format!(
+                    "{} {}",
+                    project.name,
+                    project
+                        .root
+                        .as_ref()
+                        .map(|r| r.display().to_string())
+                        .unwrap_or_default()
+                );
+                fuzzy_score(&query, &haystack).map(|score| (score, at, project))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, project)| project).collect()
+    }
+
+    /// The harnesses of the Agent row and whether each can be started for the chosen kind.
+    pub fn launcher_harness_choices(&self, cx: &gpui::App) -> Vec<HarnessChoice> {
+        let chat = self
+            .launcher
+            .as_ref()
+            .is_none_or(|l| l.kind == LaunchKind::Chat);
+        let directory = self.env.harnesses.read(cx);
+        HARNESSES
+            .iter()
+            .map(|harness| {
+                let readiness = match directory.detection(harness.id) {
+                    Detection::NotFound(how) => Readiness::NeedsInstall(how),
+                    _ if chat && !self.harness_available(harness.id, cx) => {
+                        Readiness::NeedsNewerDaemon
+                    }
+                    Detection::Checking if chat => Readiness::Checking,
+                    Detection::Installed
+                        if chat
+                            && !directory.accounts_of(harness.id).any(|a| {
+                                a.status != hutan_protocol::account::AccountStatus::LoggedOut
+                            }) =>
+                    {
+                        Readiness::NeedsLogin
+                    }
+                    _ => Readiness::Ready,
+                };
+                HarnessChoice {
+                    id: harness.id,
+                    name: harness.name,
+                    readiness,
+                }
+            })
+            .collect()
+    }
+
+    /// The models the chosen agent offers, as the Model row lists them.
+    pub fn launcher_models(&self, cx: &gpui::App) -> Models {
+        let Some(launcher) = &self.launcher else {
+            return Models::Ready(Vec::new());
+        };
+        match &launcher.agent {
+            LaunchAgent::Harness(id) => match self.env.harnesses.read(cx).models(id) {
+                Some(Models::Ready(models)) => {
+                    let mut shown: Vec<ModelInfo> =
+                        models.iter().filter(|m| !m.hidden).cloned().collect();
+                    shown.sort_by_key(|m| harnesses::model_group(id, m));
+                    Models::Ready(shown)
+                }
+                Some(other) => other.clone(),
+                None => Models::Loading,
+            },
+            LaunchAgent::Direct(provider) => {
+                if let Some(models) = self.providers.models.get(provider) {
+                    let default = self
+                        .providers
+                        .providers
+                        .iter()
+                        .find(|p| &p.id == provider)
+                        .and_then(|p| p.default_model.clone());
+                    let mut models = models.clone();
+                    if let Some(default) = default {
+                        for model in &mut models {
+                            model.is_default = model.id == default;
+                        }
+                    }
+                    Models::Ready(models)
+                } else if let Some(error) = &self.providers.error {
+                    Models::Failed(error.clone())
+                } else {
+                    Models::Loading
+                }
+            }
+        }
+    }
+
+    /// The model a start would use: the one picked, else the catalog's default (a harness chat
+    /// without a pick runs on the harness's own default and names none).
+    pub fn launcher_chosen_model(&self, cx: &gpui::App) -> Option<ModelInfo> {
+        let launcher = self.launcher.as_ref()?;
+        let Models::Ready(models) = self.launcher_models(cx) else {
+            return None;
+        };
+        match &launcher.model {
+            Some(id) => models.into_iter().find(|m| &m.id == id),
+            None => {
+                let default = models.iter().find(|m| m.is_default).cloned();
+                default.or_else(|| {
+                    launcher
+                        .is_direct()
+                        .then(|| models.first().cloned())
+                        .flatten()
+                })
+            }
+        }
+    }
+
+    /// The warning that another live agent already works in the checkout the sheet would use.
+    pub fn launcher_shared_warning(&self, cx: &gpui::App) -> Option<String> {
+        let launcher = self.launcher.as_ref()?;
+        if !launcher.kind.is_agent() {
+            return None;
+        }
+        let checkout = launcher.chosen_worktree()?;
+        let store = self.sessions.read(cx);
+        let agents = checkout
+            .live_sessions
+            .iter()
+            .filter(|id| {
+                store
+                    .session(**id)
+                    .is_some_and(|s| s.chat.is_some() || s.agent.is_some())
+            })
+            .count();
+        (agents > 0).then(|| {
+            let who = if agents == 1 {
+                "Another live agent works".to_owned()
+            } else {
+                format!("{agents} other live agents work")
+            };
+            format!(
+                "{who} in this checkout: they would write over each other. Pick New worktree to keep them apart."
+            )
+        })
+    }
+
+    /// The stops Tab walks now, top to bottom.
+    pub fn launcher_stops(&self, cx: &gpui::App) -> Vec<LauncherStop> {
+        let Some(launcher) = &self.launcher else {
+            return Vec::new();
+        };
+        let mut stops = vec![LauncherStop::Project, LauncherStop::What];
+        if launcher.kind.is_agent() {
+            stops.push(LauncherStop::Agent);
+        }
+        if launcher.kind == LaunchKind::Chat
+            && matches!(self.launcher_models(cx), Models::Ready(m) if !m.is_empty())
+        {
+            stops.push(LauncherStop::Model);
+        }
+        if launcher.kind == LaunchKind::Command {
+            stops.push(LauncherStop::Command);
+        }
+        if launcher.kind.takes_prompt() {
+            stops.push(LauncherStop::Prompt);
+        }
+        stops.push(LauncherStop::Where);
+        if launcher.place == LaunchWhere::NewWorktree {
+            stops.extend([LauncherStop::Branch, LauncherStop::Base]);
+        }
+        stops.push(LauncherStop::Title);
+        stops.push(LauncherStop::More);
+        if launcher.more_open {
+            stops.push(LauncherStop::After);
+            if launcher.is_direct() {
+                stops.push(LauncherStop::System);
+            }
+        }
+        stops.push(LauncherStop::Mode);
+        stops
+    }
+
+    // ---- opening and closing ---------------------------------------------------------------
+
+    /// ⌘⇧T, ⌘K "Start Agent or Task…", the ▶ buttons and the empty states.
+    pub fn open_launcher(
+        &mut self,
+        preset: LauncherPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (connected, chat, tasks, default_project) = {
+            let store = self.sessions.read(cx);
+            (
+                store.connection_state() == hutan_client::ConnectionState::Connected,
+                store.connection().supports_chat(),
+                store.connection().supports_tasks(),
+                self.target_workspace(store).map(|w| w.id),
+            )
+        };
+        if !connected {
+            self.set_notice("Not connected to hutand", cx);
+            return;
+        }
+        if !chat || !tasks {
+            self.set_notice(
+                "This hutand does not run agents and tasks; restart it (Daemon → Restart)",
+                cx,
+            );
+            return;
+        }
+        self.palette = None;
+        self.picker = None;
+        self.context_menu = None;
+        self.agent_picker = None;
+        let project = preset.project.or(default_project);
+        let kind = preset.kind.unwrap_or(LaunchKind::Chat);
+        let agent = if preset.direct {
+            LaunchAgent::Direct(String::new())
+        } else {
+            LaunchAgent::Harness(self.default_harness(cx))
+        };
+        let mut launcher = Launcher {
+            project,
+            project_query: TextInput::new(),
+            project_sel: 0,
+            kind,
+            agent,
+            agent_chosen: preset.direct,
+            model: None,
+            model_open: false,
+            prompt: TextInput::new(),
+            title: TextInput::new(),
+            branch: TextInput::new(),
+            base: TextInput::new(),
+            command: TextInput::new(),
+            system: TextInput::new(),
+            title_edited: false,
+            branch_edited: false,
+            base_edited: false,
+            vim: crate::workbench::chat::vim::Vim::new(),
+            place: LaunchWhere::Main,
+            worktrees: WorktreeList::Loading,
+            worktree_requests: 0,
+            wanted_checkout: preset.checkout.clone(),
+            more_open: false,
+            after: BTreeSet::new(),
+            after_cursor: 0,
+            queue: preset.queue,
+            handoff: preset.handoff.clone(),
+            stop: LauncherStop::Prompt,
+            error: None,
+            starting: false,
+        };
+        if let Some(prompt) = &preset.prompt {
+            launcher.prompt.set(prompt);
+            launcher.follow_prompt();
+        }
+        launcher.stop = if kind.takes_prompt() {
+            LauncherStop::Prompt
+        } else if kind == LaunchKind::Command {
+            LauncherStop::Command
+        } else {
+            LauncherStop::Title
+        };
+        self.launcher = Some(launcher);
+        self.edits.agent.reset();
+        window.focus(&self.launcher_focus, cx);
+        self.refresh_accounts(cx);
+        self.refresh_providers(cx);
+        self.launcher_load_models(cx);
+        self.launcher_load_worktrees(cx);
+        cx.notify();
+    }
+
+    /// Opens the sheet on an agent chat in the checkout at `cwd` (the main checkout of a
+    /// project, or one of its worktrees) with `text` as its prompt (Changes view: "Start a new
+    /// agent with these comments"). The user still presses Start.
+    pub fn start_agent_with(
+        &mut self,
+        cwd: PathBuf,
+        text: String,
+        handoff: Option<super::review::ReviewHandoff>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let preset =
+            move |project: Option<WorkspaceId>, cwd: PathBuf, text: String| LauncherPreset {
+                project,
+                checkout: Some(cwd),
+                prompt: Some(text),
+                handoff: handoff.clone(),
+                ..LauncherPreset::default()
+            };
+        // The project whose folder holds the checkout (its main checkout, or a folder in it).
+        let by_folder = {
+            let store = self.sessions.read(cx);
+            store
+                .workspaces()
+                .iter()
+                .filter(|w| w.kind == WorkspaceKind::Project)
+                .find(|w| w.roots.iter().any(|root| cwd.starts_with(root)))
+                .map(|w| w.id)
+        };
+        if by_folder.is_some() {
+            self.open_launcher(preset(by_folder, cwd, text), window, cx);
+            return;
+        }
+        // A worktree lives next to its repository: git says which repository it belongs to.
+        let listing = self
+            .sessions
+            .update(cx, |store, cx| store.list_all_worktrees(cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let repo_root = listing
+                .await
+                .ok()
+                .and_then(|list| list.into_iter().find(|w| w.path == cwd))
+                .map(|w| w.repo_root);
+            this.update_in(cx, |this, window, cx| {
+                let project = repo_root.and_then(|root| {
+                    this.sessions
+                        .read(cx)
+                        .workspaces()
+                        .iter()
+                        .filter(|w| w.kind == WorkspaceKind::Project)
+                        .find(|w| project_root_of(w).as_ref() == Some(&root))
+                        .map(|w| w.id)
+                });
+                this.open_launcher(preset(project, cwd, text), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A ▶ Start button, an empty state or the Tasks panel asked for the sheet.
+    pub(crate) fn open_launcher_from(
+        &mut self,
+        open: super::actions::LauncherOpen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = open.project.and_then(|id| id.parse().ok());
+        self.open_launcher(
+            LauncherPreset {
+                project,
+                queue: open.queue,
+                ..LauncherPreset::default()
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub fn close_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.launcher.take().is_some() {
+            self.focus_root(window, cx);
+            cx.notify();
+        }
+    }
+
+    // ---- choosing ---------------------------------------------------------------------------
+
+    /// Chooses the project the sheet starts in.
+    pub fn launcher_set_project(&mut self, project: WorkspaceId, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        if launcher.starting {
+            return;
+        }
+        let changed = launcher.project != Some(project);
+        launcher.project = Some(project);
+        launcher.project_query.clear();
+        launcher.project_sel = 0;
+        if changed {
+            launcher.place = LaunchWhere::Main;
+            launcher.worktrees = WorktreeList::Loading;
+            launcher.after.clear();
+            launcher.wanted_checkout = None;
+            launcher.base_edited = false;
+            launcher.base.clear();
+            self.launcher_load_worktrees(cx);
+        }
+        cx.notify();
+    }
+
+    pub fn launcher_set_kind(&mut self, kind: LaunchKind, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        if launcher.starting || launcher.kind == kind {
+            return;
+        }
+        launcher.kind = kind;
+        launcher.error = None;
+        launcher.model_open = false;
+        // A terminal agent runs a harness, never a direct model.
+        let direct = launcher.is_direct();
+        if kind != LaunchKind::Chat && direct {
+            launcher.agent = LaunchAgent::Harness(String::new());
+            launcher.agent_chosen = false;
+        }
+        if kind == LaunchKind::Chat && direct {
+            launcher.queue = false;
+        }
+        if !self.launcher_stops(cx).contains(&self.launcher_stop()) {
+            self.launcher_set_stop(LauncherStop::What);
+        }
+        if kind != LaunchKind::Chat || !self.launcher.as_ref().is_some_and(Launcher::is_direct) {
+            self.launcher_repick_agent(cx);
+        }
+        self.launcher_load_models(cx);
+        cx.notify();
+    }
+
+    /// Picks the agent a chat or terminal agent runs. A harness that cannot be started is not
+    /// pickable (the sheet offers Install… or Log in… for it instead).
+    pub fn launcher_choose_agent(&mut self, agent: LaunchAgent, cx: &mut Context<Self>) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        if launcher.starting {
+            return;
+        }
+        match &agent {
+            LaunchAgent::Harness(id) => {
+                let ready = self
+                    .launcher_harness_choices(cx)
+                    .iter()
+                    .any(|h| h.id == id && h.enabled());
+                if !ready {
+                    return;
+                }
+            }
+            LaunchAgent::Direct(provider) => {
+                if launcher.kind != LaunchKind::Chat
+                    || !self.providers.providers.iter().any(|p| &p.id == provider)
+                {
+                    return;
+                }
+            }
+        }
+        if let Some(launcher) = &mut self.launcher {
+            launcher.agent = agent;
+            launcher.agent_chosen = true;
+            launcher.model = None;
+            launcher.model_open = false;
+            launcher.error = None;
+            if launcher.is_direct() {
+                launcher.queue = false;
+            }
+        }
+        self.launcher_load_models(cx);
+        cx.notify();
+    }
+
+    /// Picks the model of a chat; none: the harness's default.
+    pub fn launcher_choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher
+            && !launcher.starting
+        {
+            launcher.model = model;
+            launcher.model_open = false;
+            cx.notify();
+        }
+    }
+
+    pub fn launcher_set_place(&mut self, place: LaunchWhere, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        if launcher.starting {
+            return;
+        }
+        launcher.place = place;
+        launcher.error = None;
+        let stops = self.launcher_stops(cx);
+        if !stops.contains(&self.launcher_stop()) {
+            self.launcher_set_stop(LauncherStop::Where);
+        }
+        cx.notify();
+    }
+
+    /// Replaces the text of a field and lets what follows it follow.
+    pub fn launcher_set_field(&mut self, field: LauncherField, text: &str, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        launcher.input_mut(field).set(text);
+        launcher.error = None;
+        Self::launcher_edited(launcher, field);
+        if field == LauncherField::Project {
+            launcher.project_sel = 0;
+        }
+        cx.notify();
+    }
+
+    /// What a change of `field` moves along with it.
+    fn launcher_edited(launcher: &mut Launcher, field: LauncherField) {
+        match field {
+            LauncherField::Prompt => launcher.follow_prompt(),
+            LauncherField::Command => launcher.follow_command(),
+            LauncherField::Title => {
+                launcher.title_edited = !launcher.title.is_empty();
+                launcher.follow();
+            }
+            LauncherField::Branch => launcher.branch_edited = !launcher.branch.is_empty(),
+            LauncherField::Base => launcher.base_edited = !launcher.base.is_empty(),
+            _ => {}
+        }
+    }
+
+    /// "Start now" or "Queue as task". A direct chat has no task to queue.
+    pub fn launcher_set_queue(&mut self, queue: bool, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher
+            && !launcher.starting
+            && !(queue && launcher.is_direct())
+        {
+            launcher.queue = queue;
+            cx.notify();
+        }
+    }
+
+    /// Ticks or unticks a task of the "After" list.
+    pub fn launcher_toggle_after(&mut self, task: TaskId, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher
+            && !launcher.after.remove(&task)
+        {
+            launcher.after.insert(task);
+        }
+        cx.notify();
+    }
+
+    pub fn launcher_toggle_more(&mut self, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher {
+            launcher.more_open = !launcher.more_open;
+            if !launcher.more_open
+                && matches!(launcher.stop, LauncherStop::After | LauncherStop::System)
+            {
+                launcher.stop = LauncherStop::More;
+            }
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn launcher_stop(&self) -> LauncherStop {
+        self.launcher
+            .as_ref()
+            .map_or(LauncherStop::Prompt, |l| l.stop)
+    }
+
+    fn launcher_set_stop(&mut self, stop: LauncherStop) {
+        if let Some(launcher) = &mut self.launcher
+            && launcher.stop != stop
+        {
+            launcher.stop = stop;
+            launcher.vim.reset();
+        }
+    }
+
+    /// Moves the keyboard to `stop` (a click, Tab).
+    pub(crate) fn launcher_focus_stop(
+        &mut self,
+        stop: LauncherStop,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.launcher_set_stop(stop);
+        if let Some(launcher) = &mut self.launcher
+            && stop != LauncherStop::Model
+        {
+            launcher.model_open = false;
+        }
+        window.focus(&self.launcher_focus, cx);
+        cx.notify();
+    }
+
+    // ---- asking the daemon -------------------------------------------------------------------
+
+    /// What the harnesses and providers learned reaches the open sheet: the preselected agent
+    /// follows what is installed until the user picks one, and the model list is the agent's.
+    pub(crate) fn launcher_on_harnesses_changed(&mut self, cx: &mut Context<Self>) {
+        if self.launcher.is_none() {
+            return;
+        }
+        self.launcher_repick_agent(cx);
+        cx.notify();
+    }
+
+    /// The providers listed: a direct chat the sheet waits to name a provider for gets the first.
+    pub(crate) fn launcher_on_providers_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        if let LaunchAgent::Direct(provider) = &launcher.agent
+            && provider.is_empty()
+            && let Some(first) = self.providers.providers.first().map(|p| p.id.clone())
+        {
+            if let Some(launcher) = &mut self.launcher {
+                launcher.agent = LaunchAgent::Direct(first);
+            }
+            self.launcher_load_models(cx);
+        }
+        cx.notify();
+    }
+
+    /// Until the user picks an agent, the sheet offers the first harness that can be started.
+    fn launcher_repick_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        if launcher.agent_chosen {
+            // A chosen harness that turned out unusable stays chosen: the sheet says why.
+            return;
+        }
+        let first_ready = self
+            .launcher_harness_choices(cx)
+            .into_iter()
+            .find(|h| h.enabled())
+            .map(|h| h.id.to_owned());
+        let fallback = self.default_harness(cx);
+        let wanted = LaunchAgent::Harness(first_ready.unwrap_or(fallback));
+        if self.launcher.as_ref().is_some_and(|l| l.agent != wanted) {
+            if let Some(launcher) = &mut self.launcher {
+                launcher.agent = wanted;
+                launcher.model = None;
+            }
+            self.launcher_load_models(cx);
+        }
+    }
+
+    /// Asks for the models of the chosen agent.
+    fn launcher_load_models(&mut self, cx: &mut Context<Self>) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        if launcher.kind != LaunchKind::Chat {
+            return;
+        }
+        match launcher.agent.clone() {
+            LaunchAgent::Harness(id) if !id.is_empty() => {
+                if self.harness_available(&id, cx) && self.env.harnesses.read(cx).startable(&id) {
+                    self.env
+                        .harnesses
+                        .update(cx, |directory, cx| directory.load_models(&id, cx));
+                }
+            }
+            LaunchAgent::Direct(provider) if !provider.is_empty() => {
+                self.provider_models(&provider, cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Asks for the worktrees of the chosen project: where the session can work, and the branch
+    /// the main checkout is on.
+    fn launcher_load_worktrees(&mut self, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        let Some(project) = launcher.project else {
+            launcher.worktrees = WorktreeList::Ready(Vec::new());
+            return;
+        };
+        if !self.sessions.read(cx).connection().supports_worktrees() {
+            launcher.worktrees = WorktreeList::Ready(Vec::new());
+            return;
+        }
+        launcher.worktree_requests += 1;
+        let request = launcher.worktree_requests;
+        let listing = self
+            .sessions
+            .update(cx, |store, cx| store.list_worktrees(project, cx));
+        cx.spawn(async move |this, cx| {
+            let result = listing.await;
+            this.update(cx, |this, cx| {
+                let Some(launcher) = &mut this.launcher else {
+                    return;
+                };
+                if launcher.worktree_requests != request {
+                    return;
+                }
+                launcher.worktrees = match result {
+                    Ok(list) => WorktreeList::Ready(list),
+                    Err(error) => WorktreeList::Failed(error),
+                };
+                this.launcher_worktrees_arrived();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The worktrees are known: the base follows the main checkout's branch, a checkout the
+    /// preset asked for is chosen, and a place that vanished falls back to the main checkout.
+    fn launcher_worktrees_arrived(&mut self) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        if !launcher.base_edited
+            && let Some(branch) = launcher.current_branch().map(str::to_owned)
+        {
+            launcher.base.set(&branch);
+        }
+        if let Some(wanted) = launcher.wanted_checkout.take() {
+            let chosen = match &launcher.worktrees {
+                WorktreeList::Ready(list) => list.iter().find(|w| w.path == wanted).map(|w| {
+                    if w.main {
+                        LaunchWhere::Main
+                    } else {
+                        w.branch
+                            .clone()
+                            .map_or(LaunchWhere::Main, LaunchWhere::Existing)
+                    }
+                }),
+                _ => None,
+            };
+            if let Some(place) = chosen {
+                launcher.place = place;
+            }
+        }
+        if let LaunchWhere::Existing(branch) = &launcher.place
+            && !launcher
+                .existing_worktrees()
+                .iter()
+                .any(|w| w.branch.as_deref() == Some(branch.as_str()))
+        {
+            launcher.place = LaunchWhere::Main;
+        }
+    }
+
+    // ---- starting ----------------------------------------------------------------------------
+
+    /// ⌘↩ starts what the sheet describes; ⌥⌘↩ (`and_new`) starts it and keeps the sheet open
+    /// for the next one, with the project, what and where kept and the prompt and title cleared.
+    pub fn launcher_start(&mut self, and_new: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        if launcher.starting {
+            return;
+        }
+        let Some(project) = launcher.project else {
+            launcher.error = Some("Choose a project first.".to_owned());
+            cx.notify();
+            return;
+        };
+        let agent_name = match &launcher.agent {
+            LaunchAgent::Harness(id) => harnesses::harness_name(id),
+            LaunchAgent::Direct(_) => "Direct model".to_owned(),
+        };
+        if launcher.kind == LaunchKind::Chat && launcher.is_direct() {
+            self.launcher_start_direct(project, and_new, window, cx);
+            return;
+        }
+        let request = match launcher.create_request(project, &agent_name) {
+            Ok(request) => request,
+            Err(error) => {
+                launcher.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        // The agent must be one that can be started.
+        let blocked = match &launcher.agent {
+            LaunchAgent::Harness(id) if launcher.kind.is_agent() => {
+                let id = id.clone();
+                self.launcher_harness_choices(cx)
+                    .into_iter()
+                    .find(|h| h.id == id)
+                    .filter(|h| !h.enabled())
+            }
+            _ => None,
+        };
+        if let Some(harness) = blocked {
+            let hint = match harness.readiness {
+                Readiness::NeedsInstall(_) => "Install it first.",
+                Readiness::NeedsLogin => "Log in first.",
+                Readiness::NeedsNewerDaemon => "Restart hutand (Daemon → Restart) first.",
+                _ => "It is still being checked.",
+            };
+            if let Some(launcher) = &mut self.launcher {
+                launcher.error = Some(format!("{} cannot start yet. {hint}", harness.name));
+            }
+            cx.notify();
+            return;
+        }
+        let model = self.launcher_pick_for_task(cx);
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        let queue = launcher.queue;
+        let handoff = launcher.handoff.clone();
+        let title = request.title.clone();
+        launcher.starting = true;
+        launcher.error = None;
+        let creating = self
+            .sessions
+            .update(cx, |store, cx| store.create_task(request, cx));
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let created = match creating.await {
+                Ok(task) => task,
+                Err(error) => {
+                    this.update(cx, |this, cx| this.launcher_failed(error, cx)).ok();
+                    return;
+                }
+            };
+            if queue {
+                this.update_in(cx, |this, window, cx| {
+                    this.launcher_done(and_new, window, cx);
+                    this.set_notice(format!("Queued “{title}”: it starts by itself"), cx);
+                    this.open_panel("tasks", cx);
+                })
+                .ok();
+                return;
+            }
+            let Ok(starting) = this.update(cx, |this, cx| {
+                this.sessions
+                    .update(cx, |store, cx| store.start_task(created.id, cx))
+            }) else {
+                return;
+            };
+            match starting.await {
+                Ok(started) => {
+                    let session = started.session.id;
+                    let connection = this
+                        .update(cx, |this, cx| this.sessions.read(cx).connection().clone())
+                        .ok();
+                    this.update_in(cx, |this, window, cx| {
+                        this.launcher_done(and_new, window, cx);
+                        this.open_session(session, window, cx);
+                        if and_new {
+                            this.launcher_refocus(window, cx);
+                        }
+                        if let Some(warning) = started.warnings.first() {
+                            this.set_notice(warning.clone(), cx);
+                        }
+                        // The agent has the review as its prompt: its comments count as sent.
+                        if let Some(handoff) = &handoff {
+                            this.review_handed_off(handoff, &started.session.title, cx);
+                        }
+                    })
+                    .ok();
+                    // The task cannot carry a model yet: the chat starts on the harness's
+                    // default and takes the chosen one from its next turn on.
+                    if let (Some(model), Some(connection)) = (model, connection)
+                        && let Err(error) = connection.chat_set_model(session, None, &model).await
+                    {
+                        this.update(cx, |this, cx| {
+                            this.set_notice(
+                                format!("The chat runs on the default model: cannot switch to {model}: {error}"),
+                                cx,
+                            );
+                        })
+                        .ok();
+                    }
+                }
+                Err(error) => {
+                    // The task never ran: take it back so a retry does not leave two.
+                    let removing = this
+                        .update(cx, |this, cx| {
+                            this.sessions
+                                .update(cx, |store, cx| store.delete_task(created.id, false, cx))
+                        })
+                        .ok();
+                    if let Some(removing) = removing {
+                        let _ = removing.await;
+                    }
+                    this.update(cx, |this, cx| {
+                        this.launcher_failed(format!("Cannot start: {error}"), cx);
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The model a harness chat takes from its second turn: only one the user picked and that is
+    /// not the default, and only when the chat starts now.
+    pub(crate) fn launcher_pick_for_task(&self, cx: &gpui::App) -> Option<String> {
+        let launcher = self.launcher.as_ref()?;
+        if launcher.kind != LaunchKind::Chat || launcher.queue || launcher.is_direct() {
+            return None;
+        }
+        let picked = launcher.model.clone()?;
+        match self.launcher_models(cx) {
+            Models::Ready(models) => models
+                .iter()
+                .find(|m| m.id == picked && !m.is_default)
+                .map(|m| m.id.clone()),
+            _ => None,
+        }
+    }
+
+    /// A direct model chat: no task (`TaskRun::Chat` does not run `direct`), so `chat.create`
+    /// (in a worktree made first when asked) and the prompt as its first message.
+    fn launcher_start_direct(
+        &mut self,
+        project: WorkspaceId,
+        and_new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        let LaunchAgent::Direct(provider) = launcher.agent.clone() else {
+            return;
+        };
+        if provider.is_empty() {
+            launcher.error =
+                Some("Configure a model provider first (Settings → Models).".to_owned());
+            cx.notify();
+            return;
+        }
+        let values = launcher.values();
+        let prompt = values.prompt.trim().to_owned();
+        let title = (!values.title.trim().is_empty()).then(|| values.title.trim().to_owned());
+        let place = values.place.clone();
+        let system = launcher.system.text().trim().to_owned();
+        let main = launcher.main_worktree().map(|w| w.path.clone());
+        let chosen = launcher.chosen_worktree().map(|w| w.path.clone());
+        if let LaunchPlace::NewWorktree { branch, .. } = &place
+            && branch.trim().is_empty()
+        {
+            launcher.error = Some("Name the branch of the new worktree.".to_owned());
+            cx.notify();
+            return;
+        }
+        launcher.starting = true;
+        launcher.error = None;
+        let model = self.launcher_chosen_model(cx).map(|m| m.id);
+        let info: Option<WorkspaceInfo> = self.sessions.read(cx).workspace(project).cloned();
+        let fallback_cwd = info
+            .as_ref()
+            .and_then(|w| w.roots.first().cloned())
+            .or_else(std::env::home_dir);
+        let creating_worktree = match &place {
+            LaunchPlace::NewWorktree { branch, base } => {
+                let base = base.trim();
+                let request = WorktreeCreate {
+                    workspace_id: project,
+                    repo: None,
+                    branch: branch.trim().to_owned(),
+                    base: (!base.is_empty()).then(|| base.to_owned()),
+                    path: None,
+                };
+                Some(
+                    self.sessions
+                        .update(cx, |store, cx| store.create_worktree(request, cx)),
+                )
+            }
+            _ => None,
+        };
+        let connection = self.sessions.read(cx).connection().clone();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let cwd = match creating_worktree {
+                Some(creating) => match creating.await {
+                    Ok(worktree) => Some(worktree.path),
+                    Err(error) => {
+                        this.update(cx, |this, cx| this.launcher_failed(error, cx))
+                            .ok();
+                        return;
+                    }
+                },
+                None => chosen.or(main).or(fallback_cwd),
+            };
+            let Some(cwd) = cwd else {
+                this.update(cx, |this, cx| {
+                    this.launcher_failed("The project has no folder to work in.".to_owned(), cx);
+                })
+                .ok();
+                return;
+            };
+            let created = connection
+                .chat_create(ChatCreate {
+                    workspace_id: Some(project),
+                    cwd,
+                    agent: "direct".to_owned(),
+                    model,
+                    approval_policy: None,
+                    sandbox: None,
+                    title,
+                    mode: None,
+                    provider_id: Some(provider),
+                    system_prompt: (!system.is_empty()).then_some(system),
+                })
+                .await;
+            let info = match created {
+                Ok(info) => info,
+                Err(error) => {
+                    this.update(cx, |this, cx| this.launcher_failed(error.to_string(), cx))
+                        .ok();
+                    return;
+                }
+            };
+            let sent = if prompt.is_empty() {
+                Ok(())
+            } else {
+                connection.chat_send(info.id, prompt).await.map(|_| ())
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.launcher_done(and_new, window, cx);
+                this.open_session(info.id, window, cx);
+                if and_new {
+                    this.launcher_refocus(window, cx);
+                }
+                if let Err(error) = sent {
+                    this.set_notice(
+                        format!("The chat started, its first message did not go: {error}"),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A start went through: close the sheet, or clear it for the next one.
+    fn launcher_done(&mut self, and_new: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !and_new {
+            self.launcher = None;
+            self.focus_root(window, cx);
+            cx.notify();
+            return;
+        }
+        if let Some(launcher) = &mut self.launcher {
+            launcher.starting = false;
+            launcher.error = None;
+            launcher.handoff = None;
+            launcher.prompt.clear();
+            launcher.title.clear();
+            launcher.command.clear();
+            launcher.title_edited = false;
+            launcher.branch_edited = false;
+            launcher.follow();
+            launcher.after.clear();
+            launcher.vim.reset();
+            launcher.stop = if launcher.kind.takes_prompt() {
+                LauncherStop::Prompt
+            } else if launcher.kind == LaunchKind::Command {
+                LauncherStop::Command
+            } else {
+                LauncherStop::Title
+            };
+        }
+        // A worktree the start made is a place now.
+        self.launcher_load_worktrees(cx);
+        cx.notify();
+    }
+
+    /// The sheet keeps the keyboard after a session opened behind it.
+    fn launcher_refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.launcher.is_some() {
+            window.focus(&self.launcher_focus, cx);
+        }
+    }
+
+    fn launcher_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher {
+            launcher.starting = false;
+            launcher.error = Some(error);
+        }
+        cx.notify();
+    }
+
+    // ---- keyboard ----------------------------------------------------------------------------
+
+    /// A key in the sheet; the stop says what it edits.
+    pub(crate) fn launcher_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        let ks = &event.keystroke;
+        let stop = launcher.stop;
+        let vim = VimConfig::of(&self.settings);
+        if ks.key == "enter" && ks.modifiers.platform {
+            self.launcher_start(ks.modifiers.alt, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        let field = Launcher::field_of(stop);
+        match ks.key.as_str() {
+            "escape" => {
+                // Under Vim mode the first Escape leaves Insert (or Visual); then the list, then
+                // the sheet closes.
+                if vim.enabled
+                    && let Some(field) = field
+                    && let Some(launcher) = &mut self.launcher
+                {
+                    let multiline = field == LauncherField::Prompt;
+                    let (state, input) = launcher.vim_and_input(field);
+                    if super::vim_ui::apply(state, input, event, vim.options(!multiline, true), cx)
+                        == Outcome::Handled
+                    {
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
+                if let Some(launcher) = &mut self.launcher {
+                    if launcher.model_open {
+                        launcher.model_open = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if stop == LauncherStop::Project && !launcher.project_query.is_empty() {
+                        launcher.project_query.clear();
+                        launcher.project_sel = 0;
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
+                self.close_launcher(window, cx);
+            }
+            "tab" => {
+                let stops = self.launcher_stops(cx);
+                let at = stops.iter().position(|s| *s == stop).unwrap_or(0);
+                let next = if ks.modifiers.shift {
+                    stops[(at + stops.len() - 1) % stops.len()]
+                } else {
+                    stops[(at + 1) % stops.len()]
+                };
+                self.launcher_focus_stop(next, window, cx);
+            }
+            key => match stop {
+                LauncherStop::Project => self.launcher_project_key(key, event, vim, cx),
+                LauncherStop::What => self.launcher_cycle_key(key, stop, cx),
+                LauncherStop::Agent => self.launcher_cycle_key(key, stop, cx),
+                LauncherStop::Where => self.launcher_cycle_key(key, stop, cx),
+                LauncherStop::Mode => match key {
+                    "left" | "right" | "up" | "down" | "space" | "enter" => {
+                        let queue = self.launcher.as_ref().is_some_and(|l| l.queue);
+                        self.launcher_set_queue(!queue, cx);
+                    }
+                    _ => return,
+                },
+                LauncherStop::More => match key {
+                    "space" | "enter" | "left" | "right" => self.launcher_toggle_more(cx),
+                    _ => return,
+                },
+                LauncherStop::Model => self.launcher_model_key(key, cx),
+                LauncherStop::After => self.launcher_after_key(key, cx),
+                _ => {
+                    let Some(field) = field else { return };
+                    // Return starts from a one-line field; in the prompt it is a new line.
+                    if key == "enter" && field != LauncherField::Prompt {
+                        self.launcher_start(false, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    let multiline = field == LauncherField::Prompt;
+                    let Some(launcher) = &mut self.launcher else {
+                        return;
+                    };
+                    let before = launcher.input_mut(field).text().to_owned();
+                    let (state, input) = launcher.vim_and_input(field);
+                    if !edit_text(input, state, vim, event, multiline, cx) {
+                        return;
+                    }
+                    if launcher.input_mut(field).text() != before {
+                        launcher.error = None;
+                        Self::launcher_edited(launcher, field);
+                    }
+                    cx.notify();
+                }
+            },
+        }
+        cx.stop_propagation();
+    }
+
+    fn launcher_project_key(
+        &mut self,
+        key: &str,
+        event: &KeyDownEvent,
+        vim: VimConfig,
+        cx: &mut Context<Self>,
+    ) {
+        let matches = self.launcher_project_matches(cx);
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        match key {
+            "down" => {
+                launcher.project_sel =
+                    (launcher.project_sel + 1).min(matches.len().saturating_sub(1))
+            }
+            "up" => launcher.project_sel = launcher.project_sel.saturating_sub(1),
+            "enter" => {
+                if let Some(project) = matches.get(launcher.project_sel) {
+                    let id = project.id;
+                    self.launcher_set_project(id, cx);
+                }
+            }
+            _ => {
+                let before = launcher.project_query.text().to_owned();
+                let (state, input) = (&mut launcher.vim, &mut launcher.project_query);
+                if edit_text(input, state, vim, event, false, cx)
+                    && launcher.project_query.text() != before
+                {
+                    launcher.project_sel = 0;
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// ← → (↑ ↓) cycle the choices of a row.
+    fn launcher_cycle_key(&mut self, key: &str, stop: LauncherStop, cx: &mut Context<Self>) {
+        let step: isize = match key {
+            "left" | "up" => -1,
+            "right" | "down" => 1,
+            _ => return,
+        };
+        let cycle = |len: usize, at: usize| -> usize {
+            ((at as isize + step).rem_euclid(len as isize)) as usize
+        };
+        match stop {
+            LauncherStop::What => {
+                let at = LaunchKind::ALL
+                    .iter()
+                    .position(|k| Some(*k) == self.launcher.as_ref().map(|l| l.kind))
+                    .unwrap_or(0);
+                self.launcher_set_kind(LaunchKind::ALL[cycle(LaunchKind::ALL.len(), at)], cx);
+            }
+            LauncherStop::Agent => {
+                let mut choices: Vec<LaunchAgent> = self
+                    .launcher_harness_choices(cx)
+                    .into_iter()
+                    .filter(HarnessChoice::enabled)
+                    .map(|h| LaunchAgent::Harness(h.id.to_owned()))
+                    .collect();
+                if self
+                    .launcher
+                    .as_ref()
+                    .is_some_and(|l| l.kind == LaunchKind::Chat)
+                {
+                    choices.extend(
+                        self.providers
+                            .providers
+                            .iter()
+                            .map(|p| LaunchAgent::Direct(p.id.clone())),
+                    );
+                }
+                if choices.is_empty() {
+                    return;
+                }
+                let current = self.launcher.as_ref().map(|l| l.agent.clone());
+                let at = choices
+                    .iter()
+                    .position(|c| Some(c) == current.as_ref())
+                    .unwrap_or(0);
+                self.launcher_choose_agent(choices[cycle(choices.len(), at)].clone(), cx);
+            }
+            LauncherStop::Where => {
+                let Some(launcher) = &self.launcher else {
+                    return;
+                };
+                let mut places = vec![LaunchWhere::Main, LaunchWhere::NewWorktree];
+                places.extend(
+                    launcher
+                        .existing_worktrees()
+                        .into_iter()
+                        .filter_map(|w| w.branch.clone().map(LaunchWhere::Existing)),
+                );
+                let at = places
+                    .iter()
+                    .position(|p| *p == launcher.place)
+                    .unwrap_or(0);
+                self.launcher_set_place(places[cycle(places.len(), at)].clone(), cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// ↑ ↓ change the model; ↩ opens its list.
+    fn launcher_model_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Models::Ready(models) = self.launcher_models(cx) else {
+            return;
+        };
+        if models.is_empty() {
+            return;
+        }
+        let current = self.launcher_chosen_model(cx).map(|m| m.id);
+        let at = models
+            .iter()
+            .position(|m| Some(&m.id) == current.as_ref())
+            .unwrap_or(0);
+        let next = match key {
+            "down" | "right" => (at + 1).min(models.len() - 1),
+            "up" | "left" => at.saturating_sub(1),
+            "enter" | "space" => {
+                if let Some(launcher) = &mut self.launcher {
+                    launcher.model_open = !launcher.model_open;
+                    cx.notify();
+                }
+                return;
+            }
+            _ => return,
+        };
+        let model = &models[next];
+        self.launcher_choose_model((!model.is_default).then(|| model.id.clone()), cx);
+        if let Some(launcher) = &mut self.launcher {
+            // A direct chat always names its model.
+            if launcher.is_direct() {
+                launcher.model = Some(model.id.clone());
+            }
+        }
+    }
+
+    /// ↑ ↓ walk the After list, Space ticks.
+    fn launcher_after_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        let candidates = self.launcher_dependency_candidates(cx);
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        match key {
+            "down" => {
+                launcher.after_cursor =
+                    (launcher.after_cursor + 1).min(candidates.len().saturating_sub(1))
+            }
+            "up" => launcher.after_cursor = launcher.after_cursor.saturating_sub(1),
+            "space" | "enter" => {
+                if let Some(task) = candidates.get(launcher.after_cursor).copied() {
+                    self.launcher_toggle_after(task, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// The tasks of the project the new one can wait for, as the tree lists them.
+    pub fn launcher_dependency_candidates(&self, cx: &gpui::App) -> Vec<TaskId> {
+        self.launcher_dependency_rows(cx)
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    pub(crate) fn launcher_dependency_rows(
+        &self,
+        cx: &gpui::App,
+    ) -> Vec<crate::sessions::tasks::TaskRowView> {
+        let Some(project) = self.launcher.as_ref().and_then(|l| l.project) else {
+            return Vec::new();
+        };
+        let store = self.sessions.read(cx);
+        let parent = |id| store.workspace(id).and_then(|w| w.parent_id);
+        tree_rows(
+            store.tasks(),
+            TaskFilters {
+                show_done: true,
+                workspace: Some(project),
+            },
+            &parent,
+            0,
+        )
+    }
+}

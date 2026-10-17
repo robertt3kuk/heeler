@@ -196,10 +196,20 @@ pub enum Region {
     /// An answer button of the inspector's approvals tab, counting the requests oldest first
     /// like `ChatOption`.
     InspectorOption(usize),
-    /// A control of the new-agent picker, by name (`start`, `cancel`).
+    /// A control of the Switch model dialog, by name (`start`, `cancel`).
     AgentPicker(&'static str),
-    /// The row of harness `id` (`omp`, `claude`, `codex`) in the new-agent picker.
-    AgentHarness(&'static str),
+    /// A control of the Start… sheet, by name (`project`, `prompt`, `title`, `command`, `branch`,
+    /// `base`, `system`, `model`, `more`, `shared-warning`, `add-provider`, `start`,
+    /// `start-new`, `cancel`).
+    Launcher(&'static str),
+    /// An option of a row of the Start… sheet: the row (`what`, `agent`, `install`, `login`,
+    /// `where`, `mode`) and its key (a kind, a harness id, `main`, `new`, `now`, `queue`).
+    LauncherChoice(&'static str, &'static str),
+    /// Entry `index` of a list of the Start… sheet (`project`, `provider`, `model`, `worktree`,
+    /// `after`), top to bottom.
+    LauncherItem(&'static str, usize),
+    /// The ▶ Start button of project row `workspace` in the sidebar.
+    ProjectStart(hutan_core::WorkspaceId),
     /// A control of the Accounts page: harness id (or `*`) and the control (`login`, `logout`, `card`, `refresh`).
     Account(&'static str, &'static str),
     /// A control of the first-run setup, by name (`continue`, `back`, `skip`, `appearance-dark`,
@@ -208,7 +218,7 @@ pub enum Region {
     /// A control of the setup's Agents step for harness `id`: `login`, `install-guide`,
     /// `uninstall`, `backend`.
     SetupHarness(&'static str, &'static str),
-    /// Model row `index` of the new-agent picker.
+    /// Model row `index` of the Switch model dialog.
     AgentModel(usize),
     /// Node row `index` of the agent monitor, counting every session's rows top to bottom.
     MonitorRow(usize),
@@ -370,8 +380,11 @@ pub struct Workbench {
     pub(crate) assistant_last: bool,
     /// Permission requests this window has already seen (a new one may reveal the inspector).
     pub(crate) known_approvals: std::collections::HashSet<ApprovalId>,
-    /// The ⌘⇧T dialog.
+    /// The Switch model dialog of a running chat.
     pub(crate) agent_picker: Option<AgentPicker>,
+    /// The Start… sheet (`launcher.rs`).
+    pub(crate) launcher: Option<super::launcher::Launcher>,
+    pub(crate) launcher_focus: FocusHandle,
     pub(crate) providers: super::providers::ProvidersState,
     pub(crate) agent_focus: FocusHandle,
     pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
@@ -534,6 +547,7 @@ impl Workbench {
         let sheet_focus = cx.focus_handle();
         let daemon_focus = cx.focus_handle();
         let agent_focus = cx.focus_handle();
+        let launcher_focus = cx.focus_handle();
         window.focus(&focus_handle, cx);
         // Closing the last window starts the quit flow (the window stays until it is decided);
         // either way pending layout changes are written now instead of after the debounce.
@@ -634,6 +648,8 @@ impl Workbench {
             assistant_last: false,
             known_approvals: std::collections::HashSet::new(),
             agent_picker: None,
+            launcher: None,
+            launcher_focus,
             providers: super::providers::ProvidersState::default(),
             agent_focus,
             held: HashMap::new(),

@@ -11,6 +11,8 @@ mod harness_install;
 pub(crate) mod harnesses;
 mod history;
 mod integrations;
+mod launcher;
+mod launcher_ui;
 mod mac;
 mod modal;
 pub mod model;
@@ -45,10 +47,14 @@ pub use changes::{
 };
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use harnesses::{Detection, HARNESSES, Harness, HarnessDirectory, Listing};
+pub use launcher::{
+    HarnessChoice, LaunchAgent, LaunchWhere, Launcher, LauncherField, LauncherPreset, LauncherStop,
+    ProjectChoice, Readiness, WorktreeList,
+};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};
 pub use registry::{PanelEnv, StatusBarLayout, StatusData};
-pub use review::{FirstMessage, ReviewHandoff};
+pub use review::ReviewHandoff;
 pub use settings_sheet::{Edit, SettingsSheet};
 pub use setup::{NotificationUi, SetupFinish, SetupState, SetupStep};
 pub use terminals::session_of_item;

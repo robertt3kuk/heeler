@@ -15,7 +15,7 @@ use hutan_chat_view::{ApprovalState, Body, TurnOutcome};
 use hutan_core::agent::ToolStatus;
 use hutan_core::{ApprovalId, SessionId, SessionState};
 use hutan_desktop::workbench::chat::{ChatModel, ChatView, LoadStatus};
-use hutan_desktop::workbench::{Region, Workbench};
+use hutan_desktop::workbench::{LaunchAgent, Models, Region, Workbench};
 use hutan_protocol::chat::{ApprovalInfo, ApprovalRespond};
 use hutan_protocol::messages::{Empty, Request, SessionRef};
 use hutan_settings::{SettingsPaths, SettingsStore};
@@ -1133,66 +1133,69 @@ fn a_short_reconnect_during_an_approval_keeps_the_card_and_answers_afterwards(
     assert_eq!(count(&model, cx, is_assistant), 2);
 }
 
-// ---- new agent ------------------------------------------------------------------------------
+// ---- start -----------------------------------------------------------------------------------
 
 #[gpui::test]
-fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
+fn start_runs_a_codex_chat_as_a_task_and_opens_it_focused(cx: &mut TestAppContext) {
     let env = ChatEnv::new();
     let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
     let (view, cx) = open(cx, &daemon);
     cx.simulate_keystrokes("cmd-shift-t");
-    // Nothing else is installed here: the picker finds OMP and Claude Code missing and
-    // preselects Codex by itself; picking it explicitly changes nothing.
-    view.update(cx, |wb, cx| wb.agent_picker_choose_agent("codex", cx));
-    pump(cx, "the models", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, hutan_desktop::workbench::Models::Ready(_)))
+    // Nothing else is installed here: the sheet finds OMP and Claude Code missing and
+    // preselects Codex by itself.
+    pump(cx, "Codex to be startable and its models", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher().is_some_and(|l| {
+                l.agent() == &LaunchAgent::Harness("codex".into())
+                    && matches!(wb.launcher_models(cx), Models::Ready(_))
+            }) && wb
+                .launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "codex" && h.enabled())
         })
     });
-    let (default, shown, cwd) = view.read_with(cx, |wb, _| {
-        let picker = wb.agent_picker().unwrap();
+    let (default, home) = view.read_with(cx, |wb, cx| {
         (
-            picker.chosen().map(|m| m.id.clone()),
-            picker.shown().len(),
-            picker.cwd.clone(),
+            wb.launcher_chosen_model(cx).map(|m| m.id),
+            wb.sessions()
+                .read(cx)
+                .home_workspace()
+                .and_then(|w| w.roots.first().cloned()),
         )
     });
-    assert!(default.is_some(), "the catalog's default is preselected");
-    assert!(shown >= 1);
-    // The agent is the active workspace's folder (Home here).
-    let home = view.read_with(cx, |wb, cx| {
-        wb.sessions()
-            .read(cx)
-            .home_workspace()
-            .and_then(|w| w.roots.first().cloned())
-    });
-    assert_eq!(cwd, home);
+    assert!(
+        default.is_some(),
+        "the catalog's default is the chat's model"
+    );
     draw(cx);
-    assert!(region(&view, cx, Region::AgentModel(0)).is_some());
-    assert!(region(&view, cx, Region::AgentPicker("start")).is_some());
+    assert!(region(&view, cx, Region::Launcher("start")).is_some());
+    assert!(region(&view, cx, Region::LauncherItem("model", 0)).is_none());
 
     // Escape closes it without a session.
     cx.simulate_keystrokes("escape");
-    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_none()));
     assert_eq!(
         view.read_with(cx, |wb, cx| wb.sessions().read(cx).sessions().len()),
         0
     );
 
-    // Enter starts the chat with the default model; its tab opens and has the focus.
+    // ⌘↩ starts the chat as a task; its tab opens and has the focus.
     cx.simulate_keystrokes("cmd-shift-t");
-    view.update(cx, |wb, cx| wb.agent_picker_choose_agent("codex", cx));
-    pump(cx, "the models again", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, hutan_desktop::workbench::Models::Ready(_)))
+    pump(cx, "Codex to be startable", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "codex" && h.enabled())
+                && wb
+                    .launcher()
+                    .is_some_and(|l| l.agent() == &LaunchAgent::Harness("codex".into()))
         })
     });
-    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Say hello");
+    cx.simulate_keystrokes("cmd-enter");
     pump(cx, "the chat tab", |cx| {
         view.read_with(cx, |wb, _| {
-            wb.agent_picker().is_none()
+            wb.launcher().is_none()
                 && wb.state().active_item().is_some_and(|i| {
                     matches!(i, hutan_desktop::workbench::model::ItemRef::Chat { .. })
                 })
@@ -1207,6 +1210,9 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
     assert_eq!(chat.agent, "codex");
     assert_eq!(Some(chat.model.clone()), default);
     assert_eq!(session.cwd, home);
+    // It is a task like any other: the Tasks panel and the history know it.
+    let tasks = view.read_with(cx, |wb, cx| wb.sessions().read(cx).tasks().ordered().len());
+    assert_eq!(tasks, 1);
     pump(cx, "the chat to load", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.chat_model_of(session.id)
@@ -1217,22 +1223,23 @@ fn new_agent_asks_for_a_model_and_opens_the_chat(cx: &mut TestAppContext) {
         .read_with(cx, |wb, _| wb.chat_view_of(session.id))
         .unwrap();
     assert!(cx.update(|window, cx| focused.read(cx).focus_handle_is_focused(window)));
-    // The sessions panel shows it as an agent that waits for input.
-    view.read_with(cx, |wb, cx| {
-        let store = wb.sessions().read(cx);
-        assert_eq!(
-            store.presentation(store.session(session.id).unwrap()).label,
-            "idle"
-        );
+    // Once the first turn ended the task is done and its chat waits for a reviewer.
+    pump(cx, "the first turn to end", |cx| {
+        view.read_with(cx, |wb, cx| {
+            let store = wb.sessions().read(cx);
+            store
+                .session(session.id)
+                .is_some_and(|s| store.presentation(s).label == "review")
+        })
     });
 }
 
 #[gpui::test]
-fn new_agent_says_why_it_cannot_start_without_a_daemon(cx: &mut TestAppContext) {
+fn start_says_why_it_cannot_start_without_a_daemon(cx: &mut TestAppContext) {
     let (connection, settings, state) = common::offline_connection();
     let (view, cx) = open_with(cx, settings, connection, Some(state));
     cx.simulate_keystrokes("cmd-shift-t");
-    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_none()));
     assert!(view.read_with(cx, |wb, _| {
         wb.notice().is_some_and(|n| n.contains("Not connected"))
     }));

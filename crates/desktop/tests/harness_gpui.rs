@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use common::{TestDaemon, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hutan_desktop::workbench::model::ItemRef;
-use hutan_desktop::workbench::{Detection, Models, Region, Workbench};
+use hutan_desktop::workbench::{Detection, LaunchAgent, Models, Region, Workbench};
+use hutan_protocol::chat::{ChatCreate, ChatModels, ChatModelsRequest};
+use hutan_protocol::messages::{Request, SessionResult};
 use hutan_settings::{SettingsPaths, SettingsStore};
 
 fn acp_bin() -> PathBuf {
@@ -93,31 +95,17 @@ fn click(view: &Entity<Workbench>, cx: &mut VisualTestContext, region: Region) {
 }
 
 #[gpui::test]
-fn new_agent_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext) {
+fn start_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext) {
     let scripts = tempfile::tempdir().unwrap();
     let daemon = daemon(scripts.path(), "plain-turn", "");
     let (view, cx) = open(cx, &daemon);
     cx.simulate_keystrokes("cmd-shift-t");
     // OMP is first and preselected; its models arrive grouped by provider.
-    wait_until(cx, "an answer", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| !matches!(p.models, Models::Loading))
-        })
-    });
-    view.read_with(cx, |wb, _| {
-        let p = wb.agent_picker().unwrap();
-        assert!(
-            matches!(p.models, Models::Ready(_)),
-            "{} {:?}",
-            p.agent,
-            p.models
-        );
-    });
     wait_until(cx, "the OMP models", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| p.agent == "omp" && matches!(p.models, Models::Ready(_)))
+        view.read_with(cx, |wb, cx| {
+            wb.launcher()
+                .is_some_and(|l| l.agent() == &LaunchAgent::Harness("omp".into()))
+                && matches!(wb.launcher_models(cx), Models::Ready(_))
         })
     });
     // What is installed and logged in: OMP is, Claude Code's adapter is not, Codex is a stand-in.
@@ -135,14 +123,14 @@ fn new_agent_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext)
     view.read_with(cx, |wb, cx| {
         let directory = wb.harness_directory().read(cx);
         assert_eq!(directory.logged_in("omp")[0].provider, "anthropic");
-        let picker = wb.agent_picker().unwrap();
-        let groups: Vec<String> = picker
-            .shown()
+        let Models::Ready(models) = wb.launcher_models(cx) else {
+            panic!("the models are ready");
+        };
+        assert!(!models.is_empty());
+        let groups: Vec<String> = models
             .iter()
             .filter_map(|m| m.id.split_once('/').map(|(p, _)| p.to_owned()))
             .collect();
-        let mut sorted = groups.clone();
-        sorted.sort();
         assert!(!groups.is_empty());
         // Grouped: a provider's models are contiguous.
         let mut seen = Vec::new();
@@ -157,15 +145,16 @@ fn new_agent_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext)
     for id in ["omp", "claude", "codex"] {
         assert!(
             view.read_with(cx, |wb, _| wb
-                .region_bounds(Region::AgentHarness(id))
+                .region_bounds(Region::LauncherChoice("agent", id))
                 .is_some()),
-            "{id} row"
+            "{id} choice"
         );
     }
-    view.update_in(cx, |wb, window, cx| wb.agent_picker_confirm(window, cx));
+    cx.simulate_input("Fix the build");
+    view.update_in(cx, |wb, window, cx| wb.launcher_start(false, window, cx));
     wait_until(cx, "the chat tab", |cx| {
         view.read_with(cx, |wb, _| {
-            wb.agent_picker().is_none()
+            wb.launcher().is_none()
                 && wb
                     .state()
                     .active_item()
@@ -186,27 +175,43 @@ fn new_agent_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext)
 fn a_harness_chat_switches_its_model_between_turns(cx: &mut TestAppContext) {
     let scripts = tempfile::tempdir().unwrap();
     let daemon = daemon(scripts.path(), "model-switch", "");
+    // A chat on OMP's default model, made as `hutan chat new` would (the recorded transcript
+    // sets the model when the chat starts, and once more for the switch).
+    let models: ChatModels = daemon.call(Request::ChatModels(ChatModelsRequest {
+        agent: "omp".into(),
+    }));
+    let default = models
+        .models
+        .iter()
+        .find(|m| m.is_default)
+        .or_else(|| models.models.first())
+        .expect("OMP offers models")
+        .id
+        .clone();
+    let cwd = scripts.path().canonicalize().unwrap();
+    let created: SessionResult = daemon.call(Request::ChatCreate(ChatCreate {
+        workspace_id: None,
+        cwd,
+        agent: "omp".into(),
+        model: Some(default),
+        approval_policy: None,
+        sandbox: None,
+        title: None,
+        mode: None,
+        provider_id: None,
+        system_prompt: None,
+    }));
     let (view, cx) = open(cx, &daemon);
-    cx.simulate_keystrokes("cmd-shift-t");
-    wait_until(cx, "the OMP models", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, Models::Ready(_)))
-        })
+    view.update_in(cx, |wb, window, cx| {
+        wb.open_session(created.session.id, window, cx)
     });
-    view.update_in(cx, |wb, window, cx| wb.agent_picker_confirm(window, cx));
-    wait_until(cx, "the chat", |cx| {
-        view.read_with(cx, |wb, cx| {
-            wb.agent_picker().is_none() && !wb.sessions().read(cx).sessions().is_empty()
-        })
-    });
-    let session = view.read_with(cx, |wb, cx| wb.sessions().read(cx).sessions()[0].clone());
-    let before = session.chat.unwrap().model;
+    let session = created.session;
+    let before = session.chat.clone().unwrap().model;
     click(&view, cx, Region::Chat("switch-model"));
     wait_until(cx, "the models of the chat's harness", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker().is_some_and(|p| {
-                p.switch_session == Some(session.id) && p.agent == "omp" && p.shown().len() > 1
+                p.switch_session == session.id && p.agent == "omp" && p.shown().len() > 1
             })
         })
     });

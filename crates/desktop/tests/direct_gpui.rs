@@ -6,7 +6,7 @@ mod common;
 use common::{TestDaemon, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hutan_chat_view::Body;
-use hutan_desktop::workbench::{Region, Workbench};
+use hutan_desktop::workbench::{LaunchAgent, LauncherField, Models, Region, Workbench};
 use hutan_gateway::testing::{MockServer, Reply};
 use hutan_gateway::{HttpConfig, MemoryStore};
 use hutan_protocol::messages::{Empty, Request};
@@ -136,37 +136,31 @@ fn direct_chat_uses_its_provider_and_switches_the_next_turns_model(cx: &mut Test
         wb.new_direct_chat(window, cx);
     });
     wait_until(cx, "direct model catalog", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker().is_some_and(|p| {
-                p.provider_id.as_deref() == Some(id.as_str()) && p.chosen().is_some()
+        view.read_with(cx, |wb, cx| {
+            wb.launcher().is_some_and(|l| {
+                l.agent() == &LaunchAgent::Direct(id.clone())
+                    && matches!(wb.launcher_models(cx), Models::Ready(m) if m.len() == 2)
             })
         })
     });
+    // The provider's default model is preselected; picking another is a click on the list.
     assert_eq!(
-        view.read_with(cx, |wb, _| wb
-            .agent_picker()
-            .unwrap()
-            .chosen()
-            .unwrap()
-            .id
-            .clone()),
-        "first"
+        view.read_with(cx, |wb, cx| wb.launcher_chosen_model(cx).map(|m| m.id)),
+        Some("first".to_owned())
     );
-    cx.simulate_keystrokes("s e c o n d");
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_model(Some("second".to_owned()), cx);
+    });
     assert_eq!(
-        view.read_with(cx, |wb, _| wb
-            .agent_picker()
-            .unwrap()
-            .chosen()
-            .unwrap()
-            .id
-            .clone()),
-        "second"
+        view.read_with(cx, |wb, cx| wb.launcher_chosen_model(cx).map(|m| m.id)),
+        Some("second".to_owned())
     );
-    cx.simulate_keystrokes("backspace backspace backspace backspace backspace backspace");
-    view.update_in(cx, |wb, window, cx| wb.edit_chat_system_prompt(window, cx));
-    confirm(&view, cx, "Be concise");
-    view.update_in(cx, |wb, window, cx| wb.agent_picker_confirm(window, cx));
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_model(Some("first".to_owned()), cx);
+        wb.launcher_toggle_more(cx);
+        wb.launcher_set_field(LauncherField::System, "Be concise", cx);
+    });
+    view.update_in(cx, |wb, window, cx| wb.launcher_start(false, window, cx));
     wait_until(cx, "direct chat opens", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.focused_session().is_some_and(|id| {
@@ -285,11 +279,9 @@ fn rejected_key_offers_a_masked_replacement_and_provider_removal_clears_it(
         wb.new_direct_chat(window, cx);
     });
     wait_until(cx, "models loaded", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker().is_some_and(|p| p.chosen().is_some())
-        })
+        view.read_with(cx, |wb, cx| wb.launcher_chosen_model(cx).is_some())
     });
-    view.update_in(cx, |wb, window, cx| wb.agent_picker_confirm(window, cx));
+    view.update_in(cx, |wb, window, cx| wb.launcher_start(false, window, cx));
     wait_until(cx, "composer drawn", |cx| {
         view.read_with(cx, |wb, _| {
             wb.region_bounds(Region::Chat("composer")).is_some()
@@ -340,11 +332,9 @@ fn model_switch_is_unavailable_during_streaming_and_interrupt_restores_it(cx: &m
         wb.new_direct_chat(window, cx);
     });
     wait_until(cx, "direct catalog", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker().is_some_and(|p| p.chosen().is_some())
-        })
+        view.read_with(cx, |wb, cx| wb.launcher_chosen_model(cx).is_some())
     });
-    view.update_in(cx, |wb, window, cx| wb.agent_picker_confirm(window, cx));
+    view.update_in(cx, |wb, window, cx| wb.launcher_start(false, window, cx));
     wait_until(cx, "composer", |cx| {
         view.read_with(cx, |wb, _| {
             wb.region_bounds(Region::Chat("composer")).is_some()
@@ -401,7 +391,7 @@ fn model_switch_is_unavailable_during_streaming_and_interrupt_restores_it(cx: &m
     wait_until(cx, "switch available after interrupt", |cx| {
         view.read_with(cx, |wb, _| {
             wb.agent_picker()
-                .is_some_and(|p| p.switch_session == Some(session) && p.chosen().is_some())
+                .is_some_and(|p| p.switch_session == session && p.chosen().is_some())
         })
     });
 }

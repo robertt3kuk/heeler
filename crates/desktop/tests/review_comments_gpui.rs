@@ -810,7 +810,7 @@ fn comments_are_saved_with_the_layout_and_come_back_when_the_desktop_reopens(
 // A new agent ---------------------------------------------------------------------------------
 
 #[gpui::test]
-fn start_a_new_agent_opens_the_new_agent_dialog_on_the_checkout_and_sends_it_the_review(
+fn start_a_new_agent_opens_the_start_sheet_on_the_checkout_and_sends_it_the_review(
     cx: &mut TestAppContext,
 ) {
     let fx = Fx::new();
@@ -823,17 +823,19 @@ fn start_a_new_agent_opens_the_new_agent_dialog_on_the_checkout_and_sends_it_the
         region(&view, cx, Region::Changes("review-new-agent")).is_some()
     });
     click(&view, cx, Region::Changes("review-new-agent"));
-    // The dialog is open on the worktree, with the review as the first message; nothing is sent
+    // The Start… sheet is open on the worktree, with the review as the prompt; nothing is sent
     // yet, so the comment is still a draft.
-    let (cwd, first) = view.read_with(cx, |wb, _| {
-        let picker = wb.agent_picker().expect("the new-agent dialog");
-        (
-            picker.cwd.clone(),
-            picker.first_message.as_ref().map(|m| m.text.clone()),
-        )
+    wait_until(cx, "the sheet on the worktree", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.launcher().is_some_and(|l| {
+                matches!(
+                    l.place(),
+                    hutan_desktop::workbench::LaunchWhere::Existing(_)
+                )
+            })
+        })
     });
-    assert_eq!(cwd.as_deref(), Some(fx.wt.as_path()));
-    let first = first.expect("a first message");
+    let first = view.read_with(cx, |wb, _| wb.launcher().unwrap().prompt().to_owned());
     assert!(
         first.starts_with(
             "Please address these review comments:\n\n1. a.txt:2\n   Why uppercase?\n   ```diff\n"
@@ -844,20 +846,26 @@ fn start_a_new_agent_opens_the_new_agent_dialog_on_the_checkout_and_sends_it_the
     assert!(fx.chats.sent_texts().is_empty());
 
     // Starting the agent sends it the review; then the comment is sent.
-    view.update(cx, |wb, cx| wb.agent_picker_choose_agent("codex", cx));
-    wait_until(cx, "the models", |cx| {
-        view.read_with(cx, |wb, _| {
-            wb.agent_picker()
-                .is_some_and(|p| matches!(p.models, hutan_desktop::workbench::Models::Ready(_)))
+    wait_until(cx, "Codex to be startable", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "codex" && h.enabled())
         })
     });
-    cx.simulate_keystrokes("enter");
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_agent(
+            hutan_desktop::workbench::LaunchAgent::Harness("codex".into()),
+            cx,
+        );
+    });
+    cx.simulate_keystrokes("cmd-enter");
     wait_until(cx, "the review to reach the new agent", |_| {
         fx.chats.sent_texts().len() == 1
     });
-    assert_eq!(fx.chats.sent_texts()[0], first);
+    assert_eq!(fx.chats.sent_texts()[0], first.trim());
     wait_until(cx, "the comment to be marked sent", |cx| {
         comments(&changes, cx)[0].sent_ms.is_some()
     });
-    assert!(view.read_with(cx, |wb, _| wb.agent_picker().is_none()));
+    assert!(view.read_with(cx, |wb, _| wb.launcher().is_none()));
 }

@@ -105,7 +105,7 @@ models, discover local Ollama/LM Studio, and set/clear credentials. The key prom
 supports paste, redacts Debug output and moves its input into one IPC request on submit.
 Neither the key nor provider secrets are saved in desktop state or settings files.
 
-⌘⌥T creates a direct chat; ⌘⇧T also offers configured direct providers alongside Codex.
+⌘⌥T creates a direct chat; the Start… sheet (⌘⇧T) also offers configured direct providers next to the harnesses.
 Type to filter the model list, choose the default or another model, and optionally set a
 system prompt. Direct chats reuse the streaming transcript and usage footer. The header's
 **Switch model…** control (or ⌘K → **Chat: Switch Model…**) changes the next turn's provider

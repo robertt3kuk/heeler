@@ -1,0 +1,1114 @@
+//! Drawing the Start… sheet (`launcher.rs` holds its state and behavior): a visual-system-v2
+//! sheet with a label column and one row per field, in Tab order.
+
+use gpui::{
+    AnyElement, Context, ElementId, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    transparent_black,
+};
+
+use super::agents::Models;
+use super::harnesses;
+use super::launcher::{
+    LaunchAgent, LaunchWhere, LauncherField, LauncherStop, Readiness, WorktreeList,
+};
+use super::panels::field_box;
+use super::render::probe;
+use super::ui::{self, ButtonKind, StyledExt as _};
+use super::view::{Region, Workbench};
+use super::vim_ui::VimConfig;
+use super::workspaces::tilde;
+use crate::sessions::launch::LaunchKind;
+use crate::theme::{DensityExt as _, Theme, Tokens};
+
+/// Width of the label column.
+const LABEL_WIDTH: f32 = 84.0;
+
+fn id(text: impl Into<SharedString>) -> ElementId {
+    ElementId::from(text.into())
+}
+
+impl Workbench {
+    pub(crate) fn render_launcher(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let launcher = self.launcher.as_ref()?;
+        let theme = self.theme;
+        let tokens = self.density.ui();
+        let vim = VimConfig::of(&self.settings)
+            .enabled
+            .then_some(&launcher.vim);
+        let stop = launcher.stop;
+        let kind = launcher.kind;
+        let queue = launcher.queue;
+        let starting = launcher.starting;
+        let direct = launcher.is_direct();
+        let more_open = launcher.more_open;
+
+        let label = |text: &'static str| {
+            div()
+                .flex_none()
+                .w(px(LABEL_WIDTH))
+                .pt(px(6.0))
+                .text_size(px(tokens.secondary_font_size))
+                .text_color(theme.muted)
+                .child(text)
+        };
+        let row = |text: &'static str, body: AnyElement| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(tokens.spacing * 2.0))
+                .child(label(text))
+                .child(div().flex_1().min_w_0().child(body))
+        };
+        let note = |text: String, color: gpui::Hsla| {
+            div()
+                .text_size(px(tokens.secondary_font_size))
+                .text_color(color)
+                .child(SharedString::from(text))
+        };
+        // The ring that shows where the keyboard is, on the rows that are not text fields.
+        let ring = |active: bool, body: AnyElement| {
+            div()
+                .rounded(px(tokens.radius + 2.0))
+                .border_1()
+                .border_color(if active {
+                    theme.accent
+                } else {
+                    transparent_black()
+                })
+                .p(px(1.0))
+                .child(body)
+                .into_any_element()
+        };
+
+        // ---- Project ----
+        let projects = self.launcher_projects(cx);
+        let chosen_project = launcher
+            .project
+            .and_then(|p| projects.iter().find(|c| c.id == p).cloned());
+        let project_focused = stop == LauncherStop::Project;
+        let project_detail = {
+            let root = chosen_project
+                .as_ref()
+                .and_then(|p| p.root.as_ref())
+                .map(|r| tilde(r));
+            let branch = launcher
+                .current_branch()
+                .map(|b| format!("branch {b}"))
+                .or_else(|| match &launcher.worktrees {
+                    WorktreeList::Loading => Some("checking the repository…".to_owned()),
+                    WorktreeList::Ready(list) if list.is_empty() => {
+                        Some("not a git repository".to_owned())
+                    }
+                    _ => None,
+                });
+            [root, branch]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        let project_name = chosen_project
+            .as_ref()
+            .map_or_else(|| "Choose a project".to_owned(), |p| p.name.clone());
+        let project_box = if project_focused {
+            field_box(
+                "launch-field-project",
+                &launcher.project_query,
+                vim,
+                &format!("Find a project (now: {project_name})"),
+                true,
+                false,
+                &theme,
+                &tokens,
+            )
+        } else {
+            let name = project_name.clone();
+            div()
+                .id("launch-field-project")
+                .flex()
+                .items_center()
+                .min_h(px(tokens.sidebar_row))
+                .px(px(tokens.spacing * 2.0))
+                .rounded(px(tokens.radius))
+                .bg(theme.bg)
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(SharedString::from(name))
+        }
+        .relative()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                this.launcher_focus_stop(LauncherStop::Project, window, cx);
+            }),
+        )
+        .child(probe(&self.regions, Region::Launcher("project")));
+        let mut project_body = div().flex().flex_col().gap(px(2.0)).child(project_box);
+        if project_focused {
+            let matches = self.launcher_project_matches(cx);
+            let sel = launcher.project_sel;
+            let mut list = div()
+                .id("launch-project-list")
+                .flex()
+                .flex_col()
+                .max_h(px(tokens.sidebar_row * 6.0))
+                .overflow_y_scroll()
+                .rounded(px(tokens.radius))
+                .border_1()
+                .border_color(theme.border);
+            if matches.is_empty() {
+                list = list.child(
+                    div()
+                        .px(px(tokens.spacing * 2.0))
+                        .py(px(tokens.spacing))
+                        .text_color(theme.faint)
+                        .child("No project matches."),
+                );
+            }
+            for (at, project) in matches.into_iter().enumerate() {
+                let pid = project.id;
+                let hover = theme.surface_hover;
+                list = list.child(
+                    div()
+                        .id(id(format!("launch-project-{at}")))
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(tokens.spacing * 2.0))
+                        .h(px(tokens.sidebar_row))
+                        .px(px(tokens.spacing * 2.0))
+                        .cursor_pointer()
+                        .when(at == sel, |s| s.bg(theme.accent_soft))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.launcher_set_project(pid, cx);
+                            this.launcher_focus_stop(LauncherStop::What, window, cx);
+                        }))
+                        .child(div().flex_none().child(SharedString::from(project.name)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.muted)
+                                .text_size(px(tokens.secondary_font_size))
+                                .child(SharedString::from(
+                                    project.root.as_deref().map(tilde).unwrap_or_default(),
+                                )),
+                        )
+                        .child(probe(&self.regions, Region::LauncherItem("project", at))),
+                );
+            }
+            project_body = project_body.child(list);
+        }
+        project_body = project_body.child(note(project_detail, theme.faint));
+
+        // ---- What ----
+        let mut what = div().flex().flex_wrap().gap(px(tokens.spacing));
+        for choice in LaunchKind::ALL {
+            what = what.child(
+                ui::choice(
+                    id(format!("launch-what-{}", choice.key())),
+                    choice.label(),
+                    kind == choice,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.launcher_focus_stop(LauncherStop::What, window, cx);
+                    this.launcher_set_kind(choice, cx);
+                }))
+                .child(probe(
+                    &self.regions,
+                    Region::LauncherChoice("what", choice.key()),
+                )),
+            );
+        }
+
+        // ---- Agent ----
+        let mut agent_rows: Vec<AnyElement> = Vec::new();
+        if kind.is_agent() {
+            let directory = self.env.harnesses.read(cx);
+            let mut agents = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(tokens.spacing * 2.0));
+            let mut status: Vec<AnyElement> = Vec::new();
+            for harness in self.launcher_harness_choices(cx) {
+                let hid = harness.id;
+                let selected = launcher.agent == LaunchAgent::Harness(hid.to_owned());
+                let enabled = harness.enabled();
+                let mut item = div().flex().items_center().gap(px(tokens.spacing));
+                item = item.child(
+                    ui::choice(
+                        id(format!("launch-agent-{hid}")),
+                        harness.name,
+                        selected,
+                        &theme,
+                        &tokens,
+                    )
+                    .relative()
+                    .when(!enabled, |s| s.opacity(0.55))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.launcher_focus_stop(LauncherStop::Agent, window, cx);
+                        this.launcher_choose_agent(LaunchAgent::Harness(hid.to_owned()), cx);
+                    }))
+                    .child(probe(&self.regions, Region::LauncherChoice("agent", hid))),
+                );
+                let (action, why): (Option<(&'static str, &'static str)>, Option<String>) =
+                    match &harness.readiness {
+                        Readiness::NeedsInstall(how) => (
+                            self.harness_install_available()
+                                .then_some(("install", "Install…")),
+                            Some(format!("{} is not installed. {how}", harness.name)),
+                        ),
+                        Readiness::NeedsLogin => (
+                            directory.startable(hid).then_some(("login", "Log in…")),
+                            Some(format!("{} is not logged in.", harness.name)),
+                        ),
+                        Readiness::NeedsNewerDaemon => (
+                            None,
+                            Some(format!(
+                                "{}: restart hutand (Daemon → Restart) to run the version of this app.",
+                                harness.name
+                            )),
+                        ),
+                        Readiness::Checking => (None, Some(format!("Checking {}…", harness.name))),
+                        Readiness::Ready => (None, None),
+                    };
+                if let Some((key, text)) = action {
+                    item = item.child(
+                        ui::button(
+                            id(format!("launch-{key}-{hid}")),
+                            text,
+                            ButtonKind::Secondary,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if key == "install" {
+                                window.dispatch_action(
+                                    Box::new(super::actions::InstallHarness(hid.to_owned())),
+                                    cx,
+                                );
+                            } else {
+                                this.launcher = None;
+                                this.account_flow(hid, None, true, window, cx);
+                            }
+                        }))
+                        .child(probe(&self.regions, Region::LauncherChoice(key, hid))),
+                    );
+                }
+                if let Some(why) = why {
+                    status.push(note(why, theme.warning).into_any_element());
+                }
+                agents = agents.child(item);
+            }
+            if kind == LaunchKind::Chat {
+                for (at, provider) in self.providers.providers.iter().enumerate() {
+                    let pid = provider.id.clone();
+                    let selected = launcher.agent == LaunchAgent::Direct(pid.clone());
+                    agents = agents.child(
+                        ui::choice(
+                            id(format!("launch-provider-{at}")),
+                            format!("Direct · {}", provider.name),
+                            selected,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.launcher_focus_stop(LauncherStop::Agent, window, cx);
+                            this.launcher_choose_agent(LaunchAgent::Direct(pid.clone()), cx);
+                        }))
+                        .child(probe(&self.regions, Region::LauncherItem("provider", at))),
+                    );
+                }
+                if self.providers.providers.is_empty() {
+                    agents = agents.child(
+                        ui::button(
+                            "launch-add-provider",
+                            "Direct model · Add a provider…",
+                            ButtonKind::Ghost,
+                            true,
+                            &theme,
+                            &tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.launcher = None;
+                            this.open_models_settings(window, cx);
+                        }))
+                        .child(probe(&self.regions, Region::Launcher("add-provider"))),
+                    );
+                }
+            }
+            let mut body = div()
+                .flex()
+                .flex_col()
+                .gap(px(tokens.spacing))
+                .child(agents);
+            for line in status {
+                body = body.child(line);
+            }
+            agent_rows.push(
+                row(
+                    "Agent",
+                    ring(stop == LauncherStop::Agent, body.into_any_element()),
+                )
+                .into_any_element(),
+            );
+        }
+
+        // ---- Model ----
+        let mut model_rows: Vec<AnyElement> = Vec::new();
+        if kind == LaunchKind::Chat {
+            let models = self.launcher_models(cx);
+            let chosen = self.launcher_chosen_model(cx);
+            let agent_id = match &launcher.agent {
+                LaunchAgent::Harness(id) => id.clone(),
+                LaunchAgent::Direct(_) => String::new(),
+            };
+            let body: Option<AnyElement> = match &models {
+                Models::Loading => {
+                    Some(note("Loading the models…".into(), theme.muted).into_any_element())
+                }
+                Models::Failed(error) => Some(
+                    note(format!("Could not list the models: {error}"), theme.danger)
+                        .into_any_element(),
+                ),
+                Models::Ready(list) if list.is_empty() => Some(
+                    note(
+                        if direct {
+                            "This provider lists no models.".to_owned()
+                        } else {
+                            "The harness offers no model to choose: it starts with its own default."
+                                .to_owned()
+                        },
+                        theme.muted,
+                    )
+                    .into_any_element(),
+                ),
+                Models::Ready(list) => {
+                    let current = chosen
+                        .as_ref()
+                        .map(|m| {
+                            if m.is_default {
+                                format!("{} (default)", m.display_name)
+                            } else {
+                                m.display_name.clone()
+                            }
+                        })
+                        .unwrap_or_else(|| "Default".to_owned());
+                    let open = launcher.model_open;
+                    let hover = theme.surface_hover;
+                    let mut body = div().flex().flex_col().gap(px(tokens.spacing)).child(
+                        div()
+                            .id("launch-model")
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .min_h(px(tokens.sidebar_row))
+                            .px(px(tokens.spacing * 2.0))
+                            .rounded(px(tokens.radius))
+                            .bg(theme.bg)
+                            .border_1()
+                            .border_color(if stop == LauncherStop::Model {
+                                theme.accent
+                            } else {
+                                theme.border
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.launcher_focus_stop(LauncherStop::Model, window, cx);
+                                if let Some(launcher) = &mut this.launcher {
+                                    launcher.model_open = !launcher.model_open;
+                                }
+                                cx.notify();
+                            }))
+                            .child(SharedString::from(current))
+                            .child(div().text_color(theme.muted).child(if open {
+                                "▴"
+                            } else {
+                                "▾"
+                            }))
+                            .child(probe(&self.regions, Region::Launcher("model"))),
+                    );
+                    if open {
+                        let mut group: Option<Option<String>> = None;
+                        let mut items = div()
+                            .id("launch-model-list")
+                            .flex()
+                            .flex_col()
+                            .max_h(px(tokens.sidebar_row * 7.0))
+                            .overflow_y_scroll()
+                            .rounded(px(tokens.radius))
+                            .border_1()
+                            .border_color(theme.border);
+                        for (at, model) in list.iter().enumerate() {
+                            let model_group = harnesses::model_group(&agent_id, model);
+                            if model_group.is_some() && group.as_ref() != Some(&model_group) {
+                                items = items.child(
+                                    ui::section_label(
+                                        model_group.clone().unwrap_or_default(),
+                                        &theme,
+                                        &tokens,
+                                    )
+                                    .px(px(tokens.spacing * 2.0))
+                                    .pt(px(tokens.spacing)),
+                                );
+                            }
+                            group = Some(model_group);
+                            let selected = chosen.as_ref().is_some_and(|c| c.id == model.id);
+                            let mid = model.id.clone();
+                            let is_default = model.is_default;
+                            items = items.child(
+                                div()
+                                    .id(id(format!("launch-model-{at}")))
+                                    .relative()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(tokens.spacing * 2.0))
+                                    .h(px(tokens.sidebar_row))
+                                    .px(px(tokens.spacing * 2.0))
+                                    .cursor_pointer()
+                                    .when(selected, |s| s.bg(theme.accent_soft))
+                                    .hover(move |s| s.bg(hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let direct =
+                                            this.launcher.as_ref().is_some_and(|l| l.is_direct());
+                                        this.launcher_choose_model(
+                                            (direct || !is_default).then(|| mid.clone()),
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
+                                        div()
+                                            .w(px(14.0))
+                                            .text_color(theme.muted)
+                                            .child(if selected { "●" } else { "○" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .child(SharedString::from(model.display_name.clone())),
+                                    )
+                                    .when(model.is_default, |s| {
+                                        s.child(div().text_color(theme.muted).child("default"))
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.muted)
+                                            .text_size(px(tokens.secondary_font_size))
+                                            .child(SharedString::from(model.description.clone())),
+                                    )
+                                    .child(probe(&self.regions, Region::LauncherItem("model", at))),
+                            );
+                        }
+                        body = body.child(items);
+                    }
+                    if self.launcher_pick_for_task(cx).is_some() {
+                        body = body.child(note(
+                            "The first message runs on the harness's default model; this one takes over from the next turn."
+                                .to_owned(),
+                            theme.muted,
+                        ));
+                    } else if queue && !direct && launcher.model.is_some() {
+                        body = body.child(note(
+                            "A queued task starts on the harness's default model.".to_owned(),
+                            theme.muted,
+                        ));
+                    }
+                    Some(body.into_any_element())
+                }
+            };
+            if let Some(body) = body {
+                model_rows
+                    .push(row("Model", ring(stop == LauncherStop::Model, body)).into_any_element());
+            }
+        }
+
+        // ---- Command / Prompt ----
+        let text_field = |which: LauncherField,
+                          stop_of: LauncherStop,
+                          key: &'static str,
+                          placeholder: &str,
+                          multiline: bool,
+                          cx: &mut Context<Self>| {
+            let input = match which {
+                LauncherField::Prompt => &launcher.prompt,
+                LauncherField::Title => &launcher.title,
+                LauncherField::Branch => &launcher.branch,
+                LauncherField::Base => &launcher.base,
+                LauncherField::Command => &launcher.command,
+                LauncherField::System => &launcher.system,
+                LauncherField::Project => &launcher.project_query,
+            };
+            field_box(
+                format!("launch-field-{key}"),
+                input,
+                vim,
+                placeholder,
+                stop == stop_of,
+                multiline,
+                &theme,
+                &tokens,
+            )
+            .relative()
+            .when(multiline, |s| s.min_h(px(tokens.sidebar_row * 4.0)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.launcher_focus_stop(stop_of, window, cx);
+                }),
+            )
+            .child(probe(&self.regions, Region::Launcher(key)))
+            .into_any_element()
+        };
+        let mut input_rows: Vec<AnyElement> = Vec::new();
+        if kind == LaunchKind::Command {
+            input_rows.push(
+                row(
+                    "Command",
+                    text_field(
+                        LauncherField::Command,
+                        LauncherStop::Command,
+                        "command",
+                        "cargo test -p my-crate",
+                        false,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
+        if kind.takes_prompt() {
+            input_rows.push(
+                row(
+                    "Prompt",
+                    text_field(
+                        LauncherField::Prompt,
+                        LauncherStop::Prompt,
+                        "prompt",
+                        if kind == LaunchKind::Chat {
+                            "What should the agent do? It is the first message."
+                        } else {
+                            "What the agent starts with (optional)"
+                        },
+                        true,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
+
+        // ---- Where ----
+        let worktrees_note: Option<AnyElement> = match &launcher.worktrees {
+            WorktreeList::Failed(error) => Some(
+                note(
+                    format!("Could not list the worktrees: {error}"),
+                    theme.danger,
+                )
+                .into_any_element(),
+            ),
+            _ => None,
+        };
+        let git = !matches!(&launcher.worktrees, WorktreeList::Ready(list) if list.is_empty());
+        let mut places = div().flex().flex_wrap().gap(px(tokens.spacing));
+        places = places
+            .child(
+                ui::choice(
+                    "launch-where-main",
+                    "Main checkout",
+                    launcher.place == LaunchWhere::Main,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.launcher_focus_stop(LauncherStop::Where, window, cx);
+                    this.launcher_set_place(LaunchWhere::Main, cx);
+                }))
+                .child(probe(
+                    &self.regions,
+                    Region::LauncherChoice("where", "main"),
+                )),
+            )
+            .child(
+                ui::choice(
+                    "launch-where-new",
+                    "New worktree",
+                    launcher.place == LaunchWhere::NewWorktree,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .when(!git, |s| s.opacity(0.55))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.launcher_focus_stop(LauncherStop::Where, window, cx);
+                    this.launcher_set_place(LaunchWhere::NewWorktree, cx);
+                }))
+                .child(probe(&self.regions, Region::LauncherChoice("where", "new"))),
+            );
+        let mut where_body = div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .child(places);
+        let existing: Vec<(String, String, bool, usize)> = launcher
+            .existing_worktrees()
+            .into_iter()
+            .map(|w| {
+                (
+                    w.branch.clone().unwrap_or_default(),
+                    tilde(&w.path),
+                    w.dirty,
+                    w.live_sessions.len(),
+                )
+            })
+            .collect();
+        if !existing.is_empty() {
+            let hover = theme.surface_hover;
+            let mut list = div()
+                .id("launch-worktrees")
+                .flex()
+                .flex_col()
+                .max_h(px(tokens.sidebar_row * 4.5))
+                .overflow_y_scroll()
+                .rounded(px(tokens.radius))
+                .border_1()
+                .border_color(theme.border);
+            for (at, (branch, path, dirty, live)) in existing.into_iter().enumerate() {
+                let selected = launcher.place == LaunchWhere::Existing(branch.clone());
+                let pick = branch.clone();
+                list = list.child(
+                    div()
+                        .id(id(format!("launch-worktree-{at}")))
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(tokens.spacing * 2.0))
+                        .h(px(tokens.sidebar_row))
+                        .px(px(tokens.spacing * 2.0))
+                        .cursor_pointer()
+                        .when(selected, |s| s.bg(theme.accent_soft))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.launcher_focus_stop(LauncherStop::Where, window, cx);
+                            this.launcher_set_place(LaunchWhere::Existing(pick.clone()), cx);
+                        }))
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .text_color(theme.muted)
+                                .child(if selected { "●" } else { "○" }),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(SharedString::from(format!("wt {branch}"))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.muted)
+                                .text_size(px(tokens.secondary_font_size))
+                                .child(SharedString::from(path)),
+                        )
+                        .when(dirty, |s| {
+                            s.child(ui::pill("changes", theme.warning, &tokens))
+                        })
+                        .when(live > 0, |s| {
+                            s.child(ui::pill(format!("{live} live"), theme.muted, &tokens))
+                        })
+                        .child(probe(&self.regions, Region::LauncherItem("worktree", at))),
+                );
+            }
+            where_body = where_body.child(list);
+        }
+        if let Some(note) = worktrees_note {
+            where_body = where_body.child(note);
+        }
+        if !git && launcher.place == LaunchWhere::Main {
+            where_body = where_body.child(note(
+                "Not a git repository: the session works in the project's folder.".to_owned(),
+                theme.muted,
+            ));
+        }
+        if let Some(warning) = self.launcher_shared_warning(cx) {
+            where_body = where_body.child(
+                div()
+                    .relative()
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.warning)
+                    .child(SharedString::from(format!("⚠ {warning}")))
+                    .child(probe(&self.regions, Region::Launcher("shared-warning"))),
+            );
+        }
+        let mut where_rows: Vec<AnyElement> = vec![
+            row(
+                "Where",
+                ring(stop == LauncherStop::Where, where_body.into_any_element()),
+            )
+            .into_any_element(),
+        ];
+        if launcher.place == LaunchWhere::NewWorktree {
+            where_rows.push(
+                row(
+                    "Branch",
+                    text_field(
+                        LauncherField::Branch,
+                        LauncherStop::Branch,
+                        "branch",
+                        "hutan/<title>",
+                        false,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+            where_rows.push(
+                row(
+                    "From",
+                    text_field(
+                        LauncherField::Base,
+                        LauncherStop::Base,
+                        "base",
+                        "HEAD",
+                        false,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
+
+        // ---- Title ----
+        let title_row = row(
+            "Title",
+            text_field(
+                LauncherField::Title,
+                LauncherStop::Title,
+                "title",
+                "What it is called in the Tasks panel (from the prompt)",
+                false,
+                cx,
+            ),
+        );
+
+        // ---- More ----
+        let more_header = div()
+            .id("launch-more")
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(tokens.spacing))
+            .cursor_pointer()
+            .text_size(px(tokens.secondary_font_size))
+            .text_color(theme.muted)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.launcher_focus_stop(LauncherStop::More, window, cx);
+                this.launcher_toggle_more(cx);
+            }))
+            .child(if more_open { "▾ More" } else { "▸ More" })
+            .child(div().text_color(theme.faint).child(if direct {
+                "after, system prompt"
+            } else {
+                "after"
+            }))
+            .child(probe(&self.regions, Region::Launcher("more")));
+        let mut more_rows: Vec<AnyElement> = vec![
+            row(
+                "",
+                ring(stop == LauncherStop::More, more_header.into_any_element()),
+            )
+            .into_any_element(),
+        ];
+        if more_open {
+            let candidates = self.launcher_dependency_rows(cx);
+            let hover = theme.surface_hover;
+            let mut after = div()
+                .id("launch-after")
+                .flex()
+                .flex_col()
+                .max_h(px(tokens.sidebar_row * 4.5))
+                .overflow_y_scroll();
+            if candidates.is_empty() {
+                after = after.child(
+                    div()
+                        .text_color(theme.faint)
+                        .text_size(px(tokens.secondary_font_size))
+                        .child("No tasks to wait for."),
+                );
+            }
+            for (at, candidate) in candidates.into_iter().enumerate() {
+                let task = candidate.id;
+                let ticked = launcher.after.contains(&task);
+                let cursor = stop == LauncherStop::After && launcher.after_cursor == at;
+                after = after.child(
+                    div()
+                        .id(id(format!("launch-after-{at}")))
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(tokens.spacing * 2.0))
+                        .h(px(tokens.sidebar_row - 4.0))
+                        .px(px(tokens.spacing))
+                        .rounded(px(tokens.radius))
+                        .cursor_pointer()
+                        .when(cursor, |s| s.bg(theme.accent_soft))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.launcher_focus_stop(LauncherStop::After, window, cx);
+                            if let Some(launcher) = &mut this.launcher {
+                                launcher.after_cursor = at;
+                            }
+                            this.launcher_toggle_after(task, cx);
+                        }))
+                        .child(if ticked { "☑" } else { "☐" })
+                        .child(div().truncate().child(SharedString::from(candidate.title)))
+                        .child(probe(&self.regions, Region::LauncherItem("after", at))),
+                );
+            }
+            more_rows.push(
+                row(
+                    "After",
+                    ring(stop == LauncherStop::After, after.into_any_element()),
+                )
+                .into_any_element(),
+            );
+            if direct {
+                more_rows.push(
+                    row(
+                        "System",
+                        text_field(
+                            LauncherField::System,
+                            LauncherStop::System,
+                            "system",
+                            "Optional instructions for this direct chat",
+                            false,
+                            cx,
+                        ),
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
+
+        // ---- Start now / Queue ----
+        let mode = div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(tokens.spacing))
+                    .child(
+                        ui::choice("launch-mode-now", "Start now", !queue, &theme, &tokens)
+                            .relative()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.launcher_focus_stop(LauncherStop::Mode, window, cx);
+                                this.launcher_set_queue(false, cx);
+                            }))
+                            .child(probe(&self.regions, Region::LauncherChoice("mode", "now"))),
+                    )
+                    .child(
+                        ui::choice("launch-mode-queue", "Queue as task", queue, &theme, &tokens)
+                            .relative()
+                            .when(direct, |s| s.opacity(0.55))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.launcher_focus_stop(LauncherStop::Mode, window, cx);
+                                this.launcher_set_queue(true, cx);
+                            }))
+                            .child(probe(&self.regions, Region::LauncherChoice("mode", "queue"))),
+                    ),
+            )
+            .child(note(
+                if direct {
+                    "A direct model chat has no task: it always starts now.".to_owned()
+                } else if queue {
+                    "Waits in the Tasks panel and starts by itself when ready, up to [tasks] max_parallel at a time."
+                        .to_owned()
+                } else {
+                    "Starts the task now and opens its session.".to_owned()
+                },
+                theme.faint,
+            ));
+        let mode_row = row(
+            "",
+            ring(stop == LauncherStop::Mode, mode.into_any_element()),
+        );
+
+        // ---- footer ----
+        let ready = !starting;
+        let footer = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_end()
+            .gap(px(tokens.spacing * 2.0))
+            .px(px(tokens.spacing * 4.0))
+            .py(px(tokens.spacing * 3.0))
+            .border_t_1()
+            .border_color(theme.border)
+            .children(launcher.error.clone().map(|error| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(theme.danger)
+                    .child(SharedString::from(error))
+            }))
+            .child(
+                ui::button(
+                    "launch-cancel",
+                    "Cancel",
+                    ButtonKind::Ghost,
+                    true,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .on_click(cx.listener(|this, _, window, cx| this.close_launcher(window, cx)))
+                .child(probe(&self.regions, Region::Launcher("cancel"))),
+            )
+            .child(
+                ui::button(
+                    "launch-start-new",
+                    "Start & new ⌥⌘↩",
+                    ButtonKind::Secondary,
+                    ready,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .when(ready, |s| {
+                    s.on_click(cx.listener(|this, _, window, cx| {
+                        this.launcher_start(true, window, cx);
+                    }))
+                })
+                .child(probe(&self.regions, Region::Launcher("start-new"))),
+            )
+            .child(
+                ui::button(
+                    "launch-start",
+                    if starting {
+                        "Starting…"
+                    } else if queue && !direct {
+                        "Queue ⌘↩"
+                    } else {
+                        "Start ⌘↩"
+                    },
+                    ButtonKind::Primary,
+                    ready,
+                    &theme,
+                    &tokens,
+                )
+                .relative()
+                .when(ready, |s| {
+                    s.on_click(cx.listener(|this, _, window, cx| {
+                        this.launcher_start(false, window, cx);
+                    }))
+                })
+                .child(probe(&self.regions, Region::Launcher("start"))),
+            );
+
+        let body = div()
+            .id("launch-body")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap(px(tokens.spacing * 2.5))
+            .px(px(tokens.spacing * 4.0))
+            .py(px(tokens.spacing * 3.0))
+            .child(row("Project", project_body.into_any_element()))
+            .child(row(
+                "What",
+                ring(stop == LauncherStop::What, what.into_any_element()),
+            ))
+            .children(agent_rows)
+            .children(model_rows)
+            .children(input_rows)
+            .children(where_rows)
+            .child(title_row)
+            .children(more_rows)
+            .child(mode_row);
+
+        Some(
+            div()
+                .id("launcher-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .items_start()
+                .pt(px(48.0))
+                .bg(theme.scrim())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_launcher(window, cx)),
+                )
+                .child(
+                    div()
+                        .id("launcher")
+                        .key_context("Launcher")
+                        .track_focus(&self.launcher_focus)
+                        .w(px(680.0))
+                        .max_h(px(720.0))
+                        .flex()
+                        .flex_col()
+                        .popover(&theme, &tokens)
+                        .p(px(0.0))
+                        .overflow_hidden()
+                        .text_size(px(tokens.font_size))
+                        .text_color(theme.fg)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            this.launcher_key(event, window, cx);
+                        }))
+                        .child(launcher_header(&theme, &tokens))
+                        .child(body)
+                        .child(footer),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+fn launcher_header(theme: &Theme, tokens: &Tokens) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(tokens.spacing * 2.0))
+        .h(px(tokens.sidebar_row + 10.0))
+        .px(px(tokens.spacing * 4.0))
+        .border_b_1()
+        .border_color(theme.border)
+        .child(div().medium().child("Start…"))
+        .child(
+            div()
+                .text_color(theme.faint)
+                .text_size(px(tokens.secondary_font_size))
+                .child("an agent or a task, in a project"),
+        )
+}

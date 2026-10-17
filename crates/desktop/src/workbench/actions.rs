@@ -202,6 +202,15 @@ pub struct SessionMenuAt {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+/// What a "▶ Start" button opens the Start… sheet with.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct LauncherOpen {
+    /// The project to start in (an id); none: the one in focus.
+    pub project: Option<String>,
+    /// "Queue as task" instead of "Start now".
+    pub queue: bool,
+}
+
 data_actions! {
     /// Apply the named layout preset (`default`, `focus`, `overview`, …).
     ApplyPreset(String);
@@ -244,6 +253,8 @@ data_actions! {
     JumpToBlock(BlockRef);
     /// Show the workspace with this id (switching the center to its layout).
     OpenWorkspace(String);
+    /// Open the Start… sheet in a project (the ▶ buttons, the empty states, the Tasks panel).
+    OpenLauncher(LauncherOpen);
     /// Show the context menu of a workspace row.
     ShowWorkspaceMenu(WorkspaceMenuAt);
     /// Show the menu of workspace sort modes at this position.
@@ -409,7 +420,7 @@ pub fn preset_number_action(n: usize) -> Option<Box<dyn Action>> {
 pub fn commands(presets: &[LayoutPreset], panels: &PanelRegistry, assistant: bool) -> Vec<Command> {
     let mut out = vec![
         command("Session: New Terminal", NewTerminal),
-        command("Session: New Agent…", NewAgent),
+        command("Start Agent or Task…", NewAgent),
         command("Chat: New Direct Chat…", NewChat),
         command("Session: Rename…", RenameSession),
         command("Session: Restart", RestartSession),

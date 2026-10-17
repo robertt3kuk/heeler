@@ -1,145 +1,38 @@
 //! The `tasks` panel (M7-C): the tasks of the workspace as a dependency tree — state glyph and
 //! color, title, placement badge (`main` / `wt <branch>`), run kind, elapsed time, outcome — with
 //! the actions the daemon allows per state (Start / Done / Cancel / Reset / Delete) on the
-//! selected row, an inline "+ New task" form, and the `tasks.*` filters.
+//! selected row, a "+ New task" button that opens the Start… sheet, and the `tasks.*` filters.
 //!
 //! The daemon owns tasks (`task.*`, protocol 0.16): [`SessionsStore`](crate::sessions::SessionsStore)
 //! lists them and follows `task.updated` / `task.removed`; this panel draws
 //! [`tree_rows`] and sends the requests. A click on a row focuses the task's session
 //! (`OpenSession`); "Changes" opens the review of its checkout (`ReviewTaskChanges`).
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, prelude::*, px,
+    AnyElement, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Task, Window, div, prelude::*, px,
 };
 use hutan_client::ConnectionState;
 use hutan_core::{DeliveryState, TaskId, TaskState};
 use hutan_protocol::task::TaskUpdate;
 
-use super::common::{edit_text, field_box, now_ms, panel_header_with, tone_color};
+use super::common::{now_ms, panel_header_with, tone_color};
 use super::history::pill;
-use crate::sessions::tasks::{
-    NewTask, RunChoice, TaskAction, TaskFilters, TaskRowView, build_create, tree_rows,
-};
+use crate::sessions::tasks::{TaskAction, TaskFilters, TaskRowView, tree_rows};
 use crate::settings::{TasksScope, TasksSettings};
 use crate::theme::{DensityExt as _, Theme, Tokens, reduce_motion};
-use crate::workbench::actions::{Notify, OpenSession, ReviewTaskChanges};
-use crate::workbench::chat::TextInput;
-use crate::workbench::chat::vim::{Outcome, Vim};
+use crate::workbench::actions::{
+    LauncherOpen, Notify, OpenLauncher, OpenSession, ReviewTaskChanges,
+};
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
-use crate::workbench::vim_ui::{self, VimConfig};
 use crate::workbench::{Region, style::UiStyle};
 
 /// How often the elapsed times refresh while the panel is drawn and a task runs.
 pub const TICK: Duration = Duration::from_secs(1);
-
-/// The text fields of the new-task form, in Tab order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FormField {
-    Title,
-    Prompt,
-    Command,
-    Branch,
-}
-
-impl FormField {
-    fn key(self) -> &'static str {
-        match self {
-            FormField::Title => "title",
-            FormField::Prompt => "prompt",
-            FormField::Command => "command",
-            FormField::Branch => "branch",
-        }
-    }
-}
-
-/// The open new-task form.
-#[derive(Debug)]
-struct Form {
-    title: TextInput,
-    prompt: TextInput,
-    command: TextInput,
-    branch: TextInput,
-    /// Vim's modal state over the field being typed in (`editor.vim_mode`).
-    vim: Vim,
-    after: BTreeSet<TaskId>,
-    worktree: bool,
-    run: RunChoice,
-    auto_start: bool,
-    field: FormField,
-    error: Option<String>,
-    submitting: bool,
-}
-
-impl Form {
-    fn new() -> Self {
-        Self {
-            title: TextInput::new(),
-            prompt: TextInput::new(),
-            command: TextInput::new(),
-            branch: TextInput::new(),
-            vim: Vim::new(),
-            after: BTreeSet::new(),
-            worktree: false,
-            run: RunChoice::Terminal,
-            auto_start: false,
-            field: FormField::Title,
-            error: None,
-            submitting: false,
-        }
-    }
-
-    fn input_mut(&mut self, field: FormField) -> &mut TextInput {
-        match field {
-            FormField::Title => &mut self.title,
-            FormField::Prompt => &mut self.prompt,
-            FormField::Command => &mut self.command,
-            FormField::Branch => &mut self.branch,
-        }
-    }
-
-    /// The modal state and the text of `field`.
-    fn vim_and_input(&mut self, field: FormField) -> (&mut Vim, &mut TextInput) {
-        let input = match field {
-            FormField::Title => &mut self.title,
-            FormField::Prompt => &mut self.prompt,
-            FormField::Command => &mut self.command,
-            FormField::Branch => &mut self.branch,
-        };
-        (&mut self.vim, input)
-    }
-
-    /// The fields the form shows now, in order.
-    fn fields(&self) -> Vec<FormField> {
-        let mut fields = vec![FormField::Title, FormField::Prompt];
-        if self.run == RunChoice::Terminal {
-            fields.push(FormField::Command);
-        }
-        if self.worktree {
-            fields.push(FormField::Branch);
-        }
-        fields
-    }
-
-    fn values(&self) -> NewTask {
-        NewTask {
-            title: self.title.text().to_owned(),
-            prompt: self.prompt.text().to_owned(),
-            after: self.after.iter().copied().collect(),
-            worktree: self.worktree,
-            branch: self.branch.text().to_owned(),
-            run: self.run,
-            command: self.command.text().to_owned(),
-            auto_start: self.auto_start,
-        }
-    }
-}
 
 /// A delete the daemon refused because other tasks depend on the task: the panel asks whether to
 /// delete them too.
@@ -151,11 +44,9 @@ pub struct CascadeAsk {
 
 pub struct TasksPanel {
     env: PanelEnv,
-    form: Option<Form>,
     selected: Option<TaskId>,
     cascade: Option<CascadeAsk>,
-    focus: [(FormField, FocusHandle); 4],
-    focus_wanted: Option<FormField>,
+    focus: FocusHandle,
     /// Runs while the panel is drawn and a listed task runs.
     ticker: Option<Task<()>>,
     drawn: bool,
@@ -164,10 +55,21 @@ pub struct TasksPanel {
 impl std::fmt::Debug for TasksPanel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TasksPanel")
-            .field("form", &self.form.is_some())
             .field("selected", &self.selected)
             .finish_non_exhaustive()
     }
+}
+
+/// "+ New task" and the empty state: the Start… sheet on "Queue as task", in the project in
+/// focus.
+fn open_launcher(window: &mut Window, cx: &mut gpui::App) {
+    window.dispatch_action(
+        Box::new(OpenLauncher(LauncherOpen {
+            project: None,
+            queue: true,
+        })),
+        cx,
+    );
 }
 
 impl TasksPanel {
@@ -175,27 +77,12 @@ impl TasksPanel {
         cx.observe(&env.sessions, |_, _, cx| cx.notify()).detach();
         Self {
             env,
-            form: None,
             selected: None,
             cascade: None,
-            focus: [
-                (FormField::Title, cx.focus_handle()),
-                (FormField::Prompt, cx.focus_handle()),
-                (FormField::Command, cx.focus_handle()),
-                (FormField::Branch, cx.focus_handle()),
-            ],
-            focus_wanted: None,
+            focus: cx.focus_handle(),
             ticker: None,
             drawn: false,
         }
-    }
-
-    fn handle(&self, field: FormField) -> &FocusHandle {
-        self.focus
-            .iter()
-            .find(|(f, _)| *f == field)
-            .map(|(_, h)| h)
-            .unwrap_or(&self.focus[0].1)
     }
 
     // ---- read access (also for tests) -----------------------------------------------------
@@ -218,16 +105,6 @@ impl TasksPanel {
         tree_rows(store.tasks(), self.filters(cx), &parent, now_ms)
     }
 
-    /// Whether the new-task form is open.
-    pub fn form_open(&self) -> bool {
-        self.form.is_some()
-    }
-
-    /// The error the open form shows.
-    pub fn form_error(&self) -> Option<&str> {
-        self.form.as_ref().and_then(|f| f.error.as_deref())
-    }
-
     /// The row whose actions are shown.
     pub fn selected(&self) -> Option<TaskId> {
         self.selected
@@ -241,132 +118,6 @@ impl TasksPanel {
     /// Whether the durations are ticking right now (tests).
     pub fn ticking(&self) -> bool {
         self.ticker.is_some()
-    }
-
-    // ---- the form -------------------------------------------------------------------------
-
-    /// Opens the new-task form and puts the caret in its title (⌘K "Tasks: New Task…").
-    pub fn open_form(&mut self, cx: &mut Context<Self>) {
-        if self.form.is_none() {
-            self.form = Some(Form::new());
-        }
-        self.focus_wanted = Some(FormField::Title);
-        cx.notify();
-    }
-
-    pub fn close_form(&mut self, cx: &mut Context<Self>) {
-        self.form = None;
-        cx.notify();
-    }
-
-    /// Replaces the text of a form field.
-    pub fn set_field(&mut self, field: FormField, text: &str, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form {
-            form.input_mut(field).set(text);
-            form.error = None;
-            cx.notify();
-        }
-    }
-
-    /// Picks what the new task runs.
-    pub fn set_run(&mut self, run: RunChoice, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form {
-            form.run = run;
-            if !form.fields().contains(&form.field) {
-                form.field = FormField::Title;
-            }
-            cx.notify();
-        }
-    }
-
-    pub fn set_worktree(&mut self, worktree: bool, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form {
-            form.worktree = worktree;
-            if !form.fields().contains(&form.field) {
-                form.field = FormField::Title;
-            }
-            cx.notify();
-        }
-    }
-
-    pub fn set_auto_start(&mut self, auto_start: bool, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form {
-            form.auto_start = auto_start;
-            cx.notify();
-        }
-    }
-
-    /// Ticks or unticks a task of the "After" list.
-    pub fn toggle_dependency(&mut self, task: TaskId, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form
-            && !form.after.remove(&task)
-        {
-            form.after.insert(task);
-        }
-        cx.notify();
-    }
-
-    /// The dependencies ticked in the form.
-    pub fn form_dependencies(&self) -> Vec<TaskId> {
-        self.form
-            .as_ref()
-            .map(|f| f.after.iter().copied().collect())
-            .unwrap_or_default()
-    }
-
-    /// Sends the form as `task.create`; the form closes when the daemon accepts it and shows the
-    /// daemon's reason when it does not.
-    pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = &mut self.form else {
-            return;
-        };
-        if form.submitting {
-            return;
-        }
-        let store = self.env.sessions.read(cx);
-        let Some(workspace) = store
-            .active_workspace_id()
-            .or_else(|| store.home_workspace().map(|w| w.id))
-        else {
-            form.error = Some("Open a workspace first.".to_owned());
-            cx.notify();
-            return;
-        };
-        let request = match build_create(workspace, &form.values()) {
-            Ok(request) => request,
-            Err(error) => {
-                form.error = Some(error);
-                cx.notify();
-                return;
-            }
-        };
-        form.submitting = true;
-        form.error = None;
-        let creating = self
-            .env
-            .sessions
-            .update(cx, |store, cx| store.create_task(request, cx));
-        cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = creating.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(task) => {
-                        this.form = None;
-                        this.selected = Some(task.id);
-                    }
-                    Err(error) => {
-                        if let Some(form) = &mut this.form {
-                            form.submitting = false;
-                            form.error = Some(error);
-                        }
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     // ---- row actions ----------------------------------------------------------------------
@@ -502,78 +253,6 @@ impl TasksPanel {
         cx.notify();
     }
 
-    // ---- keyboard and focus ---------------------------------------------------------------
-
-    fn on_key(
-        &mut self,
-        field: FormField,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let ks = &event.keystroke;
-        let multiline = field == FormField::Prompt;
-        let vim = VimConfig::of(&self.env.settings);
-        match ks.key.as_str() {
-            "escape" => {
-                // Under Vim mode the first Escape leaves Insert (or Visual); Normal mode closes.
-                if vim.enabled
-                    && let Some(form) = &mut self.form
-                {
-                    let (state, input) = form.vim_and_input(field);
-                    if vim_ui::apply(state, input, event, vim.options(!multiline, true), cx)
-                        == Outcome::Handled
-                    {
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                }
-                self.close_form(cx);
-            }
-            "tab" => {
-                let Some(form) = &mut self.form else {
-                    return;
-                };
-                let fields = form.fields();
-                let at = fields.iter().position(|f| *f == field).unwrap_or(0);
-                let next = if ks.modifiers.shift {
-                    fields[(at + fields.len() - 1) % fields.len()]
-                } else {
-                    fields[(at + 1) % fields.len()]
-                };
-                form.field = next;
-                form.vim.reset();
-                self.focus_wanted = Some(next);
-                cx.notify();
-            }
-            "enter" if ks.modifiers.platform || !multiline => self.submit(window, cx),
-            _ => {
-                let Some(form) = &mut self.form else {
-                    return;
-                };
-                let (state, input) = form.vim_and_input(field);
-                if !edit_text(input, state, vim, event, multiline, cx) {
-                    return;
-                }
-                form.error = None;
-                cx.notify();
-            }
-        }
-        cx.stop_propagation();
-    }
-
-    fn focus_field(&mut self, field: FormField, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.form {
-            if form.field != field {
-                form.vim.reset();
-            }
-            form.field = field;
-        }
-        self.focus_wanted = Some(field);
-        cx.notify();
-    }
-
     fn write_setting(&self, key: &str, value: toml::Value) {
         if let Err(err) = self.env.settings.write_user(key, value) {
             tracing::warn!("cannot save {key}: {err}");
@@ -624,7 +303,7 @@ fn notify(cx: &mut gpui::AsyncWindowContext, message: Option<String>) {
 
 impl Focusable for TasksPanel {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
-        self.focus[0].1.clone()
+        self.focus.clone()
     }
 }
 
@@ -646,7 +325,7 @@ fn small_button(
 }
 
 impl Render for TasksPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let settings = self.env.settings.get::<TasksSettings>();
@@ -654,19 +333,14 @@ impl Render for TasksPanel {
         let rows = self.rows(now, cx);
         let running = rows.iter().any(|r| r.state.is_active());
         self.sync_ticker(running, cx);
-        let (connected, supported, harness, nothing_at_all) = {
+        let (connected, supported, nothing_at_all) = {
             let store = self.env.sessions.read(cx);
             (
                 store.connection_state() == ConnectionState::Connected,
                 store.connection().supports_tasks(),
-                store.connection().supports_harness_chat(),
                 store.tasks().is_empty(),
             )
         };
-        if let Some(field) = self.focus_wanted.take() {
-            let handle = self.handle(field).clone();
-            cx.defer_in(window, move |_, window, cx| window.focus(&handle, cx));
-        }
 
         let new_button = small_button(
             "tasks-new",
@@ -678,7 +352,7 @@ impl Render for TasksPanel {
         )
         .relative()
         .when(connected && supported, |s| {
-            s.on_click(cx.listener(|this, _, _, cx| this.open_form(cx)))
+            s.on_click(|_, window, cx| open_launcher(window, cx))
         })
         .child(probe(&self.env.regions, Region::Tasks("new")))
         .into_any_element();
@@ -743,7 +417,7 @@ impl Render for TasksPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        if rows.is_empty() && self.form.is_none() {
+        if rows.is_empty() {
             let (text, action) = if !connected {
                 ("Not connected to hutand.", None)
             } else if !supported {
@@ -764,7 +438,7 @@ impl Render for TasksPanel {
                             &tokens,
                         )
                         .relative()
-                        .on_click(cx.listener(|this, _, _, cx| this.open_form(cx)))
+                        .on_click(|_, window, cx| open_launcher(window, cx))
                         .child(probe(&self.env.regions, Region::Tasks("empty-new")))
                         .into_any_element(),
                     ),
@@ -794,9 +468,6 @@ impl Render for TasksPanel {
             .child(chips);
         if let Some(ask) = self.cascade.clone() {
             root = root.child(self.render_cascade(&ask, &theme, &tokens, cx));
-        }
-        if self.form.is_some() {
-            root = root.child(self.render_form(harness, &theme, &tokens, window, cx));
         }
         root.child(list)
     }
@@ -1042,276 +713,5 @@ impl TasksPanel {
         element
             .child(probe(&self.env.regions, Region::TaskRow(index)))
             .into_any_element()
-    }
-
-    fn render_form(
-        &self,
-        harness: bool,
-        theme: &Theme,
-        tokens: &Tokens,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(form) = &self.form else {
-            return div().into_any_element();
-        };
-        let vim = VimConfig::of(&self.env.settings)
-            .enabled
-            .then_some(&form.vim);
-        let label = |text: &'static str| ui::section_label(text, theme, tokens);
-        let field = |which: FormField,
-                     input: &TextInput,
-                     placeholder: &str,
-                     multiline: bool,
-                     cx: &mut Context<Self>| {
-            let handle = self.handle(which).clone();
-            let focused = handle.is_focused(window);
-            field_box(
-                SharedString::from(format!("tasks-field-{}", which.key())),
-                input,
-                vim,
-                placeholder,
-                focused,
-                multiline,
-                theme,
-                tokens,
-            )
-            .relative()
-            .track_focus(&handle)
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                this.on_key(which, event, window, cx);
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    // The dock takes focus on this same mouse down; ask again after it.
-                    this.focus_field(which, cx);
-                }),
-            )
-            .child(probe(
-                &self.env.regions,
-                Region::Tasks(match which {
-                    FormField::Title => "form-title",
-                    FormField::Prompt => "form-prompt",
-                    FormField::Command => "form-command",
-                    FormField::Branch => "form-branch",
-                }),
-            ))
-            .into_any_element()
-        };
-
-        let mut run_pills = div().flex().flex_wrap().gap(px(tokens.spacing));
-        let mut choices = vec![RunChoice::Terminal, RunChoice::Codex];
-        if harness {
-            choices.extend([RunChoice::Omp, RunChoice::Claude]);
-        }
-        for choice in choices {
-            run_pills = run_pills.child(
-                pill(
-                    SharedString::from(format!("tasks-run-{}", choice.key())),
-                    choice.label(),
-                    form.run == choice,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .on_click(cx.listener(move |this, _, _, cx| this.set_run(choice, cx)))
-                .child(probe(
-                    &self.env.regions,
-                    Region::Tasks(match choice {
-                        RunChoice::Terminal => "run-terminal",
-                        RunChoice::Codex => "run-codex",
-                        RunChoice::Omp => "run-omp",
-                        RunChoice::Claude => "run-claude",
-                    }),
-                )),
-            );
-        }
-        let place_pills = div()
-            .flex()
-            .gap(px(tokens.spacing))
-            .child(
-                pill(
-                    "tasks-place-main",
-                    "Main checkout",
-                    !form.worktree,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .on_click(cx.listener(|this, _, _, cx| this.set_worktree(false, cx)))
-                .child(probe(&self.env.regions, Region::Tasks("place-main"))),
-            )
-            .child(
-                pill(
-                    "tasks-place-worktree",
-                    "New worktree",
-                    form.worktree,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .on_click(cx.listener(|this, _, _, cx| this.set_worktree(true, cx)))
-                .child(probe(&self.env.regions, Region::Tasks("place-worktree"))),
-            );
-
-        // The tasks of the workspace the new one can wait for: every one listed, as a flat list
-        // (the form picks, the tree shows).
-        let mut after = div()
-            .id("tasks-after")
-            .flex()
-            .flex_col()
-            .max_h(px(tokens.sidebar_row * 4.5))
-            .overflow_y_scroll();
-        let candidates: Vec<TaskRowView> = {
-            let store = self.env.sessions.read(cx);
-            let workspace = store
-                .active_workspace_id()
-                .or_else(|| store.home_workspace().map(|w| w.id));
-            let parent = |id| store.workspace(id).and_then(|w| w.parent_id);
-            tree_rows(
-                store.tasks(),
-                TaskFilters {
-                    show_done: true,
-                    workspace,
-                },
-                &parent,
-                0,
-            )
-        };
-        if candidates.is_empty() {
-            after = after.child(
-                div()
-                    .text_color(theme.faint)
-                    .text_size(px(tokens.secondary_font_size))
-                    .child("No tasks to wait for."),
-            );
-        }
-        for (at, row) in candidates.into_iter().enumerate() {
-            let task = row.id;
-            let ticked = form.after.contains(&task);
-            after = after.child(
-                div()
-                    .id(SharedString::from(format!("tasks-dep-{at}")))
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(tokens.spacing * 2.0))
-                    .h(px(tokens.sidebar_row - 4.0))
-                    .px(px(tokens.spacing))
-                    .rounded(px(tokens.radius))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(theme.surface_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_dependency(task, cx)))
-                    .child(if ticked { "☑" } else { "☐" })
-                    .child(
-                        div()
-                            .truncate()
-                            .child(SharedString::from(row.title.clone())),
-                    )
-                    .child(probe(&self.env.regions, Region::TaskDep(at))),
-            );
-        }
-
-        let mut body = div()
-            .id("tasks-form")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(px(tokens.spacing * 1.5))
-            .mx(px(tokens.spacing * 2.0))
-            .mb(px(tokens.spacing * 2.0))
-            .p(px(tokens.spacing * 2.5))
-            .card(theme, tokens)
-            .child(label("New task"))
-            .child(field(FormField::Title, &form.title, "Title", false, cx))
-            .child(field(
-                FormField::Prompt,
-                &form.prompt,
-                "Prompt (the first message of a chat)",
-                true,
-                cx,
-            ))
-            .child(label("Run"))
-            .child(run_pills);
-        if form.run == RunChoice::Terminal {
-            body = body.child(field(
-                FormField::Command,
-                &form.command,
-                "Command (empty: a login shell)",
-                false,
-                cx,
-            ));
-        }
-        body = body.child(label("Where")).child(place_pills);
-        if form.worktree {
-            body = body.child(field(
-                FormField::Branch,
-                &form.branch,
-                "Branch (empty: task/<slug of the title>)",
-                false,
-                cx,
-            ));
-        }
-        body = body.child(label("After")).child(after).child(
-            div()
-                .id("tasks-auto")
-                .relative()
-                .flex()
-                .items_center()
-                .gap(px(tokens.spacing * 2.0))
-                .cursor_pointer()
-                .on_click(cx.listener({
-                    let value = !form.auto_start;
-                    move |this, _, _, cx| this.set_auto_start(value, cx)
-                }))
-                .child(if form.auto_start { "☑" } else { "☐" })
-                .child("Start automatically when ready")
-                .child(probe(&self.env.regions, Region::Tasks("form-auto"))),
-        );
-        if let Some(error) = &form.error {
-            body = body.child(
-                div()
-                    .text_color(theme.danger)
-                    .child(SharedString::from(error.clone())),
-            );
-        }
-        body.child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(tokens.spacing))
-                .child(
-                    small_button(
-                        "tasks-form-cancel",
-                        "Cancel",
-                        ui::ButtonKind::Ghost,
-                        true,
-                        theme,
-                        tokens,
-                    )
-                    .relative()
-                    .on_click(cx.listener(|this, _, _, cx| this.close_form(cx)))
-                    .child(probe(&self.env.regions, Region::Tasks("form-cancel"))),
-                )
-                .child(
-                    small_button(
-                        "tasks-form-create",
-                        if form.submitting {
-                            "Creating…"
-                        } else {
-                            "Create"
-                        },
-                        ui::ButtonKind::Primary,
-                        !form.submitting,
-                        theme,
-                        tokens,
-                    )
-                    .relative()
-                    .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-                    .child(probe(&self.env.regions, Region::Tasks("form-create"))),
-                ),
-        )
-        .into_any_element()
     }
 }
