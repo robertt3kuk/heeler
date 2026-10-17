@@ -65,23 +65,33 @@ impl Ctx {
 
     async fn ui_run(&self, args: UiRunArgs) -> Result<(), CliError> {
         let client = self.connect().await?;
-        let schema = self
-            .catalog(&client, args.window.window.clone())
-            .await
-            .ok()
+        let catalog = self.catalog(&client, args.window.window.clone()).await.ok();
+        let window_id = catalog
+            .as_ref()
+            .map(|list| list.window_id.clone())
+            .or_else(|| args.window.window.clone())
+            .unwrap_or_default();
+        let schema = catalog
             .and_then(|list| list.actions.into_iter().find(|a| a.id == args.action))
             .and_then(|a| a.args_schema);
         let arguments = parse_args(&args.args, schema.as_ref())?;
-        let ran: UiRan = self
-            .call(
-                &client,
-                Request::UiRun(UiRun {
-                    window_id: args.window.window,
-                    action: args.action.clone(),
-                    args: (!arguments.is_empty()).then_some(Value::Object(arguments)),
-                }),
-            )
-            .await?;
+        let ran = match client
+            .call::<UiRan>(Request::UiRun(UiRun {
+                window_id: args.window.window,
+                action: args.action.clone(),
+                args: (!arguments.is_empty()).then_some(Value::Object(arguments)),
+            }))
+            .await
+        {
+            Ok(ran) => ran,
+            // An action that closes the window (Quit) ends the window's connection before it
+            // can answer: the daemon says so, and that is the action's success.
+            Err(hutan_client::ClientError::Remote(body)) if window_closed(&body) => UiRan {
+                window_id,
+                result: serde_json::json!({ "ran": args.action, "window_closed": true }),
+            },
+            Err(error) => return Err(self.fail(error)),
+        };
         self.print(&ran, || ran_text(&args.action, &ran))
     }
 
@@ -111,6 +121,15 @@ impl Ctx {
             )
         })
     }
+}
+
+/// What the daemon answers a `ui.run` whose window went away while it ran the action
+/// (`crates/daemon/src/uihub.rs`).
+const WINDOW_CLOSED: &str = "the window closed before it answered";
+
+/// Whether `body` is the daemon's "the window closed before it answered".
+fn window_closed(body: &hutan_protocol::ErrorBody) -> bool {
+    body.code == hutan_protocol::ErrorCode::InvalidState && body.message == WINDOW_CLOSED
 }
 
 /// `--arg key=value` pairs as a JSON object. A value is read as JSON when the argument's schema
@@ -261,6 +280,11 @@ fn ran_text(action: &str, ran: &UiRan) -> String {
     match &ran.result {
         Value::Object(map) if map.is_empty() => format!("ran {action} in window {}", ran.window_id),
         Value::Null => format!("ran {action} in window {}", ran.window_id),
+        Value::Object(map)
+            if map.len() == 2 && map.get("window_closed") == Some(&Value::Bool(true)) =>
+        {
+            format!("ran {action}; the window closed")
+        }
         result => format!("ran {action} in window {}: {result}", ran.window_id),
     }
 }

@@ -353,6 +353,79 @@ async fn ui_actions_layout_run_and_set_talk_to_the_desktop() {
     t.stop().await;
 }
 
+/// A desktop whose Quit ends the window's connection before it can answer, as the real one's
+/// does.
+async fn start_quitting_desktop(socket: &Path) {
+    let client = Client::connect(ConnectOptions {
+        socket: Some(socket.to_owned()),
+        autostart: None,
+        client: ClientInfo {
+            kind: ClientKind::Desktop,
+            version: "test".into(),
+            origin: None,
+        },
+    })
+    .await
+    .unwrap();
+    let mut events = client.events();
+    client
+        .call::<Subscribed>(Request::EventsSubscribe(Empty {}))
+        .await
+        .unwrap();
+    let mut publish = catalog();
+    publish.actions = vec![UiAction {
+        id: "workbench::Quit".into(),
+        title: "App: Quit Hutan".into(),
+        args_schema: None,
+    }];
+    client
+        .call::<Empty>(Request::UiPublish(publish))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Ok((_, event)) = events.recv().await {
+            if matches!(event, Event::UiCommand { .. }) {
+                // The window is gone: the last handle of the connection goes with it.
+                drop(client);
+                return;
+            }
+        }
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn running_an_action_that_closes_the_window_reports_success() {
+    let t = TestDaemon::start().await;
+    start_quitting_desktop(&t.paths.socket).await;
+
+    let ran = t
+        .hutan(&["ui", "run", "workbench::Quit", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(ran["window_id"], "w1");
+    assert_eq!(
+        ran["result"],
+        json!({"ran": "workbench::Quit", "window_closed": true})
+    );
+
+    // The window is gone with its connection: the next command says so.
+    let gone = t.hutan(&["ui", "run", "workbench::Quit"]).await;
+    assert_eq!(gone.code, 1, "{gone:?}");
+    assert!(gone.stderr.contains("window"), "{gone:?}");
+
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_human_output_of_a_window_closing_action_says_so() {
+    let t = TestDaemon::start().await;
+    start_quitting_desktop(&t.paths.socket).await;
+    let out = t.hutan(&["ui", "run", "workbench::Quit"]).await.ok();
+    assert!(out.stdout.contains("the window closed"), "{out:?}");
+    t.stop().await;
+}
+
 // ---- who is asking ----------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]

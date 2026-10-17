@@ -13,7 +13,7 @@ use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Task, WeakEntity};
 use hutan_client::{
     BlockList, ClientError, Connection, GoneReason, TerminalHandle, TerminalUpdate,
 };
-use hutan_core::{SessionId, TerminalId};
+use hutan_core::{Epoch, SessionId, TerminalId};
 use hutan_protocol::blocks::{Block, BlockPart};
 use hutan_protocol::messages::{
     Request, SessionInfo, TerminalColors, TerminalHistory, TerminalHistoryRows, TerminalSize,
@@ -125,6 +125,13 @@ pub struct TerminalSession {
     reconnecting: bool,
     /// Why the daemon-side terminal is unreachable for good.
     gone: Option<String>,
+    /// The daemon restarted: its terminals are gone, but a session it respawned keeps its id and
+    /// gets a new terminal, which the store's next word on the session names. While this is
+    /// set, the first such word rebinds the session (and clears `gone`).
+    awaiting_respawn: bool,
+    /// The daemon (epoch) the attached terminal belongs to, and the one `info` is the word of.
+    epoch: Option<Epoch>,
+    info_epoch: Option<Epoch>,
     colors: Option<DefaultColors>,
     /// The user stopped the daemon from the app; nothing reconnects until they start it.
     daemon_stopped: bool,
@@ -157,9 +164,11 @@ impl Drop for TerminalSession {
 }
 
 impl TerminalSession {
-    /// Attaches to the terminal of `info`; `None` when the session has no terminal (yet).
+    /// Attaches to the terminal of `info` (the word of the daemon of `epoch`); `None` when the
+    /// session has no terminal (yet).
     pub fn attach(
         info: SessionInfo,
+        epoch: Option<Epoch>,
         connection: Connection,
         colors: Option<DefaultColors>,
         cx: &mut App,
@@ -181,8 +190,11 @@ impl TerminalSession {
                 backend,
                 connection,
                 info: Some(info),
+                epoch,
+                info_epoch: epoch,
                 reconnecting: false,
                 gone: None,
+                awaiting_respawn: false,
                 colors,
                 daemon_stopped: false,
                 blocks_stale: true,
@@ -242,8 +254,12 @@ impl TerminalSession {
             TerminalUpdate::Gone { reason } => match reason {
                 GoneReason::SessionRestarted { new_terminal } => self.rebind(new_terminal, cx),
                 GoneReason::EpochChanged => {
+                    self.awaiting_respawn = true;
                     self.gone = Some("The daemon restarted; this session is gone".to_owned());
-                    self.refresh_status(cx);
+                    // The store may already know the respawned terminal.
+                    if !self.rebind_to_respawn(cx) {
+                        self.refresh_status(cx);
+                    }
                 }
                 GoneReason::NotFound => {
                     self.gone = Some("The daemon no longer knows this terminal".to_owned());
@@ -263,6 +279,29 @@ impl TerminalSession {
         self.reconnecting = true;
         self.bind(new_terminal, cx);
         self.refresh_status(cx);
+    }
+
+    /// After a daemon restart: attaches to the terminal the session was respawned with, once
+    /// the store has told us about one of the new daemon (terminal ids start over with every
+    /// daemon, so only the epoch tells its word from the old one). A session that really ended
+    /// (or has no terminal) stays ended. Returns whether it rebound.
+    fn rebind_to_respawn(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.awaiting_respawn || self.info_epoch.is_none() || self.info_epoch == self.epoch {
+            return false;
+        }
+        let Some(new_terminal) = self
+            .info
+            .as_ref()
+            .filter(|info| ended_text(&info.state).is_none())
+            .and_then(|info| info.terminal_id)
+        else {
+            return false;
+        };
+        self.awaiting_respawn = false;
+        self.gone = None;
+        self.epoch = self.info_epoch;
+        self.rebind(new_terminal, cx);
+        true
     }
 
     /// Loads the terminal's blocks (the daemon keeps at most 2 000). A daemon without capability
@@ -331,7 +370,13 @@ impl TerminalSession {
 
     fn compute_status(&self) -> ViewStatus {
         if let Some(reason) = &self.gone {
-            return ViewStatus::Ended(reason.clone());
+            // The restarted daemon's word on the session says how it really ended.
+            let ended = self
+                .info
+                .as_ref()
+                .filter(|_| self.awaiting_respawn)
+                .and_then(|info| ended_text(&info.state));
+            return ViewStatus::Ended(ended.unwrap_or_else(|| reason.clone()));
         }
         if self.daemon_stopped {
             return ViewStatus::Ended("The daemon is stopped".to_owned());
@@ -358,13 +403,22 @@ impl TerminalSession {
         cx.notify();
     }
 
-    /// The store's latest word on the session (`None`: it is gone from the daemon).
-    pub fn update_info(&mut self, info: Option<SessionInfo>, cx: &mut Context<Self>) {
-        if self.info == info {
+    /// The store's latest word on the session (`None`: it is gone from the daemon), from the
+    /// daemon of `epoch`.
+    pub fn update_info(
+        &mut self,
+        info: Option<SessionInfo>,
+        epoch: Option<Epoch>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.info == info && self.info_epoch == epoch {
             return;
         }
         self.info = info;
-        self.refresh_status(cx);
+        self.info_epoch = epoch;
+        if !self.rebind_to_respawn(cx) {
+            self.refresh_status(cx);
+        }
     }
 
     /// The user stopped (or started again) the daemon from the app.
@@ -393,6 +447,11 @@ impl TerminalSession {
     /// The terminal currently attached, if any.
     pub fn terminal(&self) -> Option<TerminalId> {
         self.handle.borrow().as_ref().map(TerminalHandle::terminal)
+    }
+
+    /// The daemon (epoch) the attached terminal belongs to.
+    pub fn daemon_epoch(&self) -> Option<Epoch> {
+        self.epoch
     }
 
     pub fn info(&self) -> Option<&SessionInfo> {

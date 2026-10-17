@@ -1,7 +1,7 @@
 //! `hutan recovery` and `hutan recovery ack`: what the last daemon restart did to each session
 //! (protocol 0.26, capability `session.recovery`, `docs/protocol.md` § Recovery).
 
-use hutan_client::recovery;
+use hutan_client::{recovery, time};
 use hutan_protocol::messages::{Request, SessionList};
 use hutan_protocol::recovery::{RecoveryAck, RecoveryAcked};
 
@@ -22,7 +22,14 @@ impl Ctx {
         let mut list = self.session_list(&client, None).await?;
         list.sessions.sort_by_key(|s| s.created_at_ms);
         // `--json` has every session that carries a recovery, history-only ones included.
-        let summary = recovery::summary(&list.sessions, recovery::clock_text);
+        let now = time::now_ms();
+        let summary = recovery::summary(&list.sessions, |ms| {
+            format!(
+                "at {}, {}",
+                time::local_time_text(ms),
+                time::relative_text(now, ms)
+            )
+        });
         list.sessions.retain(|s| s.recovery.is_some());
         let shown: SessionList = list;
         self.print(&shown, || match &summary {

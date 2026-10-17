@@ -504,3 +504,134 @@ fn commands_split_apply_presets_open_panels_focus_sessions_and_write_settings(
         hutan_desktop::theme::Density::Comfortable
     );
 }
+
+/// The arguments an action asks for, from its published schema: the first value of an enum, or
+/// the id of something that exists. `Err` says why the test cannot supply them.
+fn arguments_for(
+    action: &hutan_protocol::ui::UiAction,
+    session: SessionId,
+    workspace: hutan_core::WorkspaceId,
+) -> Result<Option<Value>, String> {
+    let Some(schema) = &action.args_schema else {
+        return Ok(None);
+    };
+    let mut args = serde_json::Map::new();
+    for key in schema["required"].as_array().into_iter().flatten() {
+        let key = key.as_str().unwrap_or_default();
+        let property = &schema["properties"][key];
+        let value = if let Some(first) = property["enum"].as_array().and_then(|e| e.first()) {
+            first.clone()
+        } else if action.id == "workbench::OpenSession" && key == "id" {
+            json!(session.to_string())
+        } else if action.id == "workbench::OpenWorkspace" && key == "id" {
+            json!(workspace.to_string())
+        } else {
+            return Err(format!("no way to supply `{key}`"));
+        };
+        args.insert(key.to_owned(), value);
+    }
+    Ok(Some(Value::Object(args)))
+}
+
+#[gpui::test]
+fn every_action_the_window_lists_dispatches(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    // A live session: stopping or restarting the daemon, or quitting, asks first instead of
+    // doing it.
+    let session = daemon.sh("sleep 300");
+    let (view, cx) = open(cx, &daemon, daemon.connection());
+    // Open Logs reveals the log in Finder; the test platform cannot.
+    view.update(cx, |wb, _| wb.set_reveal_handler(|_, _| {}));
+    settle(cx, "the first publish", |_| layout_of(&daemon).is_some());
+    view.update_in(cx, |wb, window, cx| wb.open_session(session.id, window, cx));
+    let workspace = session.workspace_id;
+    let actions: UiActionList = daemon.call(Request::UiActions(UiTarget::default()));
+    assert!(
+        actions
+            .actions
+            .iter()
+            .any(|a| a.id == "workbench::OpenAssistant"),
+        "the assistant is on by default, so its action is listed"
+    );
+
+    let mut unknown = Vec::new();
+    let mut skipped = Vec::new();
+    let mut ran = 0;
+    for action in &actions.actions {
+        // GPUI's test window cannot be minimized or zoomed (`unimplemented!`).
+        if matches!(
+            action.id.as_str(),
+            "workbench::MinimizeWindow" | "workbench::ZoomWindow"
+        ) {
+            skipped.push(format!(
+                "{}: the test platform has no such window",
+                action.id
+            ));
+            continue;
+        }
+        let args = match arguments_for(action, session.id, workspace) {
+            Ok(args) => args,
+            Err(why) => {
+                skipped.push(format!("{}: {why}", action.id));
+                continue;
+            }
+        };
+        match run(&daemon, cx, &action.id, args) {
+            Ok(answer) => {
+                assert_eq!(answer.result["ran"], action.id.as_str());
+                ran += 1;
+            }
+            Err(ClientError::Remote(error)) => {
+                // A refusal is an answer; "unknown action" is a listed action nobody handles.
+                if error.code == ErrorCode::NotFound || error.message.contains("unknown action") {
+                    unknown.push(format!("{}: {}", action.id, error.message));
+                }
+                ran += 1;
+            }
+            Err(other) => panic!("{}: {other}", action.id),
+        }
+        // Whatever the action opened (a modal, the palette, the settings) closes again.
+        cx.simulate_keystrokes("escape escape");
+        view.update_in(cx, |wb, window, cx| wb.close_modal(window, cx));
+    }
+    assert!(unknown.is_empty(), "listed but unknown: {unknown:?}");
+    assert!(ran > 90, "only {ran} actions ran; skipped: {skipped:?}");
+    // Only what the test platform cannot do (a reason is recorded for each).
+    assert_eq!(skipped.len(), 2, "unexpectedly skipped: {skipped:?}");
+}
+
+#[gpui::test]
+fn the_assistant_action_follows_the_assistant_setting_in_both_directions(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let (view, cx) = open(cx, &daemon, daemon.connection());
+    settle(cx, "the first publish", |_| layout_of(&daemon).is_some());
+    let listed = |daemon: &TestDaemon| {
+        let actions: UiActionList = daemon.call(Request::UiActions(UiTarget::default()));
+        actions
+            .actions
+            .iter()
+            .any(|a| a.id == "workbench::OpenAssistant")
+    };
+    assert!(listed(&daemon));
+    run(&daemon, cx, "workbench::OpenAssistant", None).unwrap();
+    assert!(view.read_with(cx, |wb, _| wb.panel_open("assistant")));
+
+    set(&daemon, cx, "assistant", "enabled", json!(false), "user").unwrap();
+    assert!(
+        !listed(&daemon),
+        "the catalog is current when the setting is answered"
+    );
+    assert_eq!(
+        code(run(&daemon, cx, "workbench::OpenAssistant", None)),
+        ErrorCode::NotFound
+    );
+
+    set(&daemon, cx, "assistant", "enabled", json!(true), "user").unwrap();
+    // No waiting for the debounce: the answer to the setting came after the publish.
+    assert!(
+        listed(&daemon),
+        "the catalog is current when the setting is answered"
+    );
+    run(&daemon, cx, "workbench::OpenAssistant", None).unwrap();
+    assert!(view.read_with(cx, |wb, _| wb.panel_open("assistant")));
+}

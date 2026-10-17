@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hutan_client::Client;
+use hutan_client::time::local_time_text;
 use hutan_core::{
     AfterPolicy, DeliveryState, ReviewDecision, Task, TaskId, TaskPlacement, TaskPlacementKind,
     TaskRun, TaskState, WorkspaceId,
@@ -528,7 +529,8 @@ fn delivery_line(task: &Task) -> String {
     }
     for record in &task.delivery_history {
         text.push_str(&format!(
-            "\n           {} ago  {} by {}{}{}",
+            "\n           {} ({} ago)  {} by {}{}{}",
+            local_time_text(record.at_ms),
             duration(now_ms().saturating_sub(record.at_ms)),
             delivery_text(record.state),
             record.by.as_str(),
@@ -650,7 +652,7 @@ fn task_details(
     out.trim_end().to_owned()
 }
 
-/// `done (exited 0), ran 1m 5s, ended 3m ago`.
+/// `done (exited 0), ran 1m 5s, ended 3m ago (2026-10-17 14:31 +0500)`.
 fn state_line(task: &Task) -> String {
     let mut text = task.state.as_str().to_owned();
     if let Some(outcome) = &task.outcome {
@@ -661,13 +663,15 @@ fn state_line(task: &Task) -> String {
     }
     if let Some(end) = task.ended_at_ms {
         text.push_str(&format!(
-            ", ended {} ago",
-            duration(now_ms().saturating_sub(end))
+            ", ended {} ago ({})",
+            duration(now_ms().saturating_sub(end)),
+            local_time_text(end)
         ));
     } else if let Some(start) = task.started_at_ms {
         text.push_str(&format!(
-            ", started {} ago",
-            duration(now_ms().saturating_sub(start))
+            ", started {} ago ({})",
+            duration(now_ms().saturating_sub(start)),
+            local_time_text(start)
         ));
     }
     text

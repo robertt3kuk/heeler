@@ -19,6 +19,7 @@ mod socket;
 mod store;
 mod supervisor;
 mod terminal;
+pub mod time;
 
 pub use blocks::BlockList;
 pub use chat::ChatUpdate;

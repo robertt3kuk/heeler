@@ -17,6 +17,7 @@ use serde_json::Value as Json;
 
 use super::actions::sheet as sheet_actions;
 use super::modal::PromptSpec;
+use super::settings_labels::{field_help, field_title, namespace_title, value_label};
 use super::settings_schema::{
     CatalogEntry, Field, FieldKind, catalog, fields_of, json_to_toml, namespace_schema, search,
     value_at,
@@ -644,7 +645,7 @@ impl Workbench {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_settings_namespace(ns, cx);
                     }))
-                    .child(SharedString::from(ns))
+                    .child(SharedString::from(namespace_title(ns)))
                     .into_any_element()
             })
             .collect();
@@ -742,7 +743,13 @@ impl Workbench {
                         let k = key.clone();
                         let head = button(
                             SharedString::from(format!("dropdown-{key}")),
-                            SharedString::from(format!("{} ▾", display_value(&value))),
+                            SharedString::from(format!(
+                                "{} ▾",
+                                match &value {
+                                    Json::String(s) => value_label(selected, &key, s),
+                                    other => display_value(other),
+                                }
+                            )),
                             open,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -766,7 +773,7 @@ impl Workbench {
                                     let (k, o) = (key.clone(), option.clone());
                                     button(
                                         SharedString::from(format!("option-{key}-{option}")),
-                                        SharedString::from(option.clone()),
+                                        SharedString::from(value_label(selected, &key, option)),
                                         Json::String(option.clone()) == value,
                                     )
                                     .on_click(cx.listener(
@@ -980,13 +987,15 @@ impl Workbench {
                             .child(
                                 div()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child(SharedString::from(key.clone())),
+                                    .child(SharedString::from(field_title(selected, &key))),
                             )
                             .child(
                                 div()
                                     .text_size(px(tokens.secondary_font_size))
                                     .text_color(theme.muted)
-                                    .child(SharedString::from(field.doc.clone())),
+                                    .child(SharedString::from(field_help(
+                                        selected, &key, &field.doc,
+                                    ))),
                             ),
                     )
                     .child(
@@ -1162,14 +1171,16 @@ impl Workbench {
                                                 .child(
                                                     div()
                                                         .font_weight(gpui::FontWeight::MEDIUM)
-                                                        .child(SharedString::from(selected)),
+                                                        .child(SharedString::from(
+                                                            namespace_title(selected),
+                                                        )),
                                                 )
                                                 .child(
                                                     div()
                                                         .text_size(px(tokens.secondary_font_size))
                                                         .text_color(theme.muted)
                                                         .child(if overridable {
-                                                            "workspace-overridable"
+                                                            "Can be set per workspace or project"
                                                         } else {
                                                             ""
                                                         }),

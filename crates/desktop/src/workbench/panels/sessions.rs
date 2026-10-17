@@ -20,7 +20,7 @@ use hutan_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
 
 use super::common::{
     age_label, agent_badge, kind_icon, panel_header_with, placement, placement_badge,
-    recovery_chip, state_dot, tone_color,
+    recovery_chip, state_dot, time_tooltip, tone_color,
 };
 use crate::sessions::tree::{self, Node, ProjectNode, folder_label, session_folder};
 use crate::settings::{
@@ -1379,9 +1379,11 @@ impl SessionsPanel {
                     .children(recovery.take()),
                 "age" => line.child(
                     div()
+                        .id(SharedString::from(format!("row-age-{}", info.id)))
                         .flex_none()
                         .text_size(px(tokens.secondary_font_size))
                         .text_color(theme.muted)
+                        .tooltip(time_tooltip(info.created_at_ms))
                         .child(SharedString::from(age_label(info.created_at_ms))),
                 ),
                 _ => line,

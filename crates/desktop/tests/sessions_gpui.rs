@@ -1118,8 +1118,8 @@ fn status_items_follow_the_connection_through_loss_and_recovery(cx: &mut TestApp
         epoch
     );
 
-    // The daemon itself goes away and comes back with a new epoch: it restores the session in a
-    // new terminal, so the open item (attached to the old terminal) ends.
+    // The daemon itself goes away and comes back with a new epoch: it respawns the session in a
+    // new terminal, and the open item follows it there.
     daemon.stop();
     wait_until(cx, "reconnecting after the daemon stopped", |cx| {
         matches!(conn(cx), ConnectionState::Reconnecting { .. })
@@ -1129,18 +1129,155 @@ fn status_items_follow_the_connection_through_loss_and_recovery(cx: &mut TestApp
         conn(cx) == ConnectionState::Connected
             && view.read_with(cx, |wb, cx| wb.sessions().read(cx).state().epoch) != epoch
     });
-    wait_until(cx, "the item to end", |cx| {
+    wait_until(cx, "the item to follow the respawned session", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.terminal_view_of(info.id)
-                .is_some_and(|v| matches!(v.read(cx).status(), ViewStatus::Ended(_)))
-        })
+                .is_some_and(|v| *v.read(cx).status() == ViewStatus::Live)
+        }) && attached_to_current_daemon(&view, cx, info.id)
     });
+    wait_screen(&view, cx, info.id, "status");
     assert!(view.read_with(cx, |wb, cx| {
         wb.sessions()
             .read(cx)
             .sessions()
             .iter()
             .any(|s| s.id == info.id)
+    }));
+}
+
+/// Whether the open view of `id` is attached to a terminal of the daemon the window is
+/// connected to now (terminal ids start over with every daemon, so the epoch tells).
+fn attached_to_current_daemon(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    id: SessionId,
+) -> bool {
+    view.read_with(cx, |wb, cx| {
+        let store = wb.sessions().read(cx);
+        store
+            .attached(id)
+            .is_some_and(|t| t.read(cx).daemon_epoch() == store.state().epoch)
+    })
+}
+
+fn attached_terminal(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    id: SessionId,
+) -> Option<hutan_core::TerminalId> {
+    view.read_with(cx, |wb, cx| {
+        wb.sessions()
+            .read(cx)
+            .attached(id)
+            .and_then(|t| t.read(cx).terminal())
+    })
+}
+
+#[gpui::test]
+fn terminal_tabs_in_every_pane_reattach_to_respawned_sessions_and_take_input(
+    cx: &mut TestAppContext,
+) {
+    let mut daemon = TestDaemon::start();
+    let first = daemon.create_session(&["cat"], None);
+    let second = daemon.create_session(&["cat"], None);
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 2);
+    open_session(&view, cx, first.id);
+    wait_until(cx, "the first terminal", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.terminal_view_of(first.id)
+                .is_some_and(|v| v.read(cx).model().is_ready())
+        })
+    });
+    cx.simulate_keystrokes("cmd-d");
+    wait_until(cx, "the split", |cx| state_of(&view, cx).panes().len() == 2);
+    open_session(&view, cx, second.id);
+    wait_until(cx, "both terminals to be ready", |cx| {
+        [first.id, second.id].iter().all(|id| {
+            view.read_with(cx, |wb, cx| {
+                wb.terminal_view_of(*id)
+                    .is_some_and(|v| v.read(cx).model().is_ready())
+            })
+        })
+    });
+    cx.simulate_input("before-restart\n");
+
+    let epoch = view.read_with(cx, |wb, cx| wb.sessions().read(cx).state().epoch);
+    daemon.stop();
+    daemon.restart();
+    wait_until(cx, "the new daemon", |cx| {
+        view.read_with(cx, |wb, cx| {
+            let store = wb.sessions().read(cx);
+            store.connection_state() == ConnectionState::Connected && store.state().epoch != epoch
+        })
+    });
+    wait_until(cx, "every tab to follow its respawned session", |cx| {
+        [first.id, second.id].iter().all(|id| {
+            view.read_with(cx, |wb, cx| {
+                wb.terminal_view_of(*id).is_some_and(|v| {
+                    let v = v.read(cx);
+                    *v.status() == ViewStatus::Live && v.model().is_ready()
+                })
+            }) && attached_to_current_daemon(&view, cx, *id)
+        })
+    });
+    // The old screen is gone with the old shell; the respawned one is empty.
+    assert!(
+        !screen_of(&view, cx, second.id)
+            .unwrap()
+            .contains("before-restart")
+    );
+
+    // Input goes to the live shell of the focused tab (the split's, `second`).
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.focused_session()),
+        Some(second.id)
+    );
+    cx.simulate_input("after-restart\n");
+    wait_screen(&view, cx, second.id, "after-restart");
+    // And the daemon agrees: the session runs in the terminal the tab is attached to.
+    assert_eq!(
+        daemon.session(second.id).terminal_id,
+        attached_terminal(&view, cx, second.id)
+    );
+}
+
+#[gpui::test]
+fn a_terminal_tab_of_a_session_that_ended_stays_ended_after_a_restart(cx: &mut TestAppContext) {
+    let mut daemon = TestDaemon::start_with_config("[daemon]\nrestore_sessions = \"stopped\"\n");
+    let info = daemon.create_session(&["cat"], None);
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+    open_session(&view, cx, info.id);
+    wait_until(cx, "the terminal", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.terminal_view_of(info.id)
+                .is_some_and(|v| *v.read(cx).status() == ViewStatus::Live)
+        })
+    });
+    let epoch = view.read_with(cx, |wb, cx| wb.sessions().read(cx).state().epoch);
+    daemon.stop();
+    daemon.restart_with(|_| {});
+    wait_until(cx, "the new daemon", |cx| {
+        view.read_with(cx, |wb, cx| {
+            let store = wb.sessions().read(cx);
+            store.connection_state() == ConnectionState::Connected && store.state().epoch != epoch
+        })
+    });
+    wait_until(cx, "the tab to say the session ended", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.terminal_view_of(info.id).is_some_and(|v| {
+                matches!(v.read(cx).status(), ViewStatus::Ended(text) if text.contains("stopped"))
+            })
+        })
+    });
+    // It stays ended.
+    for _ in 0..30 {
+        draw(cx);
+    }
+    assert!(view.read_with(cx, |wb, cx| {
+        wb.terminal_view_of(info.id)
+            .is_some_and(|v| matches!(v.read(cx).status(), ViewStatus::Ended(_)))
     }));
 }
 
@@ -1174,7 +1311,14 @@ fn the_inspector_describes_the_focused_session(cx: &mut TestAppContext) {
     assert_eq!(get("State"), "idle");
     assert_eq!(get("Terminal"), info.terminal_id.unwrap().to_string());
     assert!(get("Size").contains('×'), "{}", get("Size"));
-    assert!(get("Created").ends_with("ago)"), "{}", get("Created"));
+    // Local time with its zone, then how long ago.
+    let created = get("Created");
+    assert!(
+        created.contains(" +") || created.contains(" -"),
+        "a zone: {created}"
+    );
+    assert!(!created.contains("UTC"), "{created}");
+    assert!(created.ends_with("(just now)"), "{created}");
 }
 
 #[gpui::test]

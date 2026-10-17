@@ -1,5 +1,5 @@
 //! The restart summary: a card that comes up once per daemon restart that left something to
-//! say about the sessions (`session.recovery`, protocol 0.26), "hutand restarted at 02:14 (it was
+//! say about the sessions (`session.recovery`, protocol 0.26), "hutand restarted 3 min ago (it was
 //! killed or crashed). 5 sessions: …". Each line opens the session and offers Retry last message
 //! or Restart where they apply; Dismiss all acknowledges everything. Closing the card keeps the
 //! chips of the rows and the terminal and chat headers until they are acknowledged.
@@ -10,7 +10,7 @@ use gpui::{
 };
 use hutan_core::SessionId;
 
-use super::panels::tone_color;
+use super::panels::{time_tooltip, tone_color};
 use super::render::probe;
 use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
@@ -246,8 +246,10 @@ impl Workbench {
                                 .gap(px(2.0))
                                 .child(
                                     div()
+                                        .id("recovery-headline")
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(headline_color)
+                                        .tooltip(time_tooltip(summary.restarted_at_ms))
                                         .child(SharedString::from(summary.headline.clone())),
                                 )
                                 .child(

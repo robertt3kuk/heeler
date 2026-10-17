@@ -148,7 +148,7 @@ fn one_summary_per_restart_chips_until_acknowledged_and_dismissals_clear_them(
     // Two live sessions came back as new shells; the ended one is not counted.
     assert_eq!(summary.counts, "2 sessions: 2 shells respawned");
     assert!(
-        summary.headline.starts_with("hutand restarted at "),
+        summary.headline.starts_with("hutand restarted ") && !summary.headline.contains(" at "),
         "{}",
         summary.headline
     );

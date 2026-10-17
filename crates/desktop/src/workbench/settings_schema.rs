@@ -13,6 +13,7 @@ use crate::settings::{
     OverviewPanelSettings, ResourcesSettings, SessionsPanelSettings, TasksSettings,
     TerminalSettings, WorkspacesSettings,
 };
+use crate::workbench::settings_labels::{field_search_text, namespace_title};
 
 /// How a field is edited.
 #[derive(Debug, Clone, PartialEq)]
@@ -278,8 +279,8 @@ pub fn namespace_schema(schema: &Json, namespace: &str) -> Option<Json> {
         .cloned()
 }
 
-/// Namespaces matching `query` (case-insensitive substring of the namespace or of any field
-/// key or doc), in catalog order.
+/// Namespaces matching `query` (case-insensitive substring of the namespace key or title, or
+/// of any field's key, title, help or choice labels), in catalog order.
 pub fn search<'a>(
     entries: &'a [CatalogEntry],
     schemas: &BTreeMap<&'static str, Vec<Field>>,
@@ -291,10 +292,15 @@ pub fn search<'a>(
         .filter(|entry| {
             query.is_empty()
                 || entry.namespace.to_lowercase().contains(&query)
+                || namespace_title(entry.namespace)
+                    .to_lowercase()
+                    .contains(&query)
                 || schemas.get(entry.namespace).is_some_and(|fields| {
                     fields.iter().any(|f| {
                         f.dotted().to_lowercase().contains(&query)
-                            || f.doc.to_lowercase().contains(&query)
+                            || field_search_text(entry.namespace, &f.dotted(), &f.doc)
+                                .to_lowercase()
+                                .contains(&query)
                     })
                 })
         })
@@ -421,10 +427,14 @@ mod tests {
                 .map(|e| e.namespace)
                 .collect()
         };
-        assert_eq!(names("panels").len(), 3);
+        assert_eq!(names("panels.").len(), 3);
         assert_eq!(names("font"), ["terminal"]);
         assert_eq!(names("density"), ["appearance"]);
         assert_eq!(names("on_last_window_close"), ["app"]);
+        // What the sheet shows is what it finds: titles, help and choice labels.
+        assert_eq!(names("Projects Sidebar").len(), 1);
+        assert_eq!(names("Keep in the menu bar"), ["app"]);
+        assert_eq!(names("Login Items"), ["app"]);
         assert!(names("zzzz").is_empty());
     }
 }

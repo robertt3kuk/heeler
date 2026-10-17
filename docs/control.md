@@ -22,7 +22,9 @@ The desktop publishes (`ui.publish`) what it can do and what it shows, on connec
 | the action has no handler where the window's focus is now | `invalid_state` |
 | the window did not answer in time | `internal` |
 
-The answer of `ui.run` is `{window_id, result: {ran: <action>}}`. Some actions finish after the dispatch (a split starts a terminal first): read the outcome with `ui.layout`, which follows the change within the debounce.
+The answer of `ui.run` is `{window_id, result: {ran: <action>}}`. Some actions finish after the dispatch (a split starts a terminal first): read the outcome with `ui.layout`, which follows the change within the debounce. A **setting** (`ui.set_setting`) is answered after the window has applied it and published its catalog again, so what it changes about the actions (`assistant.enabled` lists or removes `workbench::OpenAssistant`) is already in `ui.actions` when the answer arrives.
+
+An action that closes the window (`workbench::Quit`, or the quit of a closed last window) ends the window's connection before it can answer, and the daemon answers its caller `invalid_state` “the window closed before it answered”. The CLI reports that as success: `hutan ui run workbench::Quit --json` prints `{"window_id": …, "result": {"ran": "workbench::Quit", "window_closed": true}}`, human output `ran workbench::Quit; the window closed`, exit code 0. (Quit with live sessions first asks which to stop; that card answers `ran` and the window stays.) Every action `ui.actions` lists is dispatchable: the desktop's `every_action_the_window_lists_dispatches` test runs each one.
 
 CLI: `hutan ui actions [--filter TEXT] [--json]`, `hutan ui layout [--json]`, `hutan ui run <action> [--arg k=v]…`, `hutan ui set <namespace.key> <value> [--layer user|workspace|project]`; `--window ID` picks a window.
 

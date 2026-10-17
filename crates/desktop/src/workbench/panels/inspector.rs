@@ -11,7 +11,7 @@ use hutan_protocol::blocks::BlockState;
 use hutan_protocol::messages::SessionInfo;
 use hutan_terminal_view::blocks::{self as block_ui, Tone};
 
-use super::common::{age_label, format_utc, panel_header, state_dot, tone_color};
+use super::common::{panel_header, state_dot, tone_color};
 use crate::settings::InspectorPanelSettings;
 use crate::workbench::actions::{BlockRef, JumpToBlock};
 use crate::workbench::registry::PanelEnv;
@@ -164,9 +164,9 @@ impl InspectorPanel {
             (
                 "Created",
                 format!(
-                    "{} ({} ago)",
-                    format_utc(info.created_at_ms),
-                    age_label(info.created_at_ms)
+                    "{} ({})",
+                    hutan_client::time::local_time_seconds_text(info.created_at_ms),
+                    hutan_client::time::relative_to_now(info.created_at_ms)
                 ),
             ),
         ]

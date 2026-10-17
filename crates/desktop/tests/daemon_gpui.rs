@@ -119,6 +119,21 @@ fn terminal_status(
     })
 }
 
+/// Whether the open view of `id` is attached to a terminal of the daemon the window is
+/// connected to now (terminal ids start over with every daemon, so the epoch tells).
+fn attached_to_current_daemon(
+    view: &Entity<Workbench>,
+    cx: &VisualTestContext,
+    id: SessionId,
+) -> bool {
+    view.read_with(cx, |wb, cx| {
+        let store = wb.sessions().read(cx);
+        store
+            .attached(id)
+            .is_some_and(|t| t.read(cx).daemon_epoch() == store.state().epoch)
+    })
+}
+
 /// Name and enabled state of the actions of the `Daemon` menu, as the menu bar holds them right
 /// now.
 type NamedFlags = Vec<(String, bool)>;
@@ -646,11 +661,11 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
         "a new daemon process"
     );
     assert!(!view.read_with(cx, |wb, _| wb.daemon_stopped()));
-    wait_until(cx, "the old terminal to end", |cx| {
-        matches!(
-            terminal_status(&view, cx, first.id),
-            Some(ViewStatus::Ended(text)) if text.contains("daemon restarted")
-        )
+    // The session was respawned with the same id: the open terminal follows it to its new
+    // terminal instead of ending.
+    wait_until(cx, "the terminal to follow the respawned session", |cx| {
+        terminal_status(&view, cx, first.id) == Some(ViewStatus::Live)
+            && attached_to_current_daemon(&view, cx, first.id)
     });
     assert!(view.read_with(cx, |wb, _| wb.modal().is_none()));
 
@@ -683,7 +698,7 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
         Some(ViewStatus::Ended(text)) if text.contains("daemon is stopped")
     ));
 
-    // Start from the popover: a daemon comes back and the old terminal ends as gone.
+    // Start from the popover: a daemon comes back and the old terminal follows its session.
     click(&view, cx, Region::Popover("daemon-start"));
     wait_until(cx, "the daemon to start again", |cx| {
         view.read_with(cx, |wb, cx| {
@@ -693,12 +708,14 @@ fn the_popover_controls_stop_restart_and_start_a_real_daemon(cx: &mut TestAppCon
     });
     assert!(!view.read_with(cx, |wb, _| wb.daemon_stopped()));
     assert_eq!(status_line(&view, cx), "hutand connected");
-    wait_until(cx, "the second terminal to end", |cx| {
-        matches!(
-            terminal_status(&view, cx, second.id),
-            Some(ViewStatus::Ended(text)) if text.contains("daemon restarted")
-        )
-    });
+    wait_until(
+        cx,
+        "the second terminal to follow its respawned session",
+        |cx| {
+            terminal_status(&view, cx, second.id) == Some(ViewStatus::Live)
+                && attached_to_current_daemon(&view, cx, second.id)
+        },
+    );
     assert!(process.socket().exists());
 }
 

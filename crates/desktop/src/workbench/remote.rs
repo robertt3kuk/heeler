@@ -170,7 +170,22 @@ async fn run_command(
         .update_in(cx, |this, _, cx| this.prepare_command(&name, &args, cx))
         .map_err(|_| gone())??;
     match prepared {
-        Prepared::Done(value) => Ok(value),
+        Prepared::Done(value) => {
+            // A setting can change what the window offers (`assistant.enabled` adds and removes
+            // an action): the window follows and publishes before it answers, so the caller's
+            // next command sees the new catalog instead of racing the debounce.
+            let publishing = this
+                .update_in(cx, |this, window, cx| {
+                    let changed = this.settings.changes().borrow().clone();
+                    this.on_settings_changed(&changed, window, cx);
+                    this.publish_task(cx)
+                })
+                .map_err(|_| gone())?;
+            if let Some(publishing) = publishing {
+                publishing.await;
+            }
+            Ok(value)
+        }
         Prepared::Dispatch {
             action: boxed,
             fallback_focus,
@@ -526,6 +541,14 @@ impl Workbench {
     /// it holds for this window (on this connection) differs from what the window is now.
     pub(crate) fn publish_now(&mut self, cx: &mut Context<Self>) {
         self.remote.pending = None;
+        if let Some(task) = self.publish_task(cx) {
+            self.remote.publishing = Some(task);
+        }
+    }
+
+    /// The `ui.publish` [`Self::publish_now`] sends, as a task that ends when the daemon has it;
+    /// `None` when there is nothing to send.
+    fn publish_task(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
         let (connection, connected) = {
             let store = self.sessions.read(cx);
             (
@@ -534,14 +557,14 @@ impl Workbench {
             )
         };
         if !connected || !connection.supports_control() {
-            return;
+            return None;
         }
         let publish = self.ui_publish(cx);
         let generation = connection.generation();
         if self.remote.published.as_ref() == Some(&(generation, publish.clone())) {
-            return;
+            return None;
         }
-        self.remote.publishing = Some(cx.spawn(async move |this, cx| {
+        Some(cx.spawn(async move |this, cx| {
             match connection.ui_publish(publish.clone()).await {
                 Ok(sent_on) => {
                     this.update(cx, |this, _| {
@@ -552,7 +575,7 @@ impl Workbench {
                 // A reconnect publishes again.
                 Err(error) => tracing::debug!(%error, "could not publish the window to the daemon"),
             }
-        }));
+        }))
     }
 
     // ---- executing ----------------------------------------------------------------------------

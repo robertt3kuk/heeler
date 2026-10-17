@@ -611,7 +611,8 @@ async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
     );
     let summary = run(&["recovery"]).await.ok();
     assert!(
-        summary.stdout.contains("hutand restarted at")
+        summary.stdout.contains("hutand restarted at 20")
+            && (summary.stdout.contains(", just now") || summary.stdout.contains(" ago"))
             && summary.stdout.contains("(it was stopped)")
             && summary.stdout.contains("1 session: 1 shell respawned"),
         "{summary:?}"

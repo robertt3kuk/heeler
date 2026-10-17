@@ -29,6 +29,7 @@ mod remote;
 mod render;
 mod resources;
 mod review;
+pub mod settings_labels;
 pub mod settings_schema;
 mod settings_sheet;
 mod setup;

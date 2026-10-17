@@ -350,26 +350,11 @@ pub fn age_label(created_at_ms: u64) -> String {
     }
 }
 
-/// `2026-10-14 12:31:07 UTC`.
-pub fn format_utc(ms: u64) -> String {
-    let secs = ms / 1000;
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = i64::try_from(days).unwrap_or(0) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
+/// The tooltip of a time shown relative (`3m`, `3 min ago`): the absolute local time with its
+/// zone (`docs/design.md` § Time).
+pub fn time_tooltip(ms: u64) -> impl Fn(&mut gpui::Window, &mut App) -> gpui::AnyView + 'static {
+    let text = SharedString::from(hutan_client::time::local_time_seconds_text(ms));
+    move |_, cx| cx.new(|_| TextTooltip(text.clone())).into()
 }
 
 /// Panel header: sentence-case section label on the left, the ⚙ that opens the panel's settings on the
@@ -427,18 +412,4 @@ pub fn panel_header_with(
                 ),
         )
         .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn utc_formatting_matches_known_instants() {
-        assert_eq!(format_utc(0), "1970-01-01 00:00:00 UTC");
-        // 2026-10-14T12:31:07Z
-        assert_eq!(format_utc(1_791_981_067_000), "2026-10-14 12:31:07 UTC");
-        // Leap day.
-        assert_eq!(format_utc(1_709_210_096_000), "2024-02-29 12:34:56 UTC");
-    }
 }

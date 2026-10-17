@@ -19,7 +19,7 @@ use hutan_core::SessionId;
 use hutan_protocol::ErrorCode;
 use hutan_protocol::history::{HistoryHit, HistorySource, HistoryStatusInfo};
 
-use super::common::{age_label, panel_header};
+use super::common::{age_label, panel_header, time_tooltip};
 use super::history_model::{
     DEBOUNCE, Filters, HistoryResume, HutanTarget, PANEL_LIMIT, ROLES, SOURCES, format_bytes,
     hit_title, hutan_target, parse_snippet, resume_blocker, role_label, shell_join, short_path,
@@ -1255,9 +1255,11 @@ impl HistoryPanel {
                     )
                     .child(
                         div()
+                            .id(SharedString::from(format!("history-age-{index}")))
                             .flex_none()
                             .text_size(px(tokens.secondary_font_size))
                             .text_color(theme.muted)
+                            .when_some(hit.ts_ms, |s, ts| s.tooltip(time_tooltip(ts)))
                             .child(SharedString::from(age)),
                     ),
             )
@@ -1304,13 +1306,9 @@ impl HistoryPanel {
             .sources
             .iter()
             .map(|s| {
-                let indexed = s.last_indexed_ms.map_or_else(
-                    || "—".to_owned(),
-                    |ms| match age_label(ms).as_str() {
-                        "now" => "just now".to_owned(),
-                        age => format!("{age} ago"),
-                    },
-                );
+                let indexed = s
+                    .last_indexed_ms
+                    .map_or_else(|| "—".to_owned(), hutan_client::time::relative_to_now);
                 format!("{} {indexed}", s.name)
             })
             .collect::<Vec<_>>()

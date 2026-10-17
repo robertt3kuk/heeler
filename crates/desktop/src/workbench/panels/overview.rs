@@ -17,7 +17,7 @@ use hutan_protocol::messages::SessionInfo;
 use hutan_terminal_view::{TerminalView, TerminalViewSettings, ViewMode};
 
 use super::common::{
-    age_label, agent_badge, kind_icon, panel_header, placement, state_dot, tone_color,
+    age_label, agent_badge, kind_icon, panel_header, placement, state_dot, time_tooltip, tone_color,
 };
 use crate::sessions::TerminalSession;
 use crate::settings::{OverviewPanelSettings, PreviewMode, SortOrder};
@@ -270,7 +270,12 @@ impl Render for OverviewPanel {
                             .text_size(px(tokens.secondary_font_size))
                             .text_color(theme.muted)
                             .child(SharedString::from(placement(info)))
-                            .child(SharedString::from(age_label(info.created_at_ms))),
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("card-age-{}", info.id)))
+                                    .tooltip(time_tooltip(info.created_at_ms))
+                                    .child(SharedString::from(age_label(info.created_at_ms))),
+                            ),
                     )
                     .into_any_element()
             })

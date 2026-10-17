@@ -391,10 +391,9 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// `14:05 UTC`.
+/// `2026-10-17 14:05 +0500`: when a batch was sent, in the user's zone.
 pub fn clock(ms: u64) -> String {
-    let minutes = ms / 60_000 % (24 * 60);
-    format!("{:02}:{:02} UTC", minutes / 60, minutes % 60)
+    hutan_client::time::local_time_text(ms)
 }
 
 #[cfg(test)]
@@ -606,7 +605,9 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_reads_utc() {
-        assert_eq!(clock(14 * 3_600_000 + 5 * 60_000 + 1234), "14:05 UTC");
+    fn the_clock_names_its_zone() {
+        let text = clock(14 * 3_600_000 + 5 * 60_000 + 1234);
+        assert!(!text.contains("UTC"), "{text}");
+        assert!(text.contains(" +") || text.contains(" -"), "{text}");
     }
 }

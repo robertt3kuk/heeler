@@ -6,7 +6,7 @@
 
 **A native macOS agentic development environment in Rust.** *Code from the canopy.* A real terminal emulator and an AI-agent workspace in one GPUI app. It runs on a separate daemon (`hutand`) that keeps your shells, coding agents and chats alive when the window is closed. *Hutan* is Malay and Indonesian for "forest", as in *orang-hutan*, "person of the forest", which is our mascot.
 
-> **Status: pre-alpha, macOS only, not released.** The first vertical slice (milestones M0–M6) is nearly complete: native notifications work; keep-running at login, the menu bar item and the Dock badge (M6-C) are in progress, and several UI surfaces have not had a visual review yet. Expect breaking protocol changes. See [`docs/status.md`](docs/status.md) and [`docs/roadmap.md`](docs/roadmap.md).
+> **Status: pre-alpha, macOS only, not released.** The first vertical slice is built: terminals and shell blocks, the desktop workbench, agent chat and monitor, worktrees with tasks and review, restart recovery, and `Hutan.app` with native notifications, start at login, the menu bar item and the Dock badge. Several surfaces have had only a quick visual review, and expect breaking protocol changes. See [`docs/status.md`](docs/status.md) and [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Why
 
@@ -22,8 +22,8 @@
 | Terminals | PTY sessions owned by the daemon, compact bounded scrollback, detach/reattach, several clients attached at once, restore after a daemon restart (respawned in the last cwd) |
 | Shell blocks | zsh/bash/fish integration injected automatically (OSC 133/7): commands become blocks with exit code and duration that you can jump to, copy, collapse or send to an agent |
 | Workbench | GPUI desktop with docks (toggle buttons in the status bar), split panes, zoom, presets (default/focus/overview), ⌘⇧P palette, settings in TOML with hot reload, Zed or Hutan default keys plus a keymap file |
-| Workspaces | One workspace per project, plus a permanent **Home**; ⌘O to open, ⌘P to jump; sort modes, pins and per-workspace layouts |
-| Agent chat | Codex through `codex app-server`: streaming, tool cards, diffs, plans, approvals enforced in the daemon; the same conversation is visible from the CLI |
+| Projects and workspaces | **Projects** appear by themselves from the folders you work in (a repository with all its worktrees, or a plain folder); your own **workspaces** group projects, and a permanent **Home** holds the rest. ⌘O to open, ⌘P to jump; sort modes, pins and a layout per workspace or project |
+| Agent chat | Codex through `codex app-server`, OMP and Claude Code through their ACP harnesses: streaming, tool cards, diffs, plans, questions, approvals enforced in the daemon; the same conversation is visible from the CLI |
 | Agent monitor | Live state (working/blocked/idle) of agents and subagents from Codex, Claude Code hooks and the OMP extension |
 | Direct model chat | OpenAI-compatible, Anthropic and Ollama/LM Studio providers; switch models mid-conversation; keys in Keychain |
 | Assistant | Palette → Assistant opens a quick chat (optional system-wide shortcut), global or per workspace; context (shell output, agent transcript, file, search) is attached explicitly as chips, then redacted and bounded |
@@ -170,12 +170,12 @@ just bundle                  # target/bundle/Hutan.app, ad-hoc signed
 just bundle --release
 ```
 
-Running the bundle is safe to try. Registering it as a launch agent and native notifications are not implemented yet (M6-B).
+Running the bundle is safe to try. Native notifications and **Start the daemon when you log in** (Settings → General) work from `Hutan.app` only: macOS asks for permission the first time, and a plain `cargo run` build does neither.
 
 ## Development
 
 ```sh
-just check     # fmt + clippy -D warnings + nextest (about 1460 tests) + cargo-deny; must be green before a merge
+just check     # fmt + clippy -D warnings + nextest (over 2,000 tests) + cargo-deny; must be green before a merge
 just bench     # performance budgets B1–B6 (docs/perf.md)
 just fmt
 ```

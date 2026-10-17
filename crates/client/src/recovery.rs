@@ -155,7 +155,7 @@ pub struct SummaryRow {
 pub struct Summary {
     /// When the daemon that restored them started: identifies the restart.
     pub restarted_at_ms: u64,
-    /// `hutand restarted at 02:14 (it was killed or crashed).`
+    /// `hutand restarted 3 min ago (it was killed or crashed).`
     pub headline: String,
     /// `5 sessions: 2 shells respawned, 1 chat turn interrupted, 1 not restarted (omp not found)`.
     pub counts: String,
@@ -164,8 +164,9 @@ pub struct Summary {
 }
 
 /// The summary of the unacknowledged recoveries of `sessions` that belong to the newest restart;
-/// `None` when there is nothing to say. `clock` writes a time of day.
-pub fn summary(sessions: &[SessionInfo], clock: impl Fn(u64) -> String) -> Option<Summary> {
+/// `None` when there is nothing to say. `when` tells when the daemon restarted, as the words
+/// after "restarted": `3 min ago`, or `at 2026-10-17 14:31 +0500, 3 min ago`.
+pub fn summary(sessions: &[SessionInfo], when: impl Fn(u64) -> String) -> Option<Summary> {
     let notable: Vec<(&SessionInfo, &Recovery)> = sessions
         .iter()
         .filter_map(|s| {
@@ -200,7 +201,7 @@ pub fn summary(sessions: &[SessionInfo], clock: impl Fn(u64) -> String) -> Optio
         .map(|(_, r)| *r)?;
     Some(Summary {
         restarted_at_ms,
-        headline: headline(newest, &clock),
+        headline: headline(newest, &when),
         counts: counts(&notable, restarted_at_ms),
         rows,
     })
@@ -248,16 +249,13 @@ fn action_of(session: &SessionInfo, recovery: &Recovery) -> Option<RowAction> {
     }
 }
 
-fn headline(recovery: &Recovery, clock: &impl Fn(u64) -> String) -> String {
+fn headline(recovery: &Recovery, when: &impl Fn(u64) -> String) -> String {
     let how = match recovery.daemon_stop {
         DaemonStop::Clean { .. } => " (it was stopped)",
         DaemonStop::Crashed => " (it was killed or crashed)",
         DaemonStop::Unknown => "",
     };
-    format!(
-        "hutand restarted at {}{how}.",
-        clock(recovery.restarted_at_ms)
-    )
+    format!("hutand restarted {}{how}.", when(recovery.restarted_at_ms))
 }
 
 fn plural(count: usize, one: &str, many: &str) -> String {
@@ -322,25 +320,6 @@ fn counts(notable: &[(&SessionInfo, &Recovery)], restarted_at_ms: u64) -> String
     )
 }
 
-/// `02:14`, in the user's time zone.
-#[allow(unsafe_code)] // `localtime_r` on a stack value; it reads the time zone, nothing else.
-pub fn clock_text(ms: u64) -> String {
-    let Ok(seconds) = libc::time_t::try_from(ms / 1000) else {
-        return "?".to_owned();
-    };
-    // SAFETY: `tm` is plain integers (and a pointer `localtime_r` fills in or leaves null); a
-    // zeroed one is valid. `localtime_r` writes only into the `tm` it is given and reads
-    // `seconds` by pointer for the length of the call.
-    let tm = unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&raw const seconds, &raw mut tm).is_null() {
-            return "?".to_owned();
-        }
-        tm
-    };
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,7 +353,7 @@ mod tests {
     }
 
     fn clock(_: u64) -> String {
-        "02:14".to_owned()
+        "at 02:14".to_owned()
     }
 
     #[test]
@@ -515,12 +494,5 @@ mod tests {
             .collect();
         assert_eq!(argv_text(&argv), "claude --resume id…");
         assert_eq!(argv_text(&argv[..2]), "claude --resume");
-    }
-
-    #[test]
-    fn the_clock_reads_hours_and_minutes() {
-        let text = clock_text(1_791_894_164_332);
-        assert_eq!(text.len(), 5, "{text}");
-        assert_eq!(text.as_bytes()[2], b':', "{text}");
     }
 }

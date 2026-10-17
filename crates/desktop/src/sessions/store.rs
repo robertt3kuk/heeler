@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use hutan_client::recovery::{self, Summary};
+use hutan_client::time::relative_to_now;
 use hutan_client::{Connection, ConnectionState, Notice, StoreState};
 use hutan_core::agent::ModelInfo;
 use hutan_core::{
@@ -293,7 +294,8 @@ impl SessionsStore {
                 let info = self.session(id).cloned();
                 match terminal.upgrade() {
                     Some(terminal) => {
-                        terminal.update(cx, |terminal, cx| terminal.update_info(info, cx));
+                        let epoch = self.state.epoch;
+                        terminal.update(cx, |terminal, cx| terminal.update_info(info, epoch, cx));
                     }
                     None => {
                         self.terminals.remove(&id);
@@ -317,7 +319,7 @@ impl SessionsStore {
     /// A window that opens after the restart is told too: what a restart did is news until it is
     /// acknowledged, wherever the user was.
     fn observe_recovery(&mut self, cx: &mut Context<Self>) {
-        let Some(summary) = recovery::summary(&self.state.sessions, recovery::clock_text) else {
+        let Some(summary) = recovery::summary(&self.state.sessions, relative_to_now) else {
             return;
         };
         if self.recovery_shown == Some(summary.restarted_at_ms) {
@@ -332,7 +334,7 @@ impl SessionsStore {
     /// What the daemon restart did to the sessions that are not acknowledged yet; `None` when
     /// there is nothing to say.
     pub fn recovery_summary(&self) -> Option<Summary> {
-        recovery::summary(&self.state.sessions, recovery::clock_text)
+        recovery::summary(&self.state.sessions, relative_to_now)
     }
 
     /// `session.recovery_ack` for one session, or for all of them.
@@ -877,7 +879,13 @@ impl SessionsStore {
             return Some(existing);
         }
         let info = self.session(session)?.clone();
-        let terminal = TerminalSession::attach(info, self.connection.clone(), self.colors, cx)?;
+        let terminal = TerminalSession::attach(
+            info,
+            self.state.epoch,
+            self.connection.clone(),
+            self.colors,
+            cx,
+        )?;
         if self.daemon_stopped {
             terminal.update(cx, |terminal, cx| terminal.set_daemon_stopped(true, cx));
         }
