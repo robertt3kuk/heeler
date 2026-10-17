@@ -1028,26 +1028,45 @@ impl Setting for AssistantSettings {
 }
 
 /// The `integrations` namespace: Hutan's hooks in the agents (`docs/integrations.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct IntegrationsSettings {
-    /// Install Hutan's hooks into Codex, Claude Code and OMP when Hutan starts: for each of
-    /// them that is installed and whose integration is not (`hutan integration install`,
+    /// Install Hutan's hooks into Codex, Claude Code and OMP every time Hutan starts: for each
+    /// of them that is installed and whose integration is not (`hutan integration install`,
     /// idempotent, only Hutan-marked entries are written, the files are backed up first). The
-    /// hooks do nothing outside a Hutan session. Turning this off stops future installs; it
-    /// does not remove what is installed (`hutan integration uninstall`, or the setup's Agents
-    /// step).
+    /// hooks do nothing outside a Hutan session. **Off by default**: the hooks go into the
+    /// agents' own configuration (`~/.codex`, `~/.claude`, `~/.omp/agent`, even with a custom
+    /// `HUTAN_HOME`), so Hutan writes there only after you asked, once in the setup's Agents
+    /// step (Install hooks for …) or here for every start. Turning this off stops future
+    /// installs; it does not remove what is installed (`hutan integration uninstall`, or the
+    /// setup's Agents step).
     pub auto_install: bool,
-}
-
-impl Default for IntegrationsSettings {
-    fn default() -> Self {
-        Self { auto_install: true }
-    }
 }
 
 impl Setting for IntegrationsSettings {
     const NAMESPACE: &'static str = "integrations";
+}
+
+/// The `launcher` namespace: the Start… sheet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct LauncherSettings {
+    /// Ask once before an agent chat that starts with a prompt sends it to a model: the first
+    /// time for each agent and model, with "Don't ask again for this model" to stop asking for
+    /// it. Off: Start sends at once. Plain terminals, commands and queued tasks never ask.
+    pub confirm_agent_start: bool,
+}
+
+impl Default for LauncherSettings {
+    fn default() -> Self {
+        Self {
+            confirm_agent_start: true,
+        }
+    }
+}
+
+impl Setting for LauncherSettings {
+    const NAMESPACE: &'static str = "launcher";
 }
 
 /// Which default key table the app starts from; `keymap.toml` is merged on top of it.
@@ -1096,6 +1115,7 @@ pub fn register_all(store: &SettingsStore) {
     store.register::<AssistantSettings>();
     store.register::<KeymapSettings>();
     store.register::<IntegrationsSettings>();
+    store.register::<LauncherSettings>();
     store.register::<TerminalSettings>();
     store.register::<LayoutSettings>();
     store.register::<SessionsPanelSettings>();

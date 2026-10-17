@@ -73,6 +73,9 @@ pub struct Modal {
     pub input: Option<String>,
     /// Write-only input: mask render snapshots and Debug; never put a key in view text.
     pub secure_input: bool,
+    /// The prefilled text is selected: typing or pasting replaces it all, Backspace clears it
+    /// (a rename opens like that). Any edit ends the selection.
+    pub input_selected: bool,
     pub(crate) choice: Option<ModalChoice>,
     pub checkbox: Option<ModalCheckbox>,
     pub(crate) on_confirm: ModalAction,
@@ -120,6 +123,7 @@ impl Workbench {
                 confirm_label: confirm_label.into(),
                 input: None,
                 secure_input: false,
+                input_selected: false,
                 choice: None,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, _, window, cx| on_confirm(this, window, cx)),
@@ -143,6 +147,7 @@ impl Workbench {
                 confirm_label: prompt.confirm_label.into(),
                 input: Some(prompt.initial.to_owned()),
                 secure_input: false,
+                input_selected: false,
                 choice: None,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, result, window, cx| {
@@ -176,10 +181,13 @@ impl Workbench {
     /// Replaces the prompt text.
     pub fn set_modal_input(&mut self, text: &str, cx: &mut Context<Self>) {
         if let Some(Modal {
-            input: Some(input), ..
+            input: Some(input),
+            input_selected,
+            ..
         }) = &mut self.modal
         {
             *input = text.to_owned();
+            *input_selected = false;
             cx.notify();
         }
     }
@@ -201,6 +209,26 @@ impl Workbench {
             checkbox.checked = checked;
             cx.notify();
         }
+    }
+
+    /// Selects the whole prefilled text of the prompt: the next typed text or paste replaces it.
+    pub fn select_modal_input(&mut self, cx: &mut Context<Self>) {
+        if let Some(Modal {
+            input: Some(input),
+            input_selected,
+            secure_input: false,
+            ..
+        }) = &mut self.modal
+            && !input.is_empty()
+        {
+            *input_selected = true;
+            cx.notify();
+        }
+    }
+
+    /// Whether the prompt's text is selected.
+    pub fn modal_input_selected(&self) -> bool {
+        self.modal.as_ref().is_some_and(|m| m.input_selected)
     }
 
     fn toggle_modal_checkbox(&mut self, cx: &mut Context<Self>) {
@@ -267,6 +295,7 @@ impl Workbench {
                 }
             }),
             secure_input: stored.secure_input,
+            input_selected: stored.input_selected,
             choice: stored.choice.clone(),
             checkbox: stored.checkbox.clone(),
             on_confirm: Rc::clone(&stored.on_confirm),
@@ -318,22 +347,38 @@ impl Workbench {
                                 .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
                                 .flatten();
                             let Some(Modal {
-                                input: Some(input), ..
+                                input: Some(input),
+                                input_selected,
+                                ..
                             }) = &mut this.modal
                             else {
                                 return;
                             };
-                            if let Some(text) = paste {
+                            let selected = std::mem::take(input_selected);
+                            if keystroke.modifiers.platform && keystroke.key == "a" {
+                                *input_selected = true;
+                            } else if let Some(text) = paste {
+                                if selected {
+                                    input.clear();
+                                }
                                 input.push_str(&text);
                             } else if keystroke.key == "backspace" {
-                                input.pop();
+                                if selected {
+                                    input.clear();
+                                } else {
+                                    input.pop();
+                                }
                             } else if !keystroke.modifiers.platform
                                 && !keystroke.modifiers.control
                                 && !keystroke.modifiers.function
                                 && let Some(text) = &keystroke.key_char
                             {
+                                if selected {
+                                    input.clear();
+                                }
                                 input.push_str(text);
                             } else {
+                                *input_selected = selected;
                                 return;
                             }
                             cx.notify();
@@ -368,6 +413,13 @@ impl Workbench {
                                         Some((text, pill)) => vec![
                                             div().flex_1().min_w_0().child(text).into_any_element(),
                                             pill.into_any_element(),
+                                        ],
+                                        None if modal.input_selected => vec![
+                                            div()
+                                                .id("modal-input-selection")
+                                                .bg(theme.accent_soft)
+                                                .child(SharedString::from(input))
+                                                .into_any_element(),
                                         ],
                                         None => vec![
                                             SharedString::from(input).into_any_element(),

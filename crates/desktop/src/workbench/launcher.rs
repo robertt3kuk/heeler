@@ -8,6 +8,11 @@
 //! order: Project, What, Agent, Model, Command, Prompt, Where (+ Branch, Base), Title, More
 //! (After, System prompt), Start now / Queue. ⌘↩ starts, ⌥⌘↩ starts and keeps the sheet open
 //! for the next one.
+//!
+//! UX-B: the sheet opens on the last start's What / Agent / Model / Where (a plain terminal the
+//! first time), says in one line what Start will do, asks once per agent and model before a chat
+//! sends its prompt at once, changes a choice row's value by arrows only while the row is open,
+//! and runs a Command through the login shell.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -30,6 +35,7 @@ use super::vim_ui::VimConfig;
 use super::workspaces::project_root_of;
 use crate::sessions::launch::{
     LaunchKind, LaunchPlace, LaunchValues, branch_for_title, build_create, title_from_prompt,
+    user_shell,
 };
 use crate::sessions::tasks::{TaskFilters, tree_rows};
 use hutan_protocol::task::TaskCreate;
@@ -142,6 +148,31 @@ impl HarnessChoice {
     }
 }
 
+/// A start that waits for the user's yes: the first chat on this agent and model that sends a
+/// prompt to a model at once (`launcher.confirm_agent_start`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartConfirm {
+    /// ⌥⌘↩ started it: the sheet stays open for the next one.
+    pub and_new: bool,
+    /// "Don't ask again for this model" is ticked.
+    pub remember: bool,
+    /// What the prompt goes to, as the question names it ("OMP · Claude Opus 4.5").
+    pub target: String,
+}
+
+/// What the Agent row says about a harness that cannot be started (yet).
+pub(crate) fn readiness_note(name: &str, readiness: &Readiness) -> Option<String> {
+    match readiness {
+        Readiness::NeedsInstall(how) => Some(format!("{name} is not installed. {how}")),
+        Readiness::NeedsLogin => Some(format!("{name} is not logged in.")),
+        Readiness::NeedsNewerDaemon => Some(format!(
+            "{name}: restart hutand (Daemon → Restart) to run the version of this app."
+        )),
+        Readiness::Checking => Some(format!("Checking {name}…")),
+        Readiness::Ready => None,
+    }
+}
+
 /// The open sheet.
 #[derive(Debug)]
 pub struct Launcher {
@@ -154,7 +185,9 @@ pub struct Launcher {
     pub(crate) agent_chosen: bool,
     /// The model of a chat; none: the harness's own default.
     pub(crate) model: Option<String>,
-    pub(crate) model_open: bool,
+    /// The row whose choices are open: ↑ ↓ change its value only then (↩ or Space opens it, Esc
+    /// or Tab closes it), and ⌘↩ does not start while one is open.
+    pub(crate) open_row: Option<LauncherStop>,
     pub(crate) prompt: TextInput,
     pub(crate) title: TextInput,
     pub(crate) branch: TextInput,
@@ -181,6 +214,14 @@ pub struct Launcher {
     pub(crate) stop: LauncherStop,
     pub(crate) error: Option<String>,
     pub(crate) starting: bool,
+    /// The agent and model of the last start: what the sheet offers while the user has not
+    /// picked one.
+    pub(crate) remembered_agent: Option<LaunchAgent>,
+    pub(crate) remembered_model: Option<String>,
+    /// A start waiting for the user's yes.
+    pub(crate) confirm: Option<StartConfirm>,
+    /// The next start was confirmed: it does not ask again.
+    pub(crate) skip_confirm: bool,
 }
 
 impl Launcher {
@@ -250,6 +291,21 @@ impl Launcher {
 
     pub fn more_open(&self) -> bool {
         self.more_open
+    }
+
+    /// The row whose choices are open.
+    pub fn open_row(&self) -> Option<LauncherStop> {
+        self.open_row
+    }
+
+    /// Whether the Model row's list is open.
+    pub fn model_open(&self) -> bool {
+        self.open_row == Some(LauncherStop::Model)
+    }
+
+    /// The start waiting for a yes, if any.
+    pub fn confirm(&self) -> Option<&StartConfirm> {
+        self.confirm.as_ref()
     }
 
     pub fn is_direct(&self) -> bool {
@@ -375,6 +431,7 @@ impl Launcher {
             title: self.title.text().to_owned(),
             prompt: self.prompt.text().to_owned(),
             command: self.command.text().to_owned(),
+            shell: user_shell(),
             place: match &self.place {
                 LaunchWhere::Main => LaunchPlace::Main,
                 LaunchWhere::NewWorktree => LaunchPlace::NewWorktree {
@@ -577,6 +634,136 @@ impl Workbench {
         })
     }
 
+    /// The note about the agent the sheet is set to, when it cannot be started yet. Only the
+    /// chosen agent has one: another harness's installation or login problem is not this
+    /// start's.
+    pub fn launcher_agent_status(&self, cx: &gpui::App) -> Option<String> {
+        let launcher = self.launcher.as_ref()?;
+        let LaunchAgent::Harness(id) = &launcher.agent else {
+            return None;
+        };
+        let choice = self
+            .launcher_harness_choices(cx)
+            .into_iter()
+            .find(|h| h.id == id)?;
+        readiness_note(choice.name, &choice.readiness)
+    }
+
+    /// The name of the agent the sheet is set to ("OMP", "Direct · Ollama").
+    fn launcher_agent_name(&self) -> String {
+        match self.launcher.as_ref().map(|l| &l.agent) {
+            Some(LaunchAgent::Harness(id)) => harnesses::harness_name(id),
+            Some(LaunchAgent::Direct(provider)) => self
+                .providers
+                .providers
+                .iter()
+                .find(|p| &p.id == provider)
+                .map_or_else(
+                    || "Direct model".to_owned(),
+                    |p| format!("Direct · {}", p.name),
+                ),
+            None => String::new(),
+        }
+    }
+
+    /// The model the sheet would use, by name ("Claude Opus 4.5"); "its default model" while
+    /// none is known.
+    fn launcher_model_name(&self, cx: &gpui::App) -> String {
+        self.launcher_chosen_model(cx)
+            .map_or_else(|| "its default model".to_owned(), |m| m.display_name)
+    }
+
+    /// Where the sheet would work, as the summary says it: the project and its checkout.
+    fn launcher_place_name(&self, cx: &gpui::App) -> String {
+        let Some(launcher) = &self.launcher else {
+            return String::new();
+        };
+        let project = launcher
+            .project
+            .and_then(|id| {
+                self.launcher_projects(cx)
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .map(|p| p.name)
+            })
+            .unwrap_or_else(|| "no project".to_owned());
+        match &launcher.place {
+            LaunchWhere::Main => match launcher.current_branch() {
+                Some(branch) => format!("{project} ({branch})"),
+                None => project,
+            },
+            LaunchWhere::NewWorktree => match launcher.branch.text().trim() {
+                "" => format!("{project} (new worktree)"),
+                branch => format!("{project} (new worktree {branch})"),
+            },
+            LaunchWhere::Existing(branch) => format!("{project} (worktree {branch})"),
+        }
+    }
+
+    /// One line on what Start does now: "Start OMP · Claude Opus 4.5 chat in hutan (main)",
+    /// "Open a terminal in hutan (main)". It is the footer's text and what a first-time
+    /// confirmation repeats.
+    pub fn launcher_summary(&self, cx: &gpui::App) -> String {
+        let Some(launcher) = &self.launcher else {
+            return String::new();
+        };
+        if launcher.project.is_none() {
+            return "Choose a project to start in.".to_owned();
+        }
+        let place = self.launcher_place_name(cx);
+        let queue = launcher.queue && !launcher.is_direct();
+        let start = if queue { "Queue" } else { "Start" };
+        match launcher.kind {
+            LaunchKind::Chat => format!(
+                "{start} {} · {} chat in {place}",
+                self.launcher_agent_name(),
+                self.launcher_model_name(cx)
+            ),
+            LaunchKind::TerminalAgent => format!(
+                "{start} {} in a terminal in {place}",
+                self.launcher_agent_name()
+            ),
+            LaunchKind::Terminal => format!(
+                "{} a terminal in {place}",
+                if queue { "Queue" } else { "Open" }
+            ),
+            LaunchKind::Command => {
+                let command = launcher.command.text().trim();
+                let shown: String = command.chars().take(40).collect();
+                let shown = if command.chars().count() > 40 {
+                    format!("{shown}…")
+                } else {
+                    shown
+                };
+                let verb = if queue { "Queue" } else { "Run" };
+                if shown.is_empty() {
+                    format!("{verb} a command in {place}")
+                } else {
+                    format!("{verb} “{shown}” in {place}")
+                }
+            }
+        }
+    }
+
+    /// The Start button's label: the summary's first words.
+    pub fn launcher_start_label(&self) -> String {
+        let Some(launcher) = &self.launcher else {
+            return String::new();
+        };
+        if launcher.starting {
+            return "Starting…".to_owned();
+        }
+        if launcher.queue && !launcher.is_direct() {
+            return "Queue ⌘↩".to_owned();
+        }
+        match launcher.kind {
+            LaunchKind::Chat => format!("Start {} chat ⌘↩", self.launcher_agent_name()),
+            LaunchKind::TerminalAgent => format!("Start {} ⌘↩", self.launcher_agent_name()),
+            LaunchKind::Terminal => "Open terminal ⌘↩".to_owned(),
+            LaunchKind::Command => "Run command ⌘↩".to_owned(),
+        }
+    }
+
     /// The stops Tab walks now, top to bottom.
     pub fn launcher_stops(&self, cx: &gpui::App) -> Vec<LauncherStop> {
         let Some(launcher) = &self.launcher else {
@@ -647,11 +834,45 @@ impl Workbench {
         self.context_menu = None;
         self.agent_picker = None;
         let project = preset.project.or(default_project);
-        let kind = preset.kind.unwrap_or(LaunchKind::Chat);
+        let memory = self.launcher_memory.clone();
+        // A preset with a prompt, a queue or a direct chat is about an agent. Otherwise the sheet
+        // opens on what the last start was, and on a plain terminal before there was one.
+        let agentic = preset.prompt.is_some() || preset.queue || preset.direct;
+        let kind = preset.kind.unwrap_or_else(|| {
+            if agentic {
+                return LaunchKind::Chat;
+            }
+            memory
+                .kind
+                .as_deref()
+                .and_then(|key| LaunchKind::ALL.into_iter().find(|k| k.key() == key))
+                .unwrap_or(LaunchKind::Terminal)
+        });
+        let remembered_agent =
+            memory
+                .agent
+                .as_deref()
+                .map(|agent| match agent.strip_prefix("direct:") {
+                    Some(provider) => LaunchAgent::Direct(provider.to_owned()),
+                    None => LaunchAgent::Harness(agent.to_owned()),
+                });
         let agent = if preset.direct {
             LaunchAgent::Direct(String::new())
         } else {
-            LaunchAgent::Harness(self.default_harness(cx))
+            self.launcher_preferred_agent(kind, remembered_agent.as_ref(), cx)
+        };
+        let model = (!preset.direct && remembered_agent.as_ref() == Some(&agent))
+            .then(|| memory.model.clone())
+            .flatten();
+        let place = match memory.place.as_deref() {
+            _ if preset.checkout.is_some() => LaunchWhere::Main,
+            Some("new_worktree") => LaunchWhere::NewWorktree,
+            Some(other) => other
+                .strip_prefix("worktree:")
+                .map_or(LaunchWhere::Main, |branch| {
+                    LaunchWhere::Existing(branch.to_owned())
+                }),
+            None => LaunchWhere::Main,
         };
         let mut launcher = Launcher {
             project,
@@ -660,8 +881,8 @@ impl Workbench {
             kind,
             agent,
             agent_chosen: preset.direct,
-            model: None,
-            model_open: false,
+            model,
+            open_row: None,
             prompt: TextInput::new(),
             title: TextInput::new(),
             branch: TextInput::new(),
@@ -672,7 +893,7 @@ impl Workbench {
             branch_edited: false,
             base_edited: false,
             vim: crate::workbench::chat::vim::Vim::new(),
-            place: LaunchWhere::Main,
+            place,
             worktrees: WorktreeList::Loading,
             worktree_requests: 0,
             wanted_checkout: preset.checkout.clone(),
@@ -684,6 +905,10 @@ impl Workbench {
             stop: LauncherStop::Prompt,
             error: None,
             starting: false,
+            remembered_agent,
+            remembered_model: memory.model.clone(),
+            confirm: None,
+            skip_confirm: false,
         };
         if let Some(prompt) = &preset.prompt {
             launcher.prompt.set(prompt);
@@ -694,13 +919,14 @@ impl Workbench {
         } else if kind == LaunchKind::Command {
             LauncherStop::Command
         } else {
-            LauncherStop::Title
+            LauncherStop::What
         };
         self.launcher = Some(launcher);
         self.edits.agent.reset();
         window.focus(&self.launcher_focus, cx);
         self.refresh_accounts(cx);
         self.refresh_providers(cx);
+        self.launcher_repick_agent(cx);
         self.launcher_load_models(cx);
         self.launcher_load_worktrees(cx);
         cx.notify();
@@ -804,6 +1030,7 @@ impl Workbench {
         }
         let changed = launcher.project != Some(project);
         launcher.project = Some(project);
+        launcher.confirm = None;
         launcher.project_query.clear();
         launcher.project_sel = 0;
         if changed {
@@ -827,7 +1054,10 @@ impl Workbench {
         }
         launcher.kind = kind;
         launcher.error = None;
-        launcher.model_open = false;
+        launcher.confirm = None;
+        if launcher.open_row == Some(LauncherStop::Model) {
+            launcher.open_row = None;
+        }
         // A terminal agent runs a harness, never a direct model.
         let direct = launcher.is_direct();
         if kind != LaunchKind::Chat && direct {
@@ -840,9 +1070,7 @@ impl Workbench {
         if !self.launcher_stops(cx).contains(&self.launcher_stop()) {
             self.launcher_set_stop(LauncherStop::What);
         }
-        if kind != LaunchKind::Chat || !self.launcher.as_ref().is_some_and(Launcher::is_direct) {
-            self.launcher_repick_agent(cx);
-        }
+        self.launcher_repick_agent(cx);
         self.launcher_load_models(cx);
         cx.notify();
     }
@@ -878,8 +1106,11 @@ impl Workbench {
             launcher.agent = agent;
             launcher.agent_chosen = true;
             launcher.model = None;
-            launcher.model_open = false;
+            if launcher.open_row == Some(LauncherStop::Model) {
+                launcher.open_row = None;
+            }
             launcher.error = None;
+            launcher.confirm = None;
             if launcher.is_direct() {
                 launcher.queue = false;
             }
@@ -894,7 +1125,8 @@ impl Workbench {
             && !launcher.starting
         {
             launcher.model = model;
-            launcher.model_open = false;
+            launcher.open_row = None;
+            launcher.confirm = None;
             cx.notify();
         }
     }
@@ -908,6 +1140,7 @@ impl Workbench {
         }
         launcher.place = place;
         launcher.error = None;
+        launcher.confirm = None;
         let stops = self.launcher_stops(cx);
         if !stops.contains(&self.launcher_stop()) {
             self.launcher_set_stop(LauncherStop::Where);
@@ -922,6 +1155,7 @@ impl Workbench {
         };
         launcher.input_mut(field).set(text);
         launcher.error = None;
+        launcher.confirm = None;
         Self::launcher_edited(launcher, field);
         if field == LauncherField::Project {
             launcher.project_sel = 0;
@@ -951,6 +1185,7 @@ impl Workbench {
             && !(queue && launcher.is_direct())
         {
             launcher.queue = queue;
+            launcher.confirm = None;
             cx.notify();
         }
     }
@@ -1000,10 +1235,11 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.launcher_set_stop(stop);
-        if let Some(launcher) = &mut self.launcher
-            && stop != LauncherStop::Model
-        {
-            launcher.model_open = false;
+        if let Some(launcher) = &mut self.launcher {
+            if launcher.open_row != Some(stop) {
+                launcher.open_row = None;
+            }
+            launcher.confirm = None;
         }
         window.focus(&self.launcher_focus, cx);
         cx.notify();
@@ -1018,6 +1254,7 @@ impl Workbench {
             return;
         }
         self.launcher_repick_agent(cx);
+        self.launcher_validate_model(cx);
         cx.notify();
     }
 
@@ -1035,10 +1272,57 @@ impl Workbench {
             }
             self.launcher_load_models(cx);
         }
+        self.launcher_repick_agent(cx);
+        self.launcher_validate_model(cx);
         cx.notify();
     }
 
-    /// Until the user picks an agent, the sheet offers the first harness that can be started.
+    /// A model the last start remembered that the agent no longer offers is dropped.
+    fn launcher_validate_model(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = self.launcher.as_ref().and_then(|l| l.model.clone()) else {
+            return;
+        };
+        if let Models::Ready(list) = self.launcher_models(cx)
+            && !list.iter().any(|m| m.id == model)
+            && let Some(launcher) = &mut self.launcher
+        {
+            launcher.model = None;
+        }
+    }
+
+    /// The agent the sheet offers until the user picks one: the one of the last start while it
+    /// can be started, else the first harness that can be.
+    fn launcher_preferred_agent(
+        &self,
+        kind: LaunchKind,
+        remembered: Option<&LaunchAgent>,
+        cx: &gpui::App,
+    ) -> LaunchAgent {
+        if let Some(remembered) = remembered {
+            let usable = match remembered {
+                LaunchAgent::Harness(id) => self
+                    .launcher_harness_choices(cx)
+                    .iter()
+                    .any(|h| h.id == id && h.enabled()),
+                LaunchAgent::Direct(provider) => {
+                    kind == LaunchKind::Chat
+                        && self.providers.providers.iter().any(|p| &p.id == provider)
+                }
+            };
+            if usable {
+                return remembered.clone();
+            }
+        }
+        let first_ready = self
+            .launcher_harness_choices(cx)
+            .into_iter()
+            .find(|h| h.enabled())
+            .map(|h| h.id.to_owned());
+        LaunchAgent::Harness(first_ready.unwrap_or_else(|| self.default_harness(cx)))
+    }
+
+    /// Until the user picks an agent, the sheet offers the last one that was started, else the
+    /// first harness that can be started. A new agent clears the old one's error.
     fn launcher_repick_agent(&mut self, cx: &mut Context<Self>) {
         let Some(launcher) = &self.launcher else {
             return;
@@ -1047,17 +1331,17 @@ impl Workbench {
             // A chosen harness that turned out unusable stays chosen: the sheet says why.
             return;
         }
-        let first_ready = self
-            .launcher_harness_choices(cx)
-            .into_iter()
-            .find(|h| h.enabled())
-            .map(|h| h.id.to_owned());
-        let fallback = self.default_harness(cx);
-        let wanted = LaunchAgent::Harness(first_ready.unwrap_or(fallback));
-        if self.launcher.as_ref().is_some_and(|l| l.agent != wanted) {
+        let wanted =
+            self.launcher_preferred_agent(launcher.kind, launcher.remembered_agent.as_ref(), cx);
+        if launcher.agent != wanted {
+            let model = (launcher.remembered_agent.as_ref() == Some(&wanted))
+                .then(|| launcher.remembered_model.clone())
+                .flatten();
             if let Some(launcher) = &mut self.launcher {
                 launcher.agent = wanted;
-                launcher.model = None;
+                launcher.model = model;
+                launcher.error = None;
+                launcher.confirm = None;
             }
             self.launcher_load_models(cx);
         }
@@ -1162,6 +1446,135 @@ impl Workbench {
         {
             launcher.place = LaunchWhere::Main;
         }
+        // A place the last start remembered that this project cannot give: no repository.
+        if launcher.place == LaunchWhere::NewWorktree
+            && matches!(&launcher.worktrees, WorktreeList::Ready(list) if list.is_empty())
+        {
+            launcher.place = LaunchWhere::Main;
+        }
+    }
+
+    // ---- confirming and remembering -----------------------------------------------------------
+
+    /// What a confirmed chat is remembered by: the agent and the model it starts on.
+    fn launcher_confirm_key(&self, cx: &gpui::App) -> Option<String> {
+        let launcher = self.launcher.as_ref()?;
+        let agent = match &launcher.agent {
+            LaunchAgent::Harness(id) => id.clone(),
+            LaunchAgent::Direct(provider) => format!("direct:{provider}"),
+        };
+        let model = self
+            .launcher_chosen_model(cx)
+            .map_or_else(|| "default".to_owned(), |m| m.id);
+        Some(format!("{agent}/{model}"))
+    }
+
+    /// Whether this start must wait for the user's yes: a chat that sends its prompt to a model
+    /// at once, on an agent and model not confirmed before (`launcher.confirm_agent_start`).
+    /// When it must, the sheet shows the question and this returns `true`.
+    fn launcher_confirm_pending(&mut self, and_new: bool, cx: &mut Context<Self>) -> bool {
+        let Some(launcher) = &mut self.launcher else {
+            return false;
+        };
+        let skip = std::mem::take(&mut launcher.skip_confirm);
+        let sends_now = launcher.kind == LaunchKind::Chat
+            && !launcher.queue
+            && !launcher.prompt.text().trim().is_empty();
+        if skip
+            || !sends_now
+            || !self
+                .settings
+                .get::<crate::settings::LauncherSettings>()
+                .confirm_agent_start
+        {
+            return false;
+        }
+        let Some(key) = self.launcher_confirm_key(cx) else {
+            return false;
+        };
+        if self.launcher_memory.confirmed.contains(&key) {
+            return false;
+        }
+        let target = format!(
+            "{} · {}",
+            self.launcher_agent_name(),
+            self.launcher_model_name(cx)
+        );
+        if let Some(launcher) = &mut self.launcher {
+            launcher.confirm = Some(StartConfirm {
+                and_new,
+                remember: true,
+                target,
+            });
+        }
+        cx.notify();
+        true
+    }
+
+    /// The user said yes to the question: the start goes ahead, and with "Don't ask again for
+    /// this model" ticked it is not asked again for this agent and model.
+    pub fn launcher_confirm_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(confirm) = self.launcher.as_mut().and_then(|l| l.confirm.take()) else {
+            return;
+        };
+        if confirm.remember
+            && let Some(key) = self.launcher_confirm_key(cx)
+            && self.launcher_memory.confirmed.insert(key)
+        {
+            self.schedule_save(cx);
+        }
+        if let Some(launcher) = &mut self.launcher {
+            launcher.skip_confirm = true;
+        }
+        self.launcher_start(confirm.and_new, window, cx);
+    }
+
+    /// The user said no: the sheet is as it was.
+    pub fn launcher_cancel_confirm(&mut self, cx: &mut Context<Self>) {
+        if let Some(launcher) = &mut self.launcher
+            && launcher.confirm.take().is_some()
+        {
+            cx.notify();
+        }
+    }
+
+    /// Ticks or unticks "Don't ask again for this model" of the question.
+    pub fn launcher_toggle_confirm_remember(&mut self, cx: &mut Context<Self>) {
+        if let Some(confirm) = self.launcher.as_mut().and_then(|l| l.confirm.as_mut()) {
+            confirm.remember = !confirm.remember;
+            cx.notify();
+        }
+    }
+
+    /// What the sheet starts is what it opens on next time.
+    fn launcher_remember(&mut self, cx: &mut Context<Self>) {
+        let Some(launcher) = &self.launcher else {
+            return;
+        };
+        let mut memory = self.launcher_memory.clone();
+        memory.kind = Some(launcher.kind.key().to_owned());
+        if launcher.kind.is_agent() {
+            memory.agent = Some(match &launcher.agent {
+                LaunchAgent::Harness(id) => id.clone(),
+                LaunchAgent::Direct(provider) => format!("direct:{provider}"),
+            });
+            if launcher.kind == LaunchKind::Chat {
+                memory.model = if launcher.is_direct() {
+                    self.launcher_chosen_model(cx).map(|m| m.id)
+                } else {
+                    launcher.model.clone()
+                };
+            }
+        }
+        memory.place = Some(match &launcher.place {
+            LaunchWhere::Main => "main".to_owned(),
+            LaunchWhere::NewWorktree => "new_worktree".to_owned(),
+            LaunchWhere::Existing(branch) => format!("worktree:{branch}"),
+        });
+        if memory != self.launcher_memory {
+            self.launcher_memory = memory;
+            self.schedule_save(cx);
+        }
     }
 
     // ---- starting ----------------------------------------------------------------------------
@@ -1237,6 +1650,10 @@ impl Workbench {
             cx.notify();
             return;
         }
+        if self.launcher_confirm_pending(and_new, cx) {
+            return;
+        }
+        self.launcher_remember(cx);
         let Some(launcher) = &mut self.launcher else {
             return;
         };
@@ -1348,8 +1765,14 @@ impl Workbench {
             cx.notify();
             return;
         }
-        launcher.starting = true;
-        launcher.error = None;
+        if self.launcher_confirm_pending(and_new, cx) {
+            return;
+        }
+        self.launcher_remember(cx);
+        if let Some(launcher) = &mut self.launcher {
+            launcher.starting = true;
+            launcher.error = None;
+        }
         let model = self.launcher_chosen_model(cx).map(|m| m.id);
         let info: Option<WorkspaceInfo> = self.sessions.read(cx).workspace(project).cloned();
         let fallback_cwd = info
@@ -1502,8 +1925,25 @@ impl Workbench {
         let ks = &event.keystroke;
         let stop = launcher.stop;
         let vim = VimConfig::of(&self.settings);
+        // The question of a first start is answered before anything else: ↩ or ⌘↩ says yes, Esc
+        // no, Space ticks "Don't ask again for this model".
+        if launcher.confirm.is_some() {
+            match ks.key.as_str() {
+                "enter" => self.launcher_confirm_start(window, cx),
+                "escape" => self.launcher_cancel_confirm(cx),
+                "space" => self.launcher_toggle_confirm_remember(cx),
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
         if ks.key == "enter" && ks.modifiers.platform {
-            self.launcher_start(ks.modifiers.alt, window, cx);
+            // ⌘↩ never fires while a row's choices are open, or a project is being searched.
+            let choosing = launcher.open_row.is_some()
+                || (stop == LauncherStop::Project && !launcher.project_query.is_empty());
+            if !choosing {
+                self.launcher_start(ks.modifiers.alt, window, cx);
+            }
             cx.stop_propagation();
             return;
         }
@@ -1527,8 +1967,8 @@ impl Workbench {
                     }
                 }
                 if let Some(launcher) = &mut self.launcher {
-                    if launcher.model_open {
-                        launcher.model_open = false;
+                    if launcher.open_row.is_some() {
+                        launcher.open_row = None;
                         cx.notify();
                         cx.stop_propagation();
                         return;
@@ -1555,21 +1995,15 @@ impl Workbench {
             }
             key => match stop {
                 LauncherStop::Project => self.launcher_project_key(key, event, vim, cx),
-                LauncherStop::What => self.launcher_cycle_key(key, stop, cx),
-                LauncherStop::Agent => self.launcher_cycle_key(key, stop, cx),
-                LauncherStop::Where => self.launcher_cycle_key(key, stop, cx),
-                LauncherStop::Mode => match key {
-                    "left" | "right" | "up" | "down" | "space" | "enter" => {
-                        let queue = self.launcher.as_ref().is_some_and(|l| l.queue);
-                        self.launcher_set_queue(!queue, cx);
-                    }
-                    _ => return,
-                },
+                LauncherStop::What
+                | LauncherStop::Agent
+                | LauncherStop::Where
+                | LauncherStop::Mode
+                | LauncherStop::Model => self.launcher_row_key(key, stop, cx),
                 LauncherStop::More => match key {
                     "space" | "enter" | "left" | "right" => self.launcher_toggle_more(cx),
                     _ => return,
                 },
-                LauncherStop::Model => self.launcher_model_key(key, cx),
                 LauncherStop::After => self.launcher_after_key(key, cx),
                 _ => {
                     let Some(field) = field else { return };
@@ -1703,7 +2137,32 @@ impl Workbench {
         }
     }
 
-    /// ↑ ↓ change the model; ↩ opens its list.
+    /// A row of choices (What, Agent, Model, Where, Start now / Queue): ↩ or Space opens its
+    /// choices; ← → ↑ ↓ change the value only while they are open. A key on a closed row does
+    /// nothing, so a stray arrow never changes what Start would do.
+    fn launcher_row_key(&mut self, key: &str, stop: LauncherStop, cx: &mut Context<Self>) {
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        let open = launcher.open_row == Some(stop);
+        match key {
+            "enter" | "space" => {
+                launcher.open_row = (!open).then_some(stop);
+                cx.notify();
+            }
+            "left" | "right" | "up" | "down" if open => match stop {
+                LauncherStop::Model => self.launcher_model_key(key, cx),
+                LauncherStop::Mode => {
+                    let queue = launcher.queue;
+                    self.launcher_set_queue(!queue, cx);
+                }
+                _ => self.launcher_cycle_key(key, stop, cx),
+            },
+            _ => {}
+        }
+    }
+
+    /// ← → ↑ ↓ change the model of the open Model row.
     fn launcher_model_key(&mut self, key: &str, cx: &mut Context<Self>) {
         let Models::Ready(models) = self.launcher_models(cx) else {
             return;
@@ -1719,13 +2178,6 @@ impl Workbench {
         let next = match key {
             "down" | "right" => (at + 1).min(models.len() - 1),
             "up" | "left" => at.saturating_sub(1),
-            "enter" | "space" => {
-                if let Some(launcher) = &mut self.launcher {
-                    launcher.model_open = !launcher.model_open;
-                    cx.notify();
-                }
-                return;
-            }
             _ => return,
         };
         let model = &models[next];
@@ -1735,6 +2187,7 @@ impl Workbench {
             if launcher.is_direct() {
                 launcher.model = Some(model.id.clone());
             }
+            launcher.open_row = Some(LauncherStop::Model);
         }
     }
 

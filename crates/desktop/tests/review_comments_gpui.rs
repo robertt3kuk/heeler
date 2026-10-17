@@ -860,6 +860,8 @@ fn start_a_new_agent_opens_the_start_sheet_on_the_checkout_and_sends_it_the_revi
         );
     });
     cx.simulate_keystrokes("cmd-enter");
+    // The first prompt to this agent and model asks before it is sent.
+    cx.simulate_keystrokes("enter");
     wait_until(cx, "the review to reach the new agent", |_| {
         fx.chats.sent_texts().len() == 1
     });

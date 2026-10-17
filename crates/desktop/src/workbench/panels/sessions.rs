@@ -134,6 +134,8 @@ enum Entry {
 struct Renaming {
     workspace: WorkspaceId,
     text: String,
+    /// The old name is selected: the first typed text or paste replaces it, Backspace clears it.
+    select_all: bool,
     _blur: Subscription,
 }
 
@@ -398,6 +400,7 @@ impl SessionsPanel {
         self.renaming = Some(Renaming {
             workspace,
             text: name,
+            select_all: true,
             _blur: blur,
         });
         cx.defer_in(window, |this, window, cx| {
@@ -414,6 +417,12 @@ impl SessionsPanel {
         self.renaming
             .as_ref()
             .map(|r| (r.workspace, r.text.as_str()))
+    }
+
+    /// Whether the inline rename opened with the whole old name selected and nothing changed it
+    /// yet.
+    pub fn rename_selected(&self) -> bool {
+        self.renaming.as_ref().is_some_and(|r| r.select_all)
     }
 
     /// Ends the inline rename: `confirm` sends the new name, else nothing changes.
@@ -447,6 +456,40 @@ impl SessionsPanel {
     fn on_rename_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let vim = VimConfig::of(&self.env.settings);
+        // The old name starts selected: typing or pasting replaces it, Backspace clears it, ⌘A
+        // selects it again.
+        let paste = (ks.modifiers.platform && ks.key == "v")
+            .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
+            .flatten();
+        if let Some(renaming) = &mut self.renaming {
+            let typing = !ks.modifiers.platform
+                && !ks.modifiers.control
+                && !ks.modifiers.function
+                && ks.key_char.is_some()
+                && !matches!(ks.key.as_str(), "enter" | "escape" | "tab");
+            if ks.modifiers.platform && ks.key == "a" {
+                renaming.select_all = true;
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            if renaming.select_all {
+                if ks.key == "backspace" || paste.is_some() {
+                    renaming.text.clear();
+                    renaming.select_all = false;
+                    if let Some(text) = &paste {
+                        renaming.text.push_str(text);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if typing {
+                    renaming.text.clear();
+                    renaming.select_all = false;
+                }
+            }
+        }
         if vim.enabled
             && let Some(renaming) = &mut self.renaming
             && self
@@ -459,9 +502,6 @@ impl SessionsPanel {
             cx.notify();
             return;
         }
-        let paste = (ks.modifiers.platform && ks.key == "v")
-            .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
-            .flatten();
         let Some(renaming) = &mut self.renaming else {
             return;
         };
@@ -833,7 +873,7 @@ impl Render for SessionsPanel {
                         .renaming
                         .as_ref()
                         .filter(|r| r.workspace == row.info.id)
-                        .map(|r| r.text.clone());
+                        .map(|r| (r.text.clone(), r.select_all));
                     list = list.child(self.render_container(
                         row,
                         self.collapsed.contains(&row.info.id),
@@ -1047,7 +1087,7 @@ impl SessionsPanel {
         current: bool,
         selected: bool,
         manual: bool,
-        renaming: Option<String>,
+        renaming: Option<(String, bool)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let style = UiStyle::get(cx);
@@ -1077,7 +1117,7 @@ impl SessionsPanel {
             WorkspaceKind::Workspace => None,
         };
         let name: AnyElement = match renaming {
-            Some(text) => div()
+            Some((text, selected)) => div()
                 .id(SharedString::from(format!("rename-{id_text}")))
                 .key_context("SidebarRename")
                 .track_focus(&self.rename_focus)
@@ -1105,6 +1145,12 @@ impl SessionsPanel {
                         &tokens,
                     ) {
                         Some(content) => content,
+                        None if selected => vec![
+                            div()
+                                .bg(theme.accent_soft)
+                                .child(SharedString::from(text))
+                                .into_any_element(),
+                        ],
                         None => vec![
                             SharedString::from(text).into_any_element(),
                             div()

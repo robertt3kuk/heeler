@@ -750,77 +750,102 @@ impl ChangesView {
         });
         let look = Look::of(cx);
         let merge_enabled = self.can_merge() && self.merged.is_none();
+        // The title and counts on the left, the actions on the right. When the pane is too
+        // narrow the actions wrap under the title (and wrap again among themselves) instead of
+        // running out of the pane: Merge is always reachable.
         div()
             .flex()
+            .flex_wrap()
             .flex_none()
             .items_center()
-            .gap(px(tokens.spacing * 2.0))
-            .h(px(tokens.sidebar_row + 8.0))
+            .gap_x(px(tokens.spacing * 2.0))
+            .gap_y(px(tokens.spacing))
+            .min_h(px(tokens.sidebar_row + 8.0))
             .px(px(tokens.spacing * 3.0))
+            .py(px(tokens.spacing))
             .border_b_1()
             .border_color(theme.border)
-            .child(div().truncate().medium().child(SharedString::from(branch)))
             .child(
                 div()
-                    .text_color(theme.muted)
-                    .text_size(px(tokens.secondary_font_size))
-                    .truncate()
-                    .child(SharedString::from(against)),
-            )
-            .when(!files.is_empty(), |s| {
-                s.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(tokens.secondary_font_size))
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!("{} files", files.len()))),
-                )
-                .child(counts_of(added, removed, &look))
-            })
-            .child(div().flex_1())
-            .children(self.render_review_controls(theme, tokens, cx))
-            .child(
-                pill(
-                    "changes-uncommitted",
-                    "With uncommitted",
-                    self.include_uncommitted,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .on_click(cx.listener({
-                    let next = !self.include_uncommitted;
-                    move |this, _, _, cx| this.set_include_uncommitted(next, cx)
-                }))
-                .child(probe(&self.env.regions, Region::Changes("toggle"))),
+                    .flex()
+                    .flex_1()
+                    .min_w(px(120.0))
+                    .items_center()
+                    .gap(px(tokens.spacing * 2.0))
+                    .overflow_hidden()
+                    .child(div().truncate().medium().child(SharedString::from(branch)))
+                    .child(
+                        div()
+                            .text_color(theme.muted)
+                            .text_size(px(tokens.secondary_font_size))
+                            .truncate()
+                            .child(SharedString::from(against)),
+                    )
+                    .when(!files.is_empty(), |s| {
+                        s.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(tokens.secondary_font_size))
+                                .text_color(theme.muted)
+                                .child(SharedString::from(format!("{} files", files.len()))),
+                        )
+                        .child(counts_of(added, removed, &look))
+                    }),
             )
             .child(
-                ui::button(
-                    "changes-refresh",
-                    "Refresh",
-                    ui::ButtonKind::Ghost,
-                    true,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
-                .child(probe(&self.env.regions, Region::Changes("refresh"))),
-            )
-            .child(
-                ui::button(
-                    "changes-merge",
-                    format!("Merge into {}…", self.base().map_or("main", |b| b)),
-                    ui::ButtonKind::Primary,
-                    merge_enabled,
-                    theme,
-                    tokens,
-                )
-                .relative()
-                .when(merge_enabled, |s| {
-                    s.on_click(cx.listener(|this, _, window, cx| this.open_merge(window, cx)))
-                })
-                .child(probe(&self.env.regions, Region::Changes("merge"))),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .max_w_full()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(tokens.spacing * 2.0))
+                    .children(self.render_review_controls(theme, tokens, cx))
+                    .child(
+                        pill(
+                            "changes-uncommitted",
+                            "With uncommitted",
+                            self.include_uncommitted,
+                            theme,
+                            tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener({
+                            let next = !self.include_uncommitted;
+                            move |this, _, _, cx| this.set_include_uncommitted(next, cx)
+                        }))
+                        .child(probe(&self.env.regions, Region::Changes("toggle"))),
+                    )
+                    .child(
+                        ui::button(
+                            "changes-refresh",
+                            "Refresh",
+                            ui::ButtonKind::Ghost,
+                            true,
+                            theme,
+                            tokens,
+                        )
+                        .relative()
+                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                        .child(probe(&self.env.regions, Region::Changes("refresh"))),
+                    )
+                    .child(
+                        ui::button(
+                            "changes-merge",
+                            format!("Merge into {}…", self.base().map_or("main", |b| b)),
+                            ui::ButtonKind::Primary,
+                            merge_enabled,
+                            theme,
+                            tokens,
+                        )
+                        .relative()
+                        .when(merge_enabled, |s| {
+                            s.on_click(
+                                cx.listener(|this, _, window, cx| this.open_merge(window, cx)),
+                            )
+                        })
+                        .child(probe(&self.env.regions, Region::Changes("merge"))),
+                    ),
             )
             .into_any_element()
     }

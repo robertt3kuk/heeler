@@ -10,7 +10,7 @@ use gpui::{
 use super::agents::Models;
 use super::harnesses;
 use super::launcher::{
-    LaunchAgent, LaunchWhere, LauncherField, LauncherStop, Readiness, WorktreeList,
+    LaunchAgent, LaunchWhere, LauncherField, LauncherStop, Readiness, WorktreeList, readiness_note,
 };
 use super::panels::field_box;
 use super::render::probe;
@@ -70,9 +70,16 @@ impl Workbench {
                 .text_color(color)
                 .child(SharedString::from(text))
         };
-        // The ring that shows where the keyboard is, on the rows that are not text fields.
-        let ring = |active: bool, body: AnyElement| {
+        // The ring that shows where the keyboard is, on the rows that are not text fields: a
+        // tint and an accent border while the row has the keyboard, a stronger tint and a hint
+        // while its choices are open (↑ ↓ change the value only then).
+        let open_row = launcher.open_row;
+        let regions = &self.regions;
+        let ring = |row_stop: LauncherStop, body: AnyElement| {
+            let active = stop == row_stop;
+            let open = open_row == Some(row_stop);
             div()
+                .relative()
                 .rounded(px(tokens.radius + 2.0))
                 .border_1()
                 .border_color(if active {
@@ -81,7 +88,21 @@ impl Workbench {
                     transparent_black()
                 })
                 .p(px(1.0))
+                .when(active, |s| s.bg(theme.surface_hover))
+                .when(open, |s| s.bg(theme.accent_soft))
                 .child(body)
+                .when(open, |s| {
+                    s.child(
+                        div()
+                            .pt(px(2.0))
+                            .text_size(px(tokens.secondary_font_size))
+                            .text_color(theme.muted)
+                            .child("← → ↑ ↓ change · ↩ or Esc done"),
+                    )
+                })
+                .when(active, |s| {
+                    s.child(probe(regions, Region::Launcher("focus")))
+                })
                 .into_any_element()
         };
 
@@ -263,27 +284,22 @@ impl Workbench {
                     }))
                     .child(probe(&self.regions, Region::LauncherChoice("agent", hid))),
                 );
-                let (action, why): (Option<(&'static str, &'static str)>, Option<String>) =
-                    match &harness.readiness {
-                        Readiness::NeedsInstall(how) => (
-                            self.harness_install_available()
-                                .then_some(("install", "Install…")),
-                            Some(format!("{} is not installed. {how}", harness.name)),
-                        ),
-                        Readiness::NeedsLogin => (
-                            directory.startable(hid).then_some(("login", "Log in…")),
-                            Some(format!("{} is not logged in.", harness.name)),
-                        ),
-                        Readiness::NeedsNewerDaemon => (
-                            None,
-                            Some(format!(
-                                "{}: restart hutand (Daemon → Restart) to run the version of this app.",
-                                harness.name
-                            )),
-                        ),
-                        Readiness::Checking => (None, Some(format!("Checking {}…", harness.name))),
-                        Readiness::Ready => (None, None),
-                    };
+                let action: Option<(&'static str, &'static str)> = match &harness.readiness {
+                    Readiness::NeedsInstall(_) => self
+                        .harness_install_available()
+                        .then_some(("install", "Install…")),
+                    Readiness::NeedsLogin => {
+                        directory.startable(hid).then_some(("login", "Log in…"))
+                    }
+                    _ => None,
+                };
+                // Only the chosen agent says why it cannot start: another harness's
+                // installation or login problem is not this start's.
+                let why = if selected {
+                    readiness_note(harness.name, &harness.readiness)
+                } else {
+                    None
+                };
                 if let Some((key, text)) = action {
                     item = item.child(
                         ui::button(
@@ -362,11 +378,7 @@ impl Workbench {
                 body = body.child(line);
             }
             agent_rows.push(
-                row(
-                    "Agent",
-                    ring(stop == LauncherStop::Agent, body.into_any_element()),
-                )
-                .into_any_element(),
+                row("Agent", ring(LauncherStop::Agent, body.into_any_element())).into_any_element(),
             );
         }
 
@@ -410,7 +422,7 @@ impl Workbench {
                             }
                         })
                         .unwrap_or_else(|| "Default".to_owned());
-                    let open = launcher.model_open;
+                    let open = launcher.model_open();
                     let hover = theme.surface_hover;
                     let mut body = div().flex().flex_col().gap(px(tokens.spacing)).child(
                         div()
@@ -433,7 +445,9 @@ impl Workbench {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.launcher_focus_stop(LauncherStop::Model, window, cx);
                                 if let Some(launcher) = &mut this.launcher {
-                                    launcher.model_open = !launcher.model_open;
+                                    launcher.open_row = (launcher.open_row
+                                        != Some(LauncherStop::Model))
+                                    .then_some(LauncherStop::Model);
                                 }
                                 cx.notify();
                             }))
@@ -525,8 +539,7 @@ impl Workbench {
                 }
             };
             if let Some(body) = body {
-                model_rows
-                    .push(row("Model", ring(stop == LauncherStop::Model, body)).into_any_element());
+                model_rows.push(row("Model", ring(LauncherStop::Model, body)).into_any_element());
             }
         }
 
@@ -572,14 +585,24 @@ impl Workbench {
             input_rows.push(
                 row(
                     "Command",
-                    text_field(
-                        LauncherField::Command,
-                        LauncherStop::Command,
-                        "command",
-                        "cargo test -p my-crate",
-                        false,
-                        cx,
-                    ),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(text_field(
+                            LauncherField::Command,
+                            LauncherStop::Command,
+                            "command",
+                            "cargo test -p my-crate && echo done",
+                            false,
+                            cx,
+                        ))
+                        .child(note(
+                            "Runs in your shell (login shell, -lc): ; && | quotes and globs work."
+                                .to_owned(),
+                            theme.faint,
+                        ))
+                        .into_any_element(),
                 )
                 .into_any_element(),
             );
@@ -753,7 +776,7 @@ impl Workbench {
         let mut where_rows: Vec<AnyElement> = vec![
             row(
                 "Where",
-                ring(stop == LauncherStop::Where, where_body.into_any_element()),
+                ring(LauncherStop::Where, where_body.into_any_element()),
             )
             .into_any_element(),
         ];
@@ -823,11 +846,7 @@ impl Workbench {
             }))
             .child(probe(&self.regions, Region::Launcher("more")));
         let mut more_rows: Vec<AnyElement> = vec![
-            row(
-                "",
-                ring(stop == LauncherStop::More, more_header.into_any_element()),
-            )
-            .into_any_element(),
+            row("", ring(LauncherStop::More, more_header.into_any_element())).into_any_element(),
         ];
         if more_open {
             let candidates = self.launcher_dependency_rows(cx);
@@ -876,11 +895,8 @@ impl Workbench {
                 );
             }
             more_rows.push(
-                row(
-                    "After",
-                    ring(stop == LauncherStop::After, after.into_any_element()),
-                )
-                .into_any_element(),
+                row("After", ring(LauncherStop::After, after.into_any_element()))
+                    .into_any_element(),
             );
             if direct {
                 more_rows.push(
@@ -940,14 +956,13 @@ impl Workbench {
                 },
                 theme.faint,
             ));
-        let mode_row = row(
-            "",
-            ring(stop == LauncherStop::Mode, mode.into_any_element()),
-        );
+        let mode_row = row("", ring(LauncherStop::Mode, mode.into_any_element()));
 
         // ---- footer ----
         let ready = !starting;
-        let footer = div()
+        let summary = self.launcher_summary(cx);
+        let start_label = self.launcher_start_label();
+        let footer_frame = div()
             .flex()
             .flex_none()
             .items_center()
@@ -956,67 +971,124 @@ impl Workbench {
             .px(px(tokens.spacing * 4.0))
             .py(px(tokens.spacing * 3.0))
             .border_t_1()
-            .border_color(theme.border)
-            .children(launcher.error.clone().map(|error| {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(theme.danger)
-                    .child(SharedString::from(error))
-            }))
-            .child(
-                ui::button(
-                    "launch-cancel",
-                    "Cancel",
-                    ButtonKind::Ghost,
-                    true,
-                    &theme,
-                    &tokens,
+            .border_color(theme.border);
+        let cancel = |id: &'static str, label: &'static str| {
+            ui::button(id, label, ButtonKind::Ghost, true, &theme, &tokens).relative()
+        };
+        let footer = if let Some(confirm) = launcher.confirm.clone() {
+            // The first chat on this agent and model that sends its prompt at once: ask.
+            let remember = confirm.remember;
+            footer_frame
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(theme.warning)
+                        .child(SharedString::from(format!(
+                            "This sends your prompt to {} now.",
+                            confirm.target
+                        )))
+                        .child(probe(&self.regions, Region::Launcher("confirm"))),
                 )
-                .relative()
-                .on_click(cx.listener(|this, _, window, cx| this.close_launcher(window, cx)))
-                .child(probe(&self.regions, Region::Launcher("cancel"))),
-            )
-            .child(
-                ui::button(
-                    "launch-start-new",
-                    "Start & new ⌥⌘↩",
-                    ButtonKind::Secondary,
-                    ready,
-                    &theme,
-                    &tokens,
+                .child(
+                    div()
+                        .id("launch-confirm-remember")
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(tokens.spacing))
+                        .cursor_pointer()
+                        .text_size(px(tokens.secondary_font_size))
+                        .text_color(theme.muted)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.launcher_toggle_confirm_remember(cx);
+                        }))
+                        .child(if remember { "☑" } else { "☐" })
+                        .child("Don't ask again for this model")
+                        .child(probe(&self.regions, Region::Launcher("confirm-remember"))),
                 )
-                .relative()
-                .when(ready, |s| {
-                    s.on_click(cx.listener(|this, _, window, cx| {
-                        this.launcher_start(true, window, cx);
+                .child(
+                    cancel("launch-confirm-cancel", "Cancel")
+                        .on_click(cx.listener(|this, _, _, cx| this.launcher_cancel_confirm(cx)))
+                        .child(probe(&self.regions, Region::Launcher("confirm-cancel"))),
+                )
+                .child(
+                    ui::button(
+                        "launch-confirm-start",
+                        "Start ↩",
+                        ButtonKind::Primary,
+                        true,
+                        &theme,
+                        &tokens,
+                    )
+                    .relative()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.launcher_confirm_start(window, cx);
                     }))
-                })
-                .child(probe(&self.regions, Region::Launcher("start-new"))),
-            )
-            .child(
-                ui::button(
-                    "launch-start",
-                    if starting {
-                        "Starting…"
-                    } else if queue && !direct {
-                        "Queue ⌘↩"
-                    } else {
-                        "Start ⌘↩"
-                    },
-                    ButtonKind::Primary,
-                    ready,
-                    &theme,
-                    &tokens,
+                    .child(probe(&self.regions, Region::Launcher("confirm-start"))),
                 )
-                .relative()
-                .when(ready, |s| {
-                    s.on_click(cx.listener(|this, _, window, cx| {
-                        this.launcher_start(false, window, cx);
-                    }))
+        } else {
+            footer_frame
+                .child(match launcher.error.clone() {
+                    Some(error) => div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(theme.danger)
+                        .child(SharedString::from(error)),
+                    None => div()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(tokens.secondary_font_size))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(summary))
+                        .child(probe(&self.regions, Region::Launcher("summary"))),
                 })
-                .child(probe(&self.regions, Region::Launcher("start"))),
-            );
+                .child(
+                    cancel("launch-cancel", "Cancel")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.close_launcher(window, cx)),
+                        )
+                        .child(probe(&self.regions, Region::Launcher("cancel"))),
+                )
+                .child(
+                    ui::button(
+                        "launch-start-new",
+                        "Start & new ⌥⌘↩",
+                        ButtonKind::Secondary,
+                        ready,
+                        &theme,
+                        &tokens,
+                    )
+                    .relative()
+                    .when(ready, |s| {
+                        s.on_click(cx.listener(|this, _, window, cx| {
+                            this.launcher_start(true, window, cx);
+                        }))
+                    })
+                    .child(probe(&self.regions, Region::Launcher("start-new"))),
+                )
+                .child(
+                    ui::button(
+                        "launch-start",
+                        start_label,
+                        ButtonKind::Primary,
+                        ready,
+                        &theme,
+                        &tokens,
+                    )
+                    .relative()
+                    .when(ready, |s| {
+                        s.on_click(cx.listener(|this, _, window, cx| {
+                            this.launcher_start(false, window, cx);
+                        }))
+                    })
+                    .child(probe(&self.regions, Region::Launcher("start"))),
+                )
+        };
 
         let body = div()
             .id("launch-body")
@@ -1031,7 +1103,7 @@ impl Workbench {
             .child(row("Project", project_body.into_any_element()))
             .child(row(
                 "What",
-                ring(stop == LauncherStop::What, what.into_any_element()),
+                ring(LauncherStop::What, what.into_any_element()),
             ))
             .children(agent_rows)
             .children(model_rows)

@@ -527,6 +527,7 @@ impl Workbench {
             confirm_label: "Stop Sessions & Quit".into(),
             input: None,
             secure_input: false,
+            input_selected: false,
             choice: Some(ModalChoice {
                 label: "Keep Running in Background".into(),
                 run: Rc::new(|this, _, _, cx| this.keep_running_in_background(cx)),

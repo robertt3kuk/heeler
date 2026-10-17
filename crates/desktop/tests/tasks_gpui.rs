@@ -592,7 +592,10 @@ fn the_sheet_creates_a_task_with_dependencies_and_a_worktree_placement(cx: &mut 
     assert_eq!(
         created.run,
         Some(TaskRun::Terminal {
-            argv: vec!["cargo".into(), "build".into(), "--release".into()]
+            argv: hutan_desktop::sessions::launch::shell_argv(
+                &hutan_desktop::sessions::launch::user_shell(),
+                "cargo build --release"
+            )
         })
     );
     // The sheet closed and the new row is in the tree under Lint, with its badge.
@@ -1254,6 +1257,58 @@ fn the_header_accepts_the_work_of_the_task_on_the_branch(cx: &mut TestAppContext
         view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string))
             .is_some_and(|n| n == "Accepted “Fix login”")
     );
+}
+
+#[gpui::test]
+fn the_changes_toolbar_wraps_so_every_action_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (task, wt) = awaiting_task(&env, "Fix login");
+    let _ = task;
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the task of the view", |cx| {
+        changes.read_with(cx, |c, cx| {
+            c.delivery_state(cx) == Some(DeliveryState::AwaitingReview)
+        })
+    });
+    let names = ["accept", "request-changes", "toggle", "refresh", "merge"];
+    let inside = |view: &Entity<Workbench>, cx: &mut VisualTestContext, width: f32, what: &str| {
+        draw(cx);
+        for name in names {
+            wait_until(cx, name, |cx| {
+                region(view, cx, Region::Changes(name)).is_some()
+            });
+        }
+        let pane = view
+            .read_with(cx, |wb, _| wb.region_bounds(Region::Center))
+            .expect("the center is drawn");
+        for name in names {
+            let bounds = view
+                .read_with(cx, |wb, _| wb.region_bounds(Region::Changes(name)))
+                .unwrap();
+            assert!(
+                bounds.right() <= gpui::px(width) && bounds.right() <= pane.right(),
+                "{what}: {name} runs out of the pane: {bounds:?} in {pane:?}"
+            );
+            assert!(
+                bounds.left() >= pane.left(),
+                "{what}: {name} starts before the pane"
+            );
+        }
+    };
+    // The reported case: both docks visible at the default width.
+    cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+    inside(&view, cx, 1280.0, "1280 px, docks visible");
+    // A narrow window: 640 px with the docks hidden still shows Merge and the rest.
+    cx.dispatch_action(actions::ToggleLeftDock);
+    cx.dispatch_action(actions::ToggleRightDock);
+    cx.simulate_resize(gpui::size(gpui::px(640.0), gpui::px(800.0)));
+    inside(&view, cx, 640.0, "640 px");
+    // Merge is a click away and still opens the form.
+    click(&view, cx, Region::Changes("merge"));
+    wait_until(cx, "the merge form", |cx| {
+        region(&view, cx, Region::Changes("merge-confirm")).is_some()
+    });
 }
 
 #[gpui::test]

@@ -50,7 +50,7 @@ pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use harnesses::{Detection, HARNESSES, Harness, HarnessDirectory, Listing};
 pub use launcher::{
     HarnessChoice, LaunchAgent, LaunchWhere, Launcher, LauncherField, LauncherPreset, LauncherStop,
-    ProjectChoice, Readiness, WorktreeList,
+    ProjectChoice, Readiness, StartConfirm, WorktreeList,
 };
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};

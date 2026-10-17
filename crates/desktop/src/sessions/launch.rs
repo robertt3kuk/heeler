@@ -84,8 +84,10 @@ pub struct LaunchValues {
     pub model: Option<String>,
     pub title: String,
     pub prompt: String,
-    /// The command of [`LaunchKind::Command`].
+    /// The command of [`LaunchKind::Command`]: shell text, run by [`shell_argv`].
     pub command: String,
+    /// The user's login shell, which runs a [`LaunchKind::Command`] (`$SHELL -lc "<command>"`).
+    pub shell: String,
     pub place: LaunchPlace,
     pub after: Vec<TaskId>,
     /// "Queue as task": the scheduler starts it by `[tasks] max_parallel`.
@@ -204,11 +206,13 @@ pub fn build_create(
         }),
         LaunchKind::Terminal => None,
         LaunchKind::Command => {
-            let argv = split_command(&values.command)?;
-            if argv.is_empty() {
+            let command = values.command.trim();
+            if command.is_empty() {
                 return Err("Type the command to run.".to_owned());
             }
-            Some(TaskRun::Terminal { argv })
+            Some(TaskRun::Terminal {
+                argv: shell_argv(&values.shell, command),
+            })
         }
     };
     let placement = match &values.place {
@@ -243,49 +247,23 @@ pub fn build_create(
     })
 }
 
-/// A command line as words: whitespace separates, single and double quotes group, a backslash
-/// escapes the next character outside single quotes. No expansion of any kind.
-pub fn split_command(line: &str) -> Result<Vec<String>, String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut started = false;
-    let mut quote: Option<char> = None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some('\''), c) => word.push(c),
-            (_, '\\') => match chars.next() {
-                Some(next) => {
-                    word.push(next);
-                    started = true;
-                }
-                None => return Err("The command ends with a backslash.".to_owned()),
-            },
-            (Some(_), c) => word.push(c),
-            (None, '\'' | '"') => {
-                quote = Some(c);
-                started = true;
-            }
-            (None, c) if c.is_whitespace() => {
-                if started {
-                    words.push(std::mem::take(&mut word));
-                    started = false;
-                }
-            }
-            (None, c) => {
-                word.push(c);
-                started = true;
-            }
-        }
-    }
-    if quote.is_some() {
-        return Err("The command has an unclosed quote.".to_owned());
-    }
-    if started {
-        words.push(word);
-    }
-    Ok(words)
+/// The user's login shell: `$SHELL`, else macOS's default (`/bin/zsh`).
+pub fn user_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_owned())
+}
+
+/// The argv that runs `command` through `shell` as a login shell: `;`, `&&`, pipes, quotes,
+/// globs and variables mean what they mean in a terminal. The daemon starts it in a session
+/// with the user's login environment.
+pub fn shell_argv(shell: &str, command: &str) -> Vec<String> {
+    vec![
+        shell.to_owned(),
+        "-lc".to_owned(),
+        command.trim().to_owned(),
+    ]
 }
 
 #[cfg(test)]
@@ -300,6 +278,7 @@ mod tests {
             title: "  Build it  ".into(),
             prompt: String::new(),
             command: String::new(),
+            shell: "/bin/zsh".into(),
             place: LaunchPlace::Main,
             after: vec![],
             queue: false,
@@ -341,12 +320,12 @@ mod tests {
             full.run,
             Some(TaskRun::Terminal {
                 argv: vec![
-                    "cargo".into(),
-                    "test".into(),
-                    "-p".into(),
-                    "my crate".into()
+                    "/bin/zsh".into(),
+                    "-lc".into(),
+                    "cargo test -p \"my crate\"".into()
                 ]
-            })
+            }),
+            "the text goes to the login shell as it is"
         );
         assert_eq!(
             full.placement,
@@ -453,14 +432,6 @@ mod tests {
         assert!(
             err(LaunchValues {
                 kind: LaunchKind::Command,
-                command: "echo 'x".into(),
-                ..values()
-            })
-            .contains("quote")
-        );
-        assert!(
-            err(LaunchValues {
-                kind: LaunchKind::Command,
                 ..values()
             })
             .contains("command")
@@ -497,14 +468,27 @@ mod tests {
     }
 
     #[test]
-    fn commands_split_like_a_shell_without_expanding() {
-        let words = |l: &str| split_command(l).unwrap();
-        assert_eq!(words("  a   b "), ["a", "b"]);
-        assert_eq!(words("a 'b c' \"d e\""), ["a", "b c", "d e"]);
-        assert_eq!(words("a\\ b"), ["a b"]);
-        assert_eq!(words("echo $HOME *"), ["echo", "$HOME", "*"]);
-        assert_eq!(words("''"), [""], "an empty quoted word is a word");
-        assert!(words("").is_empty());
-        assert!(split_command("a \\").is_err());
+    fn a_command_runs_as_the_login_shells_own_text() {
+        assert_eq!(
+            shell_argv("/bin/zsh", "  printf 'X\\n'; pwd && ls *.rs | wc -l  "),
+            ["/bin/zsh", "-lc", "printf 'X\\n'; pwd && ls *.rs | wc -l"]
+        );
+        let shell = |command: &str| {
+            build(&LaunchValues {
+                kind: LaunchKind::Command,
+                command: command.into(),
+                shell: "/bin/bash".into(),
+                ..values()
+            })
+            .unwrap()
+            .run
+        };
+        assert_eq!(
+            shell("echo 'unclosed"),
+            Some(TaskRun::Terminal {
+                argv: vec!["/bin/bash".into(), "-lc".into(), "echo 'unclosed".into()]
+            }),
+            "the shell, not the sheet, judges the text"
+        );
     }
 }

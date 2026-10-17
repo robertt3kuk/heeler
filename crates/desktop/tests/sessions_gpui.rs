@@ -375,6 +375,32 @@ fn stop_and_restart_from_the_ui(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_session_rename_prompt_opens_with_the_title_selected(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let info = daemon.sh("sleep 600");
+    let (view, cx) = open(cx, &daemon);
+    wait_synced(&view, cx, 1);
+    cx.dispatch_action(actions::RenameSessionById(info.id.to_string()));
+    assert!(view.read_with(cx, |wb, _| wb.modal_open() && wb.modal_input_selected()));
+    cx.simulate_input("Orchard review");
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.modal().and_then(|m| m.input.clone())),
+        Some("Orchard review".to_owned()),
+        "typing replaces the old title"
+    );
+    assert!(!view.read_with(cx, |wb, _| wb.modal_input_selected()));
+    cx.simulate_keystrokes("enter");
+    wait_until(cx, "the new title", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .session(info.id)
+                .is_some_and(|s| s.title == "Orchard review")
+        })
+    });
+}
+
+#[gpui::test]
 fn unread_attention_is_read_when_the_session_is_focused(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let go = daemon.home().join("go");

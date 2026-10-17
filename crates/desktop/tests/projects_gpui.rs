@@ -858,6 +858,60 @@ fn the_plus_menu_makes_workspaces_and_opens_folders_into_them(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn rename_opens_with_the_whole_name_selected_so_typing_and_pasting_replace_it(
+    cx: &mut TestAppContext,
+) {
+    let w = World::new();
+    let (view, cx) = w.synced(cx, None);
+    let panel = panel(&view, cx);
+    let text = |cx: &mut VisualTestContext| {
+        panel.read_with(cx, |p, _| p.renaming().map(|(_, text)| text.to_owned()))
+    };
+
+    // Inline: the old name is selected, typing replaces all of it.
+    view.update_in(cx, |wb, window, cx| {
+        wb.rename_workspace(w.shop.id, window, cx)
+    });
+    draw(cx);
+    assert_eq!(text(cx).as_deref(), Some("shop"));
+    assert!(panel.read_with(cx, |p, _| p.rename_selected()));
+    cx.simulate_input("store");
+    assert_eq!(text(cx).as_deref(), Some("store"), "replaced, not appended");
+    assert!(!panel.read_with(cx, |p, _| p.rename_selected()));
+    cx.simulate_input("s");
+    assert_eq!(
+        text(cx).as_deref(),
+        Some("stores"),
+        "then it edits as usual"
+    );
+    cx.simulate_keystrokes("escape");
+
+    // A paste replaces it too.
+    view.update_in(cx, |wb, window, cx| {
+        wb.rename_workspace(w.shop.id, window, cx)
+    });
+    draw(cx);
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string("Orchard review".to_owned()));
+    cx.simulate_keystrokes("cmd-v");
+    assert_eq!(text(cx).as_deref(), Some("Orchard review"));
+    cx.simulate_keystrokes("escape");
+
+    // Backspace clears the selection; ⌘A selects the text again after an edit.
+    view.update_in(cx, |wb, window, cx| {
+        wb.rename_workspace(w.shop.id, window, cx)
+    });
+    draw(cx);
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(cx).as_deref(), Some(""));
+    cx.simulate_input("ab");
+    cx.simulate_keystrokes("cmd-a");
+    assert!(panel.read_with(cx, |p, _| p.rename_selected()));
+    cx.simulate_input("c");
+    assert_eq!(text(cx).as_deref(), Some("c"));
+    cx.simulate_keystrokes("escape");
+}
+
+#[gpui::test]
 fn a_workspace_is_renamed_in_place_and_deleting_it_keeps_its_projects(cx: &mut TestAppContext) {
     let w = World::new();
     let (view, cx) = w.synced(cx, None);

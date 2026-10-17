@@ -19,7 +19,7 @@ use common::{TestDaemon, draw, open_options, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hutan_core::{Task, TaskPlacementKind, TaskRun, TaskState, WorkspaceId};
 use hutan_desktop::harness_install::FakeRunner;
-use hutan_desktop::sessions::launch::LaunchKind;
+use hutan_desktop::sessions::launch::{LaunchKind, shell_argv, user_shell};
 use hutan_desktop::workbench::actions;
 use hutan_desktop::workbench::model::ItemRef;
 use hutan_desktop::workbench::panels::TasksPanel;
@@ -234,6 +234,17 @@ fn open_sheet(view: &Entity<Workbench>, cx: &mut VisualTestContext, preset: Laun
     assert!(launcher_open(view, cx));
 }
 
+/// Presses Start on a first chat with a prompt: the sheet asks, and the test says yes.
+fn start_and_confirm(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    click(view, cx, Region::Launcher("start"));
+    wait_until(cx, "the question before the first prompt is sent", |cx| {
+        view.read_with(cx, |wb, _| {
+            wb.launcher().is_some_and(|l| l.confirm().is_some())
+        })
+    });
+    click(view, cx, Region::Launcher("confirm-start"));
+}
+
 fn active_item(view: &Entity<Workbench>, cx: &VisualTestContext) -> Option<ItemRef> {
     view.read_with(cx, |wb, _| wb.state().active_item())
 }
@@ -354,7 +365,14 @@ fn a_chat_in_a_new_worktree_creates_the_task_with_that_placement_and_starts_it(
     click(&view, cx, Region::ProjectStart(env.api_id));
     ready(&view, cx);
 
-    // Keyboard first: the caret is in the prompt; the title and the branch follow it.
+    // The sheet opens on a plain terminal; pick the agent chat, then type its prompt: the
+    // title and the branch follow it.
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher().unwrap().kind()),
+        LaunchKind::Terminal
+    );
+    click(&view, cx, Region::LauncherChoice("what", "chat"));
+    click(&view, cx, Region::Launcher("prompt"));
     assert_eq!(
         view.read_with(cx, |wb, _| wb.launcher().unwrap().stop()),
         LauncherStop::Prompt
@@ -373,7 +391,7 @@ fn a_chat_in_a_new_worktree_creates_the_task_with_that_placement_and_starts_it(
         assert!(!l.queue());
     });
 
-    click(&view, cx, Region::Launcher("start"));
+    start_and_confirm(&view, cx);
     // (A chat task is done when its first turn ends, which the replayed transcript does at once.)
     wait_until(cx, "the task to start", |_| {
         env.task("Fix the flaky test")
@@ -466,7 +484,7 @@ fn queue_as_task_does_not_start_it(cx: &mut TestAppContext) {
     assert_eq!(
         queued.run,
         Some(TaskRun::Terminal {
-            argv: vec!["cargo".into(), "test".into()]
+            argv: shell_argv(&user_shell(), "cargo test")
         })
     );
     // The sheet never asked for it to run.
@@ -608,6 +626,7 @@ fn a_harness_that_is_logged_out_is_disabled_with_log_in(cx: &mut TestAppContext)
         cx,
         LauncherPreset {
             project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
             ..LauncherPreset::default()
         },
     );
@@ -669,6 +688,7 @@ fn a_harness_that_is_not_installed_is_disabled_with_install(cx: &mut TestAppCont
         cx,
         LauncherPreset {
             project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
             ..LauncherPreset::default()
         },
     );
@@ -733,7 +753,7 @@ fn the_sheet_warns_when_another_live_agent_works_in_the_chosen_checkout(cx: &mut
             .is_none(),
         "nobody works there yet"
     );
-    click(&view, cx, Region::Launcher("start"));
+    start_and_confirm(&view, cx);
     wait_until(cx, "the first agent to start", |_| {
         env.task("First agent")
             .is_some_and(|t| t.sessions.len() == 1)
@@ -795,6 +815,7 @@ fn tab_walks_the_fields_top_to_bottom_and_the_project_is_a_fuzzy_picker(cx: &mut
         cx,
         LauncherPreset {
             project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
             ..LauncherPreset::default()
         },
     );
@@ -898,4 +919,585 @@ fn a_picked_model_goes_into_the_task_even_when_it_is_queued(cx: &mut TestAppCont
         "the pick rides in the task, queued or not"
     );
     assert_eq!(queued.state, TaskState::Todo);
+}
+
+// UX-B: a safe Start ---------------------------------------------------------------------------
+
+/// A daemon where OMP and Claude Code are both installed and logged in (their chats replay the
+/// same transcript).
+fn daemon_both(scripts: &Path) -> TestDaemon {
+    let omp = script(
+        scripts,
+        "omp",
+        r#"case "$1" in
+  models) echo '{"models":[{"provider":"anthropic","kind":"chat","id":"claude-opus-4-5","selector":"anthropic/claude-opus-4-5","name":"Claude Opus 4.5"}]}' ;;
+  usage) echo '{"reports":[]}' ;;
+  *) echo "fake omp $*" ;;
+esac"#,
+    );
+    let claude = script(
+        scripts,
+        "claude",
+        r#"if [ "$1 $2" = "auth status" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max","email":"me@example.com"}'; else echo "fake claude $*"; fi"#,
+    );
+    TestDaemon::start_with_config(&format!(
+        "[terminal]\nenv_inherit = \"daemon\"\n\n[harness.omp]\nbin = {acp:?}\nargs = [\"replay\", {t:?}, \"acp\"]\ncli = {omp:?}\n\n[harness.claude]\nbin = {acp:?}\nargs = [\"replay\", {t:?}, \"acp\"]\ncli = {claude:?}\n",
+        acp = acp_bin(),
+        t = transcript("plain-turn"),
+    ))
+}
+
+impl Env {
+    /// OMP and Claude Code both startable.
+    fn both() -> Self {
+        let scripts = tempfile::tempdir().unwrap();
+        let folders = tempfile::tempdir().unwrap();
+        let daemon = daemon_both(scripts.path());
+        let api = repo(folders.path(), "api");
+        let web = repo(folders.path(), "web");
+        let api_id = daemon.create_workspace("api", &[&api]).id;
+        let web_id = daemon.create_workspace("web", &[&web]).id;
+        Self {
+            _scripts: scripts,
+            folders,
+            daemon,
+            api,
+            api_id,
+            web_id,
+        }
+    }
+}
+
+fn summary(view: &Entity<Workbench>, cx: &VisualTestContext) -> String {
+    view.read_with(cx, |wb, cx| wb.launcher_summary(cx))
+}
+
+fn kind_of(view: &Entity<Workbench>, cx: &VisualTestContext) -> LaunchKind {
+    view.read_with(cx, |wb, _| wb.launcher().unwrap().kind())
+}
+
+/// Waits until the sheet has OMP's models and the worktrees.
+fn chat_ready(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
+    ready(view, cx);
+    wait_until(cx, "the OMP models", |cx| {
+        view.read_with(
+            cx,
+            |wb, cx| matches!(wb.launcher_models(cx), Models::Ready(m) if !m.is_empty()),
+        )
+    });
+}
+
+fn confirm_shown(view: &Entity<Workbench>, cx: &VisualTestContext) -> bool {
+    view.read_with(cx, |wb, _| {
+        wb.launcher().is_some_and(|l| l.confirm().is_some())
+    })
+}
+
+#[gpui::test]
+fn the_first_sheet_opens_on_a_plain_terminal_and_says_what_start_will_do(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    assert_eq!(
+        kind_of(&view, cx),
+        LaunchKind::Terminal,
+        "no model by default"
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher().unwrap().stop()),
+        LauncherStop::What,
+        "the keyboard starts on the choice, not in a prompt"
+    );
+    assert_eq!(summary(&view, cx), "Open a terminal in api (main)");
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher_start_label()),
+        "Open terminal ⌘↩"
+    );
+    draw(cx);
+    assert!(region(&view, cx, Region::Launcher("summary")));
+
+    // Start opens the terminal and spends nothing.
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the terminal task", |_| {
+        env.task("Terminal")
+            .is_some_and(|t| t.run.is_none() && t.sessions.len() == 1)
+    });
+    assert!(!confirm_shown(&view, cx));
+}
+
+#[gpui::test]
+fn the_summary_names_agent_model_and_place(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
+            ..LauncherPreset::default()
+        },
+    );
+    chat_ready(&view, cx);
+    let model = view.read_with(cx, |wb, cx| {
+        wb.launcher_chosen_model(cx).unwrap().display_name
+    });
+    assert_eq!(
+        summary(&view, cx),
+        format!("Start OMP · {model} chat in api (main)")
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher_start_label()),
+        "Start OMP chat ⌘↩"
+    );
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_place(LaunchWhere::NewWorktree, cx)
+    });
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Title, "Fix it", cx);
+    });
+    assert_eq!(
+        summary(&view, cx),
+        format!("Start OMP · {model} chat in api (new worktree hutan/fix-it)")
+    );
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_place(LaunchWhere::Main, cx);
+        wb.launcher_set_kind(LaunchKind::Command, cx);
+        wb.launcher_set_field(LauncherField::Command, "cargo test", cx);
+    });
+    assert_eq!(summary(&view, cx), "Run “cargo test” in api (main)");
+    view.update(cx, |wb, cx| wb.launcher_set_queue(true, cx));
+    assert_eq!(summary(&view, cx), "Queue “cargo test” in api (main)");
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_queue(false, cx);
+        wb.launcher_set_kind(LaunchKind::TerminalAgent, cx);
+    });
+    assert_eq!(summary(&view, cx), "Start OMP in a terminal in api (main)");
+    // The footer draws it.
+    draw(cx);
+    assert!(region(&view, cx, Region::Launcher("summary")));
+}
+
+#[gpui::test]
+fn the_sheet_reopens_on_what_was_started_last_and_keeps_it_across_restarts(
+    cx: &mut TestAppContext,
+) {
+    let env = Env::new();
+    let state = env.daemon.home().join("desktop-state.json");
+    let (view, cx) = open_with(
+        cx,
+        settings(&env),
+        env.daemon.connection(),
+        Some(state.clone()),
+    );
+    synced(&view, cx);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    assert_eq!(kind_of(&view, cx), LaunchKind::Terminal);
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_kind(LaunchKind::Command, cx);
+        wb.launcher_set_field(LauncherField::Command, "sleep 71", cx);
+        wb.launcher_set_place(LaunchWhere::NewWorktree, cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the command to run and the sheet to close", |cx| {
+        env.task("sleep 71")
+            .is_some_and(|t| t.state == TaskState::Running)
+            && !launcher_open(&view, cx)
+    });
+
+    // The next sheet opens on a Command in a new worktree.
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    assert_eq!(kind_of(&view, cx), LaunchKind::Command);
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher().unwrap().place().clone()),
+        LaunchWhere::NewWorktree
+    );
+    // …and so does the next run of the app: it is in the state file.
+    view.update(cx, |wb, _| wb.flush_save());
+    let remembered = hutan_desktop::workbench::persistence::load_launcher(&state);
+    assert_eq!(remembered.kind.as_deref(), Some("command"));
+    assert_eq!(remembered.place.as_deref(), Some("new_worktree"));
+
+    // A preset about an agent (a prompt, say) still opens on an agent chat.
+    cx.simulate_keystrokes("escape");
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            prompt: Some("Review".into()),
+            ..LauncherPreset::default()
+        },
+    );
+    assert_eq!(kind_of(&view, cx), LaunchKind::Chat);
+}
+
+#[gpui::test]
+fn the_first_chat_with_a_prompt_asks_once_per_agent_and_model(cx: &mut TestAppContext) {
+    let env = Env::both();
+    let (view, cx) = open(cx, &env);
+    let open_chat = |view: &Entity<Workbench>, cx: &mut VisualTestContext, prompt: &str| {
+        open_sheet(
+            view,
+            cx,
+            LauncherPreset {
+                project: Some(env.api_id),
+                kind: Some(LaunchKind::Chat),
+                prompt: Some(prompt.into()),
+                ..LauncherPreset::default()
+            },
+        );
+        chat_ready(view, cx);
+    };
+
+    // The first start does not send: it asks, naming agent and model, and Cancel changes nothing.
+    open_chat(&view, cx, "First prompt");
+    click(&view, cx, Region::Launcher("start"));
+    assert!(confirm_shown(&view, cx));
+    let target = view.read_with(cx, |wb, _| {
+        wb.launcher().unwrap().confirm().unwrap().target.clone()
+    });
+    let model = view.read_with(cx, |wb, cx| {
+        wb.launcher_chosen_model(cx).unwrap().display_name
+    });
+    assert_eq!(target, format!("OMP · {model}"));
+    draw(cx);
+    for part in [
+        "confirm",
+        "confirm-start",
+        "confirm-cancel",
+        "confirm-remember",
+    ] {
+        assert!(region(&view, cx, Region::Launcher(part)), "{part}");
+    }
+    assert!(env.tasks().is_empty(), "nothing was sent");
+    click(&view, cx, Region::Launcher("confirm-cancel"));
+    assert!(!confirm_shown(&view, cx));
+    assert!(launcher_open(&view, cx));
+    assert!(env.tasks().is_empty());
+
+    // Yes sends it, and OMP on this model is not asked about again.
+    click(&view, cx, Region::Launcher("start"));
+    assert!(confirm_shown(&view, cx));
+    click(&view, cx, Region::Launcher("confirm-start"));
+    wait_until(cx, "the first chat", |_| {
+        env.task("First prompt")
+            .is_some_and(|t| !t.sessions.is_empty())
+    });
+    wait_until(cx, "the sheet to close", |cx| !launcher_open(&view, cx));
+    open_chat(&view, cx, "Second prompt");
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the second chat, started without asking", |_| {
+        env.task("Second prompt")
+            .is_some_and(|t| !t.sessions.is_empty())
+    });
+    assert!(!confirm_shown(&view, cx));
+    wait_until(cx, "the sheet to close", |cx| !launcher_open(&view, cx));
+
+    // Another agent is another question.
+    open_chat(&view, cx, "Third prompt");
+    wait_until(cx, "Claude Code to be startable", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "claude" && h.enabled())
+        })
+    });
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_agent(LaunchAgent::Harness("claude".into()), cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    assert!(confirm_shown(&view, cx), "Claude Code was never confirmed");
+    // Not remembering asks again next time.
+    click(&view, cx, Region::Launcher("confirm-remember"));
+    click(&view, cx, Region::Launcher("confirm-start"));
+    wait_until(cx, "the third chat", |_| {
+        env.task("Third prompt")
+            .is_some_and(|t| !t.sessions.is_empty())
+    });
+    wait_until(cx, "the sheet to close", |cx| !launcher_open(&view, cx));
+    open_chat(&view, cx, "Fourth prompt");
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_agent(LaunchAgent::Harness("claude".into()), cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    assert!(confirm_shown(&view, cx), "it was not to be remembered");
+    cx.simulate_keystrokes("escape");
+    assert!(!confirm_shown(&view, cx));
+    assert!(launcher_open(&view, cx), "Escape answers the question only");
+
+    // The setting turns the question off.
+    view.read_with(cx, |wb, _| {
+        wb.settings_store()
+            .write_user("launcher.confirm_agent_start", toml::Value::Boolean(false))
+    })
+    .unwrap();
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the fourth chat, with the question off", |_| {
+        env.task("Fourth prompt")
+            .is_some_and(|t| !t.sessions.is_empty())
+    });
+}
+
+#[gpui::test]
+fn terminals_commands_and_queued_chats_never_ask(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Command),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Command, "sleep 72", cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the command", |_| env.task("sleep 72").is_some());
+    assert!(!confirm_shown(&view, cx));
+
+    // A chat that only queues sends nothing yet.
+    wait_until(cx, "the sheet to close", |cx| !launcher_open(&view, cx));
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
+            prompt: Some("Later".into()),
+            queue: true,
+            ..LauncherPreset::default()
+        },
+    );
+    chat_ready(&view, cx);
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the queued chat", |_| env.task("Later").is_some());
+    assert!(!confirm_shown(&view, cx));
+}
+
+#[gpui::test]
+fn rows_change_value_only_when_opened_and_command_enter_waits_for_the_choice(
+    cx: &mut TestAppContext,
+) {
+    let env = Env::new();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    let stop = |cx: &VisualTestContext| view.read_with(cx, |wb, _| wb.launcher().unwrap().stop());
+    let open_row =
+        |cx: &VisualTestContext| view.read_with(cx, |wb, _| wb.launcher().unwrap().open_row());
+    assert_eq!(stop(cx), LauncherStop::What);
+
+    // Arrows on a closed row do nothing: nothing can change what Start does by accident.
+    for key in ["down", "right", "up", "left"] {
+        cx.simulate_keystrokes(key);
+        assert_eq!(kind_of(&view, cx), LaunchKind::Terminal, "{key}");
+    }
+    // The focused row is highlighted.
+    draw(cx);
+    assert!(region(&view, cx, Region::Launcher("focus")));
+
+    // ↩ opens the row; now the arrows change the value.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(open_row(cx), Some(LauncherStop::What));
+    cx.simulate_keystrokes("right");
+    assert_eq!(kind_of(&view, cx), LaunchKind::Command);
+    cx.simulate_keystrokes("left left");
+    assert_eq!(kind_of(&view, cx), LaunchKind::TerminalAgent);
+
+    // ⌘↩ never fires while the row's choices are open.
+    cx.simulate_keystrokes("cmd-enter");
+    assert!(launcher_open(&view, cx));
+    assert!(!view.read_with(cx, |wb, _| wb.launcher().unwrap().starting()));
+    assert!(env.tasks().is_empty());
+    // Escape closes the choices, not the sheet.
+    cx.simulate_keystrokes("escape");
+    assert_eq!(open_row(cx), None);
+    assert!(launcher_open(&view, cx));
+    // Space opens too, and Tab closes the row and moves on.
+    cx.simulate_keystrokes("space");
+    assert_eq!(open_row(cx), Some(LauncherStop::What));
+    cx.simulate_keystrokes("tab");
+    assert_eq!(open_row(cx), None);
+    assert_eq!(stop(cx), LauncherStop::Agent);
+    // Shift-Tab goes back.
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(stop(cx), LauncherStop::What);
+
+    // The model row follows the same rule.
+    view.update(cx, |wb, cx| wb.launcher_set_kind(LaunchKind::Chat, cx));
+    wait_until(cx, "the OMP models", |cx| {
+        view.read_with(
+            cx,
+            |wb, cx| matches!(wb.launcher_models(cx), Models::Ready(m) if !m.is_empty()),
+        )
+    });
+    cx.simulate_keystrokes("tab tab");
+    assert_eq!(stop(cx), LauncherStop::Model);
+    cx.simulate_keystrokes("down");
+    assert_eq!(open_row(cx), None);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(open_row(cx), Some(LauncherStop::Model));
+    cx.simulate_keystrokes("cmd-enter");
+    assert!(env.tasks().is_empty(), "⌘↩ does not fire over an open list");
+    cx.simulate_keystrokes("escape");
+    assert!(launcher_open(&view, cx));
+    assert_eq!(open_row(cx), None);
+
+    // With nothing open ⌘↩ starts, from any row.
+    view.update(cx, |wb, cx| wb.launcher_set_kind(LaunchKind::Terminal, cx));
+    cx.simulate_keystrokes("cmd-enter");
+    wait_until(cx, "the terminal", |_| env.task("Terminal").is_some());
+}
+
+#[gpui::test]
+fn a_command_runs_through_the_login_shell_in_a_real_terminal(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Command),
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    // `;`, `&&`, quotes, redirection: all shell syntax, and the checkout is the cwd.
+    let command = "printf 'ONE\\n' > marker.txt; pwd >> marker.txt && echo TWO >> marker.txt";
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_field(LauncherField::Command, command, cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    let marker = env.api.join("marker.txt");
+    wait_until(cx, "the shell to run the whole line", |_| {
+        std::fs::read_to_string(&marker).is_ok_and(|text| text.lines().count() == 3)
+    });
+    let text = std::fs::read_to_string(&marker).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "ONE");
+    assert!(lines[1].ends_with("/api"), "pwd printed {:?}", lines[1]);
+    assert_eq!(lines[2], "TWO");
+    let task = env.task(command).expect("the task");
+    assert_eq!(
+        task.run,
+        Some(TaskRun::Terminal {
+            argv: shell_argv(&user_shell(), command)
+        })
+    );
+}
+
+#[gpui::test]
+fn the_error_of_another_agent_does_not_stay_when_the_agent_changes(cx: &mut TestAppContext) {
+    let env = Env::both();
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
+            ..LauncherPreset::default()
+        },
+    );
+    chat_ready(&view, cx);
+    wait_until(cx, "Claude Code to be startable", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "claude" && h.enabled())
+        })
+    });
+    // An empty prompt is an error on OMP…
+    click(&view, cx, Region::Launcher("start"));
+    let error = view.read_with(cx, |wb, _| {
+        wb.launcher().unwrap().error().map(str::to_owned)
+    });
+    assert!(error.is_some_and(|e| e.contains("needs a prompt")));
+    // …which is gone once the agent is another.
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_agent(LaunchAgent::Harness("claude".into()), cx);
+    });
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb
+            .launcher()
+            .unwrap()
+            .error()
+            .map(str::to_owned)),
+        None
+    );
+}
+
+#[gpui::test]
+fn only_the_chosen_agent_says_why_it_cannot_start(cx: &mut TestAppContext) {
+    let env = Env::with(true);
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            kind: Some(LaunchKind::Chat),
+            ..LauncherPreset::default()
+        },
+    );
+    wait_until(cx, "Claude Code to be found missing", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "claude" && matches!(h.readiness, Readiness::NeedsInstall(_)))
+        })
+    });
+    wait_until(cx, "OMP to be startable", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.launcher_harness_choices(cx)
+                .iter()
+                .any(|h| h.id == "omp" && h.enabled())
+        })
+    });
+    // OMP is the agent: Claude Code's missing adapter is not this start's problem.
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.launcher().unwrap().agent().clone()),
+        LaunchAgent::Harness("omp".into())
+    );
+    assert_eq!(
+        view.read_with(cx, |wb, cx| wb.launcher_agent_status(cx)),
+        None
+    );
 }

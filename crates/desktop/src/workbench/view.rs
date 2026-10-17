@@ -73,6 +73,9 @@ pub struct WorkbenchOptions {
     /// Checks and installs missing harness packages (the "Install…" buttons); `None` offers
     /// none.
     pub package_runner: Option<Arc<dyn PackageRunner>>,
+    /// Hutan runs with its own data directory (`HUTAN_HOME`): the agents' hooks still go into
+    /// their real configuration directories, which the setup says.
+    pub custom_home: bool,
 }
 
 impl WorkbenchOptions {
@@ -94,6 +97,7 @@ impl WorkbenchOptions {
             cli_link: None,
             installer: None,
             package_runner: None,
+            custom_home: std::env::var_os("HUTAN_HOME").is_some_and(|home| !home.is_empty()),
         }
     }
 
@@ -124,6 +128,12 @@ impl WorkbenchOptions {
     /// The same options installing agent integrations through `installer`.
     pub fn with_installer(mut self, installer: Arc<dyn IntegrationInstaller>) -> Self {
         self.installer = Some(installer);
+        self
+    }
+
+    /// The same options saying (or not) that Hutan runs from a custom `HUTAN_HOME`.
+    pub fn with_custom_home(mut self, custom_home: bool) -> Self {
+        self.custom_home = custom_home;
         self
     }
 }
@@ -393,6 +403,9 @@ pub struct Workbench {
     /// Review comments of the Changes views per checkout directory, saved with the layout (see
     /// [`persistence::ReviewComments`]).
     pub(crate) review_comments: persistence::ReviewComments,
+    /// What the Start… sheet remembers, saved with the layout (see
+    /// [`persistence::LauncherMemory`]).
+    pub(crate) launcher_memory: persistence::LauncherMemory,
     /// What tells the workbench a terminal's folds changed, per held session.
     pub(crate) collapse_watch: HashMap<SessionId, Subscription>,
     pub(crate) window_active: bool,
@@ -663,6 +676,11 @@ impl Workbench {
                 .as_deref()
                 .map(persistence::load_review_comments)
                 .unwrap_or_default(),
+            launcher_memory: options
+                .state_path
+                .as_deref()
+                .map(persistence::load_launcher)
+                .unwrap_or_default(),
             collapse_watch: HashMap::new(),
             window_active: window.is_window_active(),
             rendered_terminals: std::collections::HashSet::new(),
@@ -686,7 +704,10 @@ impl Workbench {
             daemon: DaemonControl::new(),
             mac,
             setup: super::setup::SetupControl::new(cx.focus_handle(), options.cli_link),
-            integrations: super::integrations::IntegrationControl::new(options.installer),
+            integrations: super::integrations::IntegrationControl::new(
+                options.installer,
+                options.custom_home,
+            ),
             harness_install: super::harness_install::HarnessInstallControl::new(
                 options.package_runner,
             ),
@@ -944,6 +965,7 @@ impl Workbench {
             &self.state,
             &self.collapsed_blocks,
             &self.review_comments,
+            &self.launcher_memory,
         ) {
             Ok(json) => json,
             Err(err) => {

@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 
 use crate::settings::{
     AgentsSettings, AppSettings, AssistantSettings, ChatSettings, EditorSettings, HistorySettings,
-    InspectorPanelSettings, IntegrationsSettings, KeymapSettings, LayoutSettings,
+    InspectorPanelSettings, IntegrationsSettings, KeymapSettings, LauncherSettings, LayoutSettings,
     OverviewPanelSettings, ResourcesSettings, SessionsPanelSettings, TasksSettings,
     TerminalSettings, WorkspacesSettings,
 };
@@ -255,6 +255,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry::of::<TasksSettings>(),
         CatalogEntry::of::<AssistantSettings>(),
         CatalogEntry::of::<IntegrationsSettings>(),
+        CatalogEntry::of::<LauncherSettings>(),
         CatalogEntry {
             namespace: "accounts",
             workspace_overridable: false,

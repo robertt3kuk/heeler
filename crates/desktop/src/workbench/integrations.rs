@@ -1,8 +1,10 @@
-//! Agent integrations that install themselves (`integrations.auto_install`, default on): when
+//! Agent integrations: the hooks Hutan puts into Codex, Claude Code and OMP so a terminal
+//! session knows what its agent is doing (`crate::integrations`). Nothing is installed unless the
+//! user asked: the setup's Agents step installs the harnesses the user ticked, and
+//! `integrations.auto_install` (default **off**) keeps them installed on every start: when
 //! Hutan starts and the daemon answers, the hooks of every harness that is installed and whose
-//! integration is not are installed with `hutan integration install` (`crate::integrations`),
-//! the way a terminal app puts its hooks in place. Off, nothing is installed by itself; it never
-//! uninstalls either (the Agents step of the setup offers that, one harness at a time).
+//! integration is not are installed with `hutan integration install`. It never uninstalls
+//! (the Agents step of the setup offers that, one harness at a time).
 //!
 //! "Installed" is the detection the Accounts page uses (`HarnessDirectory`), so the installs
 //! wait for `account.list`. The CLI runs off the main thread. Results go to the log; failures
@@ -30,12 +32,18 @@ pub(crate) struct IntegrationControl {
     statuses: HashMap<&'static str, IntegrationStatus>,
     /// A manual install or uninstall is running.
     busy: bool,
+    /// Hutan runs from a custom `HUTAN_HOME`: the hooks still go into the agents' real
+    /// configuration directories.
+    custom_home: bool,
+    /// The harnesses whose status was asked already by the setup's Agents step.
+    asked: std::collections::BTreeSet<&'static str>,
 }
 
 impl IntegrationControl {
-    pub(crate) fn new(installer: Option<Arc<dyn IntegrationInstaller>>) -> Self {
+    pub(crate) fn new(installer: Option<Arc<dyn IntegrationInstaller>>, custom_home: bool) -> Self {
         Self {
             installer,
+            custom_home,
             ..Self::default()
         }
     }
@@ -76,6 +84,12 @@ impl Workbench {
     /// A manual install or uninstall is running.
     pub fn integration_busy(&self) -> bool {
         self.integrations.busy
+    }
+
+    /// Hutan runs from a custom `HUTAN_HOME` (which does not move the agents' own
+    /// configuration directories).
+    pub fn integrations_custom_home(&self) -> bool {
+        self.integrations.custom_home
     }
 
     /// The harnesses the daemon found on its machine (the Accounts page's detection).
@@ -206,13 +220,36 @@ impl Workbench {
 
     /// Asks `hutan integration status` about every detected harness.
     pub fn refresh_integration_statuses(&mut self, cx: &mut Context<Self>) {
+        let targets = self.detected_harnesses(cx);
+        self.ask_integration_statuses(targets, cx);
+    }
+
+    /// The account listing changed while the setup's Agents step is on screen: asks the status
+    /// of the harnesses it found that were not asked yet (the step shows "Already installed",
+    /// and Uninstall hooks, from it).
+    pub(crate) fn integration_statuses_step(&mut self, cx: &mut Context<Self>) {
+        if self.integrations.installer.is_none()
+            || self.setup().map(|s| s.step) != Some(super::setup::SetupStep::Agents)
+            || !matches!(self.env.harnesses.read(cx).listing(), Listing::Ready)
+        {
+            return;
+        }
+        let targets: Vec<&'static str> = self
+            .detected_harnesses(cx)
+            .into_iter()
+            .filter(|harness| !self.integrations.asked.contains(harness))
+            .collect();
+        self.ask_integration_statuses(targets, cx);
+    }
+
+    fn ask_integration_statuses(&mut self, targets: Vec<&'static str>, cx: &mut Context<Self>) {
         let Some(installer) = self.integrations.installer.clone() else {
             return;
         };
-        let targets = self.detected_harnesses(cx);
         if targets.is_empty() {
             return;
         }
+        self.integrations.asked.extend(targets.iter().copied());
         let work = cx.background_executor().spawn(async move {
             targets
                 .into_iter()
@@ -235,6 +272,53 @@ impl Workbench {
     /// Installs the hooks of `harness` now, whatever `integrations.auto_install` says.
     pub fn install_integration(&mut self, harness: &'static str, cx: &mut Context<Self>) {
         self.change_integration(harness, true, cx);
+    }
+
+    /// Installs the hooks of each of `harnesses` that is detected, one after the other (the
+    /// setup's Agents step, for the ones the user ticked). Failures show one notice.
+    pub fn install_integrations(&mut self, harnesses: Vec<&'static str>, cx: &mut Context<Self>) {
+        let Some(installer) = self.integrations.installer.clone() else {
+            return;
+        };
+        let detected = self.detected_harnesses(cx);
+        let targets: Vec<&'static str> = harnesses
+            .into_iter()
+            .filter(|harness| detected.contains(harness))
+            .collect();
+        if targets.is_empty() || self.integrations.busy {
+            return;
+        }
+        self.integrations.busy = true;
+        cx.notify();
+        let work = cx.background_executor().spawn(async move {
+            let mut outcome = Outcome {
+                statuses: Vec::new(),
+                failures: Vec::new(),
+                installed: Vec::new(),
+            };
+            for harness in targets {
+                match installer.install(harness) {
+                    Ok(()) => {
+                        let status = installer
+                            .status(harness)
+                            .unwrap_or(IntegrationStatus::Installed);
+                        outcome.statuses.push((harness, status));
+                        outcome.installed.push(harness);
+                    }
+                    Err(error) => outcome.failures.push((harness, error)),
+                }
+            }
+            outcome
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = work.await;
+            this.update(cx, |this, cx| {
+                this.integrations.busy = false;
+                this.integrations_installed(outcome, cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Removes the hooks of `harness` (`hutan integration uninstall`).

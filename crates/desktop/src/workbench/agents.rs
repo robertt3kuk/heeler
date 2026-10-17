@@ -369,6 +369,7 @@ impl Workbench {
     /// Switch model dialog.
     pub(crate) fn on_harnesses_changed(&mut self, cx: &mut Context<Self>) {
         self.auto_install_step(cx);
+        self.integration_statuses_step(cx);
         self.launcher_on_harnesses_changed(cx);
         let Some(picker) = &self.agent_picker else {
             return;

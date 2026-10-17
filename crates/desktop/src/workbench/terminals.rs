@@ -632,6 +632,7 @@ impl Workbench {
             window,
             cx,
         );
+        self.select_modal_input(cx);
     }
 
     pub fn copy_session_id(&mut self, session: SessionId, cx: &mut Context<Self>) {

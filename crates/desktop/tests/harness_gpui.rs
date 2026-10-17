@@ -100,6 +100,9 @@ fn start_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext) {
     let daemon = daemon(scripts.path(), "plain-turn", "");
     let (view, cx) = open(cx, &daemon);
     cx.simulate_keystrokes("cmd-shift-t");
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_kind(hutan_desktop::sessions::launch::LaunchKind::Chat, cx);
+    });
     // OMP is first and preselected; its models arrive grouped by provider.
     wait_until(cx, "the OMP models", |cx| {
         view.read_with(cx, |wb, cx| {
@@ -150,8 +153,11 @@ fn start_lists_the_harnesses_and_starts_an_omp_chat(cx: &mut TestAppContext) {
             "{id} choice"
         );
     }
+    click(&view, cx, Region::Launcher("prompt"));
     cx.simulate_input("Fix the build");
     view.update_in(cx, |wb, window, cx| wb.launcher_start(false, window, cx));
+    // The first prompt to this agent and model asks before it is sent.
+    view.update_in(cx, |wb, window, cx| wb.launcher_confirm_start(window, cx));
     wait_until(cx, "the chat tab", |cx| {
         view.read_with(cx, |wb, _| {
             wb.launcher().is_none()

@@ -1141,6 +1141,10 @@ fn start_runs_a_codex_chat_as_a_task_and_opens_it_focused(cx: &mut TestAppContex
     let daemon = TestDaemon::start_with_codex(env.fixture("plain-turn"));
     let (view, cx) = open(cx, &daemon);
     cx.simulate_keystrokes("cmd-shift-t");
+    // A first sheet opens on a plain terminal: the agent chat is picked by hand.
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_kind(hutan_desktop::sessions::launch::LaunchKind::Chat, cx);
+    });
     // Nothing else is installed here: the sheet finds OMP and Claude Code missing and
     // preselects Codex by itself.
     pump(cx, "Codex to be startable and its models", |cx| {
@@ -1181,6 +1185,9 @@ fn start_runs_a_codex_chat_as_a_task_and_opens_it_focused(cx: &mut TestAppContex
 
     // ⌘↩ starts the chat as a task; its tab opens and has the focus.
     cx.simulate_keystrokes("cmd-shift-t");
+    view.update(cx, |wb, cx| {
+        wb.launcher_set_kind(hutan_desktop::sessions::launch::LaunchKind::Chat, cx);
+    });
     pump(cx, "Codex to be startable", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.launcher_harness_choices(cx)
@@ -1191,8 +1198,11 @@ fn start_runs_a_codex_chat_as_a_task_and_opens_it_focused(cx: &mut TestAppContex
                     .is_some_and(|l| l.agent() == &LaunchAgent::Harness("codex".into()))
         })
     });
+    click(&view, cx, Region::Launcher("prompt"));
     cx.simulate_input("Say hello");
     cx.simulate_keystrokes("cmd-enter");
+    // The first prompt to this agent and model asks before it is sent.
+    cx.simulate_keystrokes("enter");
     pump(cx, "the chat tab", |cx| {
         view.read_with(cx, |wb, _| {
             wb.launcher().is_none()

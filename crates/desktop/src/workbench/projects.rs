@@ -85,6 +85,7 @@ impl Workbench {
             window,
             cx,
         );
+        self.select_modal_input(cx);
     }
 
     /// `workspace.rename`: the answer to the inline edit or the prompt.
@@ -222,6 +223,7 @@ impl Workbench {
                 confirm_label: "Create".into(),
                 input: Some(String::new()),
                 secure_input: false,
+                input_selected: false,
                 choice,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, result, window, cx| {

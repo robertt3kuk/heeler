@@ -64,6 +64,15 @@ impl Env {
     }
 }
 
+/// The user turned "Keep hooks installed on every start" on before this launch.
+fn auto_install_on(daemon: &TestDaemon) {
+    std::fs::write(
+        daemon.home().join("settings.toml"),
+        "[integrations]\nauto_install = true\n",
+    )
+    .unwrap();
+}
+
 fn store(daemon: &TestDaemon) -> SettingsStore {
     SettingsStore::new(SettingsPaths::in_dir(daemon.home()))
 }
@@ -393,7 +402,8 @@ fn the_agents_step_lists_the_harnesses_and_writes_the_assistant_choice(cx: &mut 
         Some(AssistantBackend::Omp)
     );
 
-    // Hooks and assistant: pending until the step is left.
+    // Hooks and assistant: pending until the step is left. Hooks are off until asked for.
+    assert!(!view.read_with(cx, |wb, _| wb.integrations_auto_install()));
     click(&view, cx, Region::Setup("auto-install"));
     click(&view, cx, Region::Setup("backend-none"));
     assert_eq!(view.read_with(cx, |wb, cx| wb.setup_backend(cx)), None);
@@ -401,7 +411,7 @@ fn the_agents_step_lists_the_harnesses_and_writes_the_assistant_choice(cx: &mut 
     click(&view, cx, Region::Setup("backend-omp"));
     click(&view, cx, Region::Setup("continue"));
     let text = saved(&daemon);
-    assert!(text.contains("auto_install = false"), "{text}");
+    assert!(text.contains("auto_install = true"), "{text}");
     assert!(text.contains("enabled = true"), "{text}");
 
     // The backend reached the daemon: the assistant opens on OMP.
@@ -728,6 +738,7 @@ fn integrations_install_for_detected_harnesses_that_lack_them(cx: &mut TestAppCo
     // OMP has them already; nothing is said about the others, so they are not installed.
     env.installer
         .set_status("omp", IntegrationStatus::Installed);
+    auto_install_on(&daemon);
     let (view, cx) = open_plain(cx, &daemon, &env);
     wait_until(cx, "the install", |cx| {
         view.read_with(cx, |wb, _| wb.auto_install_done())
@@ -804,6 +815,7 @@ fn a_failed_install_shows_one_notice_with_the_commands(cx: &mut TestAppContext) 
     let env = Env::new();
     env.installer.fail_install("claude", "permission denied");
     env.installer.fail_install("omp", "disk full");
+    auto_install_on(&daemon);
     let (view, cx) = open_plain(cx, &daemon, &env);
     wait_until(cx, "the notice", |cx| notice(&view, cx).is_some());
     let text = notice(&view, cx).unwrap();
@@ -865,6 +877,78 @@ fn the_agents_step_uninstalls_the_hooks_of_one_harness(cx: &mut TestAppContext) 
     );
 }
 
+#[gpui::test]
+fn hooks_are_off_until_ticked_and_only_the_ticked_agents_get_them(cx: &mut TestAppContext) {
+    let scripts = tempfile::tempdir().unwrap();
+    let daemon = daemon_with_harnesses(scripts.path());
+    let env = Env::new();
+    let (view, cx) = open_first_run(cx, &daemon, &env);
+    // A fresh start installs nothing by itself, and the setting is off.
+    pump_for(cx, Duration::from_millis(400));
+    assert!(!view.read_with(cx, |wb, _| wb.integrations_auto_install()));
+    assert!(env.installer.calls().iter().all(|(a, _)| *a != "install"));
+
+    go_to(&view, cx, SetupStep::Agents);
+    wait_listing(&view, cx);
+    let found = detected(&view, cx);
+    assert!(
+        found.contains(&"omp") && found.contains(&"claude"),
+        "{found:?}"
+    );
+    for harness in &found {
+        assert!(
+            drawn(&view, cx, Region::SetupHarness(harness, "hooks")),
+            "a checkbox for {harness}"
+        );
+    }
+    assert!(view.read_with(cx, |wb, _| wb.setup().unwrap().hooks.is_empty()));
+
+    // Ticking Claude Code writes nothing yet…
+    click(&view, cx, Region::SetupHarness("claude", "hooks"));
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb
+            .setup()
+            .unwrap()
+            .hooks
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()),
+        ["claude"]
+    );
+    pump_for(cx, Duration::from_millis(200));
+    assert!(env.installer.installs().is_empty());
+    // …leaving the step installs the ticked one and only it.
+    click(&view, cx, Region::Setup("continue"));
+    wait_until(cx, "the claude install", |_| {
+        env.installer.installs() == ["claude"]
+    });
+    pump_for(cx, Duration::from_millis(300));
+    assert_eq!(env.installer.installs(), ["claude"], "OMP was not ticked");
+    assert!(saved(&daemon).contains("auto_install = false"));
+    assert!(!view.read_with(cx, |wb, _| wb.integrations_auto_install()));
+}
+
+#[gpui::test]
+fn with_a_custom_home_the_agents_step_says_hooks_go_to_the_real_config(cx: &mut TestAppContext) {
+    let scripts = tempfile::tempdir().unwrap();
+    let daemon = daemon_with_harnesses(scripts.path());
+    let env = Env::new();
+    let options = WorkbenchOptions::builtin(store(&daemon), daemon.connection(), None)
+        .with_mac(env.fakes.services())
+        .with_first_run_setup()
+        .with_cli_link(Some(env.link()))
+        .with_installer(Arc::new(env.installer.clone()))
+        .with_package_runner(Arc::new(env.runner.clone()))
+        .with_custom_home(true);
+    let (view, cx) = open_options(cx, options);
+    wait_synced(&view, cx);
+    assert!(view.read_with(cx, |wb, _| wb.integrations_custom_home()));
+    go_to(&view, cx, SetupStep::Agents);
+    wait_listing(&view, cx);
+    assert!(drawn(&view, cx, Region::SetupHarness("claude", "hooks")));
+    assert!(env.installer.calls().iter().all(|(a, _)| *a != "install"));
+}
+
 // ---- Install… for a harness that is not there --------------------------------------------------
 
 fn claude_source() -> &'static hutan_desktop::harness_install::Source {
@@ -919,6 +1003,13 @@ fn a_genuine_package_is_confirmed_with_its_version_and_only_then_installed(
     let env = Env::new();
     env.runner.genuine(claude_source(), "0.93.1");
     let (view, cx) = open_plain(cx, &daemon, &env);
+    // Nothing installs hooks at launch any more, so nothing lists the accounts by itself either:
+    // the Agents step or the Start sheet does, and the test stands in for them.
+    view.update(cx, |wb, cx| {
+        wb.harness_directory()
+            .clone()
+            .update(cx, |d, cx| d.refresh(cx));
+    });
     view.update_in(cx, |wb, window, cx| {
         wb.install_harness("claude", window, cx)
     });

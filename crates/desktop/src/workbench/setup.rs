@@ -10,6 +10,8 @@
 //! itself: the login item, the notification permission, the CLI link and the agent integrations
 //! each have their own seam and are only used when the user presses their control.
 
+use std::collections::BTreeSet;
+
 use gpui::{
     AnyElement, ClipboardItem, Context, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
@@ -120,6 +122,8 @@ pub struct SetupState {
     /// ([`Workbench::setup_backend`]).
     pub assistant_backend: Option<Option<AssistantBackend>>,
     pub auto_install: bool,
+    /// The harnesses whose hooks the user ticked to install when the Agents step is left.
+    pub hooks: BTreeSet<&'static str>,
     pub keep_running: bool,
     pub start_at_login: bool,
     pub global_shortcut: String,
@@ -143,6 +147,7 @@ impl SetupState {
             assistant_enabled: assistant.enabled,
             assistant_backend: None,
             auto_install: settings.get::<IntegrationsSettings>().auto_install,
+            hooks: BTreeSet::new(),
             keep_running: app.keep_running,
             start_at_login: app.start_at_login,
             global_shortcut: assistant.global_shortcut.clone(),
@@ -374,6 +379,10 @@ impl Workbench {
             SetupStep::Agents => {
                 self.setup_write_bool("assistant.enabled", state.assistant_enabled, cx);
                 self.setup_write_bool("integrations.auto_install", state.auto_install, cx);
+                let ticked: Vec<&'static str> = state.hooks.iter().copied().collect();
+                if !ticked.is_empty() {
+                    self.install_integrations(ticked, cx);
+                }
                 if state.assistant_enabled {
                     self.setup_configure_assistant(cx);
                 }
@@ -537,6 +546,19 @@ impl Workbench {
     pub fn setup_set_auto_install(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(state) = &mut self.setup.state {
             state.auto_install = on;
+            cx.notify();
+        }
+    }
+
+    /// Ticks or unticks "Install hooks for …" of one harness; nothing is installed until the
+    /// step is left.
+    pub fn setup_set_hook(&mut self, harness: &'static str, on: bool, cx: &mut Context<Self>) {
+        if let Some(state) = &mut self.setup.state {
+            if on {
+                state.hooks.insert(harness);
+            } else {
+                state.hooks.remove(harness);
+            }
             cx.notify();
         }
     }
@@ -1098,11 +1120,12 @@ impl Workbench {
                         .child(SharedString::from(format!("Could not start: {problem}"))),
                 )
             })
+            .child(self.setup_hooks(infos.as_slice(), state, cx))
             .child(self.setup_row(
-                "Install agent hooks automatically",
-                "Each time Hutan starts it adds its reporting hooks to the agents above that \
-                 are installed (only Hutan's own entries; they do nothing outside a Hutan \
-                 session). Codex asks you once to trust new hooks: approve Hutan's.",
+                "Keep hooks installed on every start",
+                "Off unless you turn it on: then each time Hutan starts it adds its hooks \
+                 to every agent above that is installed and lacks them. Without it, only \
+                 the agents ticked above get hooks, once.",
                 auto.into_any_element(),
             ))
             .child(self.setup_row(
@@ -1225,6 +1248,122 @@ impl Workbench {
             )
             .child(ui::pill(state_text, state_color, &tokens))
             .child(buttons)
+            .into_any_element()
+    }
+
+    /// "Install hooks for OMP / Claude Code / Codex": one unticked checkbox per installed agent,
+    /// each saying what it writes and where. Nothing is written until the step is left.
+    fn setup_hooks(
+        &self,
+        infos: &[(Harness, Detection, String, Option<IntegrationStatus>)],
+        state: &SetupState,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let tokens = self.density.ui();
+        if !self.integrations_available() {
+            return div().into_any_element();
+        }
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (harness, detection, _, hooks) in infos {
+            if *detection != Detection::Installed {
+                continue;
+            }
+            let id = harness.id;
+            let ticked = state.hooks.contains(id);
+            let present = matches!(hooks, Some(IntegrationStatus::Installed));
+            let (writes, place) = match id {
+                "omp" => (
+                    "an extension file",
+                    "~/.omp/agent/extensions/hutan-agent-state.ts",
+                ),
+                "claude" => (
+                    "a hook script and its entries in settings.json",
+                    "~/.claude/hooks/hutan-agent-state.sh, ~/.claude/settings.json",
+                ),
+                _ => (
+                    "a hook script and its entries in hooks.json",
+                    "~/.codex/hutan-agent-state.sh, ~/.codex/hooks.json",
+                ),
+            };
+            let text = if present {
+                "Already installed.".to_owned()
+            } else {
+                format!(
+                    "Writes {writes}: {place}. Only Hutan's own entries; changed files are backed up first."
+                )
+            };
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("setup-hook-{id}")))
+                    .relative()
+                    .flex()
+                    .items_start()
+                    .gap(px(tokens.spacing * 3.0))
+                    .py(px(tokens.spacing * 2.0))
+                    .cursor_pointer()
+                    .when(!present, |s| {
+                        s.on_click(cx.listener(move |this, _, _, cx| {
+                            let on = this
+                                .setup
+                                .state
+                                .as_ref()
+                                .is_some_and(|s| !s.hooks.contains(id));
+                            this.setup_set_hook(id, on, cx);
+                        }))
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .child(if present || ticked { "☑" } else { "☐" }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.0))
+                            .child(div().medium().child(SharedString::from(format!(
+                                "Install hooks for {}",
+                                harness.name
+                            ))))
+                            .child(
+                                div()
+                                    .text_size(px(tokens.secondary_font_size))
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(text)),
+                            ),
+                    )
+                    .child(probe(&self.regions, Region::SetupHarness(id, "hooks")))
+                    .into_any_element(),
+            );
+        }
+        if rows.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .pt(px(tokens.spacing * 2.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.muted)
+                    .child(if self.integrations_custom_home() {
+                        "Hooks let a terminal session show what its agent is doing. Hutan runs \
+                         with its own HUTAN_HOME, but these hooks go into the agents' real \
+                         configuration folders. Nothing is written unless you tick it."
+                    } else {
+                        "Hooks let a terminal session show what its agent is doing. They go \
+                         into the agents' own configuration folders. Nothing is written \
+                         unless you tick it."
+                    }),
+            )
+            .children(rows)
             .into_any_element()
     }
 

@@ -2,7 +2,7 @@
 
 use super::changes::ReviewComment;
 use super::model::{ModelError, WorkbenchState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -74,6 +74,32 @@ pub type ReviewComments = BTreeMap<String, Vec<ReviewComment>>;
 pub fn load_review_comments(path: &Path) -> ReviewComments {
     load_key(path, "review_comments")
 }
+/// What the Start… sheet remembers (UX-B, `launcher` in the state file): the What / Agent /
+/// Model / Where of the last start, which the next sheet opens on, and the agent + model pairs
+/// whose first prompt-carrying chat the user already confirmed. View state like the layout;
+/// never sent to the daemon. Values are the sheet's own words (`LaunchKind::key`, a harness id
+/// or `direct:<provider>`, a model id, `main` / `new_worktree` / `worktree:<branch>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LauncherMemory {
+    pub kind: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub place: Option<String>,
+    /// `<agent>/<model or default>` keys that no longer ask before a chat starts.
+    pub confirmed: BTreeSet<String>,
+}
+
+impl LauncherMemory {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The launcher memory saved in `path`; empty when the file is missing or has none.
+pub fn load_launcher(path: &Path) -> LauncherMemory {
+    load_key(path, "launcher")
+}
 
 /// What the state file holds besides the layout, read from top-level key `key`.
 fn load_key<T: serde::de::DeserializeOwned + Default>(path: &Path, key: &str) -> T {
@@ -91,9 +117,10 @@ pub fn state_json(
     state: &WorkbenchState,
     collapsed: &CollapsedBlocks,
     comments: &ReviewComments,
+    launcher: &LauncherMemory,
 ) -> Result<String, ModelError> {
     let json = state.to_json()?;
-    if collapsed.is_empty() && comments.is_empty() {
+    if collapsed.is_empty() && comments.is_empty() && launcher.is_empty() {
         return Ok(json);
     }
     let invalid = |err: serde_json::Error| ModelError::Invalid(err.to_string());
@@ -109,6 +136,12 @@ pub fn state_json(
             map.insert(
                 "review_comments".to_owned(),
                 serde_json::to_value(comments).map_err(invalid)?,
+            );
+        }
+        if !launcher.is_empty() {
+            map.insert(
+                "launcher".to_owned(),
+                serde_json::to_value(launcher).map_err(invalid)?,
             );
         }
     }
@@ -157,15 +190,22 @@ mod tests {
         let path = dir.path().join(STATE_FILE);
         let state = WorkbenchState::default();
         // Without folds the file is exactly the layout.
+        let none = LauncherMemory::default();
         assert_eq!(
-            state_json(&state, &CollapsedBlocks::new(), &ReviewComments::new()).unwrap(),
+            state_json(
+                &state,
+                &CollapsedBlocks::new(),
+                &ReviewComments::new(),
+                &none
+            )
+            .unwrap(),
             state.to_json().unwrap()
         );
         let mut collapsed = CollapsedBlocks::new();
         collapsed.insert("01TERMINAL".to_owned(), vec![3, 7]);
         save_json(
             &path,
-            &state_json(&state, &collapsed, &ReviewComments::new()).unwrap(),
+            &state_json(&state, &collapsed, &ReviewComments::new(), &none).unwrap(),
         )
         .unwrap();
         assert_eq!(load_collapsed(&path), collapsed);
@@ -175,6 +215,38 @@ mod tests {
         assert!(load_collapsed(&dir.path().join("none.json")).is_empty());
         std::fs::write(&path, "{ not json").unwrap();
         assert!(load_collapsed(&path).is_empty());
+    }
+
+    #[test]
+    fn the_launcher_memory_travels_beside_the_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(STATE_FILE);
+        let state = WorkbenchState::default();
+        let memory = LauncherMemory {
+            kind: Some("command".to_owned()),
+            agent: Some("omp".to_owned()),
+            model: Some("claude-opus-4-5".to_owned()),
+            place: Some("new_worktree".to_owned()),
+            confirmed: BTreeSet::from(["omp/claude-opus-4-5".to_owned()]),
+        };
+        save_json(
+            &path,
+            &state_json(
+                &state,
+                &CollapsedBlocks::new(),
+                &ReviewComments::new(),
+                &memory,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_launcher(&path), memory);
+        assert_eq!(
+            load_state(&path),
+            state,
+            "the layout loads from the same file"
+        );
+        assert!(load_launcher(&dir.path().join("none.json")).is_empty());
     }
 
     #[test]
