@@ -1,4 +1,4 @@
-//! `hutan task add|ls|start|done|cancel|rm|show` through the real binary against a real
+//! `hutan task add|ls|start|done|review|cancel|rm|show` through the real binary against a real
 //! in-process daemon. Every repository is created by the test in a temporary directory.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test helpers outside #[test] fns
@@ -452,5 +452,118 @@ async fn reset_runs_an_ended_task_again_and_refuses_a_running_one() {
         e.hutan(&["task", "reset", "Long"]).await.ok().stdout.trim(),
         "`Long` is ready"
     );
+    e.t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_accepts_or_asks_for_changes_and_ls_shows_the_delivery() {
+    let e = Env::start().await;
+    let work = e
+        .add("Work", &["--worktree", "--", "sh", "-c", "exit 0"])
+        .await;
+    let gated = e
+        .add(
+            "Gated",
+            &[
+                "--after",
+                "Work",
+                "--after-policy",
+                "accepted",
+                "--",
+                "sh",
+                "-c",
+                "exit 0",
+            ],
+        )
+        .await;
+    assert_eq!(e.task(&gated).await["after_policy"], "accepted");
+    let plain = e.add("Plain", &["--", "sh", "-c", "exit 0"]).await;
+
+    // Not reviewable before it is done.
+    let early = e.hutan(&["task", "review", "Work", "accept"]).await;
+    assert_eq!(early.code, 1, "{early:?}");
+    assert!(early.stderr.contains("only a done task"), "{early:?}");
+
+    e.hutan(&["task", "start", "Work"]).await.ok();
+    let done = e.wait_state(&work, "done").await;
+    assert_eq!(done["delivery"], "awaiting_review");
+    e.hutan(&["task", "start", "Plain"]).await.ok();
+    e.wait_state(&plain, "done").await;
+
+    let table = e.hutan(&["task", "ls"]).await.ok().stdout;
+    let lines: Vec<&str> = table.lines().collect();
+    assert!(
+        lines[0].starts_with("TASK") && lines[0].contains("DELIVERY"),
+        "{table}"
+    );
+    let row = |title: &str| lines.iter().find(|l| l.contains(title)).copied().unwrap();
+    assert!(row("Work").contains("awaiting review"), "{table}");
+    assert!(row("Gated").contains("after: accepted"), "{table}");
+    let delivery_of = |line: &str| {
+        let cut = lines[0].find("DELIVERY").unwrap();
+        line.chars()
+            .skip(cut)
+            .take(17)
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(delivery_of(row("Plain")), "-", "nothing to review: {table}");
+    assert_eq!(e.task(&gated).await["state"], "todo");
+
+    // Changes first (no chat to send the note to: it stays on the task), then accept.
+    let out = e
+        .hutan(&["task", "review", "Work", "changes", "-m", "Rename it."])
+        .await
+        .ok();
+    assert!(
+        out.stdout.contains("changes requested on `Work`")
+            && out.stdout.contains("kept on the task"),
+        "{out:?}"
+    );
+    let shown = e.hutan(&["task", "show", "Work"]).await.ok().stdout;
+    assert!(
+        shown.contains("changes requested (“Rename it.”)")
+            && shown.contains("awaiting review by daemon")
+            && shown.contains("changes requested by cli: Rename it."),
+        "{shown}"
+    );
+    assert!(shown.contains("wait for   done dependencies"), "{shown}");
+    assert_eq!(e.task(&gated).await["state"], "todo");
+
+    let out = e
+        .hutan(&["task", "review", "Work", "accept", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(out["task"]["delivery"], "accepted");
+    assert!(out.get("session").is_none());
+    assert_eq!(
+        e.hutan(&["task", "review", "Work", "accept"])
+            .await
+            .ok()
+            .stdout
+            .trim(),
+        "`Work` is accepted"
+    );
+    // Accepting released the task that waited for it.
+    e.wait_state(&gated, "ready").await;
+    let table = e.hutan(&["task", "ls"]).await.ok().stdout;
+    assert!(
+        table
+            .lines()
+            .find(|l| l.contains("Work"))
+            .unwrap()
+            .contains("accepted"),
+        "{table}"
+    );
+
+    // Bad policies and decisions are usage errors.
+    let out = e
+        .hutan(&["task", "add", "X", "--after-policy", "later"])
+        .await;
+    assert_eq!(out.code, 2, "{out:?}");
+    let out = e.hutan(&["task", "review", "Work", "maybe"]).await;
+    assert_eq!(out.code, 2, "{out:?}");
     e.t.stop().await;
 }

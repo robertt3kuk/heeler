@@ -976,3 +976,141 @@ async fn an_agent_reads_a_worktree_diff_freely_and_a_merge_waits_for_the_user() 
     assert!(!root.join("c.txt").exists());
     t.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_review_of_a_task_waits_for_the_user_and_is_recorded_as_the_agents() {
+    use hutan_core::{DeliveryActor, DeliveryState, ReviewDecision, TaskState};
+    use hutan_protocol::messages::{WorkspaceOpen, WorkspaceOpened};
+    use hutan_protocol::task::{TaskCreate, TaskUpdate};
+    use hutan_protocol::worktree::WorktreeCommit;
+
+    let t = TestDaemon::start_with(&daemon_toml("ask"), |_| {}).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let agent_session = shell(&t).await;
+    report_agent(&t, agent_session.id).await;
+    let user = t.connect_as(ClientKind::Desktop).await;
+    let agent = connect_from(&t, agent_session.id).await;
+    let workspace = user
+        .call::<WorkspaceOpened>(Request::WorkspaceOpen(WorkspaceOpen {
+            path: root,
+            created_by: None,
+        }))
+        .await
+        .unwrap()
+        .workspace
+        .id;
+    // A task that is done because its owner says so: nothing awaits review yet.
+    let task = user
+        .task_create(TaskCreate {
+            workspace_id: workspace,
+            title: "Write the docs".into(),
+            prompt: None,
+            depends_on: Vec::new(),
+            placement: None,
+            run: None,
+            auto_start: false,
+            after_policy: Default::default(),
+        })
+        .await
+        .unwrap();
+    user.task_start(task.id).await.unwrap();
+    user.task_update(TaskUpdate {
+        id: task.id,
+        title: None,
+        prompt: None,
+        depends_on: None,
+        placement: None,
+        run: None,
+        auto_start: None,
+        after_policy: None,
+        state: Some(TaskState::Done),
+    })
+    .await
+    .unwrap();
+
+    // Reading tasks is free; accepting asks, says what it does, and runs once allowed.
+    assert_eq!(agent.task_list(None, None).await.unwrap().len(), 1);
+    assert!(pending(&user).await.is_empty());
+    let reviewing = tokio::spawn({
+        let agent = agent.clone();
+        async move {
+            agent
+                .task_review(task.id, ReviewDecision::Accept, Some("looks fine".into()))
+                .await
+        }
+    });
+    let approval = next_approval(&user).await;
+    assert_eq!(approval.session_id, agent_session.id);
+    assert!(
+        approval.title.contains("accept the work") && approval.title.contains("looks fine"),
+        "{}",
+        approval.title
+    );
+    let unchanged = &user.task_list(None, None).await.unwrap()[0];
+    assert_eq!(
+        unchanged.delivery,
+        DeliveryState::None,
+        "nothing ran before the answer"
+    );
+    answer(&user, approval.id, "allow_once").await;
+    let reviewed = reviewing.await.unwrap().unwrap();
+    assert_eq!(reviewed.task.delivery, DeliveryState::Accepted);
+    let record = reviewed.task.delivery_history.last().unwrap();
+    assert_eq!(record.by, DeliveryActor::Agent, "recorded as the agent's");
+    assert_eq!(record.note.as_deref(), Some("looks fine"));
+
+    // A denied change request changes nothing.
+    let denied = tokio::spawn({
+        let agent = agent.clone();
+        async move {
+            agent
+                .task_review(task.id, ReviewDecision::RequestChanges, Some("no".into()))
+                .await
+        }
+    });
+    let approval = next_approval(&user).await;
+    assert!(
+        approval.title.contains("request changes"),
+        "{}",
+        approval.title
+    );
+    answer(&user, approval.id, "deny").await;
+    assert_eq!(remote_code(denied.await.unwrap()), ErrorCode::Forbidden);
+    assert_eq!(
+        user.task_list(None, None).await.unwrap()[0].delivery,
+        DeliveryState::Accepted
+    );
+
+    // The user's own review needs no approval and is the desktop's.
+    let by_user = user
+        .task_review(task.id, ReviewDecision::RequestChanges, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        by_user.task.delivery_history.last().unwrap().by,
+        DeliveryActor::Desktop
+    );
+
+    // Committing in a worktree asks too: it decides what a merge takes.
+    let committing = tokio::spawn({
+        let agent = agent.clone();
+        async move {
+            agent
+                .worktree_commit(WorktreeCommit {
+                    path: "/nowhere".into(),
+                    message: "x".into(),
+                })
+                .await
+        }
+    });
+    let approval = next_approval(&user).await;
+    assert!(
+        approval.title.contains("commit everything"),
+        "{}",
+        approval.title
+    );
+    answer(&user, approval.id, "deny").await;
+    assert_eq!(remote_code(committing.await.unwrap()), ErrorCode::Forbidden);
+    t.stop().await;
+}

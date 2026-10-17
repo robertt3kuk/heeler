@@ -8,6 +8,9 @@
 //!   `projects.auto`).
 //! - [`ui`]: the agent control surface: action catalog, layout, `ui.run` (protocol 0.21,
 //!   capability `control`).
+//! - [`task`] also carries the delivery facet (`delivery`, `delivery_history`, `after_policy`),
+//!   `task.review` and `worktree.commit`, and [`worktree`]'s `worktree.diff` says what is
+//!   committed and what is not (protocol 0.25, capability `task.review`).
 //! - [`assistant`] also carries rich input: `image` and `pasted_text` attachments, `file` for
 //!   every chat, `ChatInfo.images`, error code `unsupported` (protocol 0.23, capability
 //!   `chat.rich_input`).
@@ -59,7 +62,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 24,
+    minor: 25,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

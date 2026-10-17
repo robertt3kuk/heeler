@@ -1,4 +1,4 @@
-//! `hutan wt new|ls|rm|diff|merge` and the worktree step of `hutan new --worktree`.
+//! `hutan wt new|ls|rm|diff|merge|commit` and the worktree step of `hutan new --worktree`.
 
 use std::path::{Path, PathBuf};
 
@@ -6,16 +6,18 @@ use hutan_client::Client;
 use hutan_core::WorkspaceId;
 use hutan_protocol::messages::{CreatedBy, Request, WorkspaceKind, WorkspaceOpen, WorkspaceOpened};
 use hutan_protocol::worktree::{
-    DiffFile, DiffStatus, MergeStrategy, WorktreeCreate, WorktreeCreated, WorktreeDiff,
-    WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeInfo, WorktreeList, WorktreeMerge,
-    WorktreeMerged, WorktreeRemove, conflict_files,
+    DiffFile, DiffStatus, MergeStrategy, WorktreeCommit, WorktreeCreate, WorktreeCreated,
+    WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeInfo, WorktreeList,
+    WorktreeMerge, WorktreeMerged, WorktreeRemove, conflict_files,
 };
 use serde_json::json;
 
 use super::Ctx;
 use super::sessions::with_source;
 use super::workspaces::workspace_target;
-use crate::args::{WtCommand, WtDiffArgs, WtLsArgs, WtMergeArgs, WtNewArgs, WtRmArgs};
+use crate::args::{
+    WtCommand, WtCommitArgs, WtDiffArgs, WtLsArgs, WtMergeArgs, WtNewArgs, WtRmArgs,
+};
 use crate::error::CliError;
 
 /// Where `hutan new --worktree` starts its session.
@@ -32,6 +34,7 @@ impl Ctx {
             WtCommand::Rm(args) => self.wt_rm(args).await,
             WtCommand::Diff(args) => self.wt_diff(args).await,
             WtCommand::Merge(args) => self.wt_merge(args).await,
+            WtCommand::Commit(args) => self.wt_commit(args).await,
         }
     }
 
@@ -99,14 +102,38 @@ impl Ctx {
             "merge_base": diff.merge_base,
             "files": diff.files,
             "patch_truncated": diff.patch_truncated,
+            "commits": diff.commits,
+            "commits_truncated": diff.commits_truncated,
             "patch": (!args.stat).then_some(&patch),
         });
         self.print(&json, || {
             if args.stat {
-                stat_text(&diff)
+                stat_text(&diff, target.branch.as_deref().unwrap_or("<branch>"))
             } else {
                 patch.trim_end_matches('\n').to_owned()
             }
+        })
+    }
+
+    async fn wt_commit(&self, args: WtCommitArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let target = self
+            .wt_target(&client, &args.target, args.workspace)
+            .await?;
+        let committed = client
+            .worktree_commit(WorktreeCommit {
+                path: target.path.clone(),
+                message: args.message,
+            })
+            .await
+            .map_err(|e| self.fail(e))?;
+        self.print(&committed, || {
+            format!(
+                "committed {} file(s) on {} ({})",
+                committed.files,
+                committed.branch,
+                committed.commit.chars().take(7).collect::<String>()
+            )
         })
     }
 
@@ -387,9 +414,10 @@ fn reusable<'a>(
     }
 }
 
-/// `git diff --stat`-like lines: path, `+adds -dels`, and a summary.
-fn stat_text(diff: &WorktreeDiff) -> String {
-    if diff.files.is_empty() {
+/// `git diff --stat`-like lines: path, `+adds -dels`, a summary, then what a merge takes (the
+/// commits) and what it leaves behind (uncommitted files).
+fn stat_text(diff: &WorktreeDiff, branch: &str) -> String {
+    if diff.files.is_empty() && diff.commits.is_empty() {
         return format!("no changes against {}", diff.base);
     }
     let name = |file: &DiffFile| match (&file.old_path, file.status) {
@@ -417,7 +445,12 @@ fn stat_text(diff: &WorktreeDiff) -> String {
             } else {
                 format!("+{} -{}", file.additions, file.deletions)
             };
-            format!("{status} {:<width$}  {counts}", name(file))
+            let scope = match (file.committed, file.uncommitted) {
+                (true, true) => "  (also uncommitted)",
+                (false, true) => "  (uncommitted)",
+                _ => "",
+            };
+            format!("{status} {:<width$}  {counts}{scope}", name(file))
         })
         .collect();
     let additions: u64 = diff.files.iter().map(|f| u64::from(f.additions)).sum();
@@ -427,6 +460,29 @@ fn stat_text(diff: &WorktreeDiff) -> String {
         diff.files.len(),
         diff.base
     ));
+    lines.push(format!(
+        "a merge takes {} commit(s){}:",
+        diff.commits.len(),
+        if diff.commits_truncated {
+            " (the newest are listed)"
+        } else {
+            ""
+        }
+    ));
+    for commit in &diff.commits {
+        lines.push(format!(
+            "  {} {}",
+            commit.id.chars().take(7).collect::<String>(),
+            commit.subject
+        ));
+    }
+    let uncommitted = diff.files.iter().filter(|f| f.uncommitted).count();
+    if uncommitted > 0 {
+        lines.push(format!(
+            "{uncommitted} file(s) with uncommitted changes: a merge leaves them behind \
+             (`hutan wt commit {branch} -m MSG` commits them)"
+        ));
+    }
     lines.join("\n")
 }
 
@@ -444,13 +500,19 @@ fn merged_text(source: &WorktreeInfo, merged: &WorktreeMerged) -> String {
     );
     if merged.source_dirty {
         text.push_str(&format!(
-            "\n{} still has uncommitted changes, which are not part of the merge",
+            "\n{} still has uncommitted changes: they were not part of the merge and removing \
+             the worktree would discard them (`hutan wt rm --force` does)",
             source.path.display()
         ));
     }
     text.push_str(&format!(
-        "\nremove it with `hutan wt rm {} --delete-branch`",
-        source.path.display()
+        "\nremove the worktree with `hutan wt rm {} --delete-branch`{}",
+        source.path.display(),
+        if merged.source_dirty {
+            " (after committing or deliberately discarding them)"
+        } else {
+            ""
+        }
     ));
     text
 }

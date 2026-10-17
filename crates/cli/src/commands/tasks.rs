@@ -1,11 +1,14 @@
-//! `hutan task add|ls|start|done|cancel|rm|show`: tasks with dependencies (protocol 0.16,
-//! `docs/orchestration.md` § Tasks).
+//! `hutan task add|ls|start|done|review|cancel|rm|show`: tasks with dependencies (protocol
+//! 0.16) and their delivery (protocol 0.25, `docs/orchestration.md` § Tasks).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hutan_client::Client;
-use hutan_core::{Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId};
+use hutan_core::{
+    AfterPolicy, DeliveryState, ReviewDecision, Task, TaskId, TaskPlacement, TaskPlacementKind,
+    TaskRun, TaskState, WorkspaceId,
+};
 use hutan_protocol::messages::{SessionInfo, WorkspaceInfo};
 use hutan_protocol::task::{TaskCreate, TaskList, TaskUpdate};
 use serde_json::json;
@@ -13,7 +16,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::Ctx;
 use super::worktrees::no_workspace;
-use crate::args::{TaskAddArgs, TaskCommand, TaskLsArgs, TaskRmArgs, TaskTargetArgs};
+use crate::args::{
+    AfterPolicyArg, ReviewArg, TaskAddArgs, TaskCommand, TaskLsArgs, TaskReviewArgs, TaskRmArgs,
+    TaskTargetArgs,
+};
 use crate::error::CliError;
 
 /// Shortest task id prefix accepted as a target.
@@ -26,6 +32,7 @@ impl Ctx {
             TaskCommand::Ls(args) => self.task_ls(args).await,
             TaskCommand::Start(args) => self.task_start(args).await,
             TaskCommand::Done(args) => self.task_set_state(args, TaskState::Done).await,
+            TaskCommand::Review(args) => self.task_review(args).await,
             TaskCommand::Cancel(args) => self.task_set_state(args, TaskState::Cancelled).await,
             TaskCommand::Reset(args) => self.task_set_state(args, TaskState::Todo).await,
             TaskCommand::Rm(args) => self.task_rm(args).await,
@@ -78,6 +85,11 @@ impl Ctx {
                 placement,
                 run,
                 auto_start: args.auto,
+                after_policy: match args.after_policy {
+                    AfterPolicyArg::Done => AfterPolicy::Done,
+                    AfterPolicyArg::Accepted => AfterPolicy::Accepted,
+                    AfterPolicyArg::Merged => AfterPolicy::Merged,
+                },
             })
             .await
             .map_err(|e| self.fail(e))?;
@@ -131,12 +143,51 @@ impl Ctx {
                 placement: None,
                 run: None,
                 auto_start: None,
+                after_policy: None,
                 state: Some(state),
             })
             .await
             .map_err(|e| self.fail(e))?;
         self.print(&json!({ "task": updated }), || {
             format!("`{}` is {}", updated.title, updated.state)
+        })
+    }
+
+    async fn task_review(&self, args: TaskReviewArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let task = self
+            .target(
+                &client,
+                &TaskTargetArgs {
+                    target: args.target,
+                    workspace: args.workspace,
+                },
+            )
+            .await?;
+        let decision = match args.decision {
+            ReviewArg::Accept => ReviewDecision::Accept,
+            ReviewArg::Changes => ReviewDecision::RequestChanges,
+        };
+        let reviewed = client
+            .task_review(task.id, decision, args.note)
+            .await
+            .map_err(|e| self.fail(e))?;
+        self.print(&reviewed, || {
+            let task = &reviewed.task;
+            match (decision, reviewed.session) {
+                (ReviewDecision::Accept, _) => format!("`{}` is accepted", task.title),
+                (ReviewDecision::RequestChanges, Some(session)) => format!(
+                    "changes requested on `{}`: the note went to session {session}, which works on it again",
+                    task.title
+                ),
+                (ReviewDecision::RequestChanges, None) => match task.change_request() {
+                    Some(_) => format!(
+                        "changes requested on `{}`: the note is kept on the task (nothing to send it to)",
+                        task.title
+                    ),
+                    None => format!("changes requested on `{}`", task.title),
+                },
+            }
         })
     }
 
@@ -319,6 +370,18 @@ fn glyph(state: TaskState) -> &'static str {
     }
 }
 
+/// The delivery as the `ls` column shows it: empty while there is nothing to say.
+fn delivery_text(delivery: DeliveryState) -> &'static str {
+    match delivery {
+        DeliveryState::None => "-",
+        DeliveryState::AwaitingReview => "awaiting review",
+        DeliveryState::Accepted => "accepted",
+        DeliveryState::ChangesRequested => "changes requested",
+        DeliveryState::Merged => "merged",
+        DeliveryState::Discarded => "discarded",
+    }
+}
+
 /// `hutan task ls`: every task once, under the task it waits for last; a task that waits for
 /// several lists the others in its notes.
 fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
@@ -377,7 +440,7 @@ fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
             stack.push((below.clone(), n + 1 == count, kid, false));
         }
     }
-    let rows: Vec<[String; 4]> = lines
+    let rows: Vec<[String; 5]> = lines
         .iter()
         .map(|(prefix, index)| {
             let task = &tasks[*index];
@@ -410,12 +473,16 @@ fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
             if task.auto_start {
                 notes.push("auto".to_owned());
             }
+            if task.after_policy != AfterPolicy::Done {
+                notes.push(format!("after: {}", task.after_policy));
+            }
             if let Some(outcome) = &task.outcome {
                 notes.push(format!("({outcome})"));
             }
             [
                 format!("{prefix}{} {}", glyph(task.state), task.title),
                 task.state.as_str().to_owned(),
+                delivery_text(task.delivery).to_owned(),
                 ids.get(&task.id)
                     .cloned()
                     .unwrap_or_else(|| task.id.to_string()),
@@ -423,8 +490,8 @@ fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
             ]
         })
         .collect();
-    let header = ["TASK", "STATE", "ID", "NOTES"].map(str::to_owned);
-    let mut widths = [0usize; 3];
+    let header = ["TASK", "STATE", "DELIVERY", "ID", "NOTES"].map(str::to_owned);
+    let mut widths = [0usize; 4];
     for row in std::iter::once(&header).chain(&rows) {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(UnicodeWidthStr::width(cell.as_str()));
@@ -439,11 +506,38 @@ fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
                 line.push_str(cell);
                 line.push_str(&" ".repeat(pad + 2));
             }
-            line.push_str(&row[3]);
+            line.push_str(&row[4]);
             line.trim_end().to_owned()
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `awaiting review`, or `changes requested (“rename it”)`; then the history of moves, oldest
+/// first.
+fn delivery_line(task: &Task) -> String {
+    let mut text = delivery_text(task.delivery).to_owned();
+    if let Some(note) = task.change_request() {
+        text.push_str(&format!(" (“{note}”)"));
+    }
+    for record in &task.delivery_history {
+        text.push_str(&format!(
+            "\n           {} ago  {} by {}{}{}",
+            duration(now_ms().saturating_sub(record.at_ms)),
+            delivery_text(record.state),
+            record.by.as_str(),
+            record.commit.as_ref().map_or_else(String::new, |c| format!(
+                ", {} {}",
+                record.strategy.as_deref().unwrap_or("merge"),
+                c.chars().take(7).collect::<String>()
+            )),
+            record
+                .note
+                .as_ref()
+                .map_or_else(String::new, |n| format!(": {n}"))
+        ));
+    }
+    text
 }
 
 /// `hutan task show`.
@@ -460,6 +554,7 @@ fn task_details(
     };
     line("id", task.id.to_string());
     line("state", state_line(task));
+    line("delivery", delivery_line(task));
     line(
         "workspace",
         workspaces
@@ -498,6 +593,7 @@ fn task_details(
         "auto start",
         if task.auto_start { "yes" } else { "no" }.to_owned(),
     );
+    line("wait for", format!("{} dependencies", task.after_policy));
     let named = |ids: &mut dyn Iterator<Item = &Task>| {
         let list: Vec<String> = ids
             .map(|t| format!("{} ({}, {})", t.title, t.state, t.id))
@@ -604,6 +700,9 @@ mod tests {
             started_at_ms: None,
             ended_at_ms: None,
             outcome: None,
+            delivery: DeliveryState::None,
+            after_policy: AfterPolicy::Done,
+            delivery_history: Vec::new(),
         }
     }
 

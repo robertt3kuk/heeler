@@ -242,9 +242,13 @@ pub enum Region {
     TaskAction(usize, &'static str),
     /// Entry `index` of the new-task form's "After" list.
     TaskDep(usize),
+    /// The delivery pill of row `index` of the tasks panel's tree (`Awaiting review`, …).
+    TaskDelivery(usize),
     /// A control of the Changes view, by name (`toggle`, `refresh`, `merge`, `merge-confirm`,
     /// `merge-cancel`, `strategy-merge`, `strategy-squash`, `strategy-rebase`, `message`,
-    /// `remove`, `keep`).
+    /// `remove`, `keep`; delivery: `delivery`, `accept`, `request-changes`, `request-note`,
+    /// `request-send`, `request-cancel`, `commit-all`, `commit-message`, `commit-confirm`,
+    /// `commit-cancel`).
     Changes(&'static str),
     /// File `index` of the Changes view's list, top to bottom.
     ChangesFile(usize),

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use hutan_core::{
-    Epoch, SessionId, SessionKind, SessionState, Task, TaskId, TaskPlacement, TaskPlacementKind,
-    TaskRun, TaskState, WorkspaceId,
+    AfterPolicy, DeliveryActor, DeliveryRecord, DeliveryState, Epoch, SessionId, SessionKind,
+    SessionState, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
 };
 use tempfile::TempDir;
 
@@ -22,6 +22,11 @@ use hutan_core::ApprovalId;
 
 fn db(dir: &TempDir) -> PathBuf {
     dir.path().join("hutan.db")
+}
+
+/// The schema version a fully migrated database records: the last migration's.
+fn newest() -> u32 {
+    crate::MIGRATIONS.last().map_or(0, |m| m.version)
 }
 
 fn workspace(name: &str, position: i64) -> WorkspaceRow {
@@ -74,6 +79,32 @@ fn seed_legacy_workspace(storage: &Storage, ws: &WorkspaceRow) {
                     i64::try_from(ws.created_at_ms).unwrap(),
                     i64::try_from(ws.last_active_ms).unwrap(),
                     ws.position
+                ],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Schemas before version 9 have no delivery columns.
+fn seed_legacy_task(storage: &Storage, task: &Task) {
+    let task = task.clone();
+    storage
+        .read(move |conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, workspace_id, title, prompt, state, placement_json, \
+                     run_json, auto_start, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, 'done', ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    task.id.to_string(),
+                    task.workspace_id.to_string(),
+                    task.title,
+                    task.prompt,
+                    serde_json::to_string(&task.placement).unwrap(),
+                    task.run.as_ref().map(|r| serde_json::to_string(r).unwrap()),
+                    task.auto_start,
+                    i64::try_from(task.created_at_ms).unwrap(),
                 ],
             )
             .unwrap();
@@ -163,7 +194,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -213,7 +244,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -479,7 +510,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -672,15 +703,12 @@ fn migrating_to_projects_rebuilds_the_table_without_losing_dependents() {
             })
             .unwrap();
         storage.sessions().upsert(session(ws.id, "kept")).unwrap();
-        storage
-            .tasks()
-            .upsert(task(ws.id, "kept too", 10, &[]))
-            .unwrap();
+        seed_legacy_task(&storage, &task(ws.id, "kept too", 10, &[]));
         storage.close();
     }
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     // The sessions and tasks of the old table's rows were not cascaded away.
     assert_eq!(storage.sessions().list().unwrap().len(), 1);
     assert_eq!(storage.tasks().list().unwrap().len(), 1);
@@ -1407,7 +1435,7 @@ fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "providers"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     storage.close();
     assert!(table_exists(&db(&dir), "providers"));
     integrity_ok(&db(&dir));
@@ -1474,7 +1502,7 @@ fn migrating_v5_adds_the_worktree_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "worktrees"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     storage.close();
     assert!(table_exists(&db(&dir), "worktrees"));
     integrity_ok(&db(&dir));
@@ -1502,6 +1530,9 @@ fn task(workspace: WorkspaceId, title: &str, created: u64, deps: &[TaskId]) -> T
         started_at_ms: None,
         ended_at_ms: None,
         outcome: None,
+        delivery: DeliveryState::None,
+        after_policy: AfterPolicy::Done,
+        delivery_history: Vec::new(),
     }
 }
 
@@ -1582,11 +1613,57 @@ fn migrating_v6_adds_the_task_tables_and_keeps_the_data() {
     }
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
     assert!(storage.tasks().list().unwrap().is_empty());
     storage.close();
     for table in ["tasks", "task_deps", "task_sessions"] {
         assert!(table_exists(&db(&dir), table), "{table}");
     }
+    integrity_ok(&db(&dir));
+}
+
+#[test]
+fn the_delivery_of_a_task_is_stored_and_old_tasks_keep_todays_behaviour() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace("alpha", 0);
+    let old = task(ws.id, "old", 10, &[]);
+    {
+        let storage = Storage::open_with_migrations(db(&dir), &migrate::MIGRATIONS[..8]).unwrap();
+        seed_legacy_workspace(&storage, &ws);
+        seed_legacy_task(&storage, &old);
+        storage.close();
+    }
+    let storage = Storage::open(db(&dir)).unwrap();
+    assert_eq!(storage.app_meta().schema_version().unwrap(), newest());
+    let migrated = storage.tasks().list().unwrap();
+    assert_eq!(migrated.len(), 1);
+    assert_eq!(migrated[0].delivery, DeliveryState::None);
+    assert_eq!(migrated[0].after_policy, AfterPolicy::Done);
+    assert!(migrated[0].delivery_history.is_empty());
+
+    let mut next = task(ws.id, "next", 20, &[old.id]);
+    next.after_policy = AfterPolicy::Merged;
+    next.state = TaskState::Done;
+    let mut asked = DeliveryRecord::new(DeliveryState::ChangesRequested, DeliveryActor::Cli, 5);
+    asked.note = Some("rename it".to_owned());
+    let mut merged = DeliveryRecord::new(DeliveryState::Merged, DeliveryActor::Desktop, 9);
+    merged.commit = Some("abc123".to_owned());
+    merged.strategy = Some("squash".to_owned());
+    next.record_delivery(DeliveryRecord::new(
+        DeliveryState::AwaitingReview,
+        DeliveryActor::Daemon,
+        1,
+    ));
+    next.record_delivery(asked);
+    next.record_delivery(merged);
+    storage.tasks().upsert(next.clone()).unwrap();
+    storage.close();
+
+    // It survives a restart.
+    let storage = Storage::open(db(&dir)).unwrap();
+    let listed = storage.tasks().list().unwrap();
+    assert_eq!(listed[1], next);
+    assert_eq!(listed[1].delivery, DeliveryState::Merged);
+    storage.close();
     integrity_ok(&db(&dir));
 }

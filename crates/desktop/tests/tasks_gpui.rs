@@ -9,19 +9,29 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use common::{TestDaemon, draw, open_with, wait_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
-use hutan_core::{Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId};
+use hutan_core::{
+    AfterPolicy, DeliveryActor, DeliveryState, ReviewDecision, Task, TaskId, TaskPlacement,
+    TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
+};
+use hutan_desktop::sessions::attention::Tone;
 use hutan_desktop::sessions::tasks::{RunChoice, TaskAction, TaskRowView};
 use hutan_desktop::settings::TasksSettings;
 use hutan_desktop::workbench::actions;
 use hutan_desktop::workbench::model::ItemRef;
 use hutan_desktop::workbench::panels::{TaskFormField, TasksPanel};
-use hutan_desktop::workbench::{ChangesView, Region, Workbench};
+use hutan_desktop::workbench::{ChangesView, CleanupDefault, DeliveryForm, Region, Workbench};
 use hutan_protocol::messages::Request;
-use hutan_protocol::task::{TaskCreate, TaskList, TaskListRequest, TaskResult, TaskUpdate};
-use hutan_protocol::worktree::{MergeStrategy, WorktreeCreate, WorktreeCreated, WorktreeList};
+use hutan_protocol::task::{
+    TaskCreate, TaskList, TaskListRequest, TaskRef, TaskResult, TaskReview, TaskReviewed,
+    TaskStarted, TaskUpdate,
+};
+use hutan_protocol::worktree::{
+    MergeStrategy, WorktreeCreate, WorktreeCreated, WorktreeList, WorktreeListRequest,
+};
 use hutan_settings::{SettingsPaths, SettingsStore};
 
 // Fixtures ------------------------------------------------------------------------------------
@@ -109,6 +119,7 @@ impl Env {
                 argv: vec!["sh".into(), "-c".into(), "sleep 60".into()],
             }),
             auto_start: false,
+            after_policy: AfterPolicy::Done,
         };
         build(&mut request);
         let created: TaskResult = self.daemon.call(Request::TaskCreate(request));
@@ -128,6 +139,7 @@ impl Env {
             placement: None,
             run: None,
             auto_start: None,
+            after_policy: None,
             state: Some(state),
         }));
         updated.task
@@ -282,6 +294,7 @@ fn filters_hide_done_tasks_and_other_workspaces(cx: &mut TestAppContext) {
         placement: None,
         run: None,
         auto_start: false,
+        after_policy: AfterPolicy::Done,
     }));
     let (view, cx) = open(cx, &env);
     let panel = show_panel(&view, cx);
@@ -1060,4 +1073,396 @@ fn click_no_effect(view: &Entity<Workbench>, cx: &mut VisualTestContext) {
     let bounds = region(view, cx, Region::Tasks("new")).unwrap();
     cx.simulate_click(bounds.center(), Modifiers::none());
     draw(cx);
+}
+
+// Delivery (DL-1) ------------------------------------------------------------------------------
+
+/// A worktree task on `feature/x` whose run (`exit 0`) has finished: `done` and awaiting review,
+/// with its worktree holding a commit (`a.txt`, `b.txt`) and an untracked `untracked.txt`.
+fn awaiting_task(env: &Env, title: &str) -> (Task, PathBuf) {
+    let task = env.create(title, &[], |request| {
+        request.placement = Some(TaskPlacement {
+            kind: TaskPlacementKind::Worktree,
+            branch: Some("feature/x".into()),
+            base: None,
+        });
+        request.run = Some(TaskRun::Terminal {
+            argv: vec!["sh".into(), "-c".into(), "exit 0".into()],
+        });
+    });
+    let _: TaskStarted = env.daemon.call(Request::TaskStart(TaskRef { id: task.id }));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let done = loop {
+        let now = env.task(task.id).expect("the task exists");
+        if now.state == TaskState::Done && now.delivery == DeliveryState::AwaitingReview {
+            break now;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the task did not finish: {:?} {:?}",
+            now.state,
+            now.delivery
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let list: WorktreeList = env.daemon.call(Request::WorktreeList(WorktreeListRequest {
+        workspace_id: Some(env.workspace),
+    }));
+    let wt = list
+        .worktrees
+        .into_iter()
+        .find(|w| w.branch.as_deref() == Some("feature/x"))
+        .expect("the task's worktree exists")
+        .path;
+    fs::write(wt.join("a.txt"), "one\nTWO\nthree\nfour\n").unwrap();
+    fs::write(wt.join("b.txt"), "b\n").unwrap();
+    commit_all(&wt, "feature work");
+    fs::write(wt.join("untracked.txt"), "u1\nu2\n").unwrap();
+    (done, wt)
+}
+
+fn review(env: &Env, task: &Task, decision: ReviewDecision, note: Option<&str>) -> Task {
+    let reviewed: TaskReviewed = env.daemon.call(Request::TaskReview(TaskReview {
+        id: task.id,
+        decision,
+        note: note.map(str::to_owned),
+    }));
+    reviewed.task
+}
+
+#[gpui::test]
+fn a_finished_task_shows_its_delivery_pill_and_needs_you_without_a_badge(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (task, _wt) = awaiting_task(&env, "Fix login");
+    let session = *task.sessions.last().expect("the run has a session");
+    let (view, cx) = open(cx, &env);
+    let panel = show_panel(&view, cx);
+    wait_rows(&panel, cx, "the task", 1);
+    wait_until(cx, "the delivery pill", |cx| {
+        region(&view, cx, Region::TaskDelivery(0)).is_some()
+    });
+    let row = rows(&panel, cx).remove(0);
+    assert_eq!(
+        (row.delivery, row.delivery_label),
+        (DeliveryState::AwaitingReview, Some("Awaiting review"))
+    );
+
+    // The session is looked at and ended long ago; it still needs the user, softly: the
+    // sidebar's Needs you lists it, the menu bar and the Dock do not count it.
+    let sessions = view.read_with(cx, |wb, _| wb.sessions().clone());
+    wait_until(cx, "the session", |cx| {
+        sessions.read_with(cx, |s, _| s.session(session).is_some())
+    });
+    sessions.update(cx, |s, cx| s.mark_read(session, cx));
+    sessions.read_with(cx, |s, _| {
+        let presentation = s.presentation(s.session(session).unwrap());
+        assert_eq!(
+            (presentation.label.as_str(), presentation.needs_you),
+            ("review", true)
+        );
+        assert_eq!(presentation.tone, Tone::Accent);
+        assert_eq!(s.needs_you(), [session]);
+        assert!(s.attention_entries().is_empty(), "a soft item has no badge");
+    });
+
+    // A task that waits for review stays listed when finished tasks are hidden …
+    settings(&view, cx)
+        .write_user("tasks.show_done", toml::Value::Boolean(false))
+        .unwrap();
+    wait_until(cx, "the setting", |cx| {
+        panel.read_with(cx, |p, cx| p.rows(0, cx).len() == 1)
+    });
+    draw(cx);
+    assert_eq!(rows(&panel, cx).len(), 1);
+
+    // … until it is accepted: the pill changes, the Needs-you item and the row go.
+    review(&env, &task, ReviewDecision::Accept, None);
+    wait_until(cx, "the accepted pill", |cx| {
+        rows(&panel, cx).first().map(|r| r.delivery_label) == Some(Some("Accepted"))
+            || rows(&panel, cx).is_empty()
+    });
+    wait_until(cx, "the Needs-you item to go", |cx| {
+        sessions.read_with(cx, |s, _| s.needs_you().is_empty())
+    });
+    wait_until(cx, "the finished task to be hidden", |cx| {
+        rows(&panel, cx).is_empty()
+    });
+}
+
+#[gpui::test]
+fn the_header_accepts_the_work_of_the_task_on_the_branch(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (task, wt) = awaiting_task(&env, "Fix login");
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the task of the view", |cx| {
+        changes.read_with(cx, |c, cx| {
+            c.delivery_state(cx) == Some(DeliveryState::AwaitingReview)
+        })
+    });
+    for name in ["delivery", "accept", "request-changes", "merge"] {
+        wait_until(cx, name, |cx| {
+            region(&view, cx, Region::Changes(name)).is_some()
+        });
+    }
+    assert!(changes.read_with(cx, |c, cx| c.can_review(cx)));
+
+    click(&view, cx, Region::Changes("accept"));
+    wait_until(cx, "the daemon to accept", |_| {
+        env.task(task.id)
+            .is_some_and(|t| t.delivery == DeliveryState::Accepted)
+    });
+    assert_eq!(
+        env.task(task.id)
+            .unwrap()
+            .delivery_history
+            .last()
+            .unwrap()
+            .by,
+        DeliveryActor::Desktop
+    );
+    wait_until(cx, "the view to follow", |cx| {
+        changes.read_with(cx, |c, cx| {
+            c.delivery_state(cx) == Some(DeliveryState::Accepted)
+        })
+    });
+    assert!(
+        view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string))
+            .is_some_and(|n| n == "Accepted “Fix login”")
+    );
+}
+
+#[gpui::test]
+fn requesting_changes_sends_the_note_and_cancel_leaves_the_task_alone(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (task, wt) = awaiting_task(&env, "Fix login");
+    let (view, cx) = open(cx, &env);
+    let panel = show_panel(&view, cx);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the task of the view", |cx| {
+        changes.read_with(cx, |c, cx| c.can_review(cx))
+    });
+
+    click(&view, cx, Region::Changes("request-changes"));
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.delivery_form()),
+        Some(DeliveryForm::RequestChanges)
+    );
+    wait_until(cx, "the note field", |cx| {
+        region(&view, cx, Region::Changes("request-note")).is_some()
+    });
+    click(&view, cx, Region::Changes("request-cancel"));
+    assert_eq!(changes.read_with(cx, |c, _| c.delivery_form()), None);
+    assert_eq!(
+        env.task(task.id).unwrap().delivery,
+        DeliveryState::AwaitingReview,
+        "cancelling asks for nothing"
+    );
+
+    click(&view, cx, Region::Changes("request-changes"));
+    changes.update(cx, |c, cx| {
+        c.set_delivery_text("Handle the empty password", cx)
+    });
+    click(&view, cx, Region::Changes("request-send"));
+    wait_until(cx, "the daemon to record the request", |_| {
+        env.task(task.id)
+            .is_some_and(|t| t.delivery == DeliveryState::ChangesRequested)
+    });
+    let asked = env.task(task.id).unwrap();
+    assert_eq!(asked.change_request(), Some("Handle the empty password"));
+    assert_eq!(
+        asked.delivery_history.last().unwrap().by,
+        DeliveryActor::Desktop
+    );
+    // A terminal run cannot be written to: the note stays on the task, and the task says so.
+    wait_until(cx, "the form to close", |cx| {
+        changes.read_with(cx, |c, _| c.delivery_form().is_none())
+    });
+    assert!(
+        view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string))
+            .is_some_and(|n| n.contains("the note stays on the task"))
+    );
+    // The Tasks panel row shows the pill and the note.
+    draw(cx);
+    wait_until(cx, "the Changes requested pill", |cx| {
+        rows(&panel, cx).first().map(|r| r.delivery_label) == Some(Some("Changes requested"))
+    });
+    assert_eq!(
+        rows(&panel, cx)[0].change_request.as_deref(),
+        Some("Handle the empty password")
+    );
+}
+
+#[gpui::test]
+fn the_scope_says_what_a_merge_takes_and_commit_all_brings_the_rest(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (_task, wt) = awaiting_task(&env, "Fix login");
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the scope", |cx| {
+        changes.read_with(cx, |c, _| {
+            !c.commits().is_empty() && !c.uncommitted_files().is_empty()
+        })
+    });
+    let paths = |files: Vec<&hutan_protocol::worktree::DiffFile>| -> Vec<String> {
+        files.into_iter().map(|f| f.path.clone()).collect()
+    };
+    let (commits, committed, uncommitted) = changes.read_with(cx, |c, _| {
+        (
+            c.commits()
+                .iter()
+                .map(|commit| commit.subject.clone())
+                .collect::<Vec<_>>(),
+            paths(c.committed_files()),
+            paths(c.uncommitted_files()),
+        )
+    });
+    assert_eq!(commits, ["feature work"]);
+    assert_eq!(committed, ["a.txt", "b.txt"]);
+    assert_eq!(uncommitted, ["untracked.txt"]);
+    for name in ["scope-committed", "scope-uncommitted", "commit-all"] {
+        wait_until(cx, name, |cx| {
+            region(&view, cx, Region::Changes(name)).is_some()
+        });
+    }
+
+    // Leaving the uncommitted changes out of the list does not hide that they exist.
+    click(&view, cx, Region::Changes("toggle"));
+    wait_until(cx, "the committed-only list", |cx| {
+        changes.read_with(cx, |c, _| {
+            c.uncommitted_files().is_empty() && c.files().len() == 2
+        })
+    });
+    assert!(changes.read_with(cx, |c, _| c.has_uncommitted()));
+    wait_until(cx, "the uncommitted section", |cx| {
+        region(&view, cx, Region::Changes("scope-uncommitted")).is_some()
+    });
+    click(&view, cx, Region::Changes("toggle"));
+    wait_until(cx, "the full list", |cx| {
+        changes.read_with(cx, |c, _| c.files().len() == 3)
+    });
+
+    // The merge form lists exactly the commits it integrates and warns about the rest.
+    click(&view, cx, Region::Changes("merge"));
+    wait_until(cx, "the merge preview", |cx| {
+        region(&view, cx, Region::Changes("merge-commits")).is_some()
+    });
+    click(&view, cx, Region::Changes("merge-cancel"));
+
+    // Commit all…: a message is required; then the worktree is clean and the commit is new.
+    click(&view, cx, Region::Changes("commit-all"));
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.delivery_form()),
+        Some(DeliveryForm::Commit)
+    );
+    click(&view, cx, Region::Changes("commit-confirm"));
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.delivery_form_error().map(str::to_owned)),
+        Some("A commit needs a message.".to_owned())
+    );
+    changes.update(cx, |c, cx| c.set_delivery_text("Add the scratch file", cx));
+    click(&view, cx, Region::Changes("commit-confirm"));
+    wait_until(cx, "the commit to show in the scope", |cx| {
+        changes.read_with(cx, |c, _| {
+            c.commits().len() == 2
+                && c.uncommitted_files().is_empty()
+                && c.delivery_form().is_none()
+        })
+    });
+    assert_eq!(
+        git_out(&wt, &["log", "-1", "--format=%s"]).trim(),
+        "Add the scratch file"
+    );
+    assert!(!changes.read_with(cx, |c, _| c.has_uncommitted()));
+    assert!(
+        view.read_with(cx, |wb, _| wb.notice().map(ToString::to_string))
+            .is_some_and(|n| n.starts_with("Committed 1 file on feature/x ("))
+    );
+    draw(cx);
+    assert!(region(&view, cx, Region::Changes("scope-uncommitted")).is_none());
+}
+
+#[gpui::test]
+fn merging_marks_the_task_merged_and_leftovers_default_the_cleanup_to_keep(
+    cx: &mut TestAppContext,
+) {
+    let env = Env::new();
+    let (task, wt) = awaiting_task(&env, "Fix login");
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    wait_until(cx, "the task of the view", |cx| {
+        changes.read_with(cx, |c, cx| c.can_review(cx))
+    });
+    click(&view, cx, Region::Changes("merge"));
+    changes.update(cx, |c, cx| c.set_merge_message("Merge Fix login", cx));
+    click(&view, cx, Region::Changes("merge-confirm"));
+    wait_until(cx, "the merge result", |cx| {
+        changes.read_with(cx, |c, _| c.merged().is_some())
+    });
+    let merged = changes.read_with(cx, |c, _| c.merged().cloned().unwrap());
+    assert!(
+        merged.source_dirty,
+        "untracked.txt is not part of the merge"
+    );
+
+    // The task is merged, with the commit the merge made.
+    wait_until(cx, "the task to be merged", |_| {
+        env.task(task.id)
+            .is_some_and(|t| t.delivery == DeliveryState::Merged)
+    });
+    let record = env
+        .task(task.id)
+        .unwrap()
+        .delivery_history
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(record.commit.as_deref(), Some(merged.commit.as_str()));
+    assert_eq!(record.strategy.as_deref(), Some("merge"));
+    wait_until(cx, "the view to follow", |cx| {
+        changes.read_with(cx, |c, cx| {
+            c.delivery_state(cx) == Some(DeliveryState::Merged) && !c.can_review(cx)
+        })
+    });
+
+    // Uncommitted changes remain: removing the worktree would discard them, so Keep is the
+    // default and the offer says so.
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.cleanup_default()),
+        Some(CleanupDefault::Keep)
+    );
+    draw(cx);
+    assert!(region(&view, cx, Region::Changes("remove")).is_some());
+    click(&view, cx, Region::Changes("keep"));
+    assert!(changes.read_with(cx, |c, _| c.merged().is_none()));
+    assert!(wt.join("untracked.txt").exists(), "nothing was discarded");
+}
+
+#[gpui::test]
+fn after_commit_all_nothing_is_left_and_removal_is_the_default(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let (task, wt) = awaiting_task(&env, "Fix login");
+    let (view, cx) = open(cx, &env);
+    let changes = open_changes(&view, cx, &wt);
+    click(&view, cx, Region::Changes("commit-all"));
+    changes.update(cx, |c, cx| c.set_delivery_text("Add the scratch file", cx));
+    click(&view, cx, Region::Changes("commit-confirm"));
+    wait_until(cx, "the commit", |cx| {
+        changes.read_with(cx, |c, _| c.commits().len() == 2 && !c.has_uncommitted())
+    });
+    click(&view, cx, Region::Changes("merge"));
+    click(&view, cx, Region::Changes("merge-confirm"));
+    wait_until(cx, "the merge result", |cx| {
+        changes.read_with(cx, |c, _| c.merged().is_some())
+    });
+    assert_eq!(
+        changes.read_with(cx, |c, _| c.cleanup_default()),
+        Some(CleanupDefault::Remove)
+    );
+    // The merge took the committed scratch file too.
+    assert!(env.root.join("untracked.txt").exists());
+    click(&view, cx, Region::Changes("remove"));
+    wait_until(cx, "the worktree to go", |_| !wt.exists());
+    // Removing a merged worktree discards nothing: the task stays merged.
+    assert_eq!(env.task(task.id).unwrap().delivery, DeliveryState::Merged);
 }

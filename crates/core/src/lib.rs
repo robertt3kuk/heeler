@@ -23,6 +23,7 @@ pub use observation::{
 pub use question::{QuestionOutcome, QuestionResponse, QuestionSpec};
 pub use session::{InvalidTransition, SessionEvent, SessionKind, SessionState};
 pub use task::{
-    InvalidTaskTransition, Scheduler, Task, TaskEvent, TaskPlacement, TaskPlacementKind, TaskRun,
-    TaskState,
+    AfterPolicy, DELIVERY_HISTORY_MAX, DeliveryActor, DeliveryRecord, DeliveryState,
+    InvalidTaskTransition, REVIEW_NOTE_MAX_BYTES, ReviewDecision, Scheduler, Task, TaskEvent,
+    TaskPlacement, TaskPlacementKind, TaskRun, TaskState,
 };

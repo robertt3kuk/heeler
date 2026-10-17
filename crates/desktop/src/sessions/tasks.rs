@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 use hutan_core::task::{PROMPT_MAX_BYTES, TITLE_MAX_CHARS, default_branch, topological_order};
 use hutan_core::{
-    SessionId, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
+    AfterPolicy, DeliveryState, SessionId, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun,
+    TaskState, WorkspaceId,
 };
 use hutan_protocol::task::TaskCreate;
 
@@ -61,6 +62,33 @@ impl TaskBook {
 
     pub fn get(&self, id: TaskId) -> Option<&Task> {
         self.tasks.get(&id)
+    }
+
+    /// The task whose work the worktree of `branch` holds: the one that still waits for its
+    /// delivery, else the latest. A task placed in the main checkout is never found this way.
+    pub fn for_branch(&self, branch: &str) -> Option<&Task> {
+        self.tasks
+            .values()
+            .filter(|task| {
+                task.placement.kind == TaskPlacementKind::Worktree
+                    && placement_label(task).1.as_deref() == Some(branch)
+            })
+            .max_by_key(|task| {
+                (
+                    task.state == TaskState::Done && task.delivery.is_open(),
+                    task.created_at_ms,
+                )
+            })
+    }
+
+    /// Whether the finished run of `session` waits for a reviewer: its task is `done` and
+    /// `awaiting_review`. Such a session counts as a soft *Needs you* item.
+    pub fn awaits_review(&self, session: SessionId) -> bool {
+        self.tasks.values().any(|task| {
+            task.state == TaskState::Done
+                && task.delivery == DeliveryState::AwaitingReview
+                && task.sessions.last() == Some(&session)
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -150,10 +178,24 @@ pub fn state_glyph(state: TaskState) -> (&'static str, Tone) {
     }
 }
 
+/// The delivery pill of a task, as `hutan task ls` words it; none while there is nothing to
+/// review (yet).
+pub fn delivery_pill(delivery: DeliveryState) -> Option<(&'static str, Tone)> {
+    match delivery {
+        DeliveryState::None => None,
+        DeliveryState::AwaitingReview => Some(("Awaiting review", Tone::Accent)),
+        DeliveryState::Accepted => Some(("Accepted", Tone::Success)),
+        DeliveryState::ChangesRequested => Some(("Changes requested", Tone::Warning)),
+        DeliveryState::Merged => Some(("Merged", Tone::Success)),
+        DeliveryState::Discarded => Some(("Discarded", Tone::Muted)),
+    }
+}
+
 /// What the panel lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskFilters {
-    /// List tasks that are `done` or `cancelled` (failed ones always stay: they need a look).
+    /// List tasks that are `done` or `cancelled` (failed ones always stay: they need a look,
+    /// and so do done ones that wait for a reviewer or whose changes were requested).
     pub show_done: bool,
     /// Only tasks of this container: a project, Home, or a user workspace together with its
     /// member projects (ADR 0014); `None`: every one.
@@ -163,9 +205,16 @@ pub struct TaskFilters {
 impl TaskFilters {
     /// `parent`: the user workspace a container belongs to (`WorkspaceInfo.parent_id`).
     fn keeps(&self, task: &Task, parent: &dyn Fn(WorkspaceId) -> Option<WorkspaceId>) -> bool {
+        let needs_review = task.state == TaskState::Done
+            && matches!(
+                task.delivery,
+                DeliveryState::AwaitingReview | DeliveryState::ChangesRequested
+            );
         self.workspace
             .is_none_or(|w| w == task.workspace_id || parent(task.workspace_id) == Some(w))
-            && (self.show_done || !matches!(task.state, TaskState::Done | TaskState::Cancelled))
+            && (self.show_done
+                || needs_review
+                || !matches!(task.state, TaskState::Done | TaskState::Cancelled))
     }
 }
 
@@ -197,6 +246,14 @@ pub struct TaskRowView {
     pub session: Option<SessionId>,
     /// It has (or had) a checkout worth reviewing: a worktree task, or one that ran.
     pub reviewable: bool,
+    /// Where its finished work is (protocol 0.25).
+    pub delivery: DeliveryState,
+    /// The pill for `delivery`: `Awaiting review`, `Accepted`, …; none while there is nothing
+    /// to review.
+    pub delivery_label: Option<&'static str>,
+    pub delivery_tone: Tone,
+    /// What a reviewer asked to change, while it is still to be dealt with.
+    pub change_request: Option<String>,
 }
 
 /// `wt <branch>` / `main`, the branch for a worktree task (its default when the task names none).
@@ -311,6 +368,10 @@ pub fn tree_rows(
             auto_start: task.auto_start,
             actions: actions_for(task.state),
             session: task.sessions.last().copied(),
+            delivery: task.delivery,
+            delivery_label: delivery_pill(task.delivery).map(|(label, _)| label),
+            delivery_tone: delivery_pill(task.delivery).map_or(Tone::Muted, |(_, tone)| tone),
+            change_request: task.change_request().map(str::to_owned),
         });
         for child in children
             .remove(&task.id)
@@ -428,6 +489,7 @@ pub fn build_create(workspace: WorkspaceId, form: &NewTask) -> Result<TaskCreate
         placement,
         run,
         auto_start: form.auto_start,
+        after_policy: AfterPolicy::Done,
     })
 }
 
@@ -496,6 +558,9 @@ mod tests {
             started_at_ms: None,
             ended_at_ms: None,
             outcome: None,
+            delivery: DeliveryState::None,
+            after_policy: AfterPolicy::Done,
+            delivery_history: Vec::new(),
         }
     }
 
@@ -796,5 +861,109 @@ mod tests {
         assert_eq!(words("''"), [""], "an empty quoted word is a word");
         assert!(words("").is_empty());
         assert!(split_command("a \\").is_err());
+    }
+
+    fn reviewed(title: &str, age: u64, delivery: DeliveryState, branch: Option<&str>) -> Task {
+        let mut done = task(title, age, TaskState::Done, &[]);
+        done.delivery = delivery;
+        if let Some(branch) = branch {
+            done.placement = TaskPlacement {
+                kind: TaskPlacementKind::Worktree,
+                branch: Some(branch.to_owned()),
+                base: None,
+            };
+        }
+        done
+    }
+
+    #[test]
+    fn every_delivery_but_none_has_a_pill() {
+        let labels: Vec<Option<&str>> = DeliveryState::ALL
+            .iter()
+            .map(|d| delivery_pill(*d).map(|(label, _)| label))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                None,
+                Some("Awaiting review"),
+                Some("Accepted"),
+                Some("Changes requested"),
+                Some("Merged"),
+                Some("Discarded")
+            ]
+        );
+        assert_eq!(
+            delivery_pill(DeliveryState::AwaitingReview).map(|(_, tone)| tone),
+            Some(Tone::Accent)
+        );
+    }
+
+    #[test]
+    fn finished_tasks_that_wait_for_a_reviewer_stay_listed_without_show_done() {
+        let waiting = reviewed("Waiting", 1, DeliveryState::AwaitingReview, None);
+        let sent_back = reviewed("Sent back", 2, DeliveryState::ChangesRequested, None);
+        let accepted = reviewed("Accepted", 3, DeliveryState::Accepted, None);
+        let plain = reviewed("Plain", 4, DeliveryState::None, None);
+        let rows = tree_rows(
+            &book(&[&waiting, &sent_back, &accepted, &plain]),
+            TaskFilters {
+                show_done: false,
+                workspace: None,
+            },
+            &no_parent,
+            0,
+        );
+        let shown: Vec<(&str, Option<&str>)> = rows
+            .iter()
+            .map(|r| (r.title.as_str(), r.delivery_label))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Waiting", Some("Awaiting review")),
+                ("Sent back", Some("Changes requested"))
+            ]
+        );
+    }
+
+    #[test]
+    fn the_task_of_a_branch_is_the_one_still_waiting_for_its_delivery() {
+        let merged = reviewed("Old run", 1, DeliveryState::Merged, Some("feature/x"));
+        let waiting = reviewed(
+            "New run",
+            2,
+            DeliveryState::AwaitingReview,
+            Some("feature/x"),
+        );
+        let newer_merged = reviewed("Newest", 3, DeliveryState::Merged, Some("feature/x"));
+        let elsewhere = reviewed("Other", 4, DeliveryState::AwaitingReview, Some("other"));
+        let main = reviewed("Main", 5, DeliveryState::AwaitingReview, None);
+        let all = book(&[&merged, &waiting, &newer_merged, &elsewhere, &main]);
+        assert_eq!(all.for_branch("feature/x").map(|t| t.id), Some(waiting.id));
+        assert!(all.for_branch("nothing").is_none());
+        let only_merged = book(&[&merged, &newer_merged]);
+        assert_eq!(
+            only_merged.for_branch("feature/x").map(|t| t.id),
+            Some(newer_merged.id),
+            "without one waiting, the latest"
+        );
+    }
+
+    #[test]
+    fn a_session_awaits_review_while_its_done_task_is_awaiting() {
+        let session = SessionId::new();
+        let mut waiting = reviewed("Waiting", 1, DeliveryState::AwaitingReview, None);
+        waiting.sessions = vec![SessionId::new(), session];
+        let mut accepted = reviewed("Accepted", 2, DeliveryState::Accepted, None);
+        let accepted_session = SessionId::new();
+        accepted.sessions = vec![accepted_session];
+        let all = book(&[&waiting, &accepted]);
+        assert!(all.awaits_review(session));
+        assert!(!all.awaits_review(accepted_session));
+        assert!(
+            !all.awaits_review(waiting.sessions[0]),
+            "only the last session of a task counts"
+        );
     }
 }

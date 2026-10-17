@@ -682,6 +682,23 @@ fn describe_request(request: &Request, session: &dyn Fn(SessionId) -> String) ->
         Request::TaskUpdate(r) => format!("change task {}", r.id),
         Request::TaskDelete(r) => format!("delete task {}", r.id),
         Request::TaskStart(r) => format!("start task {}", r.id),
+        Request::TaskReview(r) => format!(
+            "{} for task {}{}",
+            match r.decision {
+                hutan_core::ReviewDecision::Accept => "accept the work",
+                hutan_core::ReviewDecision::RequestChanges => "request changes to the work",
+            },
+            r.id,
+            r.note.as_deref().map_or_else(String::new, |note| format!(
+                ": {}",
+                note.chars().take(120).collect::<String>()
+            ))
+        ),
+        Request::WorktreeCommit(r) => format!(
+            "commit everything in the git worktree {} (“{}”)",
+            r.path.display(),
+            r.message.lines().next().unwrap_or_default()
+        ),
         Request::UiRun(r) => format!("run the window action {}", r.action),
         Request::UiSetSetting(r) => format!(
             "change the setting {}.{} ({} layer)",

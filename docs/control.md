@@ -100,11 +100,13 @@ A stdio MCP server (hand-rolled JSON-RPC, one message per line; protocol version
 | `task_list` | `task.list` | no | tasks and their state |
 | `task_start` | `task.start` | yes | start a ready task |
 | `task_done` / `task_cancel` / `task_reset` | `task.update` | yes | mark done, give up, run again |
+| `task_review` | `task.review` | yes | accept a done task's work, or ask for changes with a note sent to its chat (0.25) |
 | `worktree_new` | `worktree.create` | yes | a git worktree for a branch |
 | `worktree_list` | `worktree.list` | no | worktrees and the sessions in them |
 | `worktree_diff` | `worktree.diff` | no | the files a worktree changed against its base (commits plus uncommitted) |
 | `worktree_file_diff` | `worktree.file_diff` | no | one changed file's unified diff |
 | `worktree_merge` | `worktree.merge` | yes | merge a worktree's branch into the main checkout's branch (local commit; refusals and conflicts change nothing) |
+| `worktree_commit` | `worktree.commit` | yes | stage everything in a worktree and commit it, so a merge takes it (0.25) |
 | `worktree_rm` | `worktree.remove` | yes | remove a worktree |
 | `workspace_list` | `workspace.list` | no | workspaces and projects |
 | `project_recent` | `workspace.recent` | no | recently opened folders |

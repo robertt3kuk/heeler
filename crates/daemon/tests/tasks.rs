@@ -17,17 +17,19 @@ use common::{TestDaemon, WAIT, create_in, sh, wait_event};
 use hutan_agents::CodexConfig;
 use hutan_client::{Client, ClientError};
 use hutan_core::{
-    NodeOutcome, SessionId, SessionKind, SessionState, Task, TaskId, TaskPlacement,
-    TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
+    AfterPolicy, DeliveryActor, DeliveryState, NodeOutcome, ReviewDecision, SessionId, SessionKind,
+    SessionState, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
 };
 use hutan_protocol::ErrorCode;
 use hutan_protocol::messages::{
-    AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, Event, Request, SessionInfo,
-    WorkspaceOpen, WorkspaceOpened,
+    AgentApplied, AgentReleaseRequest, AgentReportRequest, AgentState, ClientKind, Event, Request,
+    SessionInfo, WorkspaceOpen, WorkspaceOpened,
 };
 use hutan_protocol::notify::{IntentKind, NotificationIntent};
 use hutan_protocol::task::{TaskCreate, TaskUpdate};
-use hutan_protocol::worktree::PlacementKind;
+use hutan_protocol::worktree::{
+    MergeStrategy, PlacementKind, WorktreeDiffRequest, WorktreeMerge, WorktreeRemove,
+};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
@@ -144,6 +146,29 @@ impl Env {
     async fn start_with(toml: &str, fixture: Option<&str>) -> Self {
         let scratch = tempfile::tempdir().unwrap();
         let config = fixture.map(|name| replay(name, &scratch.path().join("received.jsonl")));
+        Self::start_in(toml, scratch, config).await
+    }
+
+    /// A daemon whose codex replays the transcript file `transcript` writes into the scratch
+    /// directory.
+    async fn start_with_transcript(transcript: impl FnOnce(&Path) -> PathBuf) -> Self {
+        let scratch = tempfile::tempdir().unwrap();
+        let file = transcript(scratch.path());
+        let config = CodexConfig {
+            program: fixture_bin(),
+            args: vec![
+                "replay".to_owned(),
+                "--received".to_owned(),
+                scratch.path().join("received.jsonl").display().to_string(),
+                file.display().to_string(),
+                "app-server".to_owned(),
+            ],
+            env: Vec::new(),
+        };
+        Self::start_in("", scratch, Some(config)).await
+    }
+
+    async fn start_in(toml: &str, scratch: TempDir, config: Option<CodexConfig>) -> Self {
         let daemon = TestDaemon::start_with(toml, move |c| c.codex = config).await;
         let repo = Repo::new();
         let (client, events) = daemon.connect_subscribed().await;
@@ -167,6 +192,7 @@ impl Env {
             placement: None,
             run: None,
             auto_start: false,
+            after_policy: AfterPolicy::Done,
         }
     }
 
@@ -336,6 +362,7 @@ fn update_of(id: TaskId) -> TaskUpdate {
         placement: None,
         run: None,
         auto_start: None,
+        after_policy: None,
         state: None,
     }
 }
@@ -1368,6 +1395,474 @@ async fn closing_a_workspace_takes_its_tasks_with_it() {
     assert!(t.client.task_list(None, None).await.unwrap().is_empty());
     let t = t.restart().await;
     assert!(t.client.task_list(None, None).await.unwrap().is_empty());
+    t.stop().await;
+}
+
+// delivery (protocol 0.25) ---------------------------------------------------------------------
+
+/// Writes `name` in the checkout `dir` and commits it.
+fn commit_file(dir: &Path, name: &str, text: &str) {
+    fs::write(dir.join(name), text).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", &format!("add {name}")]);
+}
+
+impl Env {
+    /// A worktree task that runs `exit 0` on the branch of its title (`task/<slug>`), started
+    /// and done.
+    async fn finished_worktree_task(&self, title: &str, branch: Option<&str>) -> Task {
+        let task = self
+            .create(TaskCreate {
+                placement: worktree(branch),
+                ..self.script(title, "exit 0", &[])
+            })
+            .await;
+        self.client.task_start(task.id).await.unwrap();
+        self.wait_state(task.id, TaskState::Done).await
+    }
+
+    async fn review(
+        &self,
+        id: TaskId,
+        decision: ReviewDecision,
+        note: Option<&str>,
+    ) -> Result<hutan_protocol::task::TaskReviewed, ClientError> {
+        self.client
+            .task_review(id, decision, note.map(str::to_owned))
+            .await
+    }
+}
+
+fn deliveries(task: &Task) -> Vec<DeliveryState> {
+    task.delivery_history.iter().map(|r| r.state).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_task_awaits_review_until_a_person_accepts_it_or_asks_for_changes() {
+    let mut t = Env::start().await;
+    let a = t
+        .create(TaskCreate {
+            placement: worktree(None),
+            ..t.script("Fix login", "exit 0", &[])
+        })
+        .await;
+    assert_eq!(a.delivery, DeliveryState::None);
+    t.client.task_start(a.id).await.unwrap();
+    let done = t.wait_state(a.id, TaskState::Done).await;
+    assert_eq!(done.delivery, DeliveryState::AwaitingReview);
+    assert_eq!(deliveries(&done), [DeliveryState::AwaitingReview]);
+    assert_eq!(done.delivery_history[0].by, DeliveryActor::Daemon);
+    assert!(done.delivery_history[0].at_ms >= done.started_at_ms.unwrap());
+    // The move is announced like every other change of the task.
+    wait_event(
+        &mut t.events,
+        "task.updated awaiting_review",
+        |event| match event {
+            Event::TaskUpdated { task }
+                if task.id == a.id && task.delivery == DeliveryState::AwaitingReview =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    )
+    .await;
+
+    // Only a done task can be reviewed.
+    let running = t
+        .create(t.script("Still running", "exec sleep 600", &[]))
+        .await;
+    t.client.task_start(running.id).await.unwrap();
+    let (code, text) = message(t.review(running.id, ReviewDecision::Accept, None).await);
+    assert_eq!(code, ErrorCode::InvalidState);
+    assert!(text.contains("only a done task"), "{text}");
+    assert_eq!(
+        message(t.review(TaskId::new(), ReviewDecision::Accept, None).await).0,
+        ErrorCode::NotFound
+    );
+    let long = "x".repeat(16 * 1024 + 1);
+    assert_eq!(
+        message(
+            t.review(a.id, ReviewDecision::RequestChanges, Some(&long))
+                .await
+        )
+        .0,
+        ErrorCode::BadRequest
+    );
+
+    // The CLI accepts; accepting again records nothing new.
+    let accepted = t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    assert!(accepted.session.is_none());
+    assert_eq!(accepted.task.delivery, DeliveryState::Accepted);
+    assert_eq!(
+        accepted.task.delivery_history.last().unwrap().by,
+        DeliveryActor::Cli
+    );
+    let again = t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    assert_eq!(again.task.delivery_history.len(), 2);
+
+    // The desktop asks for changes: the terminal agent cannot be written to, so the note stays
+    // on the task, which stays done.
+    let desktop = t.daemon.connect_as(ClientKind::Desktop).await;
+    let asked = desktop
+        .task_review(
+            a.id,
+            ReviewDecision::RequestChanges,
+            Some("  Rename the helper.  ".into()),
+        )
+        .await
+        .unwrap();
+    assert!(asked.session.is_none());
+    assert_eq!(asked.task.state, TaskState::Done);
+    assert_eq!(asked.task.delivery, DeliveryState::ChangesRequested);
+    assert_eq!(asked.task.change_request(), Some("Rename the helper."));
+    assert_eq!(
+        asked.task.delivery_history.last().unwrap().by,
+        DeliveryActor::Desktop
+    );
+    let accepted = t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    assert_eq!(
+        deliveries(&accepted.task),
+        [
+            DeliveryState::AwaitingReview,
+            DeliveryState::Accepted,
+            DeliveryState::ChangesRequested,
+            DeliveryState::Accepted
+        ]
+    );
+    assert_eq!(accepted.task.change_request(), None);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_work_that_a_person_or_an_agent_did_awaits_review() {
+    let t = Env::start().await;
+    // A command that exits 0 in the main checkout has nothing to review.
+    let plain = t.create(t.script("Run tests", "exit 0", &[])).await;
+    t.client.task_start(plain.id).await.unwrap();
+    let plain = t.wait_state(plain.id, TaskState::Done).await;
+    assert_eq!(plain.delivery, DeliveryState::None);
+    assert!(plain.delivery_history.is_empty());
+
+    // An agent that finishes in the main checkout does.
+    let agent = t.create(t.script("Agent run", "exec sleep 600", &[])).await;
+    let session = t.client.task_start(agent.id).await.unwrap().session.id;
+    t.report(session, AgentState::Working, 1).await;
+    t.report(session, AgentState::Idle, 2).await;
+    let agent = t.wait_state(agent.id, TaskState::Done).await;
+    assert_eq!(agent.delivery, DeliveryState::AwaitingReview);
+
+    // "Marked done" is the user's word, not a run that left work: nothing awaits review, but
+    // the verdict can still be given (a dependant may wait for it).
+    let shell = t.create(t.create_request("Shell")).await;
+    t.client.task_start(shell.id).await.unwrap();
+    let shell = t.update(shell.id, TaskState::Done).await.unwrap();
+    assert_eq!(shell.delivery, DeliveryState::None);
+    let accepted = t
+        .review(shell.id, ReviewDecision::Accept, None)
+        .await
+        .unwrap();
+    assert_eq!(accepted.task.delivery, DeliveryState::Accepted);
+
+    // Running it again forgets the old verdict (the history stays).
+    t.update(shell.id, TaskState::Todo).await.unwrap();
+    let reset = t.task(shell.id).await;
+    assert_eq!(reset.delivery, DeliveryState::None);
+    assert_eq!(deliveries(&reset), [DeliveryState::Accepted]);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dependency_policy_waits_for_acceptance_or_the_merge() {
+    let mut t = Env::start().await;
+    let a = t.finished_worktree_task("Alpha", None).await;
+    assert_eq!(a.delivery, DeliveryState::AwaitingReview);
+    let dependant = |title: &str, policy| TaskCreate {
+        after_policy: policy,
+        ..t.script(title, "exit 0", &[&a])
+    };
+    let by_done = t.create(dependant("After done", AfterPolicy::Done)).await;
+    let by_accept = t
+        .create(dependant("After accept", AfterPolicy::Accepted))
+        .await;
+    let by_merge = t
+        .create(dependant("After merge", AfterPolicy::Merged))
+        .await;
+    assert_eq!(by_accept.after_policy, AfterPolicy::Accepted);
+    // Today's behaviour is the default: done is enough.
+    assert_eq!(by_done.state, TaskState::Ready);
+    assert_eq!(by_accept.state, TaskState::Todo);
+    assert_eq!(by_merge.state, TaskState::Todo);
+    let (code, text) = message(t.client.task_start(by_accept.id).await);
+    assert_eq!(code, ErrorCode::InvalidState);
+    assert!(
+        text.contains("awaiting_review") && text.contains("accepted"),
+        "{text}"
+    );
+
+    // Accepting releases the first, not the second.
+    t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    t.wait_state(by_accept.id, TaskState::Ready).await;
+    assert_eq!(t.task(by_merge.id).await.state, TaskState::Todo);
+    wait_event(&mut t.events, "task.updated ready", |event| match event {
+        Event::TaskUpdated { task }
+            if task.id == by_accept.id && task.state == TaskState::Ready =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+
+    // Asking for changes takes the acceptance back.
+    t.review(a.id, ReviewDecision::RequestChanges, None)
+        .await
+        .unwrap();
+    t.wait_state(by_accept.id, TaskState::Todo).await;
+
+    // A policy can be changed while the task waits.
+    let relaxed = t
+        .client
+        .task_update(TaskUpdate {
+            after_policy: Some(AfterPolicy::Done),
+            ..update_of(by_merge.id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(relaxed.after_policy, AfterPolicy::Done);
+    t.wait_state(by_merge.id, TaskState::Ready).await;
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merge_marks_the_task_merged_with_its_commit_and_a_removal_discards_it() {
+    let t = Env::start().await;
+    let a = t.finished_worktree_task("Alpha", None).await;
+    let b = t.finished_worktree_task("Beta", Some("feature/beta")).await;
+    let gated = t
+        .create(TaskCreate {
+            after_policy: AfterPolicy::Merged,
+            ..t.script("After merge", "exit 0", &[&a])
+        })
+        .await;
+    t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    assert_eq!(t.task(gated.id).await.state, TaskState::Todo);
+
+    // One commit on the branch, and work that was never committed.
+    let dir_a = t.repo.wt("task-alpha");
+    commit_file(&dir_a, "alpha.txt", "alpha\n");
+    fs::write(dir_a.join("scratch.txt"), "wip\n").unwrap();
+    let diff = t
+        .client
+        .worktree_diff(WorktreeDiffRequest {
+            path: dir_a.clone(),
+            base: None,
+            include_uncommitted: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(diff.commits.len(), 1, "{diff:?}");
+    assert_eq!(diff.commits[0].subject, "add alpha.txt");
+    let flags: Vec<(&str, bool, bool)> = diff
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.committed, f.uncommitted))
+        .collect();
+    assert_eq!(
+        flags,
+        [("alpha.txt", true, false), ("scratch.txt", false, true)]
+    );
+
+    let merged = t
+        .client
+        .worktree_merge(WorktreeMerge {
+            path: dir_a.clone(),
+            into: None,
+            strategy: MergeStrategy::Squash,
+            message: Some("Alpha".into()),
+        })
+        .await
+        .unwrap();
+    assert!(merged.source_dirty, "the scratch file stayed behind");
+    let after = t.task(a.id).await;
+    assert_eq!(after.delivery, DeliveryState::Merged);
+    let record = after.delivery_history.last().unwrap();
+    assert_eq!(record.state, DeliveryState::Merged);
+    assert_eq!(record.commit.as_deref(), Some(merged.commit.as_str()));
+    assert_eq!(record.strategy.as_deref(), Some("squash"));
+    assert_eq!(record.by, DeliveryActor::Cli);
+    // Its dependants that waited for the merge go on, and nothing else was touched.
+    t.wait_state(gated.id, TaskState::Ready).await;
+    assert_eq!(t.task(b.id).await.delivery, DeliveryState::AwaitingReview);
+    // Merged work cannot be reviewed any more.
+    assert_eq!(
+        message(t.review(a.id, ReviewDecision::Accept, None).await).0,
+        ErrorCode::InvalidState
+    );
+
+    // Removing the worktree of work nobody merged discards it.
+    t.client
+        .worktree_remove(WorktreeRemove {
+            path: t.repo.wt("feature-beta"),
+            force: false,
+            delete_branch: true,
+        })
+        .await
+        .unwrap();
+    let discarded = t.task(b.id).await;
+    assert_eq!(discarded.delivery, DeliveryState::Discarded);
+    assert_eq!(
+        deliveries(&discarded),
+        [DeliveryState::AwaitingReview, DeliveryState::Discarded]
+    );
+    // And removing the worktree of merged work leaves it merged.
+    t.client
+        .worktree_remove(WorktreeRemove {
+            path: dir_a,
+            force: true,
+            delete_branch: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(t.task(a.id).await.delivery, DeliveryState::Merged);
+    t.stop().await;
+}
+
+/// The recorded plain turn of Codex, followed by a second turn that answers `turn/start`.
+fn two_turn_transcript(dir: &Path) -> PathBuf {
+    let recorded = fs::read_to_string(fixtures().join("plain-turn.jsonl")).unwrap();
+    let lines: Vec<&str> = recorded.lines().collect();
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    // turn/start, its response and the events of the turn (not the thread's start).
+    for index in [9, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23] {
+        out.push(
+            lines[index]
+                .replace(
+                    "01a00000-0000-7000-8000-000000000002",
+                    "01a00000-0000-7000-8000-000000000012",
+                )
+                .replace(
+                    "01a00000-0000-7000-8000-000000000003",
+                    "01a00000-0000-7000-8000-000000000013",
+                )
+                .replace("msg_fixture_1", "msg_fixture_2"),
+        );
+    }
+    let path = dir.join("two-turns.jsonl");
+    fs::write(&path, out.join("\n") + "\n").unwrap();
+    path
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_requested_on_a_chat_task_reach_the_chat_and_the_task_runs_again() {
+    let t = Env::start_with_transcript(two_turn_transcript).await;
+    let a = t
+        .create(TaskCreate {
+            prompt: Some("Reply with the single word pong and nothing else.".into()),
+            run: Some(TaskRun::Chat {
+                agent: "codex".into(),
+            }),
+            ..t.create_request("Say pong")
+        })
+        .await;
+    let started = t.client.task_start(a.id).await.unwrap();
+    let done = t.wait_state(a.id, TaskState::Done).await;
+    // The main checkout, but an agent did the work: it awaits review.
+    assert_eq!(done.delivery, DeliveryState::AwaitingReview);
+
+    let asked = t
+        .review(
+            a.id,
+            ReviewDecision::RequestChanges,
+            Some("Also say it in French."),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asked.session, Some(started.session.id));
+    // The replayed second turn may be over by the time the answer is built.
+    assert!(
+        asked
+            .task
+            .delivery_history
+            .iter()
+            .any(|r| r.state == DeliveryState::ChangesRequested),
+        "{:?}",
+        asked.task
+    );
+    let received = fs::read_to_string(t.scratch.path().join("received.jsonl")).unwrap();
+    assert!(
+        received.contains("Also say it in French."),
+        "the note reached the agent as a user message"
+    );
+
+    // The second turn ends: awaiting review again, and the history says what happened.
+    let again = t
+        .wait(a.id, "never awaited review again", |task| {
+            task.state == TaskState::Done
+                && task.delivery == DeliveryState::AwaitingReview
+                && task.delivery_history.len() == 3
+        })
+        .await;
+    assert_eq!(
+        deliveries(&again),
+        [
+            DeliveryState::AwaitingReview,
+            DeliveryState::ChangesRequested,
+            DeliveryState::AwaitingReview
+        ]
+    );
+    assert_eq!(
+        again.delivery_history[1].note.as_deref(),
+        Some("Also say it in French.")
+    );
+
+    // Without a note there is nothing to send: the decision is only recorded.
+    let quiet = t
+        .review(a.id, ReviewDecision::RequestChanges, None)
+        .await
+        .unwrap();
+    assert!(quiet.session.is_none());
+    assert_eq!(quiet.task.state, TaskState::Done);
+
+    // A chat that was stopped cannot take the note: it stays on the task.
+    common::stop(&t.client, started.session.id).await.unwrap();
+    let kept = t
+        .review(
+            a.id,
+            ReviewDecision::RequestChanges,
+            Some("One more thing."),
+        )
+        .await
+        .unwrap();
+    assert!(kept.session.is_none());
+    assert_eq!(kept.task.state, TaskState::Done);
+    assert_eq!(kept.task.change_request(), Some("One more thing."));
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delivery_and_policy_survive_a_restart() {
+    let t = Env::start().await;
+    let a = t.finished_worktree_task("Alpha", None).await;
+    let b = t
+        .create(TaskCreate {
+            after_policy: AfterPolicy::Accepted,
+            ..t.script("After accept", "exit 0", &[&a])
+        })
+        .await;
+    t.review(a.id, ReviewDecision::RequestChanges, Some("Not yet."))
+        .await
+        .unwrap();
+    let before = t.task(a.id).await;
+    assert_eq!(before.delivery, DeliveryState::ChangesRequested);
+
+    let t = t.restart().await;
+    assert_eq!(t.task(a.id).await, before, "every field, the history too");
+    let b2 = t.task(b.id).await;
+    assert_eq!(b2.after_policy, AfterPolicy::Accepted);
+    assert_eq!(b2.state, TaskState::Todo, "still waiting for acceptance");
+    t.review(a.id, ReviewDecision::Accept, None).await.unwrap();
+    t.wait_state(b.id, TaskState::Ready).await;
     t.stop().await;
 }
 

@@ -4,8 +4,15 @@
 //!
 //! A task is stored in one of five states (`todo`, `running`, `done`, `failed`, `cancelled`).
 //! Two more are *derived* when a task is shown: `ready` is a `todo` task whose dependencies are
-//! all `done`, and `blocked` is a `running` task whose agent waits for the user. Neither is
+//! all satisfied, and `blocked` is a `running` task whose agent waits for the user. Neither is
 //! stored as truth: [`effective_state`] computes them.
+//!
+//! Besides its run state a task has a **delivery** facet (protocol 0.25, DL-1): the run
+//! finishing (`done`) is not a person accepting the work, and neither is the same as the
+//! branch being merged. [`DeliveryState`] says where the work is (`awaiting_review`,
+//! `accepted`, `changes_requested`, `merged`, `discarded`), [`DeliveryRecord`] who moved it
+//! there and when, and the dependant's [`AfterPolicy`] whether it waits for `done`,
+//! `accepted` or `merged` dependencies.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -97,6 +104,7 @@ impl TaskState {
     ///                          └─▶ failed (fail)
     /// todo/ready/running/blocked ──cancel──▶ cancelled
     /// done/failed/cancelled ──reset──▶ todo
+    /// done ──resume──▶ running   (a reviewer's change request reached the session)
     /// ```
     pub fn transition(self, event: TaskEvent) -> Result<Self, InvalidTaskTransition> {
         use TaskEvent as E;
@@ -109,6 +117,7 @@ impl TaskState {
             (S::Running | S::Blocked, E::Fail) => S::Failed,
             (S::Todo | S::Ready | S::Running | S::Blocked, E::Cancel) => S::Cancelled,
             (S::Todo | S::Ready | S::Done | S::Failed | S::Cancelled, E::Reset) => S::Todo,
+            (S::Done, E::Resume) => S::Running,
             _ => return Err(InvalidTaskTransition { from: self, event }),
         };
         Ok(next)
@@ -149,6 +158,8 @@ pub enum TaskEvent {
     Cancel,
     /// Back to `todo`: it will be run again.
     Reset,
+    /// A `done` task works again: a reviewer's change request reached its session.
+    Resume,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -200,7 +211,7 @@ pub struct Task {
     pub prompt: Option<String>,
     /// As clients see it: `ready` and `blocked` are derived (see [`effective_state`]).
     pub state: TaskState,
-    /// Tasks that must be `done` first.
+    /// Tasks that must be satisfied first (see `after_policy`).
     pub depends_on: Vec<TaskId>,
     pub placement: TaskPlacement,
     /// Absent: starting the task opens a login shell in the placement.
@@ -220,22 +231,283 @@ pub struct Task {
     /// `marked done`, … Short, for people.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// Where the finished work is: awaiting a reviewer, accepted, merged, … (protocol 0.25).
+    #[serde(default, skip_serializing_if = "DeliveryState::is_none")]
+    pub delivery: DeliveryState,
+    /// What this task waits for in each of its dependencies before it can start. Default
+    /// `done`.
+    #[serde(default, skip_serializing_if = "AfterPolicy::is_done")]
+    pub after_policy: AfterPolicy,
+    /// Every move of `delivery`, oldest first; the last [`DELIVERY_HISTORY_MAX`] are kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_history: Vec<DeliveryRecord>,
+}
+
+impl Task {
+    /// Moves the delivery facet to `record.state` and keeps the record (bounded).
+    pub fn record_delivery(&mut self, record: DeliveryRecord) {
+        self.delivery = record.state;
+        self.delivery_history.push(record);
+        let extra = self
+            .delivery_history
+            .len()
+            .saturating_sub(DELIVERY_HISTORY_MAX);
+        self.delivery_history.drain(..extra);
+    }
+
+    /// The note of the latest `changes_requested` record, while the task still waits for the
+    /// agent to deal with it.
+    pub fn change_request(&self) -> Option<&str> {
+        if self.delivery != DeliveryState::ChangesRequested {
+            return None;
+        }
+        self.delivery_history
+            .iter()
+            .rev()
+            .find(|r| r.state == DeliveryState::ChangesRequested)
+            .and_then(|r| r.note.as_deref())
+    }
+}
+
+/// Most delivery records a task keeps.
+pub const DELIVERY_HISTORY_MAX: usize = 20;
+/// Longest review note, in bytes.
+pub const REVIEW_NOTE_MAX_BYTES: usize = 16 * 1024;
+
+/// Where a task's finished work is, independent of its run state.
+///
+/// ```text
+/// none ──run finished──▶ awaiting_review ──▶ accepted | changes_requested
+///                            (any of these three) ──merge──▶ merged
+///                            (any of these three) ──worktree removed──▶ discarded
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryState {
+    /// Nothing to review (yet): the run has not finished, or it left nothing to review.
+    #[default]
+    None,
+    /// The run finished `done`; nobody has looked at the result.
+    AwaitingReview,
+    /// A person accepted the work.
+    Accepted,
+    /// A person asked for changes (the note says which).
+    ChangesRequested,
+    /// The task's branch was merged into the main checkout.
+    Merged,
+    /// The task's worktree was removed without merging its branch.
+    Discarded,
+}
+
+impl DeliveryState {
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::AwaitingReview,
+        Self::Accepted,
+        Self::ChangesRequested,
+        Self::Merged,
+        Self::Discarded,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::AwaitingReview => "awaiting_review",
+            Self::Accepted => "accepted",
+            Self::ChangesRequested => "changes_requested",
+            Self::Merged => "merged",
+            Self::Discarded => "discarded",
+        }
+    }
+
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// The work is still the reviewer's to judge or integrate (`awaiting_review`, `accepted`
+    /// or `changes_requested`): the states a merge or a removal moves on.
+    pub const fn is_open(self) -> bool {
+        matches!(
+            self,
+            Self::AwaitingReview | Self::Accepted | Self::ChangesRequested
+        )
+    }
+
+    /// `merged` or `discarded`: nothing more happens to the delivery.
+    pub const fn is_final(self) -> bool {
+        matches!(self, Self::Merged | Self::Discarded)
+    }
+
+    /// The state after a reviewer's `decision`; `merged` and `discarded` take none.
+    pub fn after_review(self, decision: ReviewDecision) -> Result<Self, String> {
+        if self.is_final() {
+            return Err(format!(
+                "the work is already {}; there is nothing left to review",
+                self.as_str()
+            ));
+        }
+        Ok(match decision {
+            ReviewDecision::Accept => Self::Accepted,
+            ReviewDecision::RequestChanges => Self::ChangesRequested,
+        })
+    }
+}
+
+impl fmt::Display for DeliveryState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DeliveryState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|state| state.as_str() == s)
+            .ok_or_else(|| format!("unknown delivery state `{s}`"))
+    }
+}
+
+/// A reviewer's decision (`task.review`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Accept,
+    RequestChanges,
+}
+
+/// What a task waits for in each of its dependencies before it can start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterPolicy {
+    /// The dependency's run finished `done` (the behaviour before protocol 0.25).
+    #[default]
+    Done,
+    /// The dependency is `done` and a person accepted it (or it was merged).
+    Accepted,
+    /// The dependency is `done` and its branch was merged.
+    Merged,
+}
+
+impl AfterPolicy {
+    pub const ALL: [Self; 3] = [Self::Done, Self::Accepted, Self::Merged];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Accepted => "accepted",
+            Self::Merged => "merged",
+        }
+    }
+
+    pub const fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
+    }
+
+    /// Whether a dependency in run state `state` and delivery `delivery` satisfies the policy.
+    pub const fn satisfied_by(self, state: TaskState, delivery: DeliveryState) -> bool {
+        if !matches!(state, TaskState::Done) {
+            return false;
+        }
+        match self {
+            Self::Done => true,
+            Self::Accepted => matches!(delivery, DeliveryState::Accepted | DeliveryState::Merged),
+            Self::Merged => matches!(delivery, DeliveryState::Merged),
+        }
+    }
+}
+
+impl fmt::Display for AfterPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AfterPolicy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|policy| policy.as_str() == s)
+            .ok_or_else(|| format!("unknown dependency policy `{s}` (done, accepted or merged)"))
+    }
+}
+
+/// Who moved a task's delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryActor {
+    /// A person in the desktop.
+    Desktop,
+    /// A person at the command line.
+    Cli,
+    /// An agent through the control surface (ADR 0016; approved by the user).
+    Agent,
+    /// The daemon itself: a run finished and left work to review.
+    Daemon,
+}
+
+impl DeliveryActor {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+            Self::Daemon => "daemon",
+        }
+    }
+}
+
+/// One move of a task's delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryRecord {
+    /// The state the delivery moved to.
+    pub state: DeliveryState,
+    pub by: DeliveryActor,
+    pub at_ms: u64,
+    /// `changes_requested`: what to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// `merged`: the new tip of the target branch (full hash).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// `merged`: `merge`, `squash` or `rebase`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+}
+
+impl DeliveryRecord {
+    pub fn new(state: DeliveryState, by: DeliveryActor, at_ms: u64) -> Self {
+        Self {
+            state,
+            by,
+            at_ms,
+            note: None,
+            commit: None,
+            strategy: None,
+        }
+    }
 }
 
 /// The state a task is shown in. `stored` is what the daemon keeps; `blocked` says the agent of
-/// a running task waits for the user; `state_of` gives the stored state of a dependency (a
-/// dependency that does not exist is not `done`).
+/// a running task waits for the user; `dep_of` gives the stored run state and delivery of a
+/// dependency (a dependency that does not exist satisfies no policy); a `todo` task is `ready`
+/// when every dependency satisfies `policy`.
 pub fn effective_state(
     stored: TaskState,
     blocked: bool,
     depends_on: &[TaskId],
-    state_of: impl Fn(TaskId) -> Option<TaskState>,
+    policy: AfterPolicy,
+    dep_of: impl Fn(TaskId) -> Option<(TaskState, DeliveryState)>,
 ) -> TaskState {
     match stored.stored() {
         TaskState::Todo
-            if depends_on
-                .iter()
-                .all(|dep| state_of(*dep) == Some(TaskState::Done)) =>
+            if depends_on.iter().all(|dep| {
+                dep_of(*dep).is_some_and(|(state, delivery)| policy.satisfied_by(state, delivery))
+            }) =>
         {
             TaskState::Ready
         }
@@ -427,6 +699,9 @@ mod tests {
             started_at_ms: None,
             ended_at_ms: None,
             outcome: None,
+            delivery: DeliveryState::None,
+            after_policy: AfterPolicy::Done,
+            delivery_history: Vec::new(),
         }
     }
 
@@ -498,14 +773,16 @@ mod tests {
     #[test]
     fn a_task_is_ready_when_every_dependency_is_done() {
         let (a, b, c) = (TaskId::new(), TaskId::new(), TaskId::new());
-        let states: HashMap<TaskId, TaskState> = [
-            (a, TaskState::Done),
-            (b, TaskState::Running),
-            (c, TaskState::Failed),
+        let states: HashMap<TaskId, (TaskState, DeliveryState)> = [
+            (a, (TaskState::Done, DeliveryState::None)),
+            (b, (TaskState::Running, DeliveryState::None)),
+            (c, (TaskState::Failed, DeliveryState::None)),
         ]
         .into();
         let shown = |stored, blocked, deps: &[TaskId]| {
-            effective_state(stored, blocked, deps, |id| states.get(&id).copied())
+            effective_state(stored, blocked, deps, AfterPolicy::Done, |id| {
+                states.get(&id).copied()
+            })
         };
         assert_eq!(shown(TaskState::Todo, false, &[]), TaskState::Ready);
         assert_eq!(shown(TaskState::Todo, false, &[a]), TaskState::Ready);
@@ -669,5 +946,120 @@ mod tests {
         })
         .unwrap();
         assert_eq!(chat, serde_json::json!({"kind": "chat", "agent": "codex"}));
+    }
+
+    #[test]
+    fn a_done_task_can_be_resumed_and_nothing_else_can() {
+        use TaskEvent as E;
+        use TaskState as S;
+        assert_eq!(S::Done.transition(E::Resume), Ok(S::Running));
+        for other in [
+            S::Todo,
+            S::Ready,
+            S::Running,
+            S::Blocked,
+            S::Failed,
+            S::Cancelled,
+        ] {
+            assert!(other.transition(E::Resume).is_err(), "{other} resumed");
+        }
+    }
+
+    #[test]
+    fn dependency_policies_wait_for_the_delivery_they_name() {
+        use DeliveryState as D;
+        let (a, b, c, d) = (TaskId::new(), TaskId::new(), TaskId::new(), TaskId::new());
+        let states: HashMap<TaskId, (TaskState, DeliveryState)> = [
+            (a, (TaskState::Done, D::AwaitingReview)),
+            (b, (TaskState::Done, D::Accepted)),
+            (c, (TaskState::Done, D::Merged)),
+            (d, (TaskState::Running, D::Accepted)),
+        ]
+        .into();
+        let shown = |policy, deps: &[TaskId]| {
+            effective_state(TaskState::Todo, false, deps, policy, |id| {
+                states.get(&id).copied()
+            })
+        };
+        // `done` is today's behaviour whatever the delivery says.
+        assert_eq!(shown(AfterPolicy::Done, &[a, b, c]), TaskState::Ready);
+        assert_eq!(shown(AfterPolicy::Accepted, &[a]), TaskState::Todo);
+        assert_eq!(shown(AfterPolicy::Accepted, &[b, c]), TaskState::Ready);
+        assert_eq!(shown(AfterPolicy::Merged, &[b]), TaskState::Todo);
+        assert_eq!(shown(AfterPolicy::Merged, &[c]), TaskState::Ready);
+        assert_eq!(
+            shown(AfterPolicy::Accepted, &[d]),
+            TaskState::Todo,
+            "a dependency that runs again is not accepted"
+        );
+        assert_eq!(shown(AfterPolicy::Merged, &[]), TaskState::Ready);
+    }
+
+    #[test]
+    fn reviews_move_open_work_and_stop_at_merged_or_discarded() {
+        use DeliveryState as D;
+        for open in [D::None, D::AwaitingReview, D::Accepted, D::ChangesRequested] {
+            assert_eq!(open.after_review(ReviewDecision::Accept), Ok(D::Accepted));
+            assert_eq!(
+                open.after_review(ReviewDecision::RequestChanges),
+                Ok(D::ChangesRequested)
+            );
+        }
+        for closed in [D::Merged, D::Discarded] {
+            assert!(closed.after_review(ReviewDecision::Accept).is_err());
+            assert!(closed.is_final() && !closed.is_open());
+        }
+        for state in D::ALL {
+            assert_eq!(state.as_str().parse::<D>(), Ok(state));
+        }
+        for policy in AfterPolicy::ALL {
+            assert_eq!(policy.as_str().parse::<AfterPolicy>(), Ok(policy));
+        }
+        assert!("later".parse::<AfterPolicy>().is_err());
+    }
+
+    #[test]
+    fn the_delivery_history_keeps_the_last_twenty_moves() {
+        let mut t = task(1, &[]);
+        for at in 0..25 {
+            t.record_delivery(DeliveryRecord::new(
+                DeliveryState::AwaitingReview,
+                DeliveryActor::Daemon,
+                at,
+            ));
+        }
+        assert_eq!(t.delivery_history.len(), DELIVERY_HISTORY_MAX);
+        assert_eq!(t.delivery_history[0].at_ms, 5);
+        let mut asked =
+            DeliveryRecord::new(DeliveryState::ChangesRequested, DeliveryActor::Cli, 99);
+        asked.note = Some("rename it".into());
+        t.record_delivery(asked);
+        assert_eq!(t.delivery, DeliveryState::ChangesRequested);
+        assert_eq!(t.change_request(), Some("rename it"));
+        t.record_delivery(DeliveryRecord::new(
+            DeliveryState::Accepted,
+            DeliveryActor::Desktop,
+            100,
+        ));
+        assert_eq!(t.change_request(), None);
+    }
+
+    #[test]
+    fn the_delivery_facet_is_left_out_of_the_json_while_it_is_the_default() {
+        let mut t = task(1, &[]);
+        let json = serde_json::to_value(&t).unwrap();
+        for key in ["delivery", "after_policy", "delivery_history"] {
+            assert!(json.get(key).is_none(), "{key} is serialized");
+        }
+        t.after_policy = AfterPolicy::Accepted;
+        let mut merged = DeliveryRecord::new(DeliveryState::Merged, DeliveryActor::Agent, 5);
+        merged.commit = Some("abc".into());
+        merged.strategy = Some("squash".into());
+        t.record_delivery(merged);
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["delivery"], "merged");
+        assert_eq!(json["after_policy"], "accepted");
+        assert_eq!(json["delivery_history"][0]["by"], "agent");
+        assert_eq!(serde_json::from_value::<Task>(json).unwrap(), t);
     }
 }

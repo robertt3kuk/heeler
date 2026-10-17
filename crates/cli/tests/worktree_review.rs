@@ -123,7 +123,7 @@ async fn wt_diff_prints_the_patch_the_stat_and_json() {
         .ok()
         .stdout;
     let lines: Vec<&str> = stat.lines().collect();
-    assert_eq!(lines.len(), 4, "{stat}");
+    assert_eq!(lines.len(), 7, "{stat}");
     assert!(
         lines[0].starts_with("M a.txt") && lines[0].ends_with("+1 -0"),
         "{stat}"
@@ -132,9 +132,20 @@ async fn wt_diff_prints_the_patch_the_stat_and_json() {
         lines[1].starts_with("A b.txt") && lines[1].ends_with("+2 -0"),
         "{stat}"
     );
-    assert!(lines[2].starts_with("A untracked.txt"), "{stat}");
+    assert!(
+        lines[2].starts_with("A untracked.txt") && lines[2].ends_with("(uncommitted)"),
+        "{stat}"
+    );
     assert!(
         lines[3].starts_with("3 file(s) changed, 4 insertion(s)(+), 0 deletion(s)(-) against main"),
+        "{stat}"
+    );
+    // What a merge takes, and what it leaves behind.
+    assert_eq!(lines[4], "a merge takes 1 commit(s):", "{stat}");
+    assert!(lines[5].ends_with(" feature work"), "{stat}");
+    assert!(
+        lines[6].starts_with("1 file(s) with uncommitted changes: a merge leaves them behind")
+            && lines[6].contains("hutan wt commit feature/x -m MSG"),
         "{stat}"
     );
 
@@ -145,7 +156,9 @@ async fn wt_diff_prints_the_patch_the_stat_and_json() {
     assert_eq!(json["base"], "main");
     assert_eq!(json["files"].as_array().unwrap().len(), 3);
     assert_eq!(json["files"][0]["status"], "modified");
-    assert!(json["patch"].as_str().unwrap().contains("+three"));
+    assert_eq!(json["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(json["files"][2]["uncommitted"], true);
+    assert!(json["files"][2].get("committed").is_none());
     let json_stat = hutan_in(
         &t,
         &repo.root,
@@ -206,7 +219,8 @@ async fn wt_merge_merges_squashes_and_rebases_and_reports_refusals() {
         "{out:?}"
     );
     assert!(
-        out.stdout.contains("still has uncommitted changes"),
+        out.stdout.contains("still has uncommitted changes")
+            && out.stdout.contains("would discard them"),
         "{out:?}"
     );
     assert!(out.stdout.contains("hutan wt rm"), "{out:?}");
@@ -293,5 +307,62 @@ async fn wt_merge_merges_squashes_and_rebases_and_reports_refusals() {
     assert_eq!(both.code, 2, "{both:?}");
     let msg = hutan_in(&t, &repo.root, &["wt", "merge", "x", "--rebase", "-m", "m"]).await;
     assert_eq!(msg.code, 2, "{msg:?}");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wt_commit_commits_everything_so_the_merge_takes_it() {
+    let t = TestDaemon::start().await;
+    let repo = setup(&t).await;
+
+    // The message is required; nothing to commit is a refusal.
+    let none = hutan_in(&t, &repo.root, &["wt", "commit", "feature/x"]).await;
+    assert_eq!(none.code, 2, "clap: -m is required: {none:?}");
+
+    let out = hutan_in(
+        &t,
+        &repo.root,
+        &["wt", "commit", "feature/x", "-m", "Finish it"],
+    )
+    .await
+    .ok();
+    assert!(
+        out.stdout.starts_with("committed 1 file(s) on feature/x ("),
+        "{out:?}"
+    );
+    let wt = repo.wt("feature-x");
+    assert_eq!(git(&wt, &["log", "-1", "--format=%s"]).trim(), "Finish it");
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+    let again = hutan_in(
+        &t,
+        &repo.root,
+        &["wt", "commit", "feature/x", "-m", "Again"],
+    )
+    .await;
+    assert_eq!(again.code, 1, "{again:?}");
+    assert!(again.stderr.contains("nothing to commit"), "{again:?}");
+
+    // The stat says there is nothing left behind, and the merge leaves no leftovers.
+    let stat = hutan_in(&t, &repo.root, &["wt", "diff", "feature/x", "--stat"])
+        .await
+        .ok()
+        .stdout;
+    assert!(!stat.contains("uncommitted"), "{stat}");
+    assert!(stat.contains("a merge takes 2 commit(s):"), "{stat}");
+    let merged = hutan_in(&t, &repo.root, &["wt", "merge", "feature/x"])
+        .await
+        .ok();
+    assert!(!merged.stdout.contains("uncommitted"), "{merged:?}");
+    assert!(repo.root.join("untracked.txt").is_file());
+    let json = hutan_in(
+        &t,
+        &repo.root,
+        &["wt", "commit", "feature/x", "-m", "x", "--json"],
+    )
+    .await;
+    assert_eq!(
+        json.code, 1,
+        "the branch is merged, nothing to commit: {json:?}"
+    );
     t.stop().await;
 }

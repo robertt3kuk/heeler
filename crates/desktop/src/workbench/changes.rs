@@ -8,9 +8,11 @@
 //! `hutan_chat_view::diff` and drawn with the chat's diff rows; each hunk folds.
 
 mod comments;
+mod delivery;
 mod tray;
 
 pub use comments::{Mark, ReviewComment, SnippetLine};
+pub use delivery::{CleanupDefault, DeliveryForm};
 pub use tray::{Selection, SendTarget};
 
 use std::collections::{HashMap, HashSet};
@@ -129,6 +131,7 @@ pub struct ChangesView {
     canonical: PathBuf,
     /// Line selection, review comments and the Review tray (RC-1).
     review: tray::Review,
+    delivery: delivery::Delivery,
 }
 
 impl EventEmitter<ChangesEvent> for ChangesView {}
@@ -166,7 +169,10 @@ impl ChangesView {
             message_focus: cx.focus_handle(),
             canonical,
             review: tray::Review::new(comments, cx),
+            delivery: delivery::Delivery::new(cx),
         };
+        cx.observe(&view.env.sessions, |_, _, cx| cx.notify())
+            .detach();
         view.reload(cx);
         view
     }
@@ -429,6 +435,7 @@ impl ChangesView {
         if !self.can_merge() || self.merged.is_some() {
             return;
         }
+        self.delivery.close();
         if self.merge.is_none() {
             self.merge = Some(MergeForm {
                 strategy: MergeStrategy::Merge,
@@ -657,7 +664,8 @@ impl Render for ChangesView {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_review_key(event, window, cx);
             }))
-            .child(self.render_header(&theme, &tokens, window, cx));
+            .child(self.render_header(&theme, &tokens, window, cx))
+            .children(self.render_delivery(&theme, &tokens, window, cx));
         if let Some(tray) = self.render_review_tray(&theme, &tokens, cx) {
             root = root.child(tray);
         }
@@ -770,6 +778,7 @@ impl ChangesView {
                 .child(counts_of(added, removed, &look))
             })
             .child(div().flex_1())
+            .children(self.render_review_controls(theme, tokens, cx))
             .child(
                 pill(
                     "changes-uncommitted",
@@ -876,7 +885,8 @@ impl ChangesView {
                          have the target branch checked out, and aborted cleanly on conflicts.",
                     ),
             )
-            .child(strategies);
+            .child(strategies)
+            .child(self.render_merge_takes(theme, tokens, cx));
         if form.strategy != MergeStrategy::Rebase {
             body = body.child(
                 field_box(
@@ -969,6 +979,7 @@ impl ChangesView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let result = &merged.result;
+        let keep = CleanupDefault::of(result) == CleanupDefault::Keep;
         let mut text = format!(
             "Merged {} into {} ({}).",
             result.branch,
@@ -976,7 +987,10 @@ impl ChangesView {
             result.commit.chars().take(7).collect::<String>()
         );
         if result.source_dirty {
-            text.push_str(" The worktree still has uncommitted changes that were not merged.");
+            text.push_str(
+                " The worktree still has uncommitted changes that were not merged; removing it \
+                 would discard them, so it stays unless you say otherwise.",
+            );
         }
         div()
             .flex()
@@ -1010,7 +1024,11 @@ impl ChangesView {
                             } else {
                                 "Remove worktree and branch"
                             },
-                            ui::ButtonKind::Primary,
+                            if keep {
+                                ui::ButtonKind::Secondary
+                            } else {
+                                ui::ButtonKind::Primary
+                            },
                             !merged.removing,
                             theme,
                             tokens,
@@ -1023,7 +1041,11 @@ impl ChangesView {
                         ui::button(
                             "changes-keep",
                             "Keep",
-                            ui::ButtonKind::Ghost,
+                            if keep {
+                                ui::ButtonKind::Primary
+                            } else {
+                                ui::ButtonKind::Ghost
+                            },
                             true,
                             theme,
                             tokens,

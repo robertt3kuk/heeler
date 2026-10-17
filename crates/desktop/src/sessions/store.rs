@@ -13,8 +13,8 @@ use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use hutan_client::{Connection, ConnectionState, Notice, StoreState};
 use hutan_core::agent::ModelInfo;
 use hutan_core::{
-    AgentObservation, ApprovalId, Epoch, SessionId, Task as DaemonTask, TaskId, TerminalId,
-    WorkspaceId,
+    AgentObservation, ApprovalId, Epoch, ReviewDecision, SessionId, Task as DaemonTask, TaskId,
+    TerminalId, WorkspaceId,
 };
 use hutan_protocol::chat::{ApprovalInfo, ChatCreate};
 use hutan_protocol::messages::{
@@ -26,19 +26,19 @@ use hutan_protocol::messages::{
 use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
-    TaskStarted, TaskUpdate,
+    TaskReview, TaskReviewed, TaskStarted, TaskUpdate,
 };
 use hutan_protocol::worktree::{
-    WorktreeCreate, WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff, WorktreeFileDiffRequest,
-    WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeMerge, WorktreeMerged, WorktreeRemove,
-    WorktreeRemoved,
+    WorktreeCommit, WorktreeCommitted, WorktreeCreate, WorktreeDiff, WorktreeDiffRequest,
+    WorktreeFileDiff, WorktreeFileDiffRequest, WorktreeInfo, WorktreeList, WorktreeListRequest,
+    WorktreeMerge, WorktreeMerged, WorktreeRemove, WorktreeRemoved,
 };
 use hutan_terminal_view::DefaultColors;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::agents::{self, AgentAttentionChanged, AgentBadge};
 use super::attention::{
-    AttentionEntry, AttentionKind, AttentionTracker, Presentation, Unread, classify, present,
+    AttentionEntry, AttentionKind, AttentionTracker, Presentation, Tone, Unread, classify, present,
 };
 use super::tasks::TaskBook;
 use super::terminal::TerminalSession;
@@ -484,7 +484,9 @@ impl SessionsStore {
     }
 
     /// How `info` shows up: its own state, except that a live session in which an agent of the
-    /// observation tree is blocked always needs the user, whatever the session summary says.
+    /// observation tree is blocked always needs the user, whatever the session summary says, and
+    /// that the session of a task waiting for review is a soft *Needs you* item (accent, never
+    /// a badge: [`classify`] leaves accent alone).
     pub fn presentation(&self, info: &SessionInfo) -> Presentation {
         let presentation = present(info, self.attention.unread(info.id));
         if !presentation.needs_you
@@ -495,6 +497,15 @@ impl SessionsStore {
             if !blocked.is_empty() {
                 return agents::blocked_presentation(&blocked);
             }
+        }
+        if !presentation.needs_you && self.tasks.awaits_review(info.id) {
+            return Presentation {
+                label: "review".into(),
+                detail: "awaiting review".into(),
+                tone: Tone::Accent,
+                filled: true,
+                needs_you: true,
+            };
         }
         presentation
     }
@@ -1041,6 +1052,21 @@ impl SessionsStore {
         self.call(Request::TaskStart(TaskRef { id }), |started| started, cx)
     }
 
+    /// `task.review`: accept a done task, or ask for changes (the note goes to its chat).
+    pub fn review_task(
+        &self,
+        id: TaskId,
+        decision: ReviewDecision,
+        note: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<TaskReviewed, String>> {
+        self.call(
+            Request::TaskReview(TaskReview { id, decision, note }),
+            |reviewed| reviewed,
+            cx,
+        )
+    }
+
     // ---- worktree commands -----------------------------------------------------------------
 
     /// `worktree.diff`: what a checkout changed against its base.
@@ -1084,6 +1110,15 @@ impl SessionsStore {
                     other => other.to_string(),
                 })
         })
+    }
+
+    /// `worktree.commit`: commits everything in a worktree so a merge takes it.
+    pub fn commit_worktree(
+        &self,
+        request: WorktreeCommit,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<WorktreeCommitted, String>> {
+        self.call(Request::WorktreeCommit(request), |done| done, cx)
     }
 
     /// `worktree.list`: the worktrees of the repositories of `workspace`.

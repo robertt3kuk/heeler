@@ -109,10 +109,10 @@ pub enum Command {
     /// on, or watch them
     #[command(subcommand)]
     Notify(NotifyCommand),
-    /// Git worktrees: isolated checkouts for parallel agents (`hutan wt new|ls|rm`)
+    /// Git worktrees: isolated checkouts for parallel agents (`hutan wt new|ls|rm|diff|merge|commit`)
     #[command(subcommand)]
     Wt(WtCommand),
-    /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|cancel|reset|rm|show`)
+    /// Tasks with dependencies, run in the main checkout or a worktree (`hutan task add|ls|start|done|review|cancel|reset|rm|show`)
     #[command(subcommand)]
     Task(TaskCommand),
     /// Control the desktop window through the daemon: actions, layout, settings
@@ -216,6 +216,10 @@ pub enum TaskCommand {
     Start(TaskTargetArgs),
     /// Say a task is done (the user's word overrides what the daemon saw)
     Done(TaskTargetArgs),
+    /// Accept the finished work of a task, or ask for changes: `hutan task review TASK accept`,
+    /// `hutan task review TASK changes -m "what to change"` (the note goes to the task's chat
+    /// when its session still lives, and the task runs again)
+    Review(TaskReviewArgs),
     /// Give a task up: stops its session when it runs
     Cancel(TaskTargetArgs),
     /// Run an ended task again: back to todo, outcome cleared, earlier sessions kept in its history
@@ -264,6 +268,11 @@ pub struct TaskAddArgs {
     /// Start by itself when ready, within the daemon's `[tasks] max_parallel`
     #[arg(long)]
     pub auto: bool,
+    /// What each task given with --after must reach before this one is ready: `done` (its run
+    /// finished; the default), `accepted` (a person accepted the work) or `merged` (its branch
+    /// was merged)
+    #[arg(long = "after-policy", value_name = "WHEN", value_enum, default_value_t = AfterPolicyArg::Done)]
+    pub after_policy: AfterPolicyArg,
     /// Command to run in a terminal session after `--`; without a command or --codex starting
     /// the task opens the login shell
     #[arg(last = true, value_name = "ARGV")]
@@ -282,6 +291,39 @@ pub struct TaskLsArgs {
 pub struct TaskTargetArgs {
     #[arg(help = TASK_HELP)]
     pub target: String,
+    /// Which workspace's or project's task an exact title means when several have it (default:
+    /// $HUTAN_WORKSPACE, else the project of the current directory)
+    #[arg(long = "ws", value_name = "ID|NAME")]
+    pub workspace: Option<String>,
+}
+
+/// What `hutan task review` decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReviewArg {
+    /// The work is good
+    Accept,
+    /// The work needs changes (say which with -m)
+    Changes,
+}
+
+/// `--after-policy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AfterPolicyArg {
+    Done,
+    Accepted,
+    Merged,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskReviewArgs {
+    #[arg(help = TASK_HELP)]
+    pub target: String,
+    #[arg(value_enum)]
+    pub decision: ReviewArg,
+    /// The note: what to change (sent to the task's chat when its session is live), or a
+    /// comment on an acceptance
+    #[arg(short = 'm', long = "message", value_name = "NOTE")]
+    pub note: Option<String>,
     /// Which workspace's or project's task an exact title means when several have it (default:
     /// $HUTAN_WORKSPACE, else the project of the current directory)
     #[arg(long = "ws", value_name = "ID|NAME")]
@@ -319,6 +361,9 @@ pub enum WtCommand {
     /// pushes); refuses a dirty main checkout, a target that is not checked out there, and
     /// conflicts (which are aborted and listed)
     Merge(WtMergeArgs),
+    /// Commit everything in a worktree (tracked changes and untracked files that are not
+    /// ignored), so that a merge takes it: `hutan wt commit BRANCH -m MSG`
+    Commit(WtCommitArgs),
 }
 
 #[derive(Debug, Args)]
@@ -399,6 +444,17 @@ pub struct WtMergeArgs {
     /// The commit message (merge and squash)
     #[arg(short = 'm', long, value_name = "MSG", conflicts_with = "rebase")]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct WtCommitArgs {
+    /// The worktree's path, or its branch (see `hutan wt ls`)
+    pub target: String,
+    #[arg(long = "ws", value_name = "ID|NAME", help = WT_WS_HELP)]
+    pub workspace: Option<String>,
+    /// The commit message
+    #[arg(short = 'm', long, value_name = "MSG")]
+    pub message: String,
 }
 
 #[derive(Debug, Subcommand)]

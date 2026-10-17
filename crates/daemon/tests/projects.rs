@@ -852,6 +852,7 @@ async fn task_session(
                 argv: vec!["sleep".into(), "60".into()],
             }),
             auto_start: false,
+            after_policy: Default::default(),
         })
         .await
         .unwrap();

@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use hutan_core::{
-    SessionId, SessionKind, SessionState, Task, TaskId, TaskPlacement, TaskRun, TaskState,
-    WorkspaceId,
+    AfterPolicy, DeliveryRecord, DeliveryState, SessionId, SessionKind, SessionState, Task, TaskId,
+    TaskPlacement, TaskRun, TaskState, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -1028,20 +1028,27 @@ fn upsert_task(conn: &Connection, task: &Task) -> Result<()> {
         .as_ref()
         .map(|run| encode(serde_json::to_string(run), "task run"))
         .transpose()?;
+    let history = encode(
+        serde_json::to_string(&task.delivery_history),
+        "task delivery history",
+    )?;
     let state = task.state.stored();
     let tx = conn
         .unchecked_transaction()
         .map_err(StorageError::sqlite(context))?;
     tx.execute(
         "INSERT INTO tasks (id, workspace_id, title, prompt, state, placement_json, run_json, \
-             auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+             auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome, \
+             delivery, after_policy, delivery_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
          ON CONFLICT (id) DO UPDATE SET \
              workspace_id = excluded.workspace_id, title = excluded.title, \
              prompt = excluded.prompt, state = excluded.state, \
              placement_json = excluded.placement_json, run_json = excluded.run_json, \
              auto_start = excluded.auto_start, started_at_ms = excluded.started_at_ms, \
-             ended_at_ms = excluded.ended_at_ms, outcome = excluded.outcome",
+             ended_at_ms = excluded.ended_at_ms, outcome = excluded.outcome, \
+             delivery = excluded.delivery, after_policy = excluded.after_policy, \
+             delivery_json = excluded.delivery_json",
         params![
             task.id.to_string(),
             task.workspace_id.to_string(),
@@ -1055,6 +1062,9 @@ fn upsert_task(conn: &Connection, task: &Task) -> Result<()> {
             task.started_at_ms.map(ms),
             task.ended_at_ms.map(ms),
             task.outcome,
+            task.delivery.as_str(),
+            task.after_policy.as_str(),
+            history,
         ],
     )
     .map_err(StorageError::sqlite(context))?;
@@ -1096,7 +1106,8 @@ pub fn list_tasks(conn: &Connection) -> Result<Vec<Task>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, workspace_id, title, prompt, state, placement_json, run_json, \
-                 auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome \
+                 auto_start, created_at_ms, started_at_ms, ended_at_ms, outcome, \
+                 delivery, after_policy, delivery_json \
              FROM tasks ORDER BY created_at_ms, rowid",
         )
         .map_err(StorageError::sqlite(context))?;
@@ -1149,6 +1160,9 @@ fn task_from(row: &Row<'_>) -> Result<Task> {
     let state: String = row.get(4).map_err(read_err)?;
     let placement: String = row.get(5).map_err(read_err)?;
     let run: Option<String> = row.get(6).map_err(read_err)?;
+    let delivery: String = row.get(12).map_err(read_err)?;
+    let after_policy: String = row.get(13).map_err(read_err)?;
+    let history: String = row.get(14).map_err(read_err)?;
     Ok(Task {
         id: id
             .parse()
@@ -1174,5 +1188,13 @@ fn task_from(row: &Row<'_>) -> Result<Task> {
         started_at_ms: row.get::<_, Option<i64>>(9).map_err(read_err)?.map(unms),
         ended_at_ms: row.get::<_, Option<i64>>(10).map_err(read_err)?.map(unms),
         outcome: row.get(11).map_err(read_err)?,
+        delivery: delivery
+            .parse::<DeliveryState>()
+            .map_err(|e| StorageError::corrupt(at("delivery"), e))?,
+        after_policy: after_policy
+            .parse::<AfterPolicy>()
+            .map_err(|e| StorageError::corrupt(at("after_policy"), e))?,
+        delivery_history: serde_json::from_str::<Vec<DeliveryRecord>>(&history)
+            .map_err(|e| StorageError::corrupt(at("delivery_json"), e))?,
     })
 }

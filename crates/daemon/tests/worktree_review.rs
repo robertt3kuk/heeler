@@ -16,9 +16,9 @@ use hutan_core::WorkspaceId;
 use hutan_protocol::ErrorCode;
 use hutan_protocol::messages::{Event, Request, WorkspaceOpen, WorkspaceOpened};
 use hutan_protocol::worktree::{
-    DiffFile, DiffStatus, MergeStrategy, WorktreeCreate, WorktreeDiff, WorktreeDiffRequest,
-    WorktreeFileDiffRequest, WorktreeInfo, WorktreeMerge, WorktreeMerged, WorktreeRemove,
-    conflict_files,
+    DiffFile, DiffStatus, MergeStrategy, WorktreeCommit, WorktreeCreate, WorktreeDiff,
+    WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeInfo, WorktreeMerge, WorktreeMerged,
+    WorktreeRemove, conflict_files,
 };
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -298,11 +298,35 @@ async fn diff_lists_commits_and_uncommitted_changes_against_the_merge_base() {
         (DiffStatus::Added, 3, false)
     );
 
+    // What a merge takes and what it does not, file by file (protocol 0.25).
+    let scope = |f: &DiffFile| (f.committed, f.uncommitted);
+    assert_eq!(scope(file(&diff, "a.txt")), (true, true), "both");
+    for committed_only in ["gone.txt", "logo.bin", "new name.txt"] {
+        assert_eq!(
+            scope(file(&diff, committed_only)),
+            (true, false),
+            "{committed_only}"
+        );
+    }
+    for uncommitted_only in [".gitignore", "staged.txt", "untracked.txt"] {
+        assert_eq!(
+            scope(file(&diff, uncommitted_only)),
+            (false, true),
+            "{uncommitted_only}"
+        );
+    }
+    assert_eq!(diff.commits.len(), 1, "exactly the commits a merge takes");
+    assert_eq!(diff.commits[0].subject, "work");
+    assert_eq!(diff.commits[0].id.len(), 40);
+    assert!(!diff.commits_truncated);
+
     // Without the uncommitted part: only what the branch committed.
     let committed = env.diff(&wt.path, false).await;
     let names: Vec<&str> = committed.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(names, ["a.txt", "gone.txt", "logo.bin", "new name.txt"]);
     assert_eq!(file(&committed, "a.txt").additions, 1);
+    assert!(committed.files.iter().all(|f| scope(f) == (true, false)));
+    assert_eq!(committed.commits, diff.commits);
 
     // An explicit base: the first commit of the repository.
     let first = git(&env.repo.root, &["rev-list", "--max-parents=0", "HEAD"])
@@ -319,6 +343,113 @@ async fn diff_lists_commits_and_uncommitted_changes_against_the_merge_base() {
         .unwrap();
     assert_eq!(by_commit.base, first);
     assert_eq!(by_commit.files, committed.files);
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commit_all_puts_every_uncommitted_change_into_one_commit_so_a_merge_takes_it() {
+    let env = Env::start().await;
+    let wt = busy_worktree(&env).await;
+    assert!(
+        !env.diff(&wt.path, true)
+            .await
+            .files
+            .iter()
+            .all(|f| f.committed)
+    );
+
+    // Refusals first: nothing changes.
+    let empty = remote(
+        env.client
+            .worktree_commit(WorktreeCommit {
+                path: wt.path.clone(),
+                message: "  ".into(),
+            })
+            .await,
+    );
+    assert_eq!(empty.code, ErrorCode::BadRequest);
+    let main = remote(
+        env.client
+            .worktree_commit(WorktreeCommit {
+                path: env.repo.root.clone(),
+                message: "no".into(),
+            })
+            .await,
+    );
+    assert_eq!(main.code, ErrorCode::InvalidState);
+    assert!(main.message.contains("main checkout"), "{}", main.message);
+    assert!(
+        git(&wt.path, &["diff", "--cached", "--name-only"])
+            .trim()
+            .contains("staged.txt"),
+        "the staged file is still the only staged one"
+    );
+
+    let committed = env
+        .client
+        .worktree_commit(WorktreeCommit {
+            path: wt.path.clone(),
+            message: "Finish the work\n\nmore words".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(committed.branch, "feature/busy");
+    assert_eq!(
+        committed.files, 4,
+        "a.txt, .gitignore, staged and untracked"
+    );
+    assert_eq!(
+        git(&wt.path, &["rev-parse", "HEAD"]).trim(),
+        committed.commit
+    );
+    assert!(
+        !git(&wt.path, &["status", "--porcelain"]).contains("??"),
+        "the untracked file was added"
+    );
+    assert!(
+        wt.path.join("ignored.log").is_file(),
+        "ignored files stay out"
+    );
+    assert!(!git(&wt.path, &["ls-files"]).contains("ignored.log"));
+
+    let diff = env.diff(&wt.path, true).await;
+    assert!(
+        diff.files.iter().all(|f| f.committed && !f.uncommitted),
+        "{:?}",
+        diff.files
+    );
+    let subjects: Vec<&str> = diff.commits.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["Finish the work", "work"], "newest first");
+
+    // Nothing left to commit.
+    let nothing = remote(
+        env.client
+            .worktree_commit(WorktreeCommit {
+                path: wt.path.clone(),
+                message: "again".into(),
+            })
+            .await,
+    );
+    assert_eq!(nothing.code, ErrorCode::InvalidState);
+    assert!(
+        nothing.message.contains("nothing to commit"),
+        "{}",
+        nothing.message
+    );
+
+    // And the merge now takes all of it, with no leftovers.
+    let merged = env
+        .client
+        .worktree_merge(WorktreeMerge {
+            path: wt.path.clone(),
+            into: None,
+            strategy: MergeStrategy::Merge,
+            message: None,
+        })
+        .await
+        .unwrap();
+    assert!(!merged.source_dirty);
+    assert!(env.repo.root.join("untracked.txt").is_file());
     env.stop().await;
 }
 

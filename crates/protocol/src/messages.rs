@@ -32,12 +32,12 @@ use crate::render::Row;
 use crate::resources::{
     AgentInterrupt, ProcessSignal, ResourceSample, ResourcesListRequest, ResourcesSubscribe,
 };
-use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskUpdate};
+use crate::task::{TaskCreate, TaskDelete, TaskListRequest, TaskRef, TaskReview, TaskUpdate};
 use crate::tree::{AgentTreeRequest, NodeReport};
 use crate::ui::{SessionSendText, UiCommandResult, UiPublish, UiRun, UiSetSetting, UiTarget};
 use crate::worktree::{
-    Placement, WorktreeCreate, WorktreeDiffRequest, WorktreeFileDiffRequest, WorktreeListRequest,
-    WorktreeMerge, WorktreeRemove,
+    Placement, WorktreeCommit, WorktreeCreate, WorktreeDiffRequest, WorktreeFileDiffRequest,
+    WorktreeListRequest, WorktreeMerge, WorktreeRemove,
 };
 
 /// Parameterless request body; encoded as `{}`.
@@ -263,6 +263,10 @@ pub enum Request {
     /// answered with `WorktreeMerged`.
     #[serde(rename = "worktree.merge")]
     WorktreeMerge(WorktreeMerge),
+    /// Capability `task.review` (protocol 0.25): stage everything in a worktree and commit it;
+    /// answered with `WorktreeCommitted`.
+    #[serde(rename = "worktree.commit")]
+    WorktreeCommit(WorktreeCommit),
     /// Capability `task` (protocol 0.16): a new task; answered with `TaskResult`.
     #[serde(rename = "task.create")]
     TaskCreate(TaskCreate),
@@ -278,6 +282,10 @@ pub enum Request {
     /// Capability `task`: run a ready task; answered with `TaskStarted`.
     #[serde(rename = "task.start")]
     TaskStart(TaskRef),
+    /// Capability `task.review` (protocol 0.25): accept a done task or ask for changes;
+    /// answered with `TaskReviewed`.
+    #[serde(rename = "task.review")]
+    TaskReview(TaskReview),
     /// Capability `accounts` (protocol 0.17): the logins of the harnesses; answered with
     /// `AccountList`.
     #[serde(rename = "account.list")]

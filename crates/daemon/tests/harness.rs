@@ -1174,6 +1174,7 @@ async fn tasks_run_as_omp_and_claude_chats() {
             agent: agent.to_owned(),
         }),
         auto_start: false,
+        after_policy: Default::default(),
     };
     // `claude` is accepted as an agent too; a made-up one is not.
     t.client

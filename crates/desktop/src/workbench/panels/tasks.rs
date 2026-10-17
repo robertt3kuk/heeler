@@ -17,7 +17,7 @@ use gpui::{
     Styled, Task, Window, div, prelude::*, px,
 };
 use hutan_client::ConnectionState;
-use hutan_core::{TaskId, TaskState};
+use hutan_core::{DeliveryState, TaskId, TaskState};
 use hutan_protocol::task::TaskUpdate;
 
 use super::common::{edit_text, field_box, now_ms, panel_header_with, tone_color};
@@ -407,6 +407,7 @@ impl TasksPanel {
             placement: None,
             run: None,
             auto_start: None,
+            after_policy: None,
             state: Some(state),
         };
         match action {
@@ -880,7 +881,12 @@ impl TasksPanel {
             color
         };
         let indent = row.depth as f32 * tokens.spacing * 3.0;
-        let finished = matches!(row.state, TaskState::Done | TaskState::Cancelled);
+        // A finished task that waits for a reviewer is not finished business.
+        let finished = matches!(row.state, TaskState::Done | TaskState::Cancelled)
+            && !matches!(
+                row.delivery,
+                DeliveryState::AwaitingReview | DeliveryState::ChangesRequested
+            );
 
         let mut detail = div()
             .flex()
@@ -914,6 +920,13 @@ impl TasksPanel {
                 "also after {}",
                 row.also_after.join(", ")
             )));
+        }
+        if let Some(note) = &row.change_request {
+            detail = detail.child(
+                div()
+                    .text_color(theme.warning)
+                    .child(SharedString::from(format!("“{note}”"))),
+            );
         }
 
         let mut element = div()
@@ -954,6 +967,13 @@ impl TasksPanel {
                             .medium()
                             .child(SharedString::from(row.title.clone())),
                     )
+                    .when_some(row.delivery_label, |s, label| {
+                        s.child(
+                            ui::pill(label, tone_color(theme, row.delivery_tone), tokens)
+                                .relative()
+                                .child(probe(&self.env.regions, Region::TaskDelivery(index))),
+                        )
+                    })
                     .child(
                         div()
                             .flex_none()

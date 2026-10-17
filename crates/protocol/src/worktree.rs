@@ -162,6 +162,11 @@ pub struct WorktreeDiffRequest {
 }
 
 /// Result of `worktree.diff`: the changed files, sorted by path.
+///
+/// Protocol 0.25 (capability `task.review`) says separately what a merge would take and what
+/// it would not: [`commits`](Self::commits) are the commits on the branch since `merge_base`
+/// (exactly what `worktree.merge` integrates), and every [`DiffFile`] says whether its change
+/// is `committed`, `uncommitted`, or both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeDiff {
     /// The base that was used, as resolved (`main`, or what the request said).
@@ -173,6 +178,21 @@ pub struct WorktreeDiff {
     /// is cut), or the patches together over 20 MiB, or more files than the list holds (5000).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub patch_truncated: bool,
+    /// The commits of the checkout's branch since `merge_base`, newest first (at most 200).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<CommitSummary>,
+    /// More commits than `commits` holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub commits_truncated: bool,
+}
+
+/// One commit of [`WorktreeDiff::commits`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitSummary {
+    /// The full hash.
+    pub id: String,
+    /// The first line of the message.
+    pub subject: String,
 }
 
 /// One changed file of [`WorktreeDiff`].
@@ -190,6 +210,13 @@ pub struct DiffFile {
     /// git treats the file as binary: there are no line counts and no hunks.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub binary: bool,
+    /// Protocol 0.25: the file changed in the commits since the merge base (a merge takes it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub committed: bool,
+    /// Protocol 0.25: the file has staged, unstaged or untracked changes not in any commit (a
+    /// merge does not take them). Only set when the request included uncommitted changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uncommitted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,4 +322,30 @@ pub fn conflict_files(error: &crate::control::ErrorBody) -> Vec<String> {
         .and_then(|data| data.get("conflicts"))
         .and_then(|files| serde_json::from_value(files.clone()).ok())
         .unwrap_or_default()
+}
+
+/// `worktree.commit` (protocol 0.25, capability `task.review`): stages everything in the
+/// worktree at `path` (`git add -A`: tracked changes and untracked files that are not ignored)
+/// and commits it with `message`, so a following merge takes it. Hooks do not run. Answered
+/// with [`WorktreeCommitted`].
+///
+/// Errors: `bad_request` (`path` not absolute, an empty message), `not_found` (no such
+/// worktree), `invalid_state` for the main checkout (commit there yourself), a detached HEAD, a
+/// merge or rebase in progress, nothing to commit, or git's own refusal (e.g. no author
+/// identity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeCommit {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Result of `worktree.commit`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeCommitted {
+    /// The new commit (full hash).
+    pub commit: String,
+    /// The branch it is on.
+    pub branch: String,
+    /// Files the commit changed.
+    pub files: u32,
 }

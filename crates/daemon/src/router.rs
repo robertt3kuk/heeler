@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
-use hutan_core::TerminalId;
+use hutan_core::{DeliveryActor, TerminalId};
 use hutan_protocol::chat::ChatSent;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
-use hutan_protocol::messages::{DaemonStatusInfo, Empty, Request, SessionResult, Subscribed};
+use hutan_protocol::messages::{
+    ClientKind, DaemonStatusInfo, Empty, Request, SessionResult, Subscribed,
+};
 use hutan_protocol::notify::NotifyList;
 use hutan_protocol::task::TaskResult;
 use hutan_protocol::{Frame, PROTOCOL_VERSION, ProtocolError};
@@ -329,10 +331,21 @@ impl Router {
             }
             Request::WorktreeCreate(req) => ok(&self.worktrees.create(req).await?),
             Request::WorktreeList(req) => ok(&self.worktrees.list(req).await?),
-            Request::WorktreeRemove(req) => ok(&self.worktrees.remove(req).await?),
+            Request::WorktreeRemove(req) => {
+                let (result, removed) = self.worktrees.remove(req).await?;
+                self.tasks
+                    .worktree_removed(&removed, self.actor(conn).await);
+                ok(&result)
+            }
             Request::WorktreeDiff(req) => ok(&self.worktrees.diff(req).await?),
             Request::WorktreeFileDiff(req) => ok(&self.worktrees.file_diff(req).await?),
-            Request::WorktreeMerge(req) => ok(&self.worktrees.merge(req).await?),
+            Request::WorktreeMerge(req) => {
+                let (merged, workspaces) = self.worktrees.merge(req).await?;
+                self.tasks
+                    .worktree_merged(&merged, &workspaces, self.actor(conn).await);
+                ok(&merged)
+            }
+            Request::WorktreeCommit(req) => ok(&self.worktrees.commit(req).await?),
             Request::TaskCreate(req) => ok(&TaskResult {
                 task: self.tasks.create(req).await?,
             }),
@@ -342,6 +355,10 @@ impl Router {
             }),
             Request::TaskDelete(req) => ok(&self.tasks.delete(req)?),
             Request::TaskStart(req) => ok(&self.tasks.start(req.id).await?),
+            Request::TaskReview(req) => {
+                let by = self.actor(conn).await;
+                ok(&self.tasks.review(req, by).await?)
+            }
             Request::AccountList(_) => ok(&self.accounts.list().await),
             Request::AccountLogin(req) => ok(&self.accounts.login(req).await?),
             Request::AccountLogout(req) => ok(&self.accounts.logout(req).await?),
@@ -478,6 +495,17 @@ impl Router {
         self.control.is_agent_origin(origin).await.then_some(origin)
     }
 
+    /// Who a delivery move is recorded for: an agent (ADR 0016), the desktop, or the CLI.
+    async fn actor(&self, conn: &ConnHandle) -> DeliveryActor {
+        if self.agent_origin(conn).await.is_some() {
+            DeliveryActor::Agent
+        } else if conn.client_kind() == Some(ClientKind::Desktop) {
+            DeliveryActor::Desktop
+        } else {
+            DeliveryActor::Cli
+        }
+    }
+
     /// Drops everything the closed connection had attached.
     pub fn connection_closed(&self, conn: ConnId) {
         self.hub.connection_closed(conn);
@@ -592,11 +620,15 @@ fn classification(request: &Request) -> (&'static str, Access) {
         Request::WorktreeDiff(_) => ("worktree.diff", Read),
         Request::WorktreeFileDiff(_) => ("worktree.file_diff", Read),
         Request::WorktreeMerge(_) => ("worktree.merge", Mutate),
+        // Commits in a worktree an agent may work in, but it changes what a merge takes.
+        Request::WorktreeCommit(_) => ("worktree.commit", Mutate),
         Request::TaskCreate(_) => ("task.create", Mutate),
         Request::TaskList(_) => ("task.list", Read),
         Request::TaskUpdate(_) => ("task.update", Mutate),
         Request::TaskDelete(_) => ("task.delete", Mutate),
         Request::TaskStart(_) => ("task.start", Mutate),
+        // A verdict on finished work: an agent asks first (ADR 0016), like every mutation.
+        Request::TaskReview(_) => ("task.review", Mutate),
         // The resource manager (protocol 0.18): looking is free, ending processes is not.
         Request::ResourcesList(_) => ("resources.list", Read),
         Request::ResourcesSubscribe(_) => ("resources.subscribe", Read),

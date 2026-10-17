@@ -487,6 +487,14 @@ impl Connection {
             .is_some_and(|client| client.supports_rich_input())
     }
 
+    /// True while connected to a daemon that advertised capability `task.review`
+    /// ([`Client::supports_task_review`]); false when disconnected.
+    pub fn supports_task_review(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_task_review())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

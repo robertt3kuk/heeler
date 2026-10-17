@@ -30,9 +30,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hutan_core::{
-    AgentEventKind, AgentNode, Delivery, NodeKind, NodeOutcome, NodeState, SessionId, SessionState,
-    Task, TaskEvent, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId,
-    task as model,
+    AgentEventKind, AgentNode, Delivery, DeliveryActor, DeliveryRecord, DeliveryState, NodeKind,
+    NodeOutcome, NodeState, ReviewDecision, SessionId, SessionState, Task, TaskEvent, TaskId,
+    TaskPlacement, TaskPlacementKind, TaskRun, TaskState, WorkspaceId, task as model,
 };
 use hutan_protocol::chat::ChatCreate;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
@@ -41,9 +41,12 @@ use hutan_protocol::messages::{
     WorkspaceInfo, WorkspaceKind,
 };
 use hutan_protocol::task::{
-    TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskStarted, TaskUpdate,
+    TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskReview, TaskReviewed,
+    TaskStarted, TaskUpdate,
 };
-use hutan_protocol::worktree::{WorktreeCreate, WorktreeListRequest};
+use hutan_protocol::worktree::{
+    MergeStrategy, WorktreeCreate, WorktreeListRequest, WorktreeMerged,
+};
 use hutan_storage::Storage;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -59,7 +62,7 @@ use crate::harness::is_harness_agent;
 use crate::placement::PlacementCache;
 use crate::projects;
 use crate::registry::{RegistryHandle, log_write, now_ms};
-use crate::worktrees::WorktreeService;
+use crate::worktrees::{RemovedWorktree, WorktreeService};
 
 /// Queue between the event bus and the service task.
 pub const OBSERVER_QUEUE: usize = 1024;
@@ -126,7 +129,12 @@ impl State {
             slot.task.state,
             slot.blocked,
             &slot.task.depends_on,
-            |dep| self.tasks.get(&dep).map(|d| d.task.state),
+            slot.task.after_policy,
+            |dep| {
+                self.tasks
+                    .get(&dep)
+                    .map(|d| (d.task.state, d.task.delivery))
+            },
         ))
     }
 
@@ -252,16 +260,28 @@ impl State {
                 "the task was cancelled; set its state to todo to run it again".to_owned()
             }
             TaskState::Todo | TaskState::Ready => {
+                let policy = slot.task.after_policy;
                 let waiting: Vec<String> = slot
                     .task
                     .depends_on
                     .iter()
                     .filter(|dep| {
-                        self.tasks.get(dep).map(|d| d.task.state) != Some(TaskState::Done)
+                        !self
+                            .tasks
+                            .get(dep)
+                            .is_some_and(|d| policy.satisfied_by(d.task.state, d.task.delivery))
                     })
                     .map(|dep| {
                         let state = self.effective(*dep).map_or("gone", TaskState::as_str);
-                        format!("{} ({state})", self.label(*dep))
+                        match self.tasks.get(dep) {
+                            // The dependency ran; the policy wants more than that.
+                            Some(d) if d.task.state == TaskState::Done => format!(
+                                "{} ({state}, {}; waits for {policy})",
+                                self.label(*dep),
+                                d.task.delivery
+                            ),
+                            _ => format!("{} ({state})", self.label(*dep)),
+                        }
                     })
                     .collect();
                 format!("the task is waiting for {}", waiting.join(", "))
@@ -429,6 +449,9 @@ impl TaskService {
                 started_at_ms: None,
                 ended_at_ms: None,
                 outcome: None,
+                delivery: DeliveryState::None,
+                after_policy: req.after_policy,
+                delivery_history: Vec::new(),
             };
             st.tasks.insert(
                 id,
@@ -468,6 +491,7 @@ impl TaskService {
             || req.depends_on.is_some()
             || req.placement.is_some()
             || req.run.is_some()
+            || req.after_policy.is_some()
             || req.auto_start.is_some();
         let (task, to_stop) = {
             let mut st = self.state.lock();
@@ -530,6 +554,9 @@ impl TaskService {
                 }
                 if let Some(auto) = req.auto_start {
                     slot.task.auto_start = auto;
+                }
+                if let Some(policy) = req.after_policy {
+                    slot.task.after_policy = policy;
                 }
             }
             if let Some((event, outcome)) = event {
@@ -985,7 +1012,9 @@ impl TaskService {
             return false;
         };
         if let Some((event, outcome)) = session_outcome(&info.state) {
-            return self.apply(st, id, event, outcome);
+            // A process that exits 0 left work to review only in a worktree; an agent's
+            // chat (a Chat run) is judged by `reviewable`.
+            return self.apply_run(st, id, event, outcome, false);
         }
         let blocked = info.state == SessionState::WaitingApproval
             || info
@@ -1035,7 +1064,7 @@ impl TaskService {
             }
         }
         match finished {
-            Some((event, outcome)) => self.apply(st, id, event, outcome),
+            Some((event, outcome)) => self.apply_run(st, id, event, outcome, true),
             None => false,
         }
     }
@@ -1048,13 +1077,38 @@ impl TaskService {
         outcome: String,
     ) -> bool {
         match st.by_session.get(&session).copied() {
-            Some(id) => self.apply(st, id, event, outcome),
+            Some(id) => self.apply_run(st, id, event, outcome, true),
             None => false,
         }
     }
 
     /// Moves a task along its state machine and writes it down; whether it moved.
     fn apply(&self, st: &mut State, id: TaskId, event: TaskEvent, outcome: String) -> bool {
+        self.transition(st, id, event, outcome, None)
+    }
+
+    /// [`apply`](Self::apply) for the end of a run (the session's exit, the agent going idle,
+    /// the end of a chat turn): a `done` run leaves work for review when the task has a
+    /// worktree or an agent did it (`by_agent`: an agent, not just a process, finished).
+    fn apply_run(
+        &self,
+        st: &mut State,
+        id: TaskId,
+        event: TaskEvent,
+        outcome: String,
+        by_agent: bool,
+    ) -> bool {
+        self.transition(st, id, event, outcome, Some(by_agent))
+    }
+
+    fn transition(
+        &self,
+        st: &mut State,
+        id: TaskId,
+        event: TaskEvent,
+        outcome: String,
+        run_end: Option<bool>,
+    ) -> bool {
         let Some(slot) = st.tasks.get_mut(&id) else {
             return false;
         };
@@ -1067,19 +1121,203 @@ impl TaskService {
                 slot.task.ended_at_ms = Some(now_ms());
                 slot.task.outcome = Some(clip(&outcome));
                 slot.blocked = false;
+                if event == TaskEvent::Complete
+                    && let Some(by_agent) = run_end
+                    && reviewable(&slot.task, by_agent)
+                {
+                    slot.task.record_delivery(DeliveryRecord::new(
+                        DeliveryState::AwaitingReview,
+                        DeliveryActor::Daemon,
+                        now_ms(),
+                    ));
+                }
                 st.by_session.retain(|_, task| *task != id);
             }
             TaskEvent::Reset => {
                 slot.task.started_at_ms = None;
                 slot.task.ended_at_ms = None;
                 slot.task.outcome = None;
+                slot.task.delivery = DeliveryState::None;
                 slot.blocked = false;
                 slot.working_seen = false;
             }
-            TaskEvent::Start | TaskEvent::Block | TaskEvent::Unblock => {}
+            TaskEvent::Start | TaskEvent::Block | TaskEvent::Unblock | TaskEvent::Resume => {}
         }
         self.commit(st, id);
         true
+    }
+
+    // ---- delivery -------------------------------------------------------------------------
+
+    /// `task.review`: a person's verdict on a `done` task. A change request with a note goes
+    /// to the task's chat as a user message when that session still lives, and the task runs
+    /// again; otherwise the note stays on the task.
+    pub async fn review(
+        self: &Arc<Self>,
+        req: TaskReview,
+        by: DeliveryActor,
+    ) -> Result<TaskReviewed, ErrorBody> {
+        let note = req
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+            .map(str::to_owned);
+        if let Some(note) = &note
+            && note.len() > model::REVIEW_NOTE_MAX_BYTES
+        {
+            return Err(bad_request(format!(
+                "a review note has at most {} bytes, not {}",
+                model::REVIEW_NOTE_MAX_BYTES,
+                note.len()
+            )));
+        }
+        // The registry is asked before the lock: it is async.
+        let sessions = self
+            .registry
+            .list_sessions(SessionListFilter::default())
+            .await?
+            .sessions;
+        let (before, resumed) = {
+            let mut st = self.state.lock();
+            let Some(slot) = st.tasks.get(&req.id) else {
+                return Err(not_found(req.id));
+            };
+            if slot.task.state != TaskState::Done {
+                return Err(invalid_state(format!(
+                    "the task is {}; only a done task can be reviewed",
+                    st.effective(req.id).unwrap_or(slot.task.state)
+                )));
+            }
+            let next = slot
+                .task
+                .delivery
+                .after_review(req.decision)
+                .map_err(invalid_state)?;
+            if next == slot.task.delivery && note.is_none() {
+                // Nothing new to record.
+                let task = st.view(req.id).ok_or_else(|| not_found(req.id))?;
+                return Ok(TaskReviewed {
+                    task,
+                    session: None,
+                });
+            }
+            let before = slot.task.clone();
+            let session = (req.decision == ReviewDecision::RequestChanges
+                && note.is_some()
+                && matches!(slot.task.run, Some(TaskRun::Chat { .. })))
+            .then(|| {
+                slot.task.sessions.iter().rev().copied().find(|session| {
+                    sessions
+                        .iter()
+                        .any(|s| s.id == *session && s.state.is_live() && s.chat.is_some())
+                })
+            })
+            .flatten();
+            let mut record = DeliveryRecord::new(next, by, now_ms());
+            record.note = note.clone();
+            if let Some(slot) = st.tasks.get_mut(&req.id) {
+                slot.task.record_delivery(record);
+                if session.is_some() {
+                    slot.task.state = TaskState::Running;
+                    slot.task.ended_at_ms = None;
+                    slot.task.outcome = None;
+                    slot.blocked = false;
+                    slot.working_seen = false;
+                }
+            }
+            if let Some(session) = session {
+                // Linked before the message goes out: the turn's events must find the task.
+                st.by_session.insert(session, req.id);
+            }
+            self.commit(&mut st, req.id);
+            (before, session)
+        };
+        if let (Some(session), Some(note)) = (resumed, &note) {
+            let text = format!("Changes requested on the work of this task:\n\n{note}");
+            if let Err(error) = self.registry.chats().send(session, text, None).await {
+                // The decision is not recorded when its note could not be delivered.
+                let mut st = self.state.lock();
+                st.by_session.remove(&session);
+                if let Some(slot) = st.tasks.get_mut(&req.id) {
+                    slot.task = before;
+                    slot.blocked = false;
+                }
+                self.commit(&mut st, req.id);
+                return Err(error);
+            }
+        }
+        self.schedule();
+        let st = self.state.lock();
+        let task = st.view(req.id).ok_or_else(|| not_found(req.id))?;
+        Ok(TaskReviewed {
+            task,
+            session: resumed,
+        })
+    }
+
+    /// `worktree.merge` succeeded: the work of every finished task on the merged branch (in a
+    /// workspace of the repository) is `merged`, with the commit and strategy.
+    pub fn worktree_merged(
+        self: &Arc<Self>,
+        merged: &WorktreeMerged,
+        workspaces: &[WorkspaceId],
+        by: DeliveryActor,
+    ) {
+        {
+            let mut st = self.state.lock();
+            let ids: Vec<TaskId> = st
+                .tasks
+                .values()
+                .filter(|slot| {
+                    slot.task.state == TaskState::Done
+                        && !slot.task.delivery.is_final()
+                        && on_branch(&slot.task, &merged.branch, workspaces)
+                })
+                .map(|slot| slot.task.id)
+                .collect();
+            for id in ids {
+                if let Some(slot) = st.tasks.get_mut(&id) {
+                    let mut record = DeliveryRecord::new(DeliveryState::Merged, by, now_ms());
+                    record.commit = Some(merged.commit.clone());
+                    record.strategy = Some(strategy_name(merged.strategy).to_owned());
+                    slot.task.record_delivery(record);
+                }
+                self.commit(&mut st, id);
+            }
+        }
+        self.schedule();
+    }
+
+    /// `worktree.remove` succeeded: work of a task on that branch that nobody merged is
+    /// `discarded`.
+    pub fn worktree_removed(self: &Arc<Self>, removed: &RemovedWorktree, by: DeliveryActor) {
+        let Some(branch) = removed.branch.as_deref() else {
+            return;
+        };
+        {
+            let mut st = self.state.lock();
+            let ids: Vec<TaskId> = st
+                .tasks
+                .values()
+                .filter(|slot| {
+                    slot.task.delivery.is_open()
+                        && on_branch(&slot.task, branch, &removed.workspaces)
+                })
+                .map(|slot| slot.task.id)
+                .collect();
+            for id in ids {
+                if let Some(slot) = st.tasks.get_mut(&id) {
+                    slot.task.record_delivery(DeliveryRecord::new(
+                        DeliveryState::Discarded,
+                        by,
+                        now_ms(),
+                    ));
+                }
+                self.commit(&mut st, id);
+            }
+        }
+        self.schedule();
     }
 
     // ---- state changes --------------------------------------------------------------------
@@ -1151,6 +1389,42 @@ fn bad_request(message: impl Into<String>) -> ErrorBody {
 
 fn not_found(id: TaskId) -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, format!("task {id} not found"))
+}
+
+fn invalid_state(message: impl Into<String>) -> ErrorBody {
+    ErrorBody::new(ErrorCode::InvalidState, message)
+}
+
+/// Whether a run that finished `done` left work for a person to look at: the task has a
+/// worktree, or an agent (a chat, or an agent in a terminal) did the work in the main checkout.
+/// A plain command that exits 0 in the main checkout has nothing to review.
+fn reviewable(task: &Task, by_agent: bool) -> bool {
+    task.placement.kind == TaskPlacementKind::Worktree
+        || by_agent
+        || matches!(task.run, Some(TaskRun::Chat { .. }))
+}
+
+/// The branch a worktree task works on: the one it names, else `task/<slug of the title>`.
+fn branch_of(task: &Task) -> String {
+    task.placement
+        .branch
+        .clone()
+        .unwrap_or_else(|| model::default_branch(&task.title))
+}
+
+/// Whether `task` works in a worktree of `branch`, in one of the repository's `workspaces`.
+fn on_branch(task: &Task, branch: &str, workspaces: &[WorkspaceId]) -> bool {
+    task.placement.kind == TaskPlacementKind::Worktree
+        && workspaces.contains(&task.workspace_id)
+        && branch_of(task) == branch
+}
+
+fn strategy_name(strategy: MergeStrategy) -> &'static str {
+    match strategy {
+        MergeStrategy::Merge => "merge",
+        MergeStrategy::Squash => "squash",
+        MergeStrategy::Rebase => "rebase",
+    }
 }
 
 fn clean_title(title: &str) -> Result<String, ErrorBody> {
@@ -1321,7 +1595,7 @@ fn clip(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hutan_core::{AgentEventKind, TaskPlacement};
+    use hutan_core::{AfterPolicy, AgentEventKind, TaskPlacement};
 
     use super::*;
 
@@ -1341,6 +1615,9 @@ mod tests {
             started_at_ms: None,
             ended_at_ms: None,
             outcome: None,
+            delivery: DeliveryState::None,
+            after_policy: AfterPolicy::Done,
+            delivery_history: Vec::new(),
         }
     }
 
@@ -1543,5 +1820,74 @@ mod tests {
         state.tasks.get_mut(&second.id).unwrap().task.state = TaskState::Cancelled;
         state.refill_queue();
         assert_eq!(state.scheduler.waiting().count(), 0);
+    }
+
+    #[test]
+    fn only_worktree_work_or_an_agents_work_awaits_review() {
+        let mut t = task("x", 1, &[], TaskState::Done);
+        assert!(!reviewable(&t, false), "a command in the main checkout");
+        assert!(reviewable(&t, true), "an agent in the main checkout");
+        t.run = Some(TaskRun::Chat {
+            agent: "codex".into(),
+        });
+        assert!(reviewable(&t, false), "a chat is an agent");
+        t.run = None;
+        t.placement.kind = TaskPlacementKind::Worktree;
+        assert!(reviewable(&t, false), "a worktree holds work");
+    }
+
+    #[test]
+    fn a_task_is_on_the_branch_it_names_or_the_one_of_its_title() {
+        let ws = WorkspaceId::new();
+        let mut t = task("Fix the login bug", 1, &[], TaskState::Done);
+        t.workspace_id = ws;
+        assert!(
+            !on_branch(&t, "task/fix-the-login-bug", &[ws]),
+            "main placement"
+        );
+        t.placement.kind = TaskPlacementKind::Worktree;
+        assert!(on_branch(&t, "task/fix-the-login-bug", &[ws]));
+        assert!(!on_branch(
+            &t,
+            "task/fix-the-login-bug",
+            &[WorkspaceId::new()]
+        ));
+        t.placement.branch = Some("feature/x".into());
+        assert!(on_branch(&t, "feature/x", &[ws]));
+        assert!(!on_branch(&t, "task/fix-the-login-bug", &[ws]));
+    }
+
+    #[test]
+    fn the_dependency_policy_decides_when_a_task_is_ready() {
+        let mut a = task("a", 1, &[], TaskState::Done);
+        a.delivery = DeliveryState::AwaitingReview;
+        let mut b = task("b", 2, &[a.id], TaskState::Todo);
+        b.workspace_id = a.workspace_id;
+        let (a_id, b_id) = (a.id, b.id);
+        let mut state = state_of(vec![a, b]);
+        assert_eq!(state.effective(b_id), Some(TaskState::Ready));
+        for (policy, delivery, ready) in [
+            (AfterPolicy::Accepted, DeliveryState::AwaitingReview, false),
+            (AfterPolicy::Accepted, DeliveryState::Accepted, true),
+            (AfterPolicy::Accepted, DeliveryState::Merged, true),
+            (AfterPolicy::Merged, DeliveryState::Accepted, false),
+            (AfterPolicy::Merged, DeliveryState::Merged, true),
+        ] {
+            state.tasks.get_mut(&b_id).unwrap().task.after_policy = policy;
+            state.tasks.get_mut(&a_id).unwrap().task.delivery = delivery;
+            assert_eq!(
+                state.effective(b_id) == Some(TaskState::Ready),
+                ready,
+                "{policy} policy, dependency {delivery}"
+            );
+        }
+        // The message of a refused start names what is missing.
+        state.tasks.get_mut(&a_id).unwrap().task.delivery = DeliveryState::AwaitingReview;
+        let refusal = state.not_ready(b_id);
+        assert!(
+            refusal.message.contains("awaiting_review") && refusal.message.contains("merged"),
+            "{}",
+            refusal.message
+        );
     }
 }

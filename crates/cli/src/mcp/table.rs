@@ -404,6 +404,7 @@ static TOOLS: &[Tool] = &[
                         ],
                     },
                     "auto_start": {"type": "boolean", "description": "Start by itself when ready and a slot is free."},
+                    "after_policy": {"type": "string", "enum": ["done", "accepted", "merged"], "default": "done", "description": "What each dependency must reach before this task is ready: its run done (default), a person's acceptance, or the merge of its branch."},
                 }),
                 &["workspace_id", "title"],
             )
@@ -412,7 +413,9 @@ static TOOLS: &[Tool] = &[
     Tool {
         name: "task_list",
         description: "List tasks in dependency order with their state (todo, ready, running, \
-                      blocked, done, failed, cancelled), dependencies and sessions.",
+                      blocked, done, failed, cancelled), their `delivery` (awaiting_review, \
+                      accepted, changes_requested, merged, discarded: where the finished work is), \
+                      dependencies and sessions.",
         read_only: true,
         call: request("task.list"),
         schema: || {
@@ -434,6 +437,28 @@ static TOOLS: &[Tool] = &[
         read_only: false,
         call: request("task.start"),
         schema: || object(json!({"id": task_id()}), &["id"]),
+    },
+    Tool {
+        name: "task_review",
+        description: ask!(
+            "Give a verdict on a finished task: `accept` the work, or `request_changes` with a \
+             `note` saying what to change (sent to the task's chat as a user message when its \
+             session is still live, and the task runs again). Only a done task whose work was \
+             not merged or discarded can be reviewed. Reviewing is the user's decision: ask \
+             for it unless they told you to."
+        ),
+        read_only: false,
+        call: request("task.review"),
+        schema: || {
+            object(
+                json!({
+                    "id": task_id(),
+                    "decision": {"type": "string", "enum": ["accept", "request_changes"]},
+                    "note": text("What to change (request_changes), or a comment (accept)."),
+                }),
+                &["id", "decision"],
+            )
+        },
     },
     Tool {
         name: "task_done",
@@ -554,6 +579,26 @@ static TOOLS: &[Tool] = &[
                     "message": text("Commit message for `merge` and `squash` (not for `rebase`)."),
                 }),
                 &["path"],
+            )
+        },
+    },
+    Tool {
+        name: "worktree_commit",
+        description: ask!(
+            "Stage everything in a git worktree (tracked changes and untracked files that are \
+             not ignored) and commit it with `message`, so a following `worktree_merge` takes \
+             it: a merge integrates commits only. Hooks do not run. Refused for the main \
+             checkout and when there is nothing to commit."
+        ),
+        read_only: false,
+        call: request("worktree.commit"),
+        schema: || {
+            object(
+                json!({
+                    "path": path("The worktree's directory (not the main checkout)."),
+                    "message": text("The commit message."),
+                }),
+                &["path", "message"],
             )
         },
     },
@@ -1020,6 +1065,8 @@ mod tests {
             "task_done",
             "task_cancel",
             "task_reset",
+            "task_review",
+            "worktree_commit",
             "worktree_new",
             "worktree_list",
             "worktree_diff",

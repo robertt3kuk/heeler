@@ -1790,6 +1790,9 @@ mod tests {
             started_at_ms: Some(10_000),
             ended_at_ms: Some(75_000),
             outcome: Some(outcome.to_owned()),
+            delivery: Default::default(),
+            after_policy: Default::default(),
+            delivery_history: Vec::new(),
         }
     }
 

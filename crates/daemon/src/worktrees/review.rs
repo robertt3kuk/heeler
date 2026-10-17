@@ -21,10 +21,12 @@ use std::io::Read;
 use std::path::{Component, Path};
 use std::time::Duration;
 
+use hutan_core::WorkspaceId;
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::worktree::{
-    DiffFile, DiffStatus, MergeStrategy, WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff,
-    WorktreeFileDiffRequest, WorktreeMerge, WorktreeMerged,
+    CommitSummary, DiffFile, DiffStatus, MergeStrategy, WorktreeCommit, WorktreeCommitted,
+    WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff, WorktreeFileDiffRequest, WorktreeMerge,
+    WorktreeMerged,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -128,13 +130,31 @@ impl WorktreeService {
     pub async fn diff(&self, req: WorktreeDiffRequest) -> Result<WorktreeDiff, ErrorBody> {
         let (main, entry) = self.checkout(&req.path).await?;
         let (base, merge_base) = resolve_base(&main, &entry, req.base.as_deref()).await?;
-        let (files, patch_truncated) =
+        let (mut files, patch_truncated) =
             collect_diff(&entry.path, &merge_base, req.include_uncommitted).await?;
+        let (commits, commits_truncated) = commits_since(&entry.path, &merge_base).await?;
+        if req.include_uncommitted {
+            let (committed, uncommitted) = scope_of(&entry.path, &merge_base).await?;
+            for file in &mut files {
+                file.committed = committed.contains(&file.path)
+                    || file
+                        .old_path
+                        .as_ref()
+                        .is_some_and(|old| committed.contains(old));
+                file.uncommitted = uncommitted.contains(&file.path);
+            }
+        } else {
+            for file in &mut files {
+                file.committed = true;
+            }
+        }
         Ok(WorktreeDiff {
             base,
             merge_base,
             files,
             patch_truncated,
+            commits,
+            commits_truncated,
         })
     }
 
@@ -247,7 +267,12 @@ impl WorktreeService {
         Ok((main, entry))
     }
 
-    pub async fn merge(&self, req: WorktreeMerge) -> Result<WorktreeMerged, ErrorBody> {
+    /// Merges the worktree's branch; besides the result, the workspaces of the repository (the
+    /// task service marks the work of a task on that branch `merged`).
+    pub async fn merge(
+        &self,
+        req: WorktreeMerge,
+    ) -> Result<(WorktreeMerged, Vec<WorkspaceId>), ErrorBody> {
         let _writing = self.writes.lock().await;
         let message = req
             .message
@@ -447,13 +472,109 @@ impl WorktreeService {
             return Err(git_failed("rev-parse", &tip));
         }
         let workspaces = self.registry.list_workspaces().await?.workspaces;
-        self.changed(&workspaces_of_repo(&workspaces, &main).await);
-        Ok(WorktreeMerged {
+        let affected = workspaces_of_repo(&workspaces, &main).await;
+        self.changed(&affected);
+        Ok((
+            WorktreeMerged {
+                commit: String::from_utf8_lossy(&tip.stdout).trim().to_owned(),
+                target,
+                branch,
+                strategy: req.strategy,
+                source_dirty: req.strategy != MergeStrategy::Rebase && source_dirty,
+            },
+            affected,
+        ))
+    }
+
+    /// `worktree.commit`: everything in a worktree into one commit, so a merge takes it.
+    pub async fn commit(&self, req: WorktreeCommit) -> Result<WorktreeCommitted, ErrorBody> {
+        let _writing = self.writes.lock().await;
+        let message = req.message.trim();
+        if message.is_empty() {
+            return Err(bad_request("a commit needs a message"));
+        }
+        let (_, entry) = self.checkout(&req.path).await?;
+        if entry.is_main {
+            return Err(invalid_state(format!(
+                "{} is the main checkout; commit there yourself",
+                entry.path.display()
+            )));
+        }
+        let Some(branch) = entry.branch.clone() else {
+            return Err(invalid_state(format!(
+                "{} has a detached HEAD; check a branch out there first (`git switch -c <name>`)",
+                entry.path.display()
+            )));
+        };
+        if let Some(operation) = operation_in_progress(&entry.path).await? {
+            return Err(invalid_state(format!(
+                "{operation} is in progress in {}; finish or abort it first",
+                entry.path.display()
+            )));
+        }
+        if !dirty(&entry.path).await? {
+            return Err(invalid_state(format!(
+                "{} has nothing to commit",
+                entry.path.display()
+            )));
+        }
+        let staged = git(&entry.path, &["add", "-A"], WORKTREE_MERGE_TIMEOUT).await?;
+        if !staged.success {
+            return Err(git_failed("add", &staged));
+        }
+        let committed = git(
+            &entry.path,
+            &["commit", "--no-verify", "--cleanup=strip", "-m", message],
+            WORKTREE_MERGE_TIMEOUT,
+        )
+        .await;
+        match committed {
+            Ok(out) if out.success => {}
+            failed => {
+                // Leave the index as it was: nothing the caller did not ask for stays staged.
+                let _ = git(&entry.path, &["reset", "--quiet"], WORKTREE_MERGE_TIMEOUT).await;
+                return Err(match failed {
+                    Ok(out) => git_failed("commit", &out),
+                    Err(error) => error,
+                });
+            }
+        }
+        let tip = git(
+            &entry.path,
+            &["rev-parse", "--verify", "HEAD"],
+            READ_TIMEOUT,
+        )
+        .await?;
+        if !tip.success {
+            return Err(git_failed("rev-parse", &tip));
+        }
+        let changed = git(
+            &entry.path,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "-z",
+                "--root",
+                "HEAD",
+            ],
+            READ_TIMEOUT,
+        )
+        .await?;
+        let files = changed
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|name| !name.is_empty())
+            .count();
+        let workspaces = self.registry.list_workspaces().await?.workspaces;
+        if let Ok((main, _)) = self.checkout(&req.path).await {
+            self.changed(&workspaces_of_repo(&workspaces, &main).await);
+        }
+        Ok(WorktreeCommitted {
             commit: String::from_utf8_lossy(&tip.stdout).trim().to_owned(),
-            target,
             branch,
-            strategy: req.strategy,
-            source_dirty: req.strategy != MergeStrategy::Rebase && source_dirty,
+            files: u32::try_from(files).unwrap_or(u32::MAX),
         })
     }
 }
@@ -829,6 +950,8 @@ async fn collect_diff(
                 path: entry.path,
                 old_path: entry.old_path,
                 status: entry.status,
+                committed: false,
+                uncommitted: false,
             }
         })
         .collect();
@@ -870,6 +993,105 @@ async fn collect_diff(
         truncated = true;
     }
     Ok((files, truncated))
+}
+
+/// The most commits `worktree.diff` lists.
+const MAX_COMMITS: usize = 200;
+/// Longest commit subject sent to clients, in characters.
+const SUBJECT_MAX_CHARS: usize = 200;
+
+/// The commits of `HEAD` since `merge_base`, newest first, and whether there are more than the
+/// list holds: what a merge of the branch integrates.
+async fn commits_since(
+    root: &Path,
+    merge_base: &str,
+) -> Result<(Vec<CommitSummary>, bool), ErrorBody> {
+    let limit = format!("--max-count={}", MAX_COMMITS + 1);
+    let range = format!("{merge_base}..HEAD");
+    let log = git(
+        root,
+        &[
+            "log",
+            "--no-color",
+            "--no-show-signature",
+            "--format=%H%x1f%s%x1e",
+            &limit,
+            &range,
+            "--",
+        ],
+        READ_TIMEOUT,
+    )
+    .await?;
+    if !log.success {
+        return Err(git_failed("log", &log));
+    }
+    let mut commits = parse_log(&log.stdout);
+    let truncated = commits.len() > MAX_COMMITS;
+    commits.truncate(MAX_COMMITS);
+    Ok((commits, truncated))
+}
+
+/// Parses `git log --format=%H%x1f%s%x1e`.
+fn parse_log(output: &[u8]) -> Vec<CommitSummary> {
+    String::from_utf8_lossy(output)
+        .split('\x1e')
+        .filter_map(|record| {
+            let (id, subject) = record.trim_start_matches('\n').split_once('\x1f')?;
+            (!id.is_empty()).then(|| CommitSummary {
+                id: id.to_owned(),
+                subject: subject.chars().take(SUBJECT_MAX_CHARS).collect(),
+            })
+        })
+        .collect()
+}
+
+/// The paths changed by commits since `merge_base` and the paths with changes in no commit
+/// (staged, unstaged, untracked and not ignored); renames count under their new path.
+async fn scope_of(
+    root: &Path,
+    merge_base: &str,
+) -> Result<
+    (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ),
+    ErrorBody,
+> {
+    let committed_args = diff_args(&["--name-status", "-z"], merge_base, false, &[]);
+    let uncommitted_args = diff_args(&["--name-status", "-z"], "HEAD", true, &[]);
+    let untracked_args: Vec<&str> = vec!["ls-files", "--others", "--exclude-standard", "-z"];
+    let (committed_refs, uncommitted_refs) = (os_refs(&committed_args), os_refs(&uncommitted_args));
+    let (committed, uncommitted, untracked) = tokio::join!(
+        run_git(root, &committed_refs, DIFF_TIMEOUT),
+        run_git(root, &uncommitted_refs, DIFF_TIMEOUT),
+        git(root, &untracked_args, READ_TIMEOUT),
+    );
+    let (committed, uncommitted, untracked) = (committed?, uncommitted?, untracked?);
+    if !committed.success {
+        return Err(git_failed("diff --name-status", &committed));
+    }
+    if !uncommitted.success {
+        return Err(git_failed("diff --name-status", &uncommitted));
+    }
+    if !untracked.success {
+        return Err(git_failed("ls-files", &untracked));
+    }
+    let committed = parse_name_status(&committed.stdout)
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    let mut uncommitted: std::collections::HashSet<String> = parse_name_status(&uncommitted.stdout)
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    uncommitted.extend(
+        untracked
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|n| !n.is_empty() && !n.ends_with(b"/"))
+            .map(|n| String::from_utf8_lossy(n).into_owned()),
+    );
+    Ok((committed, uncommitted))
 }
 
 /// One entry of `git diff --name-status -z`.
@@ -1029,6 +1251,8 @@ fn untracked_files(root: &Path, names: Vec<String>) -> (Vec<DiffFile>, Vec<usize
             additions,
             deletions: 0,
             binary,
+            committed: false,
+            uncommitted: false,
         });
         sizes.push(size);
     }

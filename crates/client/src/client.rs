@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use hutan_core::{
-    ApprovalId, Epoch, QuestionId, QuestionResponse, Seq, SessionId, Task, TaskId, TaskState,
-    TerminalId, WorkspaceId,
+    ApprovalId, Epoch, QuestionId, QuestionResponse, ReviewDecision, Seq, SessionId, Task, TaskId,
+    TaskState, TerminalId, WorkspaceId,
 };
 use hutan_protocol::account::{
     AccountInfo, AccountList, AccountLogin, AccountLogout, AccountSession,
@@ -46,7 +46,7 @@ use hutan_protocol::resources::{
 };
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
-    TaskStarted, TaskUpdate,
+    TaskReview, TaskReviewed, TaskStarted, TaskUpdate,
 };
 use hutan_protocol::tree::{AgentTree, AgentTreeRequest};
 use hutan_protocol::ui::{
@@ -54,9 +54,9 @@ use hutan_protocol::ui::{
     UiRan, UiRun, UiSetSetting, UiTarget,
 };
 use hutan_protocol::worktree::{
-    WorktreeCreate, WorktreeCreated, WorktreeDiff, WorktreeDiffRequest, WorktreeFileDiff,
-    WorktreeFileDiffRequest, WorktreeInfo, WorktreeList, WorktreeListRequest, WorktreeMerge,
-    WorktreeMerged, WorktreeRemove, WorktreeRemoved,
+    WorktreeCommit, WorktreeCommitted, WorktreeCreate, WorktreeCreated, WorktreeDiff,
+    WorktreeDiffRequest, WorktreeFileDiff, WorktreeFileDiffRequest, WorktreeInfo, WorktreeList,
+    WorktreeListRequest, WorktreeMerge, WorktreeMerged, WorktreeRemove, WorktreeRemoved,
 };
 use hutan_protocol::{
     ControlMessage, ErrorBody, Frame, FrameCodec, FrameKind, MAX_PAYLOAD, PROTOCOL_VERSION,
@@ -120,6 +120,9 @@ pub(crate) const RICH_INPUT_CAPABILITY: &str = "chat.rich_input";
 /// Capability for `question.*`, the `question.*` events and `ChatInfo.pending_questions`
 /// (protocol 0.24).
 pub(crate) const QUESTIONS_CAPABILITY: &str = "chat.questions";
+/// Capability for `task.review`, `worktree.commit`, the delivery facet of tasks and the scope
+/// of `worktree.diff` (protocol 0.25).
+pub(crate) const TASK_REVIEW_CAPABILITY: &str = "task.review";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -144,6 +147,7 @@ const CAPABILITIES: &[&str] = &[
     WORKTREE_REVIEW_CAPABILITY,
     RICH_INPUT_CAPABILITY,
     QUESTIONS_CAPABILITY,
+    TASK_REVIEW_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -701,6 +705,15 @@ impl Client {
             .any(|capability| capability == RICH_INPUT_CAPABILITY)
     }
 
+    /// True when the daemon advertised capability `task.review` (protocol 0.25): tasks carry a
+    /// delivery state, `task.review` and `worktree.commit` exist.
+    pub fn supports_task_review(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == TASK_REVIEW_CAPABILITY)
+    }
+
     /// The files a checkout changed against its base (`worktree.diff`).
     pub async fn worktree_diff(
         &self,
@@ -720,6 +733,14 @@ impl Client {
     /// Merges a worktree's branch into the main checkout's branch (`worktree.merge`).
     pub async fn worktree_merge(&self, req: WorktreeMerge) -> Result<WorktreeMerged, ClientError> {
         self.call(Request::WorktreeMerge(req)).await
+    }
+
+    /// Commits everything in a worktree (`worktree.commit`).
+    pub async fn worktree_commit(
+        &self,
+        req: WorktreeCommit,
+    ) -> Result<WorktreeCommitted, ClientError> {
+        self.call(Request::WorktreeCommit(req)).await
     }
 
     /// True when the daemon advertised capability `task` (protocol 0.16).
@@ -769,6 +790,18 @@ impl Client {
     /// Runs a ready task now (`task.start`): the task, its session and any warnings.
     pub async fn task_start(&self, id: TaskId) -> Result<TaskStarted, ClientError> {
         self.call(Request::TaskStart(TaskRef { id })).await
+    }
+
+    /// A person's verdict on a done task (`task.review`): accept it, or ask for changes with a
+    /// note (sent to the task's chat when it still lives).
+    pub async fn task_review(
+        &self,
+        id: TaskId,
+        decision: ReviewDecision,
+        note: Option<String>,
+    ) -> Result<TaskReviewed, ClientError> {
+        self.call(Request::TaskReview(TaskReview { id, decision, note }))
+            .await
     }
 
     /// True when the daemon advertised capability `resources` (protocol 0.18).

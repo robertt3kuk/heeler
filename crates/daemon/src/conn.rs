@@ -55,6 +55,7 @@ pub const CAPABILITIES: &[&str] = &[
     "worktree.review",
     "chat.rich_input",
     "chat.questions",
+    "task.review",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

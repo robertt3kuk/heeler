@@ -497,29 +497,20 @@ async fn the_daemon_refuses_to_start_on_a_database_it_cannot_use() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::in_home(dir.path());
 
-    // A database written by a newer build.
+    // A database written by a newer build: every migration this build knows, and one more.
+    let newest = hutan_storage::MIGRATIONS
+        .last()
+        .map_or(0, |migration| migration.version);
     let newer = Migration {
-        version: 10,
+        version: newest + 1,
         name: "from the future",
         sql: "CREATE TABLE future (x INTEGER NOT NULL);",
     };
-    Storage::open_with_migrations(
-        &paths.database,
-        &[
-            hutan_storage::MIGRATIONS[0],
-            hutan_storage::MIGRATIONS[1],
-            hutan_storage::MIGRATIONS[2],
-            hutan_storage::MIGRATIONS[3],
-            hutan_storage::MIGRATIONS[4],
-            hutan_storage::MIGRATIONS[5],
-            hutan_storage::MIGRATIONS[6],
-            hutan_storage::MIGRATIONS[7],
-            hutan_storage::MIGRATIONS[8],
-            newer,
-        ],
-    )
-    .unwrap()
-    .close();
+    let mut written = hutan_storage::MIGRATIONS.to_vec();
+    written.push(newer);
+    Storage::open_with_migrations(&paths.database, &written)
+        .unwrap()
+        .close();
     let error = hutan_daemon::start(DaemonConfig::new(paths.clone()))
         .await
         .unwrap_err();

@@ -215,6 +215,22 @@ impl Workbench {
         self.focus_root(window, cx);
     }
 
+    /// [`open_changes`](Self::open_changes) for the work of `task`: the view reviews that task
+    /// (Accept, Request changes…) whatever its branch says.
+    fn open_changes_of_task(
+        &mut self,
+        path: PathBuf,
+        task: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = path.display().to_string();
+        self.open_changes(path, window, cx);
+        if let Some(view) = self.changes(&key) {
+            view.update(cx, |view, cx| view.set_task(Some(task), cx));
+        }
+    }
+
     fn close_changes(&mut self, path: &str, cx: &mut Context<Self>) {
         let item = ItemRef::changes(path);
         if let Some((pane, index)) = self.state.find_item(&item) {
@@ -248,7 +264,7 @@ impl Workbench {
             return;
         };
         if let Some(root) = root {
-            self.open_changes(root, window, cx);
+            self.open_changes_of_task(root, task, window, cx);
             return;
         }
         let listing = self
@@ -272,7 +288,7 @@ impl Workbench {
                     wanted.ok_or_else(|| "its worktree does not exist (yet)".to_owned())
                 });
                 match pick {
-                    Ok(worktree) => this.open_changes(worktree.path, window, cx),
+                    Ok(worktree) => this.open_changes_of_task(worktree.path, task, window, cx),
                     Err(error) => {
                         this.set_notice(
                             format!("Cannot show the changes of the task: {error}"),

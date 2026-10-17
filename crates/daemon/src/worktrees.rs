@@ -43,6 +43,15 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(180);
 /// A merge or rebase rewrites the files of a checkout (and runs no hooks).
 const WORKTREE_MERGE_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// A worktree `worktree.remove` took away.
+#[derive(Debug, Clone)]
+pub struct RemovedWorktree {
+    /// The workspaces of its repository.
+    pub workspaces: Vec<WorkspaceId>,
+    /// The branch it had checked out.
+    pub branch: Option<String>,
+}
+
 /// The worktree service: git on one side, the registry (workspaces, sessions) and storage on
 /// the other.
 #[derive(Debug)]
@@ -224,7 +233,12 @@ impl WorktreeService {
         Ok(WorktreeList { worktrees })
     }
 
-    pub async fn remove(&self, req: WorktreeRemove) -> Result<WorktreeRemoved, ErrorBody> {
+    /// Removes a worktree; besides the result, which workspaces and branch it was (the task
+    /// service marks the work of a task in it `discarded`).
+    pub async fn remove(
+        &self,
+        req: WorktreeRemove,
+    ) -> Result<(WorktreeRemoved, RemovedWorktree), ErrorBody> {
         let _writing = self.writes.lock().await;
         if !req.path.is_absolute() {
             return Err(bad_request(format!(
@@ -307,8 +321,15 @@ impl WorktreeService {
             "a worktree",
         );
         self.registry.invalidate_placements().await?;
-        self.changed(&workspaces_of_repo(&workspaces, &main).await);
-        Ok(result)
+        let affected = workspaces_of_repo(&workspaces, &main).await;
+        self.changed(&affected);
+        Ok((
+            result,
+            RemovedWorktree {
+                workspaces: affected,
+                branch: entry.branch.clone(),
+            },
+        ))
     }
 
     /// Looks for the worktree at `wanted` in every repository a workspace or a remembered

@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use hutan_core::QuestionId;
 use hutan_core::agent::{
     DecidedBy, FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
     PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
@@ -14,12 +15,15 @@ use hutan_core::question::{
     QuestionSpec,
 };
 use hutan_core::{
+    AfterPolicy, DeliveryActor, DeliveryRecord, DeliveryState, ReviewDecision, Task, TaskId,
+    TaskPlacement, TaskPlacementKind, TaskRun, TaskState,
+};
+use hutan_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, AgentNode, AgentObservation, ApprovalId,
     ApprovalPolicy, ItemId, Liveness, ModelInfo, NodeKind, NodeOutcome, NodeState, SandboxMode,
     TurnId, Usage,
 };
 use hutan_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
-use hutan_core::{QuestionId, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState};
 use hutan_protocol::account::*;
 use hutan_protocol::assistant::*;
 use hutan_protocol::blocks::{
@@ -673,6 +677,45 @@ fn running_task() -> Task {
         started_at_ms: Some(1_791_894_164_332),
         ended_at_ms: None,
         outcome: None,
+        delivery: DeliveryState::None,
+        after_policy: AfterPolicy::Accepted,
+        delivery_history: vec![],
+    }
+}
+
+/// A finished task whose work was reviewed, changed on request, accepted and merged.
+fn merged_task() -> Task {
+    let mut asked = DeliveryRecord::new(
+        DeliveryState::ChangesRequested,
+        DeliveryActor::Desktop,
+        1_791_894_300_000,
+    );
+    asked.note = Some("Keep the old session cookie name.".into());
+    let mut merged =
+        DeliveryRecord::new(DeliveryState::Merged, DeliveryActor::Cli, 1_791_894_500_000);
+    merged.commit = Some("9d8c7b6a5f4e3d2c1b0a99887766554433221100".into());
+    merged.strategy = Some("squash".into());
+    Task {
+        state: TaskState::Done,
+        ended_at_ms: Some(1_791_894_450_000),
+        outcome: Some("turn completed".into()),
+        delivery: DeliveryState::Merged,
+        after_policy: AfterPolicy::Done,
+        delivery_history: vec![
+            DeliveryRecord::new(
+                DeliveryState::AwaitingReview,
+                DeliveryActor::Daemon,
+                1_791_894_250_000,
+            ),
+            asked,
+            DeliveryRecord::new(
+                DeliveryState::Accepted,
+                DeliveryActor::Desktop,
+                1_791_894_400_000,
+            ),
+            merged,
+        ],
+        ..running_task()
     }
 }
 
@@ -693,6 +736,9 @@ fn minimal_task() -> Task {
         started_at_ms: None,
         ended_at_ms: None,
         outcome: None,
+        delivery: DeliveryState::None,
+        after_policy: AfterPolicy::Done,
+        delivery_history: vec![],
     }
 }
 
@@ -1583,6 +1629,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     agent: "codex".into(),
                 }),
                 auto_start: true,
+                after_policy: AfterPolicy::Accepted,
             }),
         ),
         (
@@ -1597,6 +1644,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     argv: vec!["cargo".into(), "test".into()],
                 }),
                 auto_start: false,
+                after_policy: AfterPolicy::Done,
             }),
         ),
         (
@@ -1609,6 +1657,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 placement: None,
                 run: None,
                 auto_start: false,
+                after_policy: AfterPolicy::Done,
             }),
         ),
         (
@@ -1632,6 +1681,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                 placement: None,
                 run: None,
                 auto_start: None,
+                after_policy: None,
                 state: Some(TaskState::Cancelled),
             }),
         ),
@@ -1647,6 +1697,7 @@ fn requests() -> Vec<(&'static str, Request)> {
                     argv: vec!["sh".into(), "-c".into(), "make".into()],
                 }),
                 auto_start: Some(false),
+                after_policy: Some(AfterPolicy::Merged),
                 state: None,
             }),
         ),
@@ -1975,6 +2026,29 @@ fn requests() -> Vec<(&'static str, Request)> {
             Request::QuestionAnswer(QuestionAnswer {
                 question_id: question(),
                 response: QuestionResponse::Cancel,
+            }),
+        ),
+        (
+            "task_review_accept",
+            Request::TaskReview(TaskReview {
+                id: tid(),
+                decision: ReviewDecision::Accept,
+                note: None,
+            }),
+        ),
+        (
+            "task_review_changes",
+            Request::TaskReview(TaskReview {
+                id: tid(),
+                decision: ReviewDecision::RequestChanges,
+                note: Some("Keep the old session cookie name.".into()),
+            }),
+        ),
+        (
+            "worktree_commit",
+            Request::WorktreeCommit(WorktreeCommit {
+                path: "/work/repo-wt/feature-login".into(),
+                message: "Add login".into(),
             }),
         ),
     ]
@@ -2645,6 +2719,12 @@ fn events() -> Vec<(&'static str, Event)> {
                     created_at_ms: 1_791_894_170_600,
                     expires_at_ms: None,
                 },
+            },
+        ),
+        (
+            "task_updated_merged",
+            Event::TaskUpdated {
+                task: merged_task(),
             },
         ),
     ]
@@ -3421,6 +3501,8 @@ fn responses_match_fixtures() {
                             additions: 12,
                             deletions: 3,
                             binary: false,
+                            committed: true,
+                            uncommitted: false,
                         },
                         DiffFile {
                             path: "assets/logo.png".into(),
@@ -3429,6 +3511,8 @@ fn responses_match_fixtures() {
                             additions: 0,
                             deletions: 0,
                             binary: true,
+                            committed: true,
+                            uncommitted: false,
                         },
                         DiffFile {
                             path: "old.txt".into(),
@@ -3437,6 +3521,8 @@ fn responses_match_fixtures() {
                             additions: 0,
                             deletions: 7,
                             binary: false,
+                            committed: false,
+                            uncommitted: true,
                         },
                         DiffFile {
                             path: "README.md".into(),
@@ -3445,9 +3531,22 @@ fn responses_match_fixtures() {
                             additions: 1,
                             deletions: 1,
                             binary: false,
+                            committed: true,
+                            uncommitted: true,
                         },
                     ],
                     patch_truncated: true,
+                    commits: vec![
+                        CommitSummary {
+                            id: "3f786850e387550fdab836ed7e6dc881de23001b".into(),
+                            subject: "Add the login form".into(),
+                        },
+                        CommitSummary {
+                            id: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".into(),
+                            subject: "Rename signin to login".into(),
+                        },
+                    ],
+                    commits_truncated: true,
                 },
             )
             .unwrap(),
@@ -3461,6 +3560,8 @@ fn responses_match_fixtures() {
                     merge_base: "5b1c0f3e8f6d2a4c7b9e0d1f2a3b4c5d6e7f8091".into(),
                     files: vec![],
                     patch_truncated: false,
+                    commits: vec![],
+                    commits_truncated: false,
                 },
             )
             .unwrap(),
@@ -3513,6 +3614,18 @@ fn responses_match_fixtures() {
                     branch: "feature/login".into(),
                     strategy: MergeStrategy::Merge,
                     source_dirty: false,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "worktree_committed",
+            ControlMessage::ok(
+                33,
+                &WorktreeCommitted {
+                    commit: "7a6b5c4d3e2f10987a6b5c4d3e2f10987a6b5c4d".into(),
+                    branch: "feature/login".into(),
+                    files: 3,
                 },
             )
             .unwrap(),
@@ -3578,6 +3691,28 @@ fn responses_match_fixtures() {
                 29,
                 &TaskResult {
                     task: minimal_task(),
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_reviewed",
+            ControlMessage::ok(
+                34,
+                &TaskReviewed {
+                    task: merged_task(),
+                    session: None,
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "task_reviewed_resumed",
+            ControlMessage::ok(
+                35,
+                &TaskReviewed {
+                    task: running_task(),
+                    session: Some(sid()),
                 },
             )
             .unwrap(),
@@ -3881,6 +4016,27 @@ fn workspaces_of_an_older_daemon_decode_with_defaults() {
             project: None,
         }
     );
+}
+
+#[test]
+fn tasks_of_an_older_daemon_have_no_delivery() {
+    // Protocol 0.23 and older knew nothing of delivery or dependency policies.
+    let old = serde_json::json!({
+        "id": tid(), "workspace_id": ws(), "title": "Old", "state": "done",
+        "depends_on": [], "placement": {"kind": "main"}, "sessions": [],
+        "created_at_ms": 1, "auto_start": false
+    });
+    let decoded: Task = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.delivery, DeliveryState::None);
+    assert_eq!(decoded.after_policy, AfterPolicy::Done);
+    assert!(decoded.delivery_history.is_empty());
+    // And a 0.23 daemon's worktree.diff has no scope information.
+    let old = serde_json::json!({
+        "base": "main", "merge_base": "abc",
+        "files": [{"path": "a", "status": "modified", "additions": 1, "deletions": 0}]
+    });
+    let diff: WorktreeDiff = serde_json::from_value(old).unwrap();
+    assert!(diff.commits.is_empty() && !diff.files[0].committed && !diff.files[0].uncommitted);
 }
 
 #[test]
