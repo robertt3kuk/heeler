@@ -1074,6 +1074,7 @@ mod tests {
             "enter | palette::Confirm | Picker",
             "escape | palette::Dismiss | Picker",
             "enter | setup::Continue | Setup",
+            "escape | setup::Skip | Setup",
         ]
         .map(str::to_owned)
         .to_vec();
