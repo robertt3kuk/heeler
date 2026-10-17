@@ -491,6 +491,9 @@ fn commands_split_apply_presets_open_panels_focus_sessions_and_write_settings(
         Some(json!({"id": in_other.id.to_string()})),
     )
     .unwrap();
+    wait_until(cx, "the session to be the focused one", |cx| {
+        view.read_with(cx, |wb, _| wb.focused_session() == Some(in_other.id))
+    });
     set(&daemon, cx, "terminal", "font_size", json!(18), "project").unwrap();
     let project_file = other.canonicalize().unwrap().join(".hutan/settings.toml");
     let text = std::fs::read_to_string(&project_file).unwrap();

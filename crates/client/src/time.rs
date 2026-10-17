@@ -64,7 +64,7 @@ fn utc_offset_secs(ms: u64) -> i64 {
         }
         tm
     };
-    i64::from(tm.tm_gmtoff)
+    tm.tm_gmtoff
 }
 
 fn format_at(ms: u64, offset_secs: i64, precision: Precision) -> String {
