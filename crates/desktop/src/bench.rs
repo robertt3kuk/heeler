@@ -28,7 +28,7 @@ const POLL: Duration = Duration::from_millis(20);
 /// `"refresh_interval_us":…` for a trace event: the refresh interval of the display the window
 /// is on, as the platform reports it (the maximum rate on variable refresh rate displays;
 /// `null` when unknown). B4b is judged against it (ADR 0011).
-fn display_members(cx: &mut gpui::AsyncWindowContext) -> String {
+pub(crate) fn display_members(cx: &mut gpui::AsyncWindowContext) -> String {
     let interval = cx
         .update(|window, cx| window.refresh_interval(cx))
         .ok()
@@ -82,6 +82,9 @@ impl Script {
 
 /// Starts the script named by `HUTAN_BENCH_INPUT`, if any.
 pub fn start(window: &mut Window, cx: &mut Context<Workbench>) {
+    if crate::bench_ui::start(window, cx) {
+        return;
+    }
     let Some(path) = std::env::var_os("HUTAN_BENCH_INPUT").filter(|p| !p.is_empty()) else {
         return;
     };

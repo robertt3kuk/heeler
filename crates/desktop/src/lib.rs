@@ -3,8 +3,10 @@
 
 pub mod app;
 pub mod bench;
+pub mod bench_ui;
 pub mod cli_link;
 pub mod crash;
+pub mod frames;
 pub mod harness_install;
 pub mod instance;
 pub mod integrations;

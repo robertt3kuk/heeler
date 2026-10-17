@@ -3,15 +3,32 @@
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-fn dock(panel: &str, size: f64, visible: bool) -> Value {
+pub fn dock(panel: &str, size: f64, visible: bool) -> Value {
     json!({ "panels": [panel], "active": panel, "size": size, "visible": visible })
 }
 
 fn pane(id: usize, session: &str) -> Value {
-    json!({ "pane": { "id": id, "items": [{ "terminal": { "session": session } }], "active": 0 } })
+    pane_of(id, vec![terminal_item(session)], 0)
 }
 
-fn split(axis: &str, children: Vec<Value>) -> Value {
+/// A pane holding `items` (see [`terminal_item`], [`chat_item`], [`panel_item`]), `active` first.
+pub fn pane_of(id: usize, items: Vec<Value>, active: usize) -> Value {
+    json!({ "pane": { "id": id, "items": items, "active": active } })
+}
+
+pub fn terminal_item(session: &str) -> Value {
+    json!({ "terminal": { "session": session } })
+}
+
+pub fn chat_item(session: &str) -> Value {
+    json!({ "chat": { "session": session } })
+}
+
+pub fn panel_item(panel: &str) -> Value {
+    json!({ "panel": { "panel": panel } })
+}
+
+pub fn split(axis: &str, children: Vec<Value>) -> Value {
     let ratios = vec![1.0 / children.len() as f64; children.len()];
     json!({ "split": { "axis": axis, "ratios": ratios, "children": children } })
 }
@@ -50,6 +67,32 @@ pub fn layout(sessions: &[String]) -> Result<Value> {
     }))
 }
 
+/// A saved layout with the given docks and center (`panes` is the number of panes in it, so
+/// that the next pane id does not clash); focus starts on pane 1.
+pub fn custom_layout(
+    left: Value,
+    right: Value,
+    bottom: Value,
+    center: Value,
+    panes: usize,
+) -> Value {
+    json!({
+        "version": 1,
+        "docks": { "left": left, "right": right, "bottom": bottom },
+        "center": center,
+        "zoomed": null,
+        "focus": { "pane": 1 },
+        "preset": "default",
+        "previous_preset": null,
+        "next_pane": panes + 1,
+    })
+}
+
+/// A dock that is not shown.
+pub fn hidden_dock(panel: &str, size: f64) -> Value {
+    dock(panel, size, false)
+}
+
 /// A `HUTAN_BENCH_INPUT` script typing lowercase letters with an Enter after every 40 keys.
 pub fn typing_script(keys: usize, interval_ms: u64, start_delay_ms: u64, jitter_ms: u64) -> Value {
     let keys: Vec<String> = (1..=keys)
@@ -75,6 +118,28 @@ mod tests {
         assert_eq!(keys.len(), 80);
         assert_eq!(keys[39], "enter");
         assert_eq!(keys[0], "b");
+    }
+
+    #[test]
+    fn custom_layouts_carry_their_items() {
+        let center = split(
+            "horizontal",
+            vec![
+                pane_of(1, vec![terminal_item("t"), chat_item("c")], 1),
+                pane_of(2, vec![panel_item("tasks")], 0),
+            ],
+        );
+        let layout = custom_layout(
+            dock("sessions", 240.0, true),
+            dock("agents", 300.0, true),
+            hidden_dock("resources", 200.0),
+            center,
+            2,
+        );
+        let text = layout.to_string();
+        assert!(text.contains(r#""chat":{"session":"c"}"#));
+        assert!(text.contains(r#""panel":{"panel":"tasks"}"#));
+        assert_eq!(layout["next_pane"], 3);
     }
 
     #[test]

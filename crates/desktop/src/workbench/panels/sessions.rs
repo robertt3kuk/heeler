@@ -965,6 +965,7 @@ impl Render for SessionsPanel {
 
         let search = div()
             .id("sessions-search")
+            .relative()
             .key_context("SessionsSearch")
             .track_focus(&self.search_focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key(event, cx)))
@@ -1012,7 +1013,8 @@ impl Render for SessionsPanel {
                     ],
                     None => vec![div().child(self.query.clone()).into_any_element()],
                 },
-            );
+            )
+            .child(probe(&self.env.regions, Region::SidebarControl("filter")));
 
         let new_session = div()
             .id("sessions-new")

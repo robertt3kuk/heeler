@@ -27,6 +27,7 @@ struct Tracer {
 
 static TRACER: LazyLock<Option<Tracer>> = LazyLock::new(init_tracer);
 static KEY_SEQ: AtomicU64 = AtomicU64::new(0);
+static TEXT_PAINTS: AtomicU64 = AtomicU64::new(0);
 
 fn init_tracer() -> Option<Tracer> {
     let on = std::env::var("HUTAN_TRACE_LATENCY").is_ok_and(|v| !v.is_empty() && v != "0");
@@ -113,6 +114,17 @@ pub fn startup(stage: &'static str) {
             ),
         );
     }
+}
+
+/// Counts one paint of a terminal view that shows text (call only while tracing is on).
+pub fn note_text_painted() {
+    TEXT_PAINTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many paints of terminal views that show text happened so far: a frame that changed it
+/// painted a terminal with content (the frame timing of the desktop's benchmarks).
+pub fn text_paints() -> u64 {
+    TEXT_PAINTS.load(Ordering::Relaxed)
 }
 
 /// Whether [`startup`] already reported `stage` (always false when tracing is off).

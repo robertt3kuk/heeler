@@ -4,7 +4,9 @@
 //! bar glyph (`docs/packaging.md`).
 
 mod bench;
+mod bench_ui;
 mod bundle;
+mod fake_codex;
 mod icon;
 mod install;
 mod menubar;
@@ -24,7 +26,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Build release binaries and measure the budgets B1–B6 of docs/vision.md.
+    /// Build release binaries and measure the budgets B1–B6 of docs/vision.md and B3p, B7–B10 of docs/perf.md.
     Bench {
         /// Budgets to measure, comma separated (e.g. `B1,B4`); default all.
         #[arg(long, value_delimiter = ',')]
@@ -62,6 +64,14 @@ enum Command {
         /// Existing Homebrew tap checkout to receive Casks/hutan.rb and Formula/hutan.rb.
         #[arg(long, value_name = "DIR")]
         tap: std::path::PathBuf,
+    },
+    /// A stand-in for `codex app-server` that the chat benchmarks point the daemon at (reads
+    /// JSON-RPC on stdin, never touches the network or a login).
+    #[command(hide = true)]
+    FakeCodex {
+        /// The daemon appends `-c key=value` overrides (its MCP wiring); a stand-in ignores them.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        _overrides: Vec<String>,
     },
     /// Render assets/macos/Hutan.icns from the brand icon SVG.
     Icon,
@@ -107,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
             out,
             bin_dir,
         }),
+        Command::FakeCodex { .. } => fake_codex::run(),
         Command::Release { tap } => release::run(tap),
         Command::Icon => icon::run(&bundle::workspace_root()),
         Command::MenubarIcon => menubar::run(&bundle::workspace_root()),

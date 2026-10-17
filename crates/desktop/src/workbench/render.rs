@@ -65,6 +65,7 @@ fn id(text: impl Into<SharedString>) -> ElementId {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::frames::begin();
         self.sync_appearance(window, cx);
         let title = format!("{} — Hutan", self.active_title(cx));
         if title != self.last_title {
@@ -161,6 +162,8 @@ impl Render for Workbench {
         .children(sheet)
         .children(setup)
         .children(modal)
+        // Last: its paint ends the frame the benchmarks time (`frames`).
+        .children(crate::frames::enabled().then(crate::frames::probe))
     }
 }
 

@@ -1193,6 +1193,9 @@ impl Render for ChatView {
         let attach = self.render_attach(&look, cx);
         let composer = self.render_composer(&gate, window, &look, cx);
         let empty = self.model.read(cx).transcript().is_empty();
+        if !empty {
+            crate::frames::content_painted();
+        }
         let body = if empty {
             self.render_empty(&look, cx)
         } else {

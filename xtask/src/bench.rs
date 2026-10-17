@@ -25,11 +25,11 @@ use crate::proc::{self, Guard};
 use crate::seed;
 use crate::stats::{median, percentile};
 
-const MIB: f64 = 1024.0 * 1024.0;
+pub(crate) const MIB: f64 = 1024.0 * 1024.0;
 /// Metric holding the refresh interval of the window's display (ms), read from the platform.
-const REFRESH_INTERVAL_MS: &str = "b4_refresh_interval_ms";
+pub(crate) const REFRESH_INTERVAL_MS: &str = "b4_refresh_interval_ms";
 /// 1.0 when a typing run's window was not presented at the display rate (see `typing`).
-const DISPLAY_STALLED: &str = "b4_display_stalled";
+pub(crate) const DISPLAY_STALLED: &str = "b4_display_stalled";
 /// Attempts per run of a scenario whose measurement the machine's display state can spoil.
 const MAX_ATTEMPTS: u32 = 4;
 
@@ -123,6 +123,86 @@ pub const BUDGETS: &[Budget] = &[
         limit: 500.0,
         frame_margin_ms: None,
     },
+    Budget {
+        id: "B3p",
+        name: "Idle CPU, 60 sessions + Tasks, Resources, Agents open, 30 s",
+        metric: "b3p_idle_cpu_pct",
+        unit: "%",
+        limit: 0.5,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B7a",
+        name: "Chat of 5000 events: open to first paint",
+        metric: "b7a_open_ms",
+        unit: "ms",
+        limit: 150.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B7b",
+        name: "Chat of 5000 events: scroll frame p95 (one frame + 2 ms)",
+        metric: "b7b_scroll_frame_p95_ms",
+        unit: "ms",
+        limit: 0.0,
+        frame_margin_ms: Some(2.0),
+    },
+    Budget {
+        id: "B7c",
+        name: "Chat of 5000 events: desktop RSS growth",
+        metric: "b7c_rss_growth_mb",
+        unit: "MB",
+        limit: 60.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B8a",
+        name: "Streaming 200 deltas/s: frame p95 (one frame + 2 ms)",
+        metric: "b8a_frame_p95_ms",
+        unit: "ms",
+        limit: 0.0,
+        frame_margin_ms: Some(2.0),
+    },
+    Budget {
+        id: "B8b",
+        name: "Streaming 200 deltas/s: longest frame",
+        metric: "b8b_frame_max_ms",
+        unit: "ms",
+        limit: 50.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B8c",
+        name: "Streaming 200 deltas/s: composer key p95 (Hutan path)",
+        metric: "b8c_key_p95_ms",
+        unit: "ms",
+        limit: 16.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B9a",
+        name: "Sidebar, 300 sessions / 40 projects: filter key p95 (Hutan path)",
+        metric: "b9a_key_p95_ms",
+        unit: "ms",
+        limit: 16.0,
+        frame_margin_ms: None,
+    },
+    Budget {
+        id: "B9b",
+        name: "Sidebar, 300 sessions: drag frame p95 (one frame + 2 ms)",
+        metric: "b9b_frame_p95_ms",
+        unit: "ms",
+        limit: 0.0,
+        frame_margin_ms: Some(2.0),
+    },
+    Budget {
+        id: "B10",
+        name: "Switch between 10 terminals and 5 chats: p95 to first frame",
+        metric: "b10_switch_p95_ms",
+        unit: "ms",
+        limit: 50.0,
+        frame_margin_ms: None,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,15 +217,30 @@ enum Scenario {
     Flood,
     /// B6.
     ColdStart,
+    /// B3p: idle with the sidebar full and the Tasks, Resources and Agents panels open.
+    IdlePanels,
+    /// B7a, B7b, B7c: a chat of 5000 journal events opened and scrolled.
+    Transcript,
+    /// B8a, B8b, B8c: a reply streams while the composer is typed into.
+    Streaming,
+    /// B9a, B9b: the sidebar with 300 sessions: filter typing and a drag.
+    Sidebar,
+    /// B10: switching between ten terminals and five chats.
+    Switching,
 }
 
 impl Scenario {
-    const ALL: [Scenario; 5] = [
+    const ALL: [Scenario; 10] = [
         Scenario::Idle,
         Scenario::IdleWide,
         Scenario::Typing,
         Scenario::Flood,
         Scenario::ColdStart,
+        Scenario::IdlePanels,
+        Scenario::Transcript,
+        Scenario::Streaming,
+        Scenario::Sidebar,
+        Scenario::Switching,
     ];
 
     fn name(self) -> &'static str {
@@ -155,6 +250,11 @@ impl Scenario {
             Scenario::Typing => "typing (B4a,B4b)",
             Scenario::Flood => "flood (B5)",
             Scenario::ColdStart => "cold start (B6)",
+            Scenario::IdlePanels => "idle with panels (B3p)",
+            Scenario::Transcript => "transcript (B7)",
+            Scenario::Streaming => "streaming (B8)",
+            Scenario::Sidebar => "sidebar (B9)",
+            Scenario::Switching => "switching (B10)",
         }
     }
 
@@ -165,15 +265,26 @@ impl Scenario {
             Scenario::Typing => &["B4a", "B4b"],
             Scenario::Flood => &["B5"],
             Scenario::ColdStart => &["B6"],
+            Scenario::IdlePanels => &["B3p"],
+            Scenario::Transcript => &["B7a", "B7b", "B7c"],
+            Scenario::Streaming => &["B8a", "B8b", "B8c"],
+            Scenario::Sidebar => &["B9a", "B9b"],
+            Scenario::Switching => &["B10"],
         }
     }
 }
 
 /// Whether the `--only` entry `wanted` (any case) selects the budget `id`: exactly, or as the
-/// family prefix (`B4` selects `B4a` and `B4b`, `B2` selects `B2w`).
+/// family prefix (`B4` selects `B4a` and `B4b`, `B2` selects `B2w`, `B3` selects `B3p`; `B1`
+/// does not select `B10`: a family's members end in a letter).
 fn selects(wanted: &str, id: &str) -> bool {
+    let family_member = id.chars().last().is_some_and(|c| c.is_ascii_lowercase());
     let (wanted, id) = (wanted.to_uppercase(), id.to_uppercase());
-    id == wanted || (wanted.len() >= 2 && id.len() == wanted.len() + 1 && id.starts_with(&wanted))
+    id == wanted
+        || (family_member
+            && wanted.len() >= 2
+            && id.len() == wanted.len() + 1
+            && id.starts_with(&wanted))
 }
 
 #[derive(Debug)]
@@ -189,14 +300,16 @@ pub struct Options {
     pub key_interval_ms: Option<u64>,
 }
 
-type Metrics = BTreeMap<String, f64>;
+pub(crate) type Metrics = BTreeMap<String, f64>;
 
 pub async fn run(options: Options) -> Result<()> {
     let root = workspace_root();
     let wanted: Vec<String> = options.only.clone();
     for id in &wanted {
         if !BUDGETS.iter().any(|b| selects(id, b.id)) {
-            bail!("unknown budget {id}; known: B1, B2, B2w, B3, B4a, B4b, B5, B6");
+            bail!(
+                "unknown budget {id}; known: B1, B2, B2w, B3, B3p, B4a, B4b, B5, B6, B7a, B7b, B7c, B8a, B8b, B8c, B9a, B9b, B10"
+            );
         }
     }
     let selected = |s: &Scenario| {
@@ -214,39 +327,8 @@ pub async fn run(options: Options) -> Result<()> {
     keep_display_awake();
     let machine = machine_info();
     let mut results: BTreeMap<&'static str, Vec<Metrics>> = BTreeMap::new();
-    for scenario in scenarios {
-        for run in 1..=options.runs {
-            let mut attempt = 1;
-            let measured = loop {
-                eprintln!(
-                    "== {} run {run}/{} (attempt {attempt})",
-                    scenario.name(),
-                    options.runs
-                );
-                let mut measured = tokio::select! {
-                    result = run_scenario(scenario, &bins, options.key_interval_ms) => result?,
-                    _ = tokio::signal::ctrl_c() => bail!("interrupted"),
-                };
-                let stalled = measured.get(DISPLAY_STALLED) == Some(&1.0);
-                if stalled {
-                    eprintln!(
-                        "the window was inactive or not presented at the display rate during this run (another app in front, occluded, display asleep?)"
-                    );
-                    if attempt >= MAX_ATTEMPTS {
-                        bail!(
-                            "{} run {run}: the window was not presented at the display rate in {MAX_ATTEMPTS} attempts; keep the bench window in front and the display awake",
-                            scenario.name()
-                        );
-                    }
-                    attempt += 1;
-                    continue;
-                }
-                measured.insert("attempts".into(), f64::from(attempt));
-                break measured;
-            };
-            results.entry(scenario.name()).or_default().push(measured);
-        }
-    }
+    // A scenario that fails keeps what the others measured: the report is written either way.
+    let outcome = run_scenarios(&scenarios, &bins, &options, &mut results).await;
 
     let rows = summarize(&results, &wanted);
     let report = json!({
@@ -266,8 +348,59 @@ pub async fn run(options: Options) -> Result<()> {
         print_table(&rows);
     }
     eprintln!("wrote {}", path.display());
+    outcome?;
     if rows.iter().any(|r| !r.pass) {
         bail!("at least one budget missed");
+    }
+    Ok(())
+}
+
+async fn run_scenarios(
+    scenarios: &[Scenario],
+    bins: &Bins,
+    options: &Options,
+    results: &mut BTreeMap<&'static str, Vec<Metrics>>,
+) -> Result<()> {
+    for &scenario in scenarios {
+        for run in 1..=options.runs {
+            let mut attempt = 1;
+            let measured = loop {
+                eprintln!(
+                    "== {} run {run}/{} (attempt {attempt})",
+                    scenario.name(),
+                    options.runs
+                );
+                let mut measured = tokio::select! {
+                    result = run_scenario(scenario, bins, options.key_interval_ms) => result?,
+                    _ = tokio::signal::ctrl_c() => bail!("interrupted"),
+                };
+                for budget in BUDGETS
+                    .iter()
+                    .filter(|b| scenario.budgets().contains(&b.id))
+                {
+                    if let Some(value) = measured.get(budget.metric) {
+                        eprintln!("   {:<4} {value:.2} {}", budget.id, budget.unit);
+                    }
+                }
+                let stalled = measured.get(DISPLAY_STALLED) == Some(&1.0);
+                if stalled {
+                    eprintln!(
+                        "the window was inactive or not presented at the display rate during this run (another app in front, occluded, display asleep?)"
+                    );
+                    if attempt >= MAX_ATTEMPTS {
+                        bail!(
+                            "{} run {run}: the window was not presented at the display rate in {MAX_ATTEMPTS} attempts; keep the bench window in front and the display awake",
+                            scenario.name()
+                        );
+                    }
+                    attempt += 1;
+                    continue;
+                }
+                measured.insert("attempts".into(), f64::from(attempt));
+                break measured;
+            };
+            results.entry(scenario.name()).or_default().push(measured);
+        }
     }
     Ok(())
 }
@@ -291,13 +424,13 @@ fn unix_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-struct Bins {
+pub(crate) struct Bins {
     desktop: PathBuf,
     daemon: PathBuf,
     cli: PathBuf,
@@ -436,21 +569,29 @@ fn print_table(rows: &[Row]) {
 
 // ---- stack: one daemon (+ desktop) in a temporary home ----------------------------------
 
-struct Stack<'a> {
+pub(crate) struct Stack<'a> {
     bins: &'a Bins,
     home: TempDir,
-    client: Client,
+    pub(crate) client: Client,
     // Declared after `client` so the connection closes before the daemon is stopped.
-    daemon: Guard,
+    pub(crate) daemon: Guard,
     desktop: Option<Guard>,
 }
 
 impl<'a> Stack<'a> {
     async fn start(bins: &'a Bins) -> Result<Self> {
+        Self::start_with(bins, None).await
+    }
+
+    /// Like [`start`](Self::start), with `daemon_toml` as the daemon's configuration file.
+    pub(crate) async fn start_with(bins: &'a Bins, daemon_toml: Option<&str>) -> Result<Self> {
         let home = tempfile::Builder::new()
             .prefix("hutan-bench-")
             .tempdir()
             .context("creating the temporary HUTAN_HOME")?;
+        if let Some(text) = daemon_toml {
+            std::fs::write(home.path().join("daemon.toml"), text)?;
+        }
         let log = std::fs::File::create(home.path().join("daemon.out"))?;
         let mut daemon = Guard::spawn(
             "hutand",
@@ -493,13 +634,13 @@ impl<'a> Stack<'a> {
         })
     }
 
-    fn path(&self, name: &str) -> PathBuf {
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
         self.home.path().join(name)
     }
 
     /// With `--sample`: runs `sample <pid> <secs>` in the background, writing
     /// `target/bench/sample-<timestamp>-<name>.txt`. Wait for the returned child.
-    fn sample(&self, pid: u32, secs: u32, name: &str) -> Option<std::process::Child> {
+    pub(crate) fn sample(&self, pid: u32, secs: u32, name: &str) -> Option<std::process::Child> {
         let dir = self.bins.sample_dir.as_ref()?;
         let _ = std::fs::create_dir_all(dir);
         let file = dir.join(format!("sample-{}-{name}.txt", unix_secs()));
@@ -516,11 +657,11 @@ impl<'a> Stack<'a> {
             .ok()
     }
 
-    async fn create(&self, command: &[&str]) -> Result<SessionInfo> {
+    pub(crate) async fn create(&self, command: &[&str]) -> Result<SessionInfo> {
         self.create_sized(command, None).await
     }
 
-    async fn create_sized(
+    pub(crate) async fn create_sized(
         &self,
         command: &[&str],
         size: Option<TerminalSize>,
@@ -539,18 +680,18 @@ impl<'a> Stack<'a> {
         Ok(result.session)
     }
 
-    async fn type_into(&self, session: &SessionInfo, text: &str) -> Result<()> {
+    pub(crate) async fn type_into(&self, session: &SessionInfo, text: &str) -> Result<()> {
         let terminal: TerminalId = session.terminal_id.context("session has no terminal")?;
         self.client.send_input(terminal, text.as_bytes()).await?;
         Ok(())
     }
 
-    async fn clients(&self) -> Result<u32> {
+    pub(crate) async fn clients(&self) -> Result<u32> {
         let status: DaemonStatusInfo = self.client.call(Request::DaemonStatus(Empty {})).await?;
         Ok(status.clients)
     }
 
-    fn daemon_usage(&self) -> Result<proc::Usage> {
+    pub(crate) fn daemon_usage(&self) -> Result<proc::Usage> {
         proc::usage(self.daemon.pid())
     }
 
@@ -563,10 +704,25 @@ impl<'a> Stack<'a> {
         script: Option<&Value>,
     ) -> Result<()> {
         let ids: Vec<String> = sessions.iter().map(|s| s.id.to_string()).collect();
+        self.launch_layout(&seed::layout(&ids)?, trace, script, None)
+    }
+
+    /// Writes `layout` as the desktop's saved state and starts the desktop; `ui` is a scenario
+    /// for `HUTAN_BENCH_UI` (`bench_ui` of the desktop crate, which needs `trace`).
+    pub(crate) fn launch_layout(
+        &mut self,
+        layout: &Value,
+        trace: bool,
+        script: Option<&Value>,
+        ui: Option<&Value>,
+    ) -> Result<()> {
         std::fs::write(
             self.path("desktop-state.json"),
-            serde_json::to_string_pretty(&seed::layout(&ids)?)?,
+            serde_json::to_string_pretty(layout)?,
         )?;
+        // A fresh home shows the first-run setup over the whole window: a user who has set up
+        // Hutan (everyone who uses it) does not see it, and it blocks the mouse.
+        std::fs::write(self.path("settings.toml"), "[app]\nsetup_done = true\n")?;
         let log = std::fs::File::create(self.path("desktop.out"))?;
         let mut command = Command::new(&self.bins.desktop);
         command
@@ -587,16 +743,21 @@ impl<'a> Stack<'a> {
             std::fs::write(&path, serde_json::to_string(script)?)?;
             command.env("HUTAN_BENCH_INPUT", path);
         }
+        if let Some(ui) = ui {
+            let path = self.path("scenario.json");
+            std::fs::write(&path, serde_json::to_string(ui)?)?;
+            command.env("HUTAN_BENCH_UI", path);
+        }
         self.desktop = Some(Guard::spawn("hutan-desktop", &mut command)?);
         Ok(())
     }
 
-    fn desktop(&mut self) -> Result<&mut Guard> {
+    pub(crate) fn desktop(&mut self) -> Result<&mut Guard> {
         self.desktop.as_mut().context("the desktop is not running")
     }
 
     /// Fails when the desktop exited or did not restore the seeded layout.
-    fn check_desktop(&mut self) -> Result<()> {
+    pub(crate) fn check_desktop(&mut self) -> Result<()> {
         self.desktop()?.ensure_running()?;
         let log = std::fs::read_to_string(self.path("desktop.out")).unwrap_or_default();
         if log.contains("using the default layout") {
@@ -605,7 +766,7 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 
-    fn trace(&self) -> Vec<Value> {
+    pub(crate) fn trace(&self) -> Vec<Value> {
         std::fs::read_to_string(self.path("trace.jsonl"))
             .unwrap_or_default()
             .lines()
@@ -614,7 +775,7 @@ impl<'a> Stack<'a> {
     }
 
     /// Waits for a trace event; the desktop must stay up.
-    async fn wait_trace(
+    pub(crate) async fn wait_trace(
         &mut self,
         what: &str,
         timeout: Duration,
@@ -634,7 +795,7 @@ impl<'a> Stack<'a> {
     }
 
     /// What the daemon and the desktop printed, for failure reports.
-    fn logs(&self) -> String {
+    pub(crate) fn logs(&self) -> String {
         let tail = |name: &str| {
             let text = std::fs::read_to_string(self.path(name)).unwrap_or_default();
             let lines: Vec<&str> = text.lines().collect();
@@ -688,7 +849,7 @@ fn startup_us(events: &[Value], stage: &str) -> Option<u64> {
         .and_then(|e| e["t_us"].as_u64())
 }
 
-fn is_event(event: &Value, name: &str) -> bool {
+pub(crate) fn is_event(event: &Value, name: &str) -> bool {
     event["ev"] == name
 }
 
@@ -753,7 +914,7 @@ fn record_latency(metrics: &mut Metrics, prefix: &str, totals: &[f64]) {
     metrics.insert(format!("{prefix}_keys_measured"), totals.len() as f64);
 }
 
-fn now_us() -> u64 {
+pub(crate) fn now_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
@@ -766,14 +927,39 @@ async fn run_scenario(
     bins: &Bins,
     key_interval_ms: Option<u64>,
 ) -> Result<Metrics> {
-    let mut stack = Stack::start(bins).await?;
+    let mut stack = match scenario {
+        Scenario::Transcript | Scenario::Streaming | Scenario::Switching | Scenario::IdlePanels => {
+            crate::bench_ui::start_stack(bins).await?
+        }
+        _ => Stack::start(bins).await?,
+    };
     let result = match scenario {
         Scenario::Idle => idle(&mut stack).await,
         Scenario::IdleWide => idle_wide(&mut stack).await,
         Scenario::Typing => typing(&mut stack, key_interval_ms).await,
         Scenario::Flood => flood(&mut stack, key_interval_ms).await,
         Scenario::ColdStart => cold_start(&mut stack).await,
+        Scenario::IdlePanels => crate::bench_ui::idle_panels(&mut stack).await,
+        Scenario::Transcript => crate::bench_ui::transcript(&mut stack).await,
+        Scenario::Streaming => crate::bench_ui::streaming(&mut stack).await,
+        Scenario::Sidebar => crate::bench_ui::sidebar(&mut stack).await,
+        Scenario::Switching => crate::bench_ui::switching(&mut stack).await,
     };
+    // The trace of the run stays next to the report: what the harness reads is what you can read.
+    let trace = stack.path("trace.jsonl");
+    if trace.is_file() {
+        let dir = workspace_root().join("target/bench");
+        let slug: String = scenario
+            .name()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::copy(
+            &trace,
+            dir.join(format!("trace-{}-{slug}.jsonl", unix_secs())),
+        );
+    }
     let result = result.map_err(|err| err.context(stack.logs()));
     let teardown = stack.teardown();
     let metrics = result?;
@@ -782,11 +968,11 @@ async fn run_scenario(
 }
 
 /// `sh` session that prints a prompt and then echoes what is typed, like a shell at rest.
-const PROMPT_CAT: &[&str] = &["sh", "-c", "printf 'bench> '; exec cat"];
+pub(crate) const PROMPT_CAT: &[&str] = &["sh", "-c", "printf 'bench> '; exec cat"];
 
 /// Seconds of idling before B1 is sampled, and the B3 window after it.
-const SETTLE: Duration = Duration::from_secs(10);
-const CPU_WINDOW: Duration = Duration::from_secs(30);
+pub(crate) const SETTLE: Duration = Duration::from_secs(10);
+pub(crate) const CPU_WINDOW: Duration = Duration::from_secs(30);
 const LOADED_SESSIONS: usize = 10;
 const SHOWN_SESSIONS: usize = 4;
 
@@ -874,9 +1060,24 @@ async fn idle(stack: &mut Stack<'_>) -> Result<Metrics> {
     );
     metrics.insert("b2_daemon_rss_mb".into(), daemon0.rss_bytes as f64 / MIB);
 
+    measure_cpu(stack, "b3", desktop0, daemon0, &mut metrics).await?;
+    Ok(metrics)
+}
+
+/// The idle CPU window: samples (with `--sample`) and idles for [`CPU_WINDOW`], then records
+/// `<prefix>_idle_cpu_pct` (daemon + desktop), each part and the wakeups, against the usage
+/// read when the window opened.
+async fn measure_cpu(
+    stack: &mut Stack<'_>,
+    prefix: &str,
+    desktop0: proc::Usage,
+    daemon0: proc::Usage,
+    metrics: &mut Metrics,
+) -> Result<()> {
+    let desktop_pid = stack.desktop()?.pid();
     let samples = [
-        stack.sample(desktop_pid, 10, "idle-desktop"),
-        stack.sample(stack.daemon.pid(), 10, "idle-daemon"),
+        stack.sample(desktop_pid, 10, &format!("{prefix}-idle-desktop")),
+        stack.sample(stack.daemon.pid(), 10, &format!("{prefix}-idle-daemon")),
     ];
     let t0 = Instant::now();
     sleep(CPU_WINDOW).await;
@@ -889,23 +1090,42 @@ async fn idle(stack: &mut Stack<'_>) -> Result<Metrics> {
     let daemon1 = stack.daemon_usage()?;
     let pct = |a: &proc::Usage, b: &proc::Usage| (b.cpu - a.cpu).as_secs_f64() / elapsed * 100.0;
     let (desktop_pct, daemon_pct) = (pct(&desktop0, &desktop1), pct(&daemon0, &daemon1));
-    metrics.insert("b3_desktop_cpu_pct".into(), desktop_pct);
-    metrics.insert("b3_daemon_cpu_pct".into(), daemon_pct);
-    metrics.insert("b3_idle_cpu_pct".into(), desktop_pct + daemon_pct);
+    metrics.insert(format!("{prefix}_desktop_cpu_pct"), desktop_pct);
+    metrics.insert(format!("{prefix}_daemon_cpu_pct"), daemon_pct);
+    metrics.insert(format!("{prefix}_idle_cpu_pct"), desktop_pct + daemon_pct);
     metrics.insert(
-        "b3_desktop_wakeups_per_s".into(),
+        format!("{prefix}_desktop_wakeups_per_s"),
         (desktop1.wakeups - desktop0.wakeups) as f64 / elapsed,
     );
     metrics.insert(
-        "b3_daemon_wakeups_per_s".into(),
+        format!("{prefix}_daemon_wakeups_per_s"),
         (daemon1.wakeups - daemon0.wakeups) as f64 / elapsed,
     );
-    Ok(metrics)
+    metrics.insert(
+        format!("{prefix}_desktop_rss_mb"),
+        desktop1.rss_bytes as f64 / MIB,
+    );
+    metrics.insert(
+        format!("{prefix}_daemon_rss_mb"),
+        daemon1.rss_bytes as f64 / MIB,
+    );
+    Ok(())
+}
+
+/// B3p's entry: the usage when the window opens, then [`measure_cpu`].
+pub(crate) async fn idle_cpu(
+    stack: &mut Stack<'_>,
+    prefix: &str,
+    metrics: &mut Metrics,
+) -> Result<()> {
+    let desktop0 = proc::usage(stack.desktop()?.pid())?;
+    let daemon0 = stack.daemon_usage()?;
+    measure_cpu(stack, prefix, desktop0, daemon0, metrics).await
 }
 
 const TYPING_KEYS: usize = 500;
 const TYPING_INTERVAL_MS: u64 = 100;
-const SCRIPT_START_DELAY_MS: u64 = 1500;
+pub(crate) const SCRIPT_START_DELAY_MS: u64 = 1500;
 /// Spread of key times over one display frame at least (see `Script::jitter` in the desktop).
 const KEY_JITTER_MS: u64 = 17;
 
@@ -969,7 +1189,7 @@ async fn typing(stack: &mut Stack<'_>, key_interval_ms: Option<u64>) -> Result<M
 /// The refresh interval (ms) of the display the window was on, as GPUI reported it when the key
 /// script began and when it ended. Fails when the platform did not report one or the window
 /// moved to another display in between: B4b has no defined limit then.
-fn display_refresh_interval_ms(events: &[Value]) -> Result<f64> {
+pub(crate) fn display_refresh_interval_ms(events: &[Value]) -> Result<f64> {
     let at = |name: &str| {
         events
             .iter()
@@ -987,7 +1207,7 @@ fn display_refresh_interval_ms(events: &[Value]) -> Result<f64> {
 
 /// 1.0 when the desktop window was the active (key) window when the key script began. GPUI
 /// caps inactive windows at 30 fps, so latency numbers are only representative when it was.
-fn window_active(events: &[Value]) -> f64 {
+pub(crate) fn window_active(events: &[Value]) -> f64 {
     let active = events
         .iter()
         .find(|e| is_event(e, "bench_start"))

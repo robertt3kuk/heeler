@@ -705,11 +705,11 @@ impl TerminalView {
             return;
         }
         self.latency.painted_and_emit(std::time::Instant::now());
-        if self.mode == ViewMode::Interactive
-            && !crate::trace::startup_seen("first_terminal_painted")
-            && self.model.get().visible_has_text()
-        {
-            crate::trace::startup("first_terminal_painted");
+        if self.mode == ViewMode::Interactive && self.model.get().visible_has_text() {
+            crate::trace::note_text_painted();
+            if !crate::trace::startup_seen("first_terminal_painted") {
+                crate::trace::startup("first_terminal_painted");
+            }
         }
     }
 
