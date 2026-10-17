@@ -16,8 +16,8 @@ class Hutan < Formula
 
   def install
     ENV["MACOSX_DEPLOYMENT_TARGET"] = "13.0"
-    system "cargo", "build", "--frozen", "--release", "-p", "hutan-cli", "-p", "hutan-daemon"
-    bin.install "target/release/hutan", "target/release/hutand"
+    system "cargo", "install", *std_cargo_args(path: "crates/cli")
+    system "cargo", "install", *std_cargo_args(path: "crates/daemon")
   end
 
   def caveats

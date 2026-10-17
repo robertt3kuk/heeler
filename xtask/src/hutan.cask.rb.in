@@ -8,7 +8,7 @@ cask "hutan" do
   homepage "https://github.com/robertt3kuk/hutan"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Hutan.app"
   binary "#{appdir}/Hutan.app/Contents/MacOS/hutan"
@@ -16,8 +16,8 @@ cask "hutan" do
   uninstall launchctl: "dev.hutan.daemon",
             quit:      "dev.hutan.Hutan",
             script:    {
-              executable: "#{appdir}/Hutan.app/Contents/MacOS/hutan",
-              args:       ["daemon", "stop"],
+              executable:   "#{appdir}/Hutan.app/Contents/MacOS/hutan",
+              args:         ["daemon", "stop"],
               must_succeed: false,
             }
 
