@@ -7,6 +7,12 @@
 //! patch, fetched when it is selected) and `worktree.merge`. Patches are parsed with
 //! `hutan_chat_view::diff` and drawn with the chat's diff rows; each hunk folds.
 
+mod comments;
+mod tray;
+
+pub use comments::{Mark, ReviewComment, SnippetLine};
+pub use tray::{Selection, SendTarget};
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -40,6 +46,15 @@ pub enum ChangesEvent {
     Notice(String),
     /// The worktree is gone: close the tab.
     Close,
+    /// The review comments of this checkout changed: save them (all of them, every base).
+    Comments(Vec<ReviewComment>),
+    /// "Start a new agent with these comments": open the launcher on `cwd` with `text` as the
+    /// prompt; `comments` are marked sent once the new agent has it.
+    StartAgent {
+        cwd: PathBuf,
+        text: String,
+        comments: Vec<u64>,
+    },
 }
 
 /// The hunks of a file's diff: the line ranges starting at each `@@` header.
@@ -110,6 +125,10 @@ pub struct ChangesView {
     merge: Option<MergeForm>,
     merged: Option<Merged>,
     message_focus: FocusHandle,
+    /// The checkout's canonical path, which sessions' placements name.
+    canonical: PathBuf,
+    /// Line selection, review comments and the Review tray (RC-1).
+    review: tray::Review,
 }
 
 impl EventEmitter<ChangesEvent> for ChangesView {}
@@ -123,7 +142,14 @@ impl std::fmt::Debug for ChangesView {
 }
 
 impl ChangesView {
-    pub fn new(env: PanelEnv, path: PathBuf, base: Option<String>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        env: PanelEnv,
+        path: PathBuf,
+        base: Option<String>,
+        comments: Vec<ReviewComment>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let mut view = Self {
             env,
             path,
@@ -138,6 +164,8 @@ impl ChangesView {
             merge: None,
             merged: None,
             message_focus: cx.focus_handle(),
+            canonical,
+            review: tray::Review::new(comments, cx),
         };
         view.reload(cx);
         view
@@ -267,6 +295,7 @@ impl ChangesView {
         self.generation += 1;
         let generation = self.generation;
         self.patches.clear();
+        self.review_reloading();
         if !matches!(self.listing, Listing::Ready(_)) {
             self.listing = Listing::Loading;
         }
@@ -305,6 +334,7 @@ impl ChangesView {
                         if let Some(file) = this.selected.clone() {
                             this.load_patch(&file, cx);
                         }
+                        this.review_listed(cx);
                     }
                     Err(error) => this.listing = Listing::Failed(error),
                 }
@@ -329,6 +359,7 @@ impl ChangesView {
         if !self.files().iter().any(|f| f.path == file) {
             return;
         }
+        self.review.selection = None;
         self.selected = Some(file.to_owned());
         self.load_patch(file, cx);
         cx.notify();
@@ -372,6 +403,7 @@ impl ChangesView {
                     Err(error) => FilePatch::Failed(error),
                 };
                 this.patches.insert(entry.path.clone(), patch);
+                this.review_patch_arrived(&entry.path, cx);
                 cx.notify();
             })
             .ok();
@@ -381,6 +413,7 @@ impl ChangesView {
 
     /// Folds or unfolds hunk `hunk` of the selected file.
     pub fn toggle_hunk(&mut self, hunk: usize, cx: &mut Context<Self>) {
+        self.review.selection = None;
         if let Some(file) = self.selected.clone()
             && !self.collapsed.remove(&(file.clone(), hunk))
         {
@@ -620,7 +653,14 @@ impl Render for ChangesView {
             .text_size(px(tokens.font_size))
             .text_color(theme.fg)
             .bg(theme.bg)
+            .track_focus(&self.review.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_review_key(event, window, cx);
+            }))
             .child(self.render_header(&theme, &tokens, window, cx));
+        if let Some(tray) = self.render_review_tray(&theme, &tokens, cx) {
+            root = root.child(tray);
+        }
         if let Some(merged) = &self.merged {
             root = root.child(self.render_merged(merged, &theme, &tokens, cx));
         }
@@ -665,7 +705,7 @@ impl Render for ChangesView {
                 .min_h_0()
                 .flex()
                 .child(self.render_files(&theme, &tokens, cx))
-                .child(self.render_patch(&look, cx))
+                .child(self.render_patch(&look, window, cx))
                 .into_any_element(),
         })
     }
@@ -1057,18 +1097,29 @@ impl ChangesView {
         list.into_any_element()
     }
 
-    fn render_patch(&self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
+    fn render_patch(&self, look: &Look, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let mut pane = div()
             .id("changes-diff")
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
+            .track_scroll(&self.review.scroll)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    // The workbench takes focus on this same mouse down; ask again after it.
+                    let handle = this.review.focus.clone();
+                    cx.defer_in(window, move |_, window, cx| window.focus(&handle, cx));
+                }),
+            )
             .p(px(tokens.spacing * 2.0))
             .flex()
             .flex_col()
-            .gap(px(tokens.spacing));
+            .gap(px(tokens.spacing))
+            .child(probe(&self.env.regions, Region::Changes("diff")));
         let Some(file) = self.selected.clone() else {
             return pane.into_any_element();
         };
@@ -1146,11 +1197,22 @@ impl ChangesView {
                     if folded {
                         continue;
                     }
-                    for line in &diff.lines[range.start + 1..range.end] {
+                    let anchors = self.anchors(&file);
+                    for (offset, line) in diff.lines[range.start + 1..range.end].iter().enumerate()
+                    {
                         if drawn >= MAX_LINES {
                             break;
                         }
-                        block = block.child(diff_row(line, look));
+                        block = self.review_line(
+                            block,
+                            &anchors,
+                            &file,
+                            range.start + 1 + offset,
+                            line,
+                            look,
+                            window,
+                            cx,
+                        );
                         drawn += 1;
                     }
                 }
@@ -1166,6 +1228,9 @@ impl ChangesView {
                 }
                 if !ranges.is_empty() {
                     pane = pane.child(block);
+                }
+                for card in self.render_outdated(&file, look, window, cx) {
+                    pane = pane.child(card);
                 }
                 if *truncated {
                     pane = pane.child(

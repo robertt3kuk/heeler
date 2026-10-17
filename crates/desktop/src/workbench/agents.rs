@@ -26,6 +26,7 @@ use super::harnesses::{self, Detection, HARNESSES};
 use super::model::{FocusTarget, ItemRef, PaneId};
 use super::panels::AssistantPanel;
 use super::render::probe;
+use super::review::FirstMessage;
 use super::terminals::session_of_item;
 use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
@@ -63,6 +64,8 @@ pub struct AgentPicker {
     pub agent: String,
     /// The user picked the harness: what the daemon finds installed no longer moves it.
     pub agent_chosen: bool,
+    /// Sent to the new chat as its first message (a review from the Changes view).
+    pub first_message: Option<FirstMessage>,
 }
 
 impl AgentPicker {
@@ -315,6 +318,7 @@ impl Workbench {
             direct,
             agent,
             agent_chosen,
+            first_message: None,
         });
         window.focus(&self.agent_focus, cx);
         self.edits.agent.reset();
@@ -511,6 +515,7 @@ impl Workbench {
             provider_id: picker.provider_id.clone(),
             system_prompt: picker.system_prompt.clone(),
         };
+        let first = picker.first_message.clone();
         let task = self
             .sessions
             .update(cx, |store, cx| store.create_chat(request, cx));
@@ -521,6 +526,28 @@ impl Workbench {
                     this.open_session(info.id, window, cx);
                 })
                 .ok();
+                if let Some(FirstMessage { text, handoff }) = first {
+                    let sending = this.update(cx, |this, cx| {
+                        this.sessions.update(cx, |store, cx| {
+                            store.chat_send(info.id, text, Vec::new(), cx)
+                        })
+                    });
+                    let sent = match sending {
+                        Ok(sending) => sending.await,
+                        Err(_) => return,
+                    };
+                    this.update(cx, |this, cx| match sent {
+                        Ok(()) => {
+                            if let Some(handoff) = handoff {
+                                this.review_handed_off(&handoff, &info.title, cx);
+                            }
+                        }
+                        Err(error) => {
+                            this.set_notice(format!("The review was not sent: {error}"), cx);
+                        }
+                    })
+                    .ok();
+                }
             }
             Err(error) => {
                 this.update(cx, |this, cx| {

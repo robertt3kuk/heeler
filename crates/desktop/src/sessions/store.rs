@@ -1081,6 +1081,56 @@ impl SessionsStore {
         self.call(Request::WorktreeRemove(request), |removed| removed, cx)
     }
 
+    // ---- messages to agents ----------------------------------------------------------------
+
+    /// `chat.send` with attachments: one user message to an agent chat (the turn's events
+    /// follow on the chat's own stream).
+    pub fn chat_send(
+        &self,
+        session: SessionId,
+        text: String,
+        attachments: Vec<hutan_protocol::assistant::Attachment>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let connection = self.connection.clone();
+        cx.background_spawn(async move {
+            connection
+                .chat_send_with(session, text, attachments)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// `session.send_text` of `text` pasted into the terminal of `session` and submitted: in a
+    /// bracketed paste while the application has switched that mode on (or the terminal is not
+    /// attached here, so its mode is unknown: the agents that run in terminals all do), else
+    /// typed with carriage returns for the line breaks.
+    pub fn paste_into_terminal(
+        &self,
+        session: SessionId,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let bracketed = self.attached(session).is_none_or(|attached| {
+            attached
+                .read(cx)
+                .shared()
+                .read(cx)
+                .model()
+                .modes()
+                .bracketed_paste
+        });
+        let bytes = hutan_terminal_view::paste::paste_bytes(text, bracketed);
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let request = Request::SessionSendText(hutan_protocol::ui::SessionSendText {
+            session_id: session,
+            text,
+            enter: true,
+        });
+        self.call(request, |_: hutan_protocol::ui::SessionTextSent| (), cx)
+    }
+
     // ---- workspace commands ----------------------------------------------------------------
 
     /// One request on the connection, its answer decoded as `T` and mapped by `done`. The store

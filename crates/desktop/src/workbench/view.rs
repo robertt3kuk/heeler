@@ -247,6 +247,18 @@ pub enum Region {
     ChangesFile(usize),
     /// Hunk header `index` of the shown file's diff, top to bottom.
     ChangesHunk(usize),
+    /// The number gutter of diff line `index` (an index into the shown file's diff lines) of
+    /// the Changes view: clicking it selects the line.
+    ChangesLine(usize),
+    /// A control of comment `index` of the Changes view's review (in the order of the Review
+    /// tray): `card`, `edit`, `delete`, `send`, `resolve`.
+    ChangesComment(usize, &'static str),
+    /// Row `index` of the Review tray's list of comments.
+    ChangesTray(usize),
+    /// Sent batch `index` of the Review tray's list.
+    ChangesBatch(usize),
+    /// Entry `index` of the "Send to agent ▾" menu's agents.
+    ChangesTarget(usize),
 }
 
 /// A pane tab or dock tab being dragged.
@@ -350,6 +362,9 @@ pub struct Workbench {
     pub(crate) held: HashMap<SessionId, Entity<TerminalSession>>,
     /// Folded blocks per terminal, saved with the layout (see [`persistence::CollapsedBlocks`]).
     pub(crate) collapsed_blocks: persistence::CollapsedBlocks,
+    /// Review comments of the Changes views per checkout directory, saved with the layout (see
+    /// [`persistence::ReviewComments`]).
+    pub(crate) review_comments: persistence::ReviewComments,
     /// What tells the workbench a terminal's folds changed, per held session.
     pub(crate) collapse_watch: HashMap<SessionId, Subscription>,
     pub(crate) window_active: bool,
@@ -606,6 +621,11 @@ impl Workbench {
                 .state_path
                 .as_deref()
                 .map(persistence::load_collapsed)
+                .unwrap_or_default(),
+            review_comments: options
+                .state_path
+                .as_deref()
+                .map(persistence::load_review_comments)
                 .unwrap_or_default(),
             collapse_watch: HashMap::new(),
             window_active: window.is_window_active(),
@@ -883,7 +903,11 @@ impl Workbench {
         let Some(path) = &self.state_path else {
             return;
         };
-        let json = match persistence::state_json(&self.state, &self.collapsed_blocks) {
+        let json = match persistence::state_json(
+            &self.state,
+            &self.collapsed_blocks,
+            &self.review_comments,
+        ) {
             Ok(json) => json,
             Err(err) => {
                 tracing::error!("cannot serialize desktop layout: {err}");

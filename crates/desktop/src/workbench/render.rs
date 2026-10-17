@@ -1695,7 +1695,7 @@ impl Workbench {
             ItemRef::Terminal { session } => self.render_terminal_item(pane, session, window, cx),
             ItemRef::Chat { session } => self.render_chat_item(pane, session, cx),
             ItemRef::Changes { path } => {
-                let view = self.changes_view(path, cx);
+                let view = self.changes_view(path, window, cx);
                 div().size_full().child(view).into_any_element()
             }
         }

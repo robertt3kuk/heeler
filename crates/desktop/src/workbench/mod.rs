@@ -38,12 +38,15 @@ mod workspaces;
 mod worktrees;
 
 pub use agents::{AgentPicker, CODEX, Models};
-pub use changes::{ChangesEvent, ChangesView, hunk_ranges};
+pub use changes::{
+    ChangesEvent, ChangesView, Mark, ReviewComment, Selection, SendTarget, SnippetLine, hunk_ranges,
+};
 pub use daemon::{DaemonBusy, log_file as daemon_log_file};
 pub use harnesses::{Detection, HARNESSES, Harness, HarnessDirectory, Listing};
 pub use modal::{Modal, ModalCheckbox, ModalChoice};
 pub use panels::{HistoryConfirm, HistoryPanel, StatusTone, connection_label};
 pub use registry::{PanelEnv, StatusBarLayout, StatusData};
+pub use review::{FirstMessage, ReviewHandoff};
 pub use settings_sheet::{Edit, SettingsSheet};
 pub use setup::{NotificationUi, SetupFinish, SetupState, SetupStep};
 pub use terminals::session_of_item;

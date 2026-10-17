@@ -1,5 +1,6 @@
 //! `desktop-state.json` location, load, and atomic save.
 
+use super::changes::ReviewComment;
 use super::model::{ModelError, WorkbenchState};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -61,34 +62,55 @@ pub type CollapsedBlocks = BTreeMap<String, Vec<u64>>;
 
 /// The folded blocks saved in `path`; none when the file is missing or has none.
 pub fn load_collapsed(path: &Path) -> CollapsedBlocks {
+    load_key(path, "collapsed_blocks")
+}
+
+/// Review comments of the Changes views (RC-1), per checkout (its directory): drafts, sent and
+/// resolved ones. Like the folds, view state saved beside the layout (`review_comments` in the
+/// state file) so they survive a restart of the desktop; never sent to the daemon.
+pub type ReviewComments = BTreeMap<String, Vec<ReviewComment>>;
+
+/// The review comments saved in `path`; none when the file is missing or has none.
+pub fn load_review_comments(path: &Path) -> ReviewComments {
+    load_key(path, "review_comments")
+}
+
+/// What the state file holds besides the layout, read from top-level key `key`.
+fn load_key<T: serde::de::DeserializeOwned + Default>(path: &Path, key: &str) -> T {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|mut value| {
-            value
-                .get_mut("collapsed_blocks")
-                .map(serde_json::Value::take)
-        })
+        .and_then(|mut value| value.get_mut(key).map(serde_json::Value::take))
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
 }
 
-/// The state file's JSON: the layout plus, when there are any, the folded blocks.
+/// The state file's JSON: the layout plus, when there are any, the folded blocks and the
+/// review comments.
 pub fn state_json(
     state: &WorkbenchState,
     collapsed: &CollapsedBlocks,
+    comments: &ReviewComments,
 ) -> Result<String, ModelError> {
     let json = state.to_json()?;
-    if collapsed.is_empty() {
+    if collapsed.is_empty() && comments.is_empty() {
         return Ok(json);
     }
     let invalid = |err: serde_json::Error| ModelError::Invalid(err.to_string());
     let mut value: serde_json::Value = serde_json::from_str(&json).map_err(invalid)?;
     if let Some(map) = value.as_object_mut() {
-        map.insert(
-            "collapsed_blocks".to_owned(),
-            serde_json::to_value(collapsed).map_err(invalid)?,
-        );
+        if !collapsed.is_empty() {
+            map.insert(
+                "collapsed_blocks".to_owned(),
+                serde_json::to_value(collapsed).map_err(invalid)?,
+            );
+        }
+        if !comments.is_empty() {
+            map.insert(
+                "review_comments".to_owned(),
+                serde_json::to_value(comments).map_err(invalid)?,
+            );
+        }
     }
     serde_json::to_string_pretty(&value).map_err(invalid)
 }
@@ -136,12 +158,16 @@ mod tests {
         let state = WorkbenchState::default();
         // Without folds the file is exactly the layout.
         assert_eq!(
-            state_json(&state, &CollapsedBlocks::new()).unwrap(),
+            state_json(&state, &CollapsedBlocks::new(), &ReviewComments::new()).unwrap(),
             state.to_json().unwrap()
         );
         let mut collapsed = CollapsedBlocks::new();
         collapsed.insert("01TERMINAL".to_owned(), vec![3, 7]);
-        save_json(&path, &state_json(&state, &collapsed).unwrap()).unwrap();
+        save_json(
+            &path,
+            &state_json(&state, &collapsed, &ReviewComments::new()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(load_collapsed(&path), collapsed);
         // The layout still loads from the same file.
         assert_eq!(load_state(&path), state);

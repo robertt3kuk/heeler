@@ -15,6 +15,22 @@ use super::view::{MenuEntry, Workbench};
 use super::workspaces::{PickerAction, PickerEntry, PickerKind, PickerState, tilde};
 use hutan_protocol::worktree::WorktreeInfo;
 
+/// Comments of a Changes view that went into a new agent's first message: where they are and
+/// which they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewHandoff {
+    /// The checkout's directory (the key of its Changes view).
+    pub checkout: String,
+    pub comments: Vec<u64>,
+}
+
+/// What a new agent is told first, and which review it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstMessage {
+    pub text: String,
+    pub handoff: Option<ReviewHandoff>,
+}
+
 impl Workbench {
     /// "Tasks: Show Panel".
     pub(crate) fn show_tasks_panel(&mut self, cx: &mut Context<Self>) {
@@ -80,6 +96,7 @@ impl Workbench {
     pub(crate) fn changes_view(
         &mut self,
         path: &str,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ChangesView> {
         if let Some(view) = self.changes_views.get(path) {
@@ -87,18 +104,74 @@ impl Workbench {
         }
         let env = self.env.clone();
         let dir = PathBuf::from(path);
-        let view = cx.new(|cx| ChangesView::new(env, dir, None, cx));
+        let comments = self.review_comments.get(path).cloned().unwrap_or_default();
+        let view = cx.new(|cx| ChangesView::new(env, dir, None, comments, cx));
         let key = path.to_owned();
-        let subscription = cx.subscribe(
+        let subscription = cx.subscribe_in(
             &view,
-            move |this, _, event: &ChangesEvent, cx| match event {
+            window,
+            move |this, _, event: &ChangesEvent, window, cx| match event {
                 ChangesEvent::Notice(text) => this.set_notice(text.clone(), cx),
-                ChangesEvent::Close => this.close_changes(&key, cx),
+                ChangesEvent::Close => {
+                    this.close_changes(&key, cx);
+                    if this.review_comments.remove(&key).is_some() {
+                        this.schedule_save(cx);
+                    }
+                }
+                ChangesEvent::Comments(comments) => {
+                    if comments.is_empty() {
+                        this.review_comments.remove(&key);
+                    } else {
+                        this.review_comments.insert(key.clone(), comments.clone());
+                    }
+                    this.schedule_save(cx);
+                }
+                ChangesEvent::StartAgent {
+                    cwd,
+                    text,
+                    comments,
+                } => {
+                    let handoff = ReviewHandoff {
+                        checkout: key.clone(),
+                        comments: comments.clone(),
+                    };
+                    this.start_agent_with(cwd.clone(), text.clone(), Some(handoff), window, cx);
+                }
             },
         );
         self.changes_subscriptions.push(subscription);
         self.changes_views.insert(path.to_owned(), view.clone());
         view
+    }
+
+    /// "Start a new agent with these comments" of a Changes view: the new-agent dialog on the
+    /// checkout `cwd`; once its chat exists, `text` is its first message and the comments of
+    /// `handoff` count as sent.
+    pub(crate) fn start_agent_with(
+        &mut self,
+        cwd: PathBuf,
+        text: String,
+        handoff: Option<ReviewHandoff>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_agent(window, cx);
+        if let Some(picker) = &mut self.agent_picker {
+            picker.cwd = Some(cwd);
+            picker.first_message = Some(FirstMessage { text, handoff });
+        }
+    }
+
+    /// The new agent of a review has its first message: the comments are sent.
+    pub(crate) fn review_handed_off(
+        &mut self,
+        handoff: &ReviewHandoff,
+        to: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(view) = self.changes_views.get(&handoff.checkout) {
+            view.update(cx, |view, cx| view.comments_sent(&handoff.comments, to, cx));
+        }
     }
 
     /// The Changes view of `path`, if its tab was opened in this window.
@@ -111,7 +184,7 @@ impl Workbench {
     pub fn open_changes(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let key = path.display().to_string();
         let existing = self.changes_views.contains_key(&key);
-        let view = self.changes_view(&key, cx);
+        let view = self.changes_view(&key, window, cx);
         if existing {
             view.update(cx, |view, cx| view.reload(cx));
         }
