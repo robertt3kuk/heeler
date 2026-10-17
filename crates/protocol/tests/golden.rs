@@ -686,6 +686,7 @@ fn running_task() -> Task {
         },
         run: Some(TaskRun::Chat {
             agent: "codex".into(),
+            model: None,
         }),
         auto_start: true,
         sessions: vec![sid()],
@@ -1643,9 +1644,26 @@ fn requests() -> Vec<(&'static str, Request)> {
                 }),
                 run: Some(TaskRun::Chat {
                     agent: "codex".into(),
+                    model: None,
                 }),
                 auto_start: true,
                 after_policy: AfterPolicy::Accepted,
+            }),
+        ),
+        (
+            "task_create_chat_model",
+            Request::TaskCreate(TaskCreate {
+                workspace_id: ws(),
+                title: "Fix the login bug".into(),
+                prompt: Some("Users are logged out after a minute; find out why.".into()),
+                depends_on: vec![],
+                placement: None,
+                run: Some(TaskRun::Chat {
+                    agent: "omp".into(),
+                    model: Some("anthropic/claude-opus-4-5".into()),
+                }),
+                auto_start: false,
+                after_policy: AfterPolicy::Done,
             }),
         ),
         (

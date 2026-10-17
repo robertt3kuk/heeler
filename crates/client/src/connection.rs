@@ -503,6 +503,14 @@ impl Connection {
             .is_some_and(|client| client.supports_recovery())
     }
 
+    /// True while connected to a daemon that advertised capability `task.chat_model`
+    /// ([`Client::supports_task_chat_model`]); false when disconnected.
+    pub fn supports_task_chat_model(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_task_chat_model())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

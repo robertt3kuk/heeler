@@ -126,6 +126,8 @@ pub(crate) const QUESTIONS_CAPABILITY: &str = "chat.questions";
 pub(crate) const TASK_REVIEW_CAPABILITY: &str = "task.review";
 /// Capability for `SessionInfo.recovery` and `session.recovery_ack` (protocol 0.26).
 pub(crate) const RECOVERY_CAPABILITY: &str = "session.recovery";
+/// Capability for `TaskRun::Chat.model` (protocol 0.27).
+pub(crate) const TASK_CHAT_MODEL_CAPABILITY: &str = "task.chat_model";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -152,6 +154,7 @@ const CAPABILITIES: &[&str] = &[
     QUESTIONS_CAPABILITY,
     TASK_REVIEW_CAPABILITY,
     RECOVERY_CAPABILITY,
+    TASK_CHAT_MODEL_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -734,6 +737,15 @@ impl Client {
     ) -> Result<RecoveryAcked, ClientError> {
         self.call(Request::SessionRecoveryAck(RecoveryAck { session_id }))
             .await
+    }
+
+    /// True when the daemon advertised capability `task.chat_model` (protocol 0.27): a chat task
+    /// starts with the model it names.
+    pub fn supports_task_chat_model(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == TASK_CHAT_MODEL_CAPABILITY)
     }
 
     /// The files a checkout changed against its base (`worktree.diff`).

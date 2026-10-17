@@ -65,7 +65,10 @@ impl Ctx {
             .clone()
             .or_else(|| args.codex.then(|| "codex".to_owned()));
         let run = if let Some(agent) = chat_agent {
-            Some(TaskRun::Chat { agent })
+            Some(TaskRun::Chat {
+                agent,
+                model: args.model.clone(),
+            })
         } else if args.argv.is_empty() {
             None
         } else {
@@ -466,7 +469,10 @@ fn task_tree(tasks: &[Task], ids: &HashMap<TaskId, String>) -> String {
                 });
             }
             match &task.run {
-                Some(TaskRun::Chat { agent }) => notes.push(format!("chat {agent}")),
+                Some(TaskRun::Chat { agent, model }) => notes.push(match model {
+                    Some(model) => format!("chat {agent} ({model})"),
+                    None => format!("chat {agent}"),
+                }),
                 Some(TaskRun::Terminal { argv }) => notes.push(format!("$ {}", argv.join(" "))),
                 None => {}
             }
@@ -585,7 +591,10 @@ fn task_details(
         "run",
         match &task.run {
             Some(TaskRun::Terminal { argv }) => format!("terminal: {}", argv.join(" ")),
-            Some(TaskRun::Chat { agent }) => format!("chat with {agent}"),
+            Some(TaskRun::Chat { agent, model }) => match model {
+                Some(model) => format!("chat with {agent} on {model}"),
+                None => format!("chat with {agent}"),
+            },
             None => "terminal: the login shell".to_owned(),
         },
     );
@@ -852,6 +861,7 @@ mod tests {
         };
         ship.run = Some(TaskRun::Chat {
             agent: "codex".into(),
+            model: None,
         });
         ship.outcome = Some("turn failed: boom".into());
         ship.started_at_ms = Some(1_000);

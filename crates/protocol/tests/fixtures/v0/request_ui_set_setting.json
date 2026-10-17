@@ -1,1 +1,1 @@
-{"id":126,"method":"ui.set_setting","params":{"key":"cursor.style","layer":"user","namespace":"terminal","value":"bar"}}
+{"id":127,"method":"ui.set_setting","params":{"key":"cursor.style","layer":"user","namespace":"terminal","value":"bar"}}

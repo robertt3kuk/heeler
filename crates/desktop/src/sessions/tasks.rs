@@ -281,7 +281,10 @@ pub fn run_label(run: Option<&TaskRun>) -> String {
             }
             format!("$ {short}")
         }
-        Some(TaskRun::Chat { agent }) => format!("{agent} chat"),
+        Some(TaskRun::Chat { agent, model }) => match model {
+            Some(model) => format!("{agent} chat · {model}"),
+            None => format!("{agent} chat"),
+        },
     }
 }
 
@@ -386,7 +389,7 @@ pub fn tree_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hutan_core::TaskPlacement;
+    use hutan_core::{AfterPolicy, TaskPlacement};
 
     fn task(title: &str, age: u64, state: TaskState, deps: &[&Task]) -> Task {
         Task {
@@ -519,6 +522,7 @@ mod tests {
         t.outcome = Some("exited 3".into());
         t.run = Some(TaskRun::Chat {
             agent: "omp".into(),
+            model: None,
         });
         let row = &tree_rows(&book(&[&t]), ALL, &no_parent, 75_000)[0];
         assert_eq!(

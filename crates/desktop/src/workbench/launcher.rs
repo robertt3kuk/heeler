@@ -369,6 +369,9 @@ impl Launcher {
                 LaunchAgent::Harness(id) => id.clone(),
                 LaunchAgent::Direct(_) => String::new(),
             },
+            model: (self.kind == LaunchKind::Chat && !matches!(self.agent, LaunchAgent::Direct(_)))
+                .then(|| self.model.clone())
+                .flatten(),
             title: self.title.text().to_owned(),
             prompt: self.prompt.text().to_owned(),
             command: self.command.text().to_owned(),
@@ -1217,7 +1220,23 @@ impl Workbench {
             cx.notify();
             return;
         }
-        let model = self.launcher_pick_for_task(cx);
+        // A daemon that predates `task.chat_model` would start the chat on its default model.
+        if self
+            .launcher
+            .as_ref()
+            .is_some_and(|l| l.model.is_some() && l.kind == LaunchKind::Chat && !l.is_direct())
+            && !self
+                .sessions
+                .read(cx)
+                .connection()
+                .supports_task_chat_model()
+        {
+            if let Some(launcher) = &mut self.launcher {
+                launcher.error = Some("This hutand cannot start a chat on a chosen model; restart it (Daemon → Restart) or pick the default.".to_owned());
+            }
+            cx.notify();
+            return;
+        }
         let Some(launcher) = &mut self.launcher else {
             return;
         };
@@ -1234,7 +1253,8 @@ impl Workbench {
             let created = match creating.await {
                 Ok(task) => task,
                 Err(error) => {
-                    this.update(cx, |this, cx| this.launcher_failed(error, cx)).ok();
+                    this.update(cx, |this, cx| this.launcher_failed(error, cx))
+                        .ok();
                     return;
                 }
             };
@@ -1256,9 +1276,6 @@ impl Workbench {
             match starting.await {
                 Ok(started) => {
                     let session = started.session.id;
-                    let connection = this
-                        .update(cx, |this, cx| this.sessions.read(cx).connection().clone())
-                        .ok();
                     this.update_in(cx, |this, window, cx| {
                         this.launcher_done(and_new, window, cx);
                         this.open_session(session, window, cx);
@@ -1274,19 +1291,6 @@ impl Workbench {
                         }
                     })
                     .ok();
-                    // The task cannot carry a model yet: the chat starts on the harness's
-                    // default and takes the chosen one from its next turn on.
-                    if let (Some(model), Some(connection)) = (model, connection)
-                        && let Err(error) = connection.chat_set_model(session, None, &model).await
-                    {
-                        this.update(cx, |this, cx| {
-                            this.set_notice(
-                                format!("The chat runs on the default model: cannot switch to {model}: {error}"),
-                                cx,
-                            );
-                        })
-                        .ok();
-                    }
                 }
                 Err(error) => {
                     // The task never ran: take it back so a retry does not leave two.
@@ -1307,23 +1311,6 @@ impl Workbench {
             }
         })
         .detach();
-    }
-
-    /// The model a harness chat takes from its second turn: only one the user picked and that is
-    /// not the default, and only when the chat starts now.
-    pub(crate) fn launcher_pick_for_task(&self, cx: &gpui::App) -> Option<String> {
-        let launcher = self.launcher.as_ref()?;
-        if launcher.kind != LaunchKind::Chat || launcher.queue || launcher.is_direct() {
-            return None;
-        }
-        let picked = launcher.model.clone()?;
-        match self.launcher_models(cx) {
-            Models::Ready(models) => models
-                .iter()
-                .find(|m| m.id == picked && !m.is_default)
-                .map(|m| m.id.clone()),
-            _ => None,
-        }
     }
 
     /// A direct model chat: no task (`TaskRun::Chat` does not run `direct`), so `chat.create`

@@ -268,6 +268,15 @@ pub struct TaskAddArgs {
     /// Run it as a chat with this agent: codex, omp or claude (needs --prompt)
     #[arg(long, requires = "prompt", conflicts_with = "argv", value_parser = ["codex", "omp", "claude"])]
     pub agent: Option<String>,
+    /// The model of the chat, one the agent offers (`hutan chat models <agent>`); default: the
+    /// agent's own
+    #[arg(
+        long,
+        value_name = "MODEL",
+        requires = "prompt",
+        conflicts_with = "argv"
+    )]
+    pub model: Option<String>,
     /// Start by itself when ready, within the daemon's `[tasks] max_parallel`
     #[arg(long)]
     pub auto: bool,

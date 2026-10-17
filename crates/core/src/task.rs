@@ -198,7 +198,12 @@ pub enum TaskRun {
     /// A terminal session running `argv` (never empty).
     Terminal { argv: Vec<String> },
     /// A chat session with an agent (`codex`); the task's prompt is the first message.
-    Chat { agent: String },
+    Chat {
+        agent: String,
+        /// A model the agent offers (`chat.models`); absent: the agent's own default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
 }
 
 /// A unit of work in a workspace.
@@ -943,9 +948,19 @@ mod tests {
         assert_eq!(serde_json::from_value::<Task>(json).unwrap(), t);
         let chat = serde_json::to_value(TaskRun::Chat {
             agent: "codex".into(),
+            model: None,
         })
         .unwrap();
         assert_eq!(chat, serde_json::json!({"kind": "chat", "agent": "codex"}));
+        let picked = serde_json::to_value(TaskRun::Chat {
+            agent: "omp".into(),
+            model: Some("anthropic/claude-opus-4-5".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            picked,
+            serde_json::json!({"kind": "chat", "agent": "omp", "model": "anthropic/claude-opus-4-5"})
+        );
     }
 
     #[test]

@@ -784,8 +784,9 @@ impl TaskService {
             || !self.registry.auto_projects())
         .then_some(task.workspace_id);
         let session = match &task.run {
-            Some(TaskRun::Chat { agent }) => {
-                self.start_chat(task, session_workspace, agent, cwd).await?
+            Some(TaskRun::Chat { agent, model }) => {
+                self.start_chat(task, session_workspace, agent, model.clone(), cwd)
+                    .await?
             }
             run => {
                 let argv = match run {
@@ -831,6 +832,7 @@ impl TaskService {
         task: &Task,
         workspace_id: Option<WorkspaceId>,
         agent: &str,
+        model: Option<String>,
         cwd: PathBuf,
     ) -> Result<SessionInfo, ErrorBody> {
         let prompt = task
@@ -843,7 +845,7 @@ impl TaskService {
                 workspace_id,
                 cwd,
                 agent: agent.to_owned(),
-                model: None,
+                model,
                 approval_policy: None,
                 sandbox: None,
                 title: Some(task.title.clone()),
@@ -1519,7 +1521,10 @@ fn check_run(run: Option<&TaskRun>, prompt: Option<&str>) -> Result<(), ErrorBod
             }
             Ok(())
         }
-        Some(TaskRun::Chat { agent }) => {
+        Some(TaskRun::Chat { agent, model }) => {
+            if model.as_deref().is_some_and(|m| m.trim().is_empty()) {
+                return Err(bad_request("a chat task's model cannot be empty"));
+            }
             if agent != AGENT_CODEX && !is_harness_agent(agent) {
                 return Err(bad_request(format!(
                     "a chat task runs the `{AGENT_CODEX}`, `omp` or `claude` agent, not `{agent}`"
@@ -1679,6 +1684,7 @@ mod tests {
         assert!(check_run(Some(&terminal(&["a\0b"])), None).is_err());
         let chat = TaskRun::Chat {
             agent: "codex".into(),
+            model: None,
         };
         assert!(check_run(Some(&chat), Some("go")).is_ok());
         assert!(
@@ -1687,8 +1693,14 @@ mod tests {
         );
         let other = TaskRun::Chat {
             agent: "direct".into(),
+            model: None,
         };
         assert!(check_run(Some(&other), Some("go")).is_err());
+        let empty_model = TaskRun::Chat {
+            agent: "codex".into(),
+            model: Some(" ".into()),
+        };
+        assert!(check_run(Some(&empty_model), Some("go")).is_err());
         assert!(check_run(None, None).is_ok());
 
         let worktree = |branch: Option<&str>| TaskPlacement {
@@ -1851,6 +1863,7 @@ mod tests {
         assert!(reviewable(&t, true), "an agent in the main checkout");
         t.run = Some(TaskRun::Chat {
             agent: "codex".into(),
+            model: None,
         });
         assert!(reviewable(&t, false), "a chat is an agent");
         t.run = None;

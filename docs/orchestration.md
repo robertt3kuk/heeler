@@ -35,7 +35,7 @@ Creating and removing are serialised in the daemon. A repository that cannot be 
 ## CLI
 
 ```text
-hutan wt new <branch> [--ws ID|NAME] [--base REF] [--path PATH] [--repo PATH]
+hutan wt new <branch> [--ws ID|NAME] [--base REF] [--model MODEL] [--path PATH] [--repo PATH]
 hutan wt ls [--ws ID|NAME] [--json]
 hutan wt rm <path|branch> [--ws ID|NAME] [--force] [--delete-branch]
 hutan new --worktree <branch> [--ws ...] [--title T] [--attach] [-- argv]

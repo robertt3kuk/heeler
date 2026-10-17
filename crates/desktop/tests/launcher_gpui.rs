@@ -390,7 +390,8 @@ fn a_chat_in_a_new_worktree_creates_the_task_with_that_placement_and_starts_it(
     assert_eq!(
         task.run,
         Some(TaskRun::Chat {
-            agent: "omp".into()
+            agent: "omp".into(),
+            model: None,
         })
     );
     assert_eq!(task.prompt.as_deref(), Some("Fix the flaky test"));
@@ -431,6 +432,7 @@ fn queue_as_task_does_not_start_it(cx: &mut TestAppContext) {
             argv: vec!["sh".into(), "-c".into(), "sleep 60".into()],
         }),
         auto_start: false,
+        after_policy: Default::default(),
     }));
     let (view, cx) = open(cx, &env);
     open_sheet(
@@ -839,4 +841,61 @@ fn tab_walks_the_fields_top_to_bottom_and_the_project_is_a_fuzzy_picker(cx: &mut
     cx.simulate_input("web");
     cx.simulate_keystrokes("enter");
     assert_eq!(launcher_project(&view, cx), Some(env.web_id));
+}
+
+#[gpui::test]
+fn a_picked_model_goes_into_the_task_even_when_it_is_queued(cx: &mut TestAppContext) {
+    let env = Env::new();
+    let first: TaskResult = env.daemon.call(Request::TaskCreate(TaskCreate {
+        workspace_id: env.api_id,
+        title: "Plan".into(),
+        prompt: None,
+        depends_on: Vec::new(),
+        placement: None,
+        run: Some(TaskRun::Terminal {
+            argv: vec!["sh".into(), "-c".into(), "sleep 60".into()],
+        }),
+        auto_start: false,
+        after_policy: Default::default(),
+    }));
+    let (view, cx) = open(cx, &env);
+    open_sheet(
+        &view,
+        cx,
+        LauncherPreset {
+            project: Some(env.api_id),
+            prompt: Some("Review the diff".into()),
+            queue: true,
+            ..LauncherPreset::default()
+        },
+    );
+    ready(&view, cx);
+    wait_until(cx, "the OMP models", |cx| {
+        view.read_with(
+            cx,
+            |wb, cx| matches!(wb.launcher_models(cx), Models::Ready(m) if !m.is_empty()),
+        )
+    });
+    let model = view.read_with(cx, |wb, cx| match wb.launcher_models(cx) {
+        Models::Ready(models) => models[0].id.clone(),
+        _ => unreachable!(),
+    });
+    view.update(cx, |wb, cx| {
+        wb.launcher_choose_model(Some(model.clone()), cx);
+        wb.launcher_toggle_after(first.task.id, cx);
+    });
+    click(&view, cx, Region::Launcher("start"));
+    wait_until(cx, "the task to exist", |_| {
+        env.task("Review the diff").is_some()
+    });
+    let queued = env.task("Review the diff").unwrap();
+    assert_eq!(
+        queued.run,
+        Some(TaskRun::Chat {
+            agent: "omp".into(),
+            model: Some(model)
+        }),
+        "the pick rides in the task, queued or not"
+    );
+    assert_eq!(queued.state, TaskState::Todo);
 }

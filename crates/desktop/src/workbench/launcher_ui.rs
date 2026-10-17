@@ -521,18 +521,6 @@ impl Workbench {
                         }
                         body = body.child(items);
                     }
-                    if self.launcher_pick_for_task(cx).is_some() {
-                        body = body.child(note(
-                            "The first message runs on the harness's default model; this one takes over from the next turn."
-                                .to_owned(),
-                            theme.muted,
-                        ));
-                    } else if queue && !direct && launcher.model.is_some() {
-                        body = body.child(note(
-                            "A queued task starts on the harness's default model.".to_owned(),
-                            theme.muted,
-                        ));
-                    }
                     Some(body.into_any_element())
                 }
             };

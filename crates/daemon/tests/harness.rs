@@ -1180,6 +1180,7 @@ async fn tasks_run_as_omp_and_claude_chats() {
         placement: None,
         run: Some(TaskRun::Chat {
             agent: agent.to_owned(),
+            model: None,
         }),
         auto_start: false,
         after_policy: Default::default(),
@@ -1224,6 +1225,70 @@ async fn tasks_run_as_omp_and_claude_chats() {
     assert_eq!(
         t.received_of("session/prompt")[0]["params"]["prompt"][0]["text"],
         "Say hello."
+    );
+    t.stop().await;
+}
+
+/// A chat task starts its chat on the model it names (`task.chat_model`); one the harness does
+/// not offer fails the start, naming the choices.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_task_starts_on_the_model_it_names() {
+    let t = H::omp(&fixture("model-switch")).await;
+    assert!(t.client.supports_task_chat_model());
+    let root = t.work.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let project = t
+        .client
+        .call::<WorkspaceInfo>(Request::WorkspaceCreate(WorkspaceCreate {
+            name: "tasks".into(),
+            paths: vec![root],
+            project_ids: Vec::new(),
+            created_by: None,
+        }))
+        .await
+        .unwrap();
+    let create = |title: &str, model: &str| TaskCreate {
+        workspace_id: project.id,
+        title: title.to_owned(),
+        prompt: Some("Say hello.".into()),
+        depends_on: Vec::new(),
+        placement: None,
+        run: Some(TaskRun::Chat {
+            agent: "omp".into(),
+            model: Some(model.to_owned()),
+        }),
+        auto_start: false,
+        after_policy: Default::default(),
+    };
+    // An empty model is refused at creation.
+    assert!(t.client.task_create(create("empty", " ")).await.is_err());
+
+    // One the harness does not offer fails the start and names the choices.
+    let bad = t
+        .client
+        .task_create(create("nobody", "nobody/nothing"))
+        .await
+        .unwrap();
+    let error = t.client.task_start(bad.id).await.unwrap_err().to_string();
+    assert!(
+        error.contains("nobody/nothing") && error.contains(HAIKU),
+        "{error}"
+    );
+
+    let task = t.client.task_create(create("haiku", HAIKU)).await.unwrap();
+    assert_eq!(
+        task.run,
+        Some(TaskRun::Chat {
+            agent: "omp".into(),
+            model: Some(HAIKU.into())
+        })
+    );
+    let started = t.client.task_start(task.id).await.unwrap();
+    let session = t.session(started.session.id).await;
+    assert_eq!(session.chat.as_ref().map(|c| c.model.as_str()), Some(HAIKU));
+    assert!(
+        !t.received_of("session/set_config_option").is_empty(),
+        "the harness was asked for the model"
     );
     t.stop().await;
 }

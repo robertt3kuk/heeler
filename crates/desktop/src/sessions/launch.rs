@@ -80,6 +80,8 @@ pub struct LaunchValues {
     pub kind: LaunchKind,
     /// `omp`, `claude` or `codex`: the harness of a chat or terminal agent.
     pub agent: String,
+    /// The model of a chat (one the agent offers); none: the agent's own default.
+    pub model: Option<String>,
     pub title: String,
     pub prompt: String,
     /// The command of [`LaunchKind::Command`].
@@ -194,6 +196,7 @@ pub fn build_create(
             }
             Some(TaskRun::Chat {
                 agent: values.agent.clone(),
+                model: values.model.clone(),
             })
         }
         LaunchKind::TerminalAgent => Some(TaskRun::Terminal {
@@ -293,6 +296,7 @@ mod tests {
         LaunchValues {
             kind: LaunchKind::Terminal,
             agent: "omp".into(),
+            model: None,
             title: "  Build it  ".into(),
             prompt: String::new(),
             command: String::new(),
@@ -378,6 +382,7 @@ mod tests {
         let chat = build(&LaunchValues {
             kind: LaunchKind::Chat,
             agent: "codex".into(),
+            model: Some("gpt-x".into()),
             title: String::new(),
             prompt: "  fix the flaky test\nthen rebase ".into(),
             ..values()
@@ -391,7 +396,8 @@ mod tests {
         assert_eq!(
             chat.run,
             Some(TaskRun::Chat {
-                agent: "codex".into()
+                agent: "codex".into(),
+                model: Some("gpt-x".into()),
             })
         );
     }
