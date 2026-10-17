@@ -18,10 +18,11 @@ use crate::sessions::{AgentBadge, PlacementBadge, Presentation, Tone};
 use crate::theme::{Theme, Tokens};
 use crate::workbench::actions::{OpenSettingsFor, SessionMenuAt, ShowPlacementMenu};
 use crate::workbench::chat::TextInput;
-use crate::workbench::chat::vim::{Mode, Outcome, Vim};
+use crate::workbench::chat::vim::Vim;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
-use crate::workbench::vim_ui::{self, Caret, VimConfig};
+use crate::workbench::text_field::{EditableText, FieldMut, FieldRef, FieldState, edit_field};
+use crate::workbench::vim_ui::{self, VimConfig};
 use crate::workbench::{BadgeSite, Region};
 
 pub fn tone_color(theme: &Theme, tone: Tone) -> Hsla {
@@ -193,56 +194,12 @@ pub fn placement(info: &SessionInfo) -> String {
     }
 }
 
-/// Applies a key press to a text field with no Vim mode: characters, ⌘V, ⌘Z / ⌘⇧Z (undo,
-/// redo), Backspace, Delete, ←, →, Home, End and (in a multi-line field) Enter. `true` when the
-/// text or the caret changed; keys the field does not answer to (Tab, Escape, other ⌘
-/// shortcuts, Enter in a single line) are left alone.
-fn type_into(input: &mut TextInput, event: &KeyDownEvent, multiline: bool, cx: &App) -> bool {
-    let ks = &event.keystroke;
-    if ks.modifiers.platform {
-        if ks.key == "v"
-            && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
-        {
-            let text = if multiline {
-                text
-            } else {
-                text.replace(['\r', '\n'], " ")
-            };
-            input.insert(&text);
-            return true;
-        }
-        if ks.key == "z" {
-            return if ks.modifiers.shift {
-                input.redo()
-            } else {
-                input.undo()
-            };
-        }
-        return false;
-    }
-    if ks.modifiers.control || ks.modifiers.function {
-        return false;
-    }
-    match ks.key.as_str() {
-        "backspace" => input.backspace(),
-        "delete" => input.delete(),
-        "left" => input.left(),
-        "right" => input.right(),
-        "home" => input.home(),
-        "end" => input.end(),
-        "enter" if multiline => input.insert("\n"),
-        _ => match &ks.key_char {
-            Some(text) if !text.chars().any(char::is_control) => input.insert(text),
-            _ => return false,
-        },
-    }
-    true
-}
-
-/// Applies a key press to a text field (see [`type_into`] for the keys). With `editor.vim_mode`
-/// on (`config`), Escape (Insert, Visual to Normal) and the Normal and Visual commands are Vim's,
-/// and Insert mode types as ever; in Normal and Visual mode a key Vim does not use changes
-/// nothing (⌘ shortcuts still apply). `vim` is the field's modal state.
+/// Applies a key press to a text field (see [`edit_keys`] for the keys). With `editor.vim_mode`
+/// on (`config`), Escape (Insert, Visual to Normal) and the Normal and Visual commands are Vim's;
+/// in Normal and Visual mode a key Vim does not use changes nothing (⌘ shortcuts still apply).
+/// Typed text is not a key: it reaches the field through the platform's text input
+/// ([`field_box`]'s element). `vim` is the field's modal state. `true` when the text or the
+/// caret changed or the key was used.
 pub fn edit_text(
     input: &mut TextInput,
     vim: &mut Vim,
@@ -251,23 +208,23 @@ pub fn edit_text(
     multiline: bool,
     cx: &mut App,
 ) -> bool {
-    if !config.enabled {
-        return type_into(input, event, multiline, cx);
-    }
-    let options = config.options(!multiline, true);
-    if vim_ui::apply(vim, input, event, options, cx) == Outcome::Handled {
-        return true;
-    }
-    if vim.mode() != Mode::Insert && !event.keystroke.modifiers.platform {
-        return false;
-    }
-    type_into(input, event, multiline, cx)
+    edit_field(
+        &mut FieldMut {
+            input,
+            vim: config.enabled.then_some(vim),
+            multiline,
+        },
+        config,
+        event,
+        cx,
+    )
 }
 
 /// A text field's box: the text with a caret while `focused`, or the dim `placeholder` while it
-/// is empty. The caller adds the id's click, focus tracking and key handler. With `vim` (the
-/// field's modal state, given under Vim mode) the caret is a block in Normal and Visual mode,
-/// the selection is tinted, and the mode pill sits at the right while `focused`.
+/// is empty. The caller adds the id's click, focus tracking and key handler. `field` makes it
+/// editable by the mouse and the platform's text input. With `vim` (the field's modal state,
+/// given under Vim mode) the caret is a block in Normal and Visual mode and the mode pill sits
+/// at the right while `focused`.
 #[allow(clippy::too_many_arguments)] // the field's look and its state, one call per form field
 pub fn field_box(
     id: impl Into<SharedString>,
@@ -276,35 +233,22 @@ pub fn field_box(
     placeholder: &str,
     focused: bool,
     multiline: bool,
+    field: Option<FieldRef>,
     theme: &Theme,
     tokens: &Tokens,
 ) -> gpui::Stateful<gpui::Div> {
-    let text = input.text();
-    let cursor = input.cursor().min(text.len());
-    let (before, after) = text.split_at(cursor);
-    let block = vim.filter(|vim| focused && vim.mode().block_caret());
-    let mut content = div().flex().flex_wrap().items_center().min_w_0();
-    if text.is_empty() && !focused {
-        content = content.child(
-            div()
-                .text_color(theme.faint)
-                .child(SharedString::from(placeholder.to_owned())),
-        );
-    } else if block.is_none() {
-        content = content
-            .child(SharedString::from(before.to_owned()))
-            .when(focused, |s| {
-                s.child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(tokens.font_size + 2.0))
-                        .bg(theme.accent),
-                )
-            })
-            .child(SharedString::from(after.to_owned()));
-    }
+    let id: SharedString = id.into();
+    let text = EditableText::new(
+        SharedString::from(format!("{id}-text")),
+        FieldState::of(input, vim),
+        theme,
+    )
+    .placeholder(placeholder.to_owned())
+    .multiline(multiline)
+    .focused(focused)
+    .field(field);
     let field = div()
-        .id(id.into())
+        .id(id)
         .flex()
         .items_center()
         .min_h(px(tokens.sidebar_row))
@@ -320,13 +264,10 @@ pub fn field_box(
         .text_color(theme.fg)
         .cursor_text();
     match vim {
-        None => field.child(content),
+        None => field.child(div().flex_1().min_w_0().child(text)),
         Some(vim) => field
             .gap(px(tokens.spacing))
-            .child(div().flex_1().min_w_0().child(match block {
-                Some(vim) => vim_ui::block_text(text, &Caret::of(vim, input), theme),
-                None => content.into_any_element(),
-            }))
+            .child(div().flex_1().min_w_0().child(text))
             .when(focused, |s| {
                 s.child(vim_ui::mode_pill(vim.mode(), theme, tokens))
             }),

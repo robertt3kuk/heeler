@@ -41,6 +41,7 @@ use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
+use crate::workbench::text_field::FieldRef;
 use crate::workbench::ui::{self, ButtonKind, Mascot, StyledExt as _};
 use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 use crate::workbench::{BadgeSite, DragPreview, Region};
@@ -179,8 +180,6 @@ impl LayoutKey {
 struct Renaming {
     workspace: WorkspaceId,
     text: String,
-    /// The old name is selected: the first typed text or paste replaces it, Backspace clears it.
-    select_all: bool,
     _blur: Subscription,
 }
 
@@ -496,11 +495,10 @@ impl SessionsPanel {
         let blur = cx.on_focus_out(&self.rename_focus, window, |this, _, window, cx| {
             this.finish_rename(true, window, cx);
         });
-        self.rename_edit.reset();
+        self.rename_edit.reset_selected(&name);
         self.renaming = Some(Renaming {
             workspace,
             text: name,
-            select_all: true,
             _blur: blur,
         });
         cx.defer_in(window, |this, window, cx| {
@@ -522,7 +520,9 @@ impl SessionsPanel {
     /// Whether the inline rename opened with the whole old name selected and nothing changed it
     /// yet.
     pub fn rename_selected(&self) -> bool {
-        self.renaming.as_ref().is_some_and(|r| r.select_all)
+        self.renaming
+            .as_ref()
+            .is_some_and(|r| self.rename_edit.selected(&r.text))
     }
 
     /// Ends the inline rename: `confirm` sends the new name, else nothing changes.
@@ -554,76 +554,26 @@ impl SessionsPanel {
     }
 
     fn on_rename_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let ks = &event.keystroke;
         let vim = VimConfig::of(&self.env.settings);
+        let Some(renaming) = &mut self.renaming else {
+            return;
+        };
         // The old name starts selected: typing or pasting replaces it, Backspace clears it, ⌘A
-        // selects it again.
-        let paste = (ks.modifiers.platform && ks.key == "v")
-            .then(|| cx.read_from_clipboard().and_then(|item| item.text()))
-            .flatten();
-        if let Some(renaming) = &mut self.renaming {
-            let typing = !ks.modifiers.platform
-                && !ks.modifiers.control
-                && !ks.modifiers.function
-                && ks.key_char.is_some()
-                && !matches!(ks.key.as_str(), "enter" | "escape" | "tab");
-            if ks.modifiers.platform && ks.key == "a" {
-                renaming.select_all = true;
-                cx.stop_propagation();
-                cx.notify();
-                return;
-            }
-            if renaming.select_all {
-                if ks.key == "backspace" || paste.is_some() {
-                    renaming.text.clear();
-                    renaming.select_all = false;
-                    if let Some(text) = &paste {
-                        renaming.text.push_str(text);
-                    }
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if typing {
-                    renaming.text.clear();
-                    renaming.select_all = false;
-                }
-            }
-        }
-        if vim.enabled
-            && let Some(renaming) = &mut self.renaming
-            && self
-                .rename_edit
-                .key(&mut renaming.text, event, vim, true, cx)
-                == Outcome::Handled
+        // selects it again. Typed text arrives through the field's platform text input.
+        if self
+            .rename_edit
+            .key(&mut renaming.text, event, vim, true, cx)
+            == Outcome::Handled
         {
-            // Enter and Escape in Normal mode fall through to the code below.
             cx.stop_propagation();
             cx.notify();
             return;
         }
-        let Some(renaming) = &mut self.renaming else {
-            return;
-        };
-        match ks.key.as_str() {
+        // Enter and Escape (in Normal mode, under Vim mode) fall through to here.
+        match event.keystroke.key.as_str() {
             "enter" => self.finish_rename(true, window, cx),
             "escape" => self.finish_rename(false, window, cx),
-            "backspace" => {
-                renaming.text.pop();
-            }
-            _ => {
-                if let Some(text) = paste {
-                    renaming.text.push_str(&text);
-                } else if !ks.modifiers.platform
-                    && !ks.modifiers.control
-                    && !ks.modifiers.function
-                    && let Some(text) = &ks.key_char
-                {
-                    renaming.text.push_str(text);
-                } else {
-                    return;
-                }
-            }
+            _ => return,
         }
         cx.stop_propagation();
         cx.notify();
@@ -875,34 +825,46 @@ impl SessionsPanel {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let ks = &event.keystroke;
         let vim = VimConfig::of(&self.env.settings);
-        if vim.enabled {
-            if self.query_edit.key(&mut self.query, event, vim, true, cx) == Outcome::Handled {
-                cx.stop_propagation();
-                cx.notify();
-            } else if event.keystroke.key == "escape" {
-                // Escape in Normal mode clears the filter, as ever.
-                self.query.clear();
-                cx.stop_propagation();
-                cx.notify();
-            }
-            return;
-        }
-        if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
-            return;
-        }
-        if ks.key == "backspace" {
-            self.query.pop();
-        } else if ks.key == "escape" {
+        // Vim's commands and the editing keys; typed text arrives through the field's platform
+        // text input (`search_field`).
+        if self.query_edit.key(&mut self.query, event, vim, true, cx) == Outcome::Handled {
+            cx.stop_propagation();
+            cx.notify();
+        } else if event.keystroke.key == "escape" {
+            // Escape (in Normal mode, under Vim mode) clears the filter.
             self.query.clear();
-        } else if let Some(text) = &ks.key_char {
-            self.query.push_str(text);
-        } else {
-            return;
+            cx.stop_propagation();
+            cx.notify();
         }
-        cx.stop_propagation();
-        cx.notify();
+    }
+
+    /// How the filter's element reaches its text: the platform's text input and the mouse.
+    fn search_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.search_focus.clone(),
+            |this, cx, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                this.query_edit.with(&mut this.query, vim_on, false, f);
+                cx.notify();
+            },
+        )
+    }
+
+    /// How the rename's element reaches its text.
+    fn rename_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.rename_focus.clone(),
+            |this, cx, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                if let Some(renaming) = &mut this.renaming {
+                    this.rename_edit.with(&mut renaming.text, vim_on, false, f);
+                }
+                cx.notify();
+            },
+        )
     }
 
     /// A project row was dropped on `target` (a workspace or project row, or `None` for the "No
@@ -1090,26 +1052,18 @@ impl Render for SessionsPanel {
                     });
                 }),
             )
-            .children(
-                match vim_ui::field_content(
-                    &self.env.settings,
-                    &self.query_edit,
-                    &self.query,
-                    &theme,
-                    &tokens,
-                )
-                .filter(|_| searching)
-                {
-                    Some(content) => content,
-                    None if self.query.is_empty() => vec![
-                        div()
-                            .text_color(theme.faint)
-                            .child("⌕ Filter projects and sessions")
-                            .into_any_element(),
-                    ],
-                    None => vec![div().child(self.query.clone()).into_any_element()],
-                },
-            )
+            .children(vim_ui::string_field(
+                "sessions-search-text",
+                &self.query_edit,
+                &self.query,
+                VimConfig::of(&self.env.settings).enabled,
+                "⌕ Filter projects and sessions",
+                searching,
+                false,
+                self.search_field(cx),
+                &theme,
+                &tokens,
+            ))
             .child(probe(&self.env.regions, Region::SidebarControl("filter")));
 
         let new_session = div()
@@ -1191,7 +1145,7 @@ impl SessionsPanel {
                     .renaming
                     .as_ref()
                     .filter(|r| r.workspace == row.info.id)
-                    .map(|r| (r.text.clone(), r.select_all));
+                    .map(|r| r.text.clone());
                 self.render_container(
                     row,
                     self.collapsed.contains(&row.info.id),
@@ -1266,7 +1220,7 @@ impl SessionsPanel {
         current: bool,
         selected: bool,
         manual: bool,
-        renaming: Option<(String, bool)>,
+        renaming: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let style = UiStyle::get(cx);
@@ -1296,7 +1250,7 @@ impl SessionsPanel {
             WorkspaceKind::Workspace => None,
         };
         let name: AnyElement = match renaming {
-            Some((text, selected)) => div()
+            Some(text) => div()
                 .id(SharedString::from(format!("rename-{id_text}")))
                 .key_context("SidebarRename")
                 .track_focus(&self.rename_focus)
@@ -1315,31 +1269,18 @@ impl SessionsPanel {
                 .border_1()
                 .border_color(accent)
                 .text_color(theme.fg)
-                .children(
-                    match vim_ui::field_content(
-                        &self.env.settings,
-                        &self.rename_edit,
-                        &text,
-                        &theme,
-                        &tokens,
-                    ) {
-                        Some(content) => content,
-                        None if selected => vec![
-                            div()
-                                .bg(theme.accent_soft)
-                                .child(SharedString::from(text))
-                                .into_any_element(),
-                        ],
-                        None => vec![
-                            SharedString::from(text).into_any_element(),
-                            div()
-                                .w(px(1.0))
-                                .h(px(tokens.font_size))
-                                .bg(accent)
-                                .into_any_element(),
-                        ],
-                    },
-                )
+                .children(vim_ui::string_field(
+                    SharedString::from(format!("rename-text-{id_text}")),
+                    &self.rename_edit,
+                    &text,
+                    VimConfig::of(&self.env.settings).enabled,
+                    "",
+                    true,
+                    false,
+                    self.rename_field(cx),
+                    &theme,
+                    &tokens,
+                ))
                 .into_any_element(),
             None => div()
                 .flex_1()

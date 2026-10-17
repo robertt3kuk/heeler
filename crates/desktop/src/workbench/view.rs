@@ -1229,19 +1229,6 @@ impl Workbench {
         }
     }
 
-    pub(crate) fn palette_type(&mut self, text: &str, cx: &mut Context<Self>) {
-        if let Some(query) = self.palette.as_ref().map(|p| format!("{}{text}", p.query)) {
-            self.set_palette_query(&query, cx);
-        }
-    }
-
-    pub(crate) fn palette_backspace(&mut self, cx: &mut Context<Self>) {
-        if let Some(mut query) = self.palette.as_ref().map(|p| p.query.clone()) {
-            query.pop();
-            self.set_palette_query(&query, cx);
-        }
-    }
-
     pub(crate) fn palette_select(&mut self, next: bool, cx: &mut Context<Self>) {
         if let Some(palette) = &mut self.palette {
             if next {

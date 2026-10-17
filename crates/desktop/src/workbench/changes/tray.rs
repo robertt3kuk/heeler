@@ -29,6 +29,7 @@ use crate::workbench::chat::vim::{Outcome, Vim};
 use crate::workbench::chat::{Look, TextInput, diff_row};
 use crate::workbench::panels::{age_label, edit_text, field_box};
 use crate::workbench::render::probe;
+use crate::workbench::text_field::{FieldMut, FieldRef};
 use crate::workbench::ui::{self, StyledExt as _};
 use crate::workbench::view::Region;
 use crate::workbench::vim_ui::{self, VimConfig};
@@ -854,6 +855,24 @@ impl ChangesView {
         cx.stop_propagation();
     }
 
+    /// How the comment box's element reaches its text: the platform's text input and the mouse.
+    fn comment_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.review.comment_focus.clone(),
+            |this, _, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                if let Some(draft) = &mut this.review.draft {
+                    f(&mut FieldMut {
+                        input: &mut draft.input,
+                        vim: vim_on.then_some(&mut draft.vim),
+                        multiline: true,
+                    });
+                }
+            },
+        )
+    }
+
     // ---- drawing --------------------------------------------------------------------------
 
     /// What the tray says of the comments: `3 comments · 2 sent · 1 resolved` (the count is of
@@ -1414,6 +1433,7 @@ impl ChangesView {
                     "Leave a comment…",
                     focused,
                     true,
+                    Some(self.comment_field(cx)),
                     theme,
                     tokens,
                 )

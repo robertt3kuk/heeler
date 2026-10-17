@@ -1,15 +1,25 @@
-//! The composer's text: a string with a cursor, edited by the keys a multi-line text field
-//! answers to, with an undo history. No GPUI; the view feeds it keystrokes.
+//! The text of a text field: a string with a caret, an optional selection, the marked (composing)
+//! range of an input method, and an undo history. No GPUI; the field's element and key handler
+//! feed it (`workbench::text_field`).
+
+use std::ops::Range;
 
 /// Most undo steps kept.
 const HISTORY_MAX: usize = 200;
 
-/// A multi-line text and a caret between two of its characters.
+/// A text and a caret between two of its characters, optionally with a selection from an anchor
+/// to the caret and a marked range (text an input method is composing).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
     text: String,
     /// Byte offset, always on a character boundary.
     cursor: usize,
+    /// The other end of the selection (a character boundary); the caret is one end. `None`
+    /// (or equal to the caret) when nothing is selected.
+    anchor: Option<usize>,
+    /// The bytes an input method is composing (character boundaries). Drawn underlined; the
+    /// next committed text replaces it.
+    marked: Option<Range<usize>>,
     history: History,
 }
 
@@ -75,6 +85,8 @@ impl TextInput {
         }
         self.text = text.to_owned();
         self.cursor = self.text.len();
+        self.anchor = None;
+        self.marked = None;
         self.settle(EditKind::Other);
     }
 
@@ -83,6 +95,8 @@ impl TextInput {
     pub fn reset_to(&mut self, text: &str) {
         self.text = text.to_owned();
         self.cursor = self.text.len();
+        self.anchor = None;
+        self.marked = None;
         self.history = History::default();
     }
 
@@ -92,6 +106,8 @@ impl TextInput {
         }
         self.text.clear();
         self.cursor = 0;
+        self.anchor = None;
+        self.marked = None;
         self.settle(EditKind::Other);
     }
 
@@ -99,12 +115,19 @@ impl TextInput {
     /// there is nothing to undo into).
     pub fn take(&mut self) -> String {
         self.cursor = 0;
+        self.anchor = None;
+        self.marked = None;
         self.history = History::default();
         std::mem::take(&mut self.text)
     }
 
+    /// Types `text` at the caret; it replaces the selection when there is one.
     pub fn insert(&mut self, text: &str) {
         if text.is_empty() {
+            return;
+        }
+        if let Some(selection) = self.selection() {
+            self.replace_range(selection, text);
             return;
         }
         self.note(EditKind::Typing);
@@ -115,48 +138,61 @@ impl TextInput {
 
     /// Removes the bytes `range` (character boundaries inside the text; anything else is
     /// ignored) and puts the caret where the range began.
-    pub fn remove_range(&mut self, range: std::ops::Range<usize>) {
-        if range.start <= range.end
-            && range.end <= self.text.len()
-            && self.text.is_char_boundary(range.start)
-            && self.text.is_char_boundary(range.end)
-        {
+    pub fn remove_range(&mut self, range: Range<usize>) {
+        if self.is_range(&range) {
             if range.start < range.end {
                 self.note(EditKind::Other);
             }
             self.text.drain(range.clone());
             self.cursor = range.start;
+            self.anchor = None;
+            self.marked = None;
             self.settle(EditKind::Other);
         }
     }
 
     /// Replaces the bytes `range` (character boundaries inside the text; anything else is
     /// ignored) with `text` and puts the caret after it.
-    pub fn replace_range(&mut self, range: std::ops::Range<usize>, text: &str) {
-        if range.start <= range.end
-            && range.end <= self.text.len()
-            && self.text.is_char_boundary(range.start)
-            && self.text.is_char_boundary(range.end)
-        {
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str) {
+        if self.is_range(&range) {
             if range.start < range.end || !text.is_empty() {
                 self.note(EditKind::Other);
             }
             self.text.replace_range(range.clone(), text);
             self.cursor = range.start + text.len();
+            self.anchor = None;
+            self.marked = None;
             self.settle(EditKind::Other);
         }
     }
 
-    /// Puts the caret at byte offset `at`, or at the nearest character boundary before it.
+    fn is_range(&self, range: &Range<usize>) -> bool {
+        range.start <= range.end
+            && range.end <= self.text.len()
+            && self.text.is_char_boundary(range.start)
+            && self.text.is_char_boundary(range.end)
+    }
+
+    /// Puts the caret at byte offset `at`, or at the nearest character boundary before it. The
+    /// selection goes away.
     pub fn set_cursor(&mut self, at: usize) {
+        self.cursor = self.boundary_at_or_before(at);
+        self.anchor = None;
+        self.marked = None;
+    }
+
+    fn boundary_at_or_before(&self, at: usize) -> usize {
         let mut at = at.min(self.text.len());
         while !self.text.is_char_boundary(at) {
             at -= 1;
         }
-        self.cursor = at;
+        at
     }
 
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if let Some(prev) = self.prev_boundary(self.cursor) {
             self.note(EditKind::Backspacing);
             self.text.drain(prev..self.cursor);
@@ -166,11 +202,235 @@ impl TextInput {
     }
 
     pub fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if let Some(next) = self.next_boundary(self.cursor) {
             self.note(EditKind::Other);
             self.text.drain(self.cursor..next);
             self.settle(EditKind::Other);
         }
+    }
+
+    // ---- selection -------------------------------------------------------------------------
+
+    /// The selected bytes; `None` when nothing (an empty range included) is selected.
+    pub fn selection(&self) -> Option<Range<usize>> {
+        let anchor = self.anchor?.min(self.text.len());
+        (anchor != self.cursor).then(|| anchor.min(self.cursor)..anchor.max(self.cursor))
+    }
+
+    /// The selected text.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|range| &self.text[range])
+    }
+
+    /// Whether the selection runs from the caret backwards (the caret is its start).
+    pub fn selection_reversed(&self) -> bool {
+        self.selection()
+            .is_some_and(|range| range.start == self.cursor)
+    }
+
+    /// Selects everything; the caret goes to the end.
+    pub fn select_all(&mut self) {
+        self.marked = None;
+        self.anchor = (!self.text.is_empty()).then_some(0);
+        self.cursor = self.text.len();
+    }
+
+    /// Selects from `anchor` to `cursor` (each at or before the given offset's character
+    /// boundary).
+    pub fn select(&mut self, anchor: usize, cursor: usize) {
+        let (anchor, cursor) = (
+            self.boundary_at_or_before(anchor),
+            self.boundary_at_or_before(cursor),
+        );
+        self.marked = None;
+        self.anchor = (anchor != cursor).then_some(anchor);
+        self.cursor = cursor;
+    }
+
+    /// Moves the caret with `motion` and keeps the selection's other end where it was (or at
+    /// the caret's old place): what holding Shift does.
+    pub fn extend(&mut self, motion: impl FnOnce(&mut Self)) {
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        self.anchor = None;
+        motion(self);
+        self.anchor = (anchor != self.cursor).then_some(anchor);
+    }
+
+    /// Drags the selection's caret end to `at`, keeping its other end (the caret's old place
+    /// when nothing was selected).
+    pub fn extend_to(&mut self, at: usize) {
+        self.extend(|input| input.cursor = input.boundary_at_or_before(at));
+    }
+
+    /// The bytes of the word around `at`: a run of letters and digits, of spaces, or of other
+    /// characters (a line break is never part of one).
+    pub fn word_range_at(&self, at: usize) -> Range<usize> {
+        let at = self.boundary_at_or_before(at);
+        let class = |c: char| match c {
+            c if c.is_alphanumeric() || c == '_' => 0,
+            c if c.is_whitespace() => 1,
+            _ => 2,
+        };
+        let Some(pivot) = self.text[at..]
+            .chars()
+            .next()
+            .or_else(|| self.text[..at].chars().next_back())
+            .filter(|c| *c != '\n')
+        else {
+            return at..at;
+        };
+        let same = |c: char| c != '\n' && class(c) == class(pivot);
+        let start = self.text[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| same(*c))
+            .last()
+            .map_or(at, |(i, _)| i);
+        let end = self.text[at..]
+            .char_indices()
+            .take_while(|(_, c)| same(*c))
+            .last()
+            .map_or(at, |(i, c)| at + i + c.len_utf8());
+        start..end
+    }
+
+    /// Selects the word around `at` (a double click).
+    pub fn select_word_at(&mut self, at: usize) {
+        let range = self.word_range_at(at);
+        self.select(range.start, range.end);
+    }
+
+    /// Selects the line around `at` (a triple click).
+    pub fn select_line_at(&mut self, at: usize) {
+        let at = self.boundary_at_or_before(at);
+        self.select(self.line_start(at), self.line_end(at));
+    }
+
+    /// Removes the selection's text; `true` when there was one.
+    fn delete_selection(&mut self) -> bool {
+        let Some(selection) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        self.remove_range(selection);
+        true
+    }
+
+    /// Removes the selection and returns its text (⌘X).
+    pub fn cut(&mut self) -> Option<String> {
+        let text = self.selected_text()?.to_owned();
+        self.delete_selection();
+        Some(text)
+    }
+
+    // ---- input methods ---------------------------------------------------------------------
+
+    /// The bytes an input method is composing.
+    pub fn marked(&self) -> Option<Range<usize>> {
+        self.marked.clone()
+    }
+
+    /// Ends the composition: the marked text stays as typed.
+    pub fn unmark(&mut self) {
+        self.marked = None;
+    }
+
+    /// The bytes an input method's edit targets when it names no range: the composition, else
+    /// the selection, else the caret.
+    fn target_range(&self) -> Range<usize> {
+        self.marked
+            .clone()
+            .or_else(|| self.selection())
+            .unwrap_or(self.cursor..self.cursor)
+    }
+
+    /// Commits `text` over `range` (bytes; the composition, the selection or the caret when
+    /// `None`) and ends the composition. A composition's undo step was opened when it began.
+    pub fn commit(&mut self, range: Option<Range<usize>>, text: &str) {
+        let composing = self.marked.is_some();
+        let range = range.unwrap_or_else(|| self.target_range());
+        if !self.is_range(&range) {
+            return;
+        }
+        if composing {
+            self.text.replace_range(range.clone(), text);
+            self.cursor = range.start + text.len();
+            self.anchor = None;
+            self.marked = None;
+            self.history.last = None;
+        } else if range.start == range.end && range.start == self.cursor {
+            self.insert(text);
+        } else {
+            self.replace_range(range, text);
+        }
+    }
+
+    /// Replaces `range` (bytes; the composition, the selection or the caret when `None`) with
+    /// `text` and marks it as being composed. `selected` is the part of `text` (bytes) the
+    /// input method has selected; the caret goes to its end, an empty one by default at the
+    /// end of `text`. Empty `text` ends the composition.
+    pub fn mark(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+    ) {
+        let composing = self.marked.is_some();
+        let range = range.unwrap_or_else(|| self.target_range());
+        if !self.is_range(&range) {
+            return;
+        }
+        if !composing {
+            // One undo step for the whole composition, taken before it changes anything.
+            self.note(EditKind::Other);
+        }
+        self.text.replace_range(range.clone(), text);
+        self.history.last = None;
+        let start = range.start;
+        if text.is_empty() {
+            self.marked = None;
+            self.cursor = start;
+            self.anchor = None;
+            return;
+        }
+        self.marked = Some(start..start + text.len());
+        let end = text.len();
+        let mut selected = selected.map_or(end..end, |s| s.start.min(end)..s.end.min(end));
+        if !text.is_char_boundary(selected.start) || !text.is_char_boundary(selected.end) {
+            selected = end..end;
+        }
+        self.cursor = start + selected.end;
+        self.anchor = (selected.start != selected.end).then_some(start + selected.start);
+    }
+
+    // ---- UTF-16 (what the platform's input methods count in) --------------------------------
+
+    /// The UTF-16 offset of byte offset `at`.
+    pub fn utf16_offset(&self, at: usize) -> usize {
+        utf16_len(&self.text[..self.boundary_at_or_before(at)])
+    }
+
+    /// The byte offset of UTF-16 offset `offset`: the start of the character that contains it.
+    pub fn byte_offset(&self, offset: usize) -> usize {
+        utf16_to_byte(&self.text, offset)
+    }
+
+    /// `range` (bytes) in UTF-16.
+    pub fn utf16_range(&self, range: &Range<usize>) -> Range<usize> {
+        self.utf16_offset(range.start)..self.utf16_offset(range.end)
+    }
+
+    /// `range` (UTF-16) in bytes; a surrogate pair cut in the middle is taken whole.
+    pub fn byte_range(&self, range: &Range<usize>) -> Range<usize> {
+        let start = self.byte_offset(range.start);
+        let mut end = self.byte_offset(range.end);
+        if end < self.text.len() && self.utf16_offset(end) < range.end {
+            end = self.next_boundary(end).unwrap_or(end);
+        }
+        start..end.max(start)
     }
 
     // ---- undo ------------------------------------------------------------------------------
@@ -184,6 +444,7 @@ impl TextInput {
 
     /// Called before an edit: opens an undo step unless the edit continues the last one.
     fn note(&mut self, kind: EditKind) {
+        self.marked = None;
         if self.history.grouped {
             return;
         }
@@ -238,6 +499,8 @@ impl TextInput {
         self.history.redo.push(current);
         self.text = step.text;
         self.cursor = step.cursor;
+        self.anchor = None;
+        self.marked = None;
         true
     }
 
@@ -252,33 +515,58 @@ impl TextInput {
         self.history.undo.push(current);
         self.text = step.text;
         self.cursor = step.cursor;
+        self.anchor = None;
+        self.marked = None;
         true
     }
 
+    /// ← : one character back; with a selection, its start.
     pub fn left(&mut self) {
-        if let Some(prev) = self.prev_boundary(self.cursor) {
-            self.cursor = prev;
+        if let Some(selection) = self.selection() {
+            self.move_to(selection.start);
+        } else if let Some(prev) = self.prev_boundary(self.cursor) {
+            self.move_to(prev);
         }
     }
 
+    /// → : one character on; with a selection, its end.
     pub fn right(&mut self) {
-        if let Some(next) = self.next_boundary(self.cursor) {
-            self.cursor = next;
+        if let Some(selection) = self.selection() {
+            self.move_to(selection.end);
+        } else if let Some(next) = self.next_boundary(self.cursor) {
+            self.move_to(next);
         }
+    }
+
+    /// Puts the caret at `at` (a character boundary) and drops the selection.
+    fn move_to(&mut self, at: usize) {
+        self.cursor = at;
+        self.anchor = None;
+        self.marked = None;
     }
 
     /// Start of the caret's line.
     pub fn home(&mut self) {
-        self.cursor = self.line_start(self.cursor);
+        self.move_to(self.line_start(self.cursor));
     }
 
     /// End of the caret's line.
     pub fn end(&mut self) {
-        self.cursor = self.line_end(self.cursor);
+        self.move_to(self.line_end(self.cursor));
+    }
+
+    /// Start of the text (⌘↑).
+    pub fn text_start(&mut self) {
+        self.move_to(0);
+    }
+
+    /// End of the text (⌘↓).
+    pub fn text_end(&mut self) {
+        self.move_to(self.text.len());
     }
 
     pub fn word_left(&mut self) {
-        self.cursor = self.word_start(self.cursor);
+        self.move_to(self.word_start(self.cursor));
     }
 
     pub fn word_right(&mut self) {
@@ -296,11 +584,15 @@ impl TextInput {
             }
             at += c.len_utf8();
         }
-        self.cursor = at;
+        self.move_to(at);
     }
 
-    /// Deletes from the start of the previous word to the caret (⌥⌫).
+    /// Deletes from the start of the previous word to the caret (⌥⌫); the selection if there
+    /// is one.
     pub fn delete_word_back(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         let start = self.word_start(self.cursor);
         if start < self.cursor {
             self.note(EditKind::Other);
@@ -310,8 +602,11 @@ impl TextInput {
         }
     }
 
-    /// Deletes from the caret to the start of its line (⌘⌫).
+    /// Deletes from the caret to the start of its line (⌘⌫); the selection if there is one.
     pub fn delete_to_line_start(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         let start = self.line_start(self.cursor);
         if start == self.cursor {
             self.backspace();
@@ -327,6 +622,8 @@ impl TextInput {
     /// first line it goes to the start of the text. `false` when it did not move.
     pub fn up(&mut self) -> bool {
         let start = self.line_start(self.cursor);
+        self.anchor = None;
+        self.marked = None;
         if start == 0 {
             let moved = self.cursor != 0;
             self.cursor = 0;
@@ -342,6 +639,8 @@ impl TextInput {
     /// Moves the caret one line down; on the last line it goes to the end of the text.
     pub fn down(&mut self) -> bool {
         let end = self.line_end(self.cursor);
+        self.anchor = None;
+        self.marked = None;
         if end == self.text.len() {
             let moved = self.cursor != end;
             self.cursor = end;
@@ -405,6 +704,24 @@ impl TextInput {
         }
         at
     }
+}
+
+/// The length of `text` in UTF-16 code units (what the platform's input methods count in).
+pub fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The byte offset in `text` of UTF-16 offset `units`: the start of the character that contains
+/// it, or the end of the text.
+pub fn utf16_to_byte(text: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (at, c) in text.char_indices() {
+        if seen + c.len_utf16() > units {
+            return at;
+        }
+        seen += c.len_utf16();
+    }
+    text.len()
 }
 
 #[cfg(test)]
@@ -575,5 +892,117 @@ mod tests {
         i.insert("y");
         i.take();
         assert!(!i.undo());
+    }
+
+    #[test]
+    fn utf16_ranges_round_trip_through_emoji_cyrillic_and_cjk() {
+        let i = input("aй日😀b");
+        // a=1, й=1, 日=1, 😀=2, b=1 UTF-16 units.
+        assert_eq!(utf16_len(i.text()), 6);
+        let emoji = "aй日".len();
+        assert_eq!(i.utf16_offset(emoji), 3);
+        assert_eq!(i.byte_offset(3), emoji);
+        let emoji_end = emoji + "😀".len();
+        assert_eq!(i.utf16_range(&(emoji..emoji_end)), 3..5);
+        assert_eq!(i.byte_range(&(3..5)), emoji..emoji_end);
+        // A range ending inside the surrogate pair takes the whole character.
+        assert_eq!(i.byte_range(&(3..4)), emoji..emoji_end);
+        assert_eq!(
+            i.byte_offset(4),
+            emoji,
+            "inside a pair is the start of the character"
+        );
+        assert_eq!(i.byte_offset(99), i.text().len());
+        assert_eq!(
+            i.utf16_offset(emoji + 1),
+            3,
+            "inside a character rounds down"
+        );
+    }
+
+    #[test]
+    fn typing_replaces_the_selection_and_shift_motions_select() {
+        let mut i = input("hello world");
+        i.select_all();
+        assert_eq!(i.selected_text(), Some("hello world"));
+        i.insert("ы");
+        assert_eq!(i.text(), "ы");
+        assert!(i.selection().is_none());
+        i.set("one two");
+        i.extend(TextInput::word_left);
+        assert_eq!(i.selected_text(), Some("two"));
+        assert!(
+            i.selection_reversed(),
+            "the caret is at the start of the word"
+        );
+        i.extend(TextInput::left);
+        assert_eq!(i.selected_text(), Some(" two"));
+        i.left();
+        assert_eq!(
+            i.cursor(),
+            "one".len(),
+            "← with a selection goes to its start"
+        );
+        assert!(i.selection().is_none());
+        i.select_all();
+        i.backspace();
+        assert!(i.is_empty());
+        assert!(i.undo());
+        assert_eq!(i.text(), "one two");
+    }
+
+    #[test]
+    fn cut_and_word_selection() {
+        let mut i = input("alpha beta  gamma");
+        i.select_word_at(8);
+        assert_eq!(i.selected_text(), Some("beta"));
+        i.select_word_at(10);
+        assert_eq!(i.selected_text(), Some("  "));
+        i.select_line_at(3);
+        assert_eq!(i.cut().as_deref(), Some("alpha beta  gamma"));
+        assert!(i.is_empty());
+        assert_eq!(i.cut(), None);
+    }
+
+    #[test]
+    fn a_composition_is_marked_then_committed_in_one_undo_step() {
+        let mut i = TextInput::new();
+        i.reset_to("ab");
+        i.left();
+        // The input method shows 'に' while composing, then 'にほん', then commits '日本'.
+        i.mark(None, "に", None);
+        assert_eq!(i.text(), "aにb");
+        assert_eq!(i.marked(), Some(1..4));
+        assert_eq!(i.cursor(), 4);
+        i.mark(None, "にほん", Some(0..3));
+        assert_eq!(i.text(), "aにほんb");
+        assert_eq!(i.marked(), Some(1..10));
+        assert_eq!(i.selection(), Some(1..4), "the segment being converted");
+        i.commit(None, "日本");
+        assert_eq!(i.text(), "a日本b");
+        assert_eq!(i.marked(), None);
+        assert_eq!(i.cursor(), "a日本".len());
+        assert!(i.undo());
+        assert_eq!(i.text(), "ab", "the composition undoes as one step");
+        assert!(!i.undo());
+    }
+
+    #[test]
+    fn committing_without_a_composition_is_typing() {
+        let mut i = input("");
+        i.commit(None, "ф");
+        i.commit(None, "ы");
+        assert_eq!(i.text(), "фы");
+        assert!(i.undo(), "typed runs undo together");
+        assert!(i.is_empty());
+        // An explicit range replaces: press-and-hold accent popup replaces the typed 'a'.
+        i.commit(None, "a");
+        i.commit(Some(0..1), "à");
+        assert_eq!(i.text(), "à");
+        // An empty marked text ends the composition without leaving text behind.
+        i.mark(None, "x", None);
+        i.mark(None, "", None);
+        assert_eq!(i.text(), "à");
+        assert_eq!(i.marked(), None);
     }
 }

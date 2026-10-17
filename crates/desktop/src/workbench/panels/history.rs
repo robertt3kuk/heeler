@@ -35,6 +35,7 @@ use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::UiStyle;
+use crate::workbench::text_field::FieldRef;
 use crate::workbench::ui;
 use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 
@@ -575,27 +576,36 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    /// How the search box's element reaches its text: the platform's text input and the mouse.
+    fn search_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.search_focus.clone(),
+            |this, cx, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                let mut query = this.query.clone();
+                this.query_edit.with(&mut query, vim_on, false, f);
+                this.set_query(&query, cx);
+            },
+        )
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let vim = VimConfig::of(&self.env.settings);
-        if vim.enabled {
-            let mut query = self.query.clone();
-            if self.query_edit.key(&mut query, event, vim, true, cx) == Outcome::Handled {
-                self.set_query(&query, cx);
-                cx.stop_propagation();
-                return;
-            }
-            // Enter, ↑ ↓ and Escape in Normal mode are the panel's own: they follow.
+        // Vim's commands and the editing keys; typed text arrives through the box's platform
+        // text input (`search_field`).
+        let mut query = self.query.clone();
+        if self.query_edit.key(&mut query, event, vim, true, cx) == Outcome::Handled {
+            self.set_query(&query, cx);
+            cx.stop_propagation();
+            return;
         }
+        // Enter, ↑ ↓ and Escape (in Normal mode, under Vim mode) are the panel's own.
         let ks = &event.keystroke;
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
             return;
         }
         match ks.key.as_str() {
-            "backspace" => {
-                let mut query = self.query.clone();
-                query.pop();
-                self.set_query(&query, cx);
-            }
             "escape" => self.set_query("", cx),
             "down" => self.move_selection(1, cx),
             "up" => self.move_selection(-1, cx),
@@ -612,13 +622,7 @@ impl HistoryPanel {
                     }
                 }
             }
-            _ => match &ks.key_char {
-                Some(text) if !text.chars().any(char::is_control) => {
-                    let query = format!("{}{text}", self.query);
-                    self.set_query(&query, cx);
-                }
-                _ => return,
-            },
+            _ => return,
         }
         cx.stop_propagation();
     }
@@ -925,26 +929,18 @@ impl HistoryPanel {
                     });
                 }),
             )
-            .children(
-                match vim_ui::field_content(
-                    &self.env.settings,
-                    &self.query_edit,
-                    &self.query,
-                    theme,
-                    tokens,
-                )
-                .filter(|_| searching_field)
-                {
-                    Some(content) => content,
-                    None if self.query.is_empty() => vec![
-                        div()
-                            .text_color(theme.faint)
-                            .child("⌕ Search sessions, commands, transcripts")
-                            .into_any_element(),
-                    ],
-                    None => vec![div().child(self.query.clone()).into_any_element()],
-                },
-            )
+            .children(vim_ui::string_field(
+                "history-search-text",
+                &self.query_edit,
+                &self.query,
+                VimConfig::of(&self.env.settings).enabled,
+                "⌕ Search sessions, commands, transcripts",
+                searching_field,
+                false,
+                self.search_field(cx),
+                theme,
+                tokens,
+            ))
             .child(probe(&self.env.regions, Region::History("search")));
 
         let mut list = div()

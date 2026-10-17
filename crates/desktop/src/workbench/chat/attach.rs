@@ -8,9 +8,9 @@
 //! menu it leaves the keyboard to the composer; a form with a field takes the typing.
 
 use gpui::{
-    AnyElement, App, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Task, TextRun,
-    div, font, prelude::*, px,
+    AnyElement, App, Context, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled, Task, div,
+    prelude::*, px,
 };
 use hutan_client::ClientError;
 use hutan_core::TerminalId;
@@ -25,10 +25,12 @@ use super::context::{
 use super::input::TextInput;
 use super::markdown_view::Look;
 use super::view::ChatView;
-use super::vim::{Mode, Outcome, Vim};
+use super::vim::{Outcome, Vim};
 use super::widgets::{ButtonKind, button};
+use crate::workbench::panels::edit_text;
 use crate::workbench::panels::{HISTORY_DEBOUNCE, hit_title, source_label};
 use crate::workbench::render::probe;
+use crate::workbench::text_field::{EditableText, FieldMut, FieldRef, FieldState};
 use crate::workbench::ui::StyledExt as _;
 use crate::workbench::view::Region;
 use crate::workbench::vim_ui::{self, VimConfig};
@@ -37,7 +39,6 @@ use crate::workbench::vim_ui::{self, VimConfig};
 const BLOCKS_SHOWN: u32 = 12;
 /// Indexed transcripts listed for a query.
 const INDEXED_SHOWN: u32 = 8;
-const CARET: &str = "▏";
 
 /// Which step of attaching the user is at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,106 +573,50 @@ impl ChatView {
             return false;
         };
         let vim = VimConfig::of(&self.settings);
-        if vim.enabled
-            && let Some(attaching) = &mut self.attach
-            && attaching.vim.mode() != Mode::Insert
-        {
-            // Normal and Visual mode: the keys are Vim's commands; Enter and the keys it has
-            // no use for fall through to the form's own.
-            if vim_ui::apply(
-                &mut attaching.vim,
-                &mut attaching.arg,
-                event,
-                vim.options(true, true),
-                cx,
-            ) == Outcome::Handled
-            {
-                self.arg_changed(cx);
-                return true;
-            }
+        let plain_keys = !mods.platform && !mods.control && !mods.alt;
+        if key == "enter" && plain_keys {
+            self.confirm_attach(cx);
+            return true;
         }
-        let edit = |this: &mut Self, change: &dyn Fn(&mut TextInput), cx: &mut Context<Self>| {
-            if let Some(attaching) = &mut this.attach {
-                change(&mut attaching.arg);
-            }
-            this.arg_changed(cx);
+        if matches!(key, "up" | "down" | "tab") && plain_keys {
+            return false;
+        }
+        let Some(attaching) = &mut self.attach else {
+            return false;
         };
-        if mods.platform {
-            match key {
-                "v" => {
-                    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-                        return true;
-                    };
-                    let line = text.replace(['\n', '\r'], " ");
-                    edit(self, &|input| input.insert(&line), cx);
-                }
-                "z" => {
-                    let shift = mods.shift;
-                    edit(
-                        self,
-                        &|input| {
-                            if shift {
-                                input.redo();
-                            } else {
-                                input.undo();
-                            }
-                        },
-                        cx,
-                    );
-                }
-                "backspace" => edit(self, &TextInput::delete_to_line_start, cx),
-                "left" => edit(self, &TextInput::home, cx),
-                "right" => edit(self, &TextInput::end, cx),
-                _ => return false,
-            }
-            return true;
+        // Vim's commands and the editing keys; typed text reaches the field through the
+        // platform's text input (`attach_field`).
+        let used = edit_text(
+            &mut attaching.arg,
+            &mut attaching.vim,
+            vim,
+            event,
+            false,
+            cx,
+        );
+        if used {
+            self.arg_changed(cx);
         }
-        if mods.control {
-            match key {
-                "a" => edit(self, &TextInput::home, cx),
-                "e" => edit(self, &TextInput::end, cx),
-                "b" => edit(self, &TextInput::left, cx),
-                "f" => edit(self, &TextInput::right, cx),
-                "u" => edit(self, &TextInput::delete_to_line_start, cx),
-                _ => return false,
+        used
+    }
+
+    /// How the form's field element reaches its text: the platform's text input and the mouse.
+    fn attach_field(&self, cx: &mut Context<Self>) -> FieldRef {
+        FieldRef::new(cx.weak_entity(), self.focus_handle(cx), |this, cx, f| {
+            let vim_on = VimConfig::of(&this.settings).enabled;
+            let Some(attaching) = &mut this.attach else {
+                return;
+            };
+            let before = attaching.arg.text().to_owned();
+            f(&mut FieldMut {
+                input: &mut attaching.arg,
+                vim: vim_on.then_some(&mut attaching.vim),
+                multiline: false,
+            });
+            if attaching.arg.text() != before {
+                this.arg_changed(cx);
             }
-            return true;
-        }
-        let typed = |keystroke: &gpui::Keystroke| {
-            keystroke
-                .key_char
-                .clone()
-                .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
-        };
-        if mods.alt {
-            match key {
-                "left" => edit(self, &TextInput::word_left, cx),
-                "right" => edit(self, &TextInput::word_right, cx),
-                "backspace" => edit(self, &TextInput::delete_word_back, cx),
-                _ => match typed(keystroke) {
-                    Some(text) => edit(self, &|input| input.insert(&text), cx),
-                    None => return false,
-                },
-            }
-            return true;
-        }
-        match key {
-            "enter" => {
-                self.confirm_attach(cx);
-            }
-            "backspace" => edit(self, &TextInput::backspace, cx),
-            "delete" => edit(self, &TextInput::delete, cx),
-            "left" => edit(self, &TextInput::left, cx),
-            "right" => edit(self, &TextInput::right, cx),
-            "home" => edit(self, &TextInput::home, cx),
-            "end" => edit(self, &TextInput::end, cx),
-            "up" | "down" | "tab" => return false,
-            _ => match typed(keystroke) {
-                Some(text) => edit(self, &|input| input.insert(&text), cx),
-                None => return false,
-            },
-        }
-        true
+        })
     }
 
     // ---- rendering -------------------------------------------------------------------------
@@ -738,53 +683,6 @@ impl ChatView {
         super::widgets::round_button("chat-attach", "＋", self.attach.is_some(), true, 28.0, look)
             .on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx)))
             .child(probe(&self.regions, Region::Attach("button")))
-            .into_any_element()
-    }
-
-    fn field_text(
-        &self,
-        input: &TextInput,
-        vim: Option<&Vim>,
-        placeholder: &str,
-        look: &Look,
-    ) -> AnyElement {
-        let theme = &look.theme;
-        if let Some(vim) = vim.filter(|vim| vim.mode().block_caret()) {
-            return vim_ui::block_text(input.text(), &vim_ui::Caret::of(vim, input), &look.theme);
-        }
-        if input.is_empty() {
-            return div()
-                .flex()
-                .items_center()
-                .child(div().text_color(theme.accent).child(CARET))
-                .child(
-                    div()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(placeholder.to_owned())),
-                )
-                .into_any_element();
-        }
-        let (before, after) = input.text().split_at(input.cursor());
-        let shown = format!("{before}{CARET}{after}");
-        let run = |len: usize, color: gpui::Hsla| TextRun {
-            len,
-            font: font(".SystemUIFont"),
-            color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let runs: Vec<TextRun> = [
-            (before.len(), theme.fg),
-            (CARET.len(), theme.accent),
-            (after.len(), theme.fg),
-        ]
-        .into_iter()
-        .filter(|(len, _)| *len > 0)
-        .map(|(len, color)| run(len, color))
-        .collect();
-        div()
-            .child(StyledText::new(shown).with_runs(runs))
             .into_any_element()
     }
 
@@ -1045,12 +943,18 @@ impl ChatView {
             .bg(theme.bg)
             .border_1()
             .border_color(theme.border)
-            .child(div().flex_1().min_w_0().child(self.field_text(
-                &arg,
-                vim_state.as_ref(),
-                placeholder,
-                look,
-            )))
+            .child(
+                div().flex_1().min_w_0().child(
+                    EditableText::new(
+                        "chat-attach-text",
+                        FieldState::of(&arg, vim_state.as_ref()),
+                        theme,
+                    )
+                    .placeholder(placeholder)
+                    .focused(true)
+                    .field(Some(self.attach_field(cx))),
+                ),
+            )
             .children(
                 vim_state
                     .as_ref()

@@ -8,14 +8,14 @@
 //! caret, the undo history and the modal state.
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, IntoElement, KeyDownEvent, ParentElement,
-    SharedString, Styled, StyledText, TextRun, div, font, px,
+    AnyElement, App, ClipboardItem, Context, IntoElement, KeyDownEvent, ParentElement, Styled, div,
 };
 use hutan_settings::SettingsStore;
 
 use super::chat::TextInput;
 use super::chat::vim::{Clipboard, Key, Mode, Options, Outcome, Vim};
 use super::modal::Modal;
+use super::text_field::{EditableText, FieldMut, FieldRef, FieldState, edit_field};
 use super::ui;
 use super::view::Workbench;
 use crate::settings::EditorSettings;
@@ -100,7 +100,9 @@ impl Clipboard for AppClipboard<'_> {
     }
 }
 
-/// Feeds `event` to the modal layer over `input`.
+/// Feeds `event` to the modal layer over `input`. Typed characters in Insert mode are not keys
+/// to it: they reach the field through the platform's text input (`text_field`), like every
+/// other text.
 pub fn apply(
     vim: &mut Vim,
     input: &mut TextInput,
@@ -109,6 +111,7 @@ pub fn apply(
     cx: &mut App,
 ) -> Outcome {
     match key_of(event) {
+        Some(Key::Char(_)) if vim.mode() == Mode::Insert => Outcome::Ignored,
         Some(key) => vim.key(input, key, options, &mut AppClipboard(cx)),
         None => Outcome::Ignored,
     }
@@ -133,139 +136,6 @@ impl CaretShape {
     }
 }
 
-/// Where the caret and the selection of a field are, to draw them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Caret {
-    pub cursor: usize,
-    pub mode: Mode,
-    pub selection: Option<std::ops::Range<usize>>,
-}
-
-impl Caret {
-    pub fn of(vim: &Vim, input: &TextInput) -> Self {
-        Self {
-            cursor: input.cursor().min(input.text().len()),
-            mode: vim.mode(),
-            selection: vim.selection(input),
-        }
-    }
-}
-
-/// How a run of a field's text is drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Paint {
-    Plain,
-    Selected,
-    /// The block caret.
-    Block,
-}
-
-/// The text to show for a block caret and how to paint it: a character under the caret to
-/// highlight (a space when the caret is at the end of a line), the selection tinted.
-/// The runs' lengths add up to the shown text's length.
-pub fn block_layout(text: &str, caret: &Caret) -> (String, Vec<(usize, Paint)>) {
-    let cursor = caret.cursor.min(text.len());
-    let under = text[cursor..].chars().next().filter(|c| *c != '\n');
-    let mut shown = text.to_owned();
-    let caret_len = match under {
-        Some(c) => c.len_utf8(),
-        None => {
-            shown.insert(cursor, ' ');
-            1
-        }
-    };
-    // Offsets of `text` after the inserted space move along.
-    let at = |offset: usize| {
-        if under.is_none() && offset >= cursor {
-            offset + 1
-        } else {
-            offset
-        }
-    };
-    let (sel_start, sel_end) = caret
-        .selection
-        .as_ref()
-        .map_or((0, 0), |range| (at(range.start), at(range.end)));
-    let mut cuts = vec![
-        0,
-        shown.len(),
-        cursor,
-        cursor + caret_len,
-        sel_start,
-        sel_end,
-    ];
-    cuts.retain(|cut| *cut <= shown.len() && shown.is_char_boundary(*cut));
-    cuts.sort_unstable();
-    cuts.dedup();
-    let paint_at = |start: usize| {
-        if (cursor..cursor + caret_len).contains(&start) {
-            Paint::Block
-        } else if (sel_start..sel_end).contains(&start) {
-            Paint::Selected
-        } else {
-            Paint::Plain
-        }
-    };
-    let runs = cuts
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0], paint_at(pair[0])))
-        .collect();
-    (shown, runs)
-}
-
-/// The text of a field with its caret, for Normal and Visual mode: the character under the
-/// caret in a block, the selection tinted.
-pub fn block_text(text: &str, caret: &Caret, theme: &Theme) -> AnyElement {
-    let (shown, runs) = block_layout(text, caret);
-    let run = |len: usize, paint: Paint| TextRun {
-        len,
-        font: font(".SystemUIFont"),
-        color: if paint == Paint::Block {
-            theme.bg
-        } else {
-            theme.fg
-        },
-        background_color: match paint {
-            Paint::Plain => None,
-            Paint::Selected => Some(theme.accent_soft),
-            Paint::Block => Some(theme.accent),
-        },
-        underline: None,
-        strikethrough: None,
-    };
-    let runs: Vec<TextRun> = runs
-        .into_iter()
-        .map(|(len, paint)| run(len, paint))
-        .collect();
-    div()
-        .child(StyledText::new(SharedString::from(shown)).with_runs(runs))
-        .into_any_element()
-}
-
-/// The text of a single-line field with its caret in the shape of the mode: a bar between
-/// the characters in Insert, a block over one in Normal and Visual.
-pub fn field_text(text: &str, caret: &Caret, theme: &Theme, tokens: &Tokens) -> AnyElement {
-    if caret.mode.block_caret() {
-        return block_text(text, caret, theme);
-    }
-    let cursor = caret.cursor.min(text.len());
-    let (before, after) = text.split_at(cursor);
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .min_w_0()
-        .child(SharedString::from(before.to_owned()))
-        .child(
-            div()
-                .w(px(1.0))
-                .h(px(tokens.font_size + 2.0))
-                .bg(theme.accent),
-        )
-        .child(SharedString::from(after.to_owned()))
-        .into_any_element()
-}
-
 /// The `NORMAL` / `INSERT` / `VISUAL` pill.
 pub fn mode_pill(mode: Mode, theme: &Theme, tokens: &Tokens) -> gpui::Div {
     let color = match mode {
@@ -276,8 +146,9 @@ pub fn mode_pill(mode: Mode, theme: &Theme, tokens: &Tokens) -> gpui::Div {
     ui::pill(mode.label(), color, tokens)
 }
 
-/// The state of one plain-`String` field under Vim mode: the text as a [`TextInput`] (caret,
-/// undo history) and the modal layer.
+/// The state of one plain-`String` field: the text as a [`TextInput`] (caret, selection, the text
+/// an input method is composing, undo history) and, under Vim mode, the modal layer. The string
+/// stays the field's value; this follows it.
 #[derive(Debug, Clone, Default)]
 pub struct FieldEdit {
     input: TextInput,
@@ -299,6 +170,24 @@ impl FieldEdit {
         self.input = TextInput::new();
     }
 
+    /// A field that opens with its text selected (typing replaces it): a rename.
+    pub fn reset_selected(&mut self, text: &str) {
+        self.reset();
+        self.input.reset_to(text);
+        self.input.select_all();
+    }
+
+    /// Selects all of `text`: typing replaces it.
+    pub fn select_all(&mut self, text: &str) {
+        self.sync(text);
+        self.input.select_all();
+    }
+
+    /// Whether part of `text` is selected.
+    pub fn selected(&self, text: &str) -> bool {
+        self.input.text() == text && self.input.selection().is_some()
+    }
+
     /// Follows `text` when it changed behind this field's back (set by code, not typed).
     fn sync(&mut self, text: &str) {
         if self.input.text() != text {
@@ -306,21 +195,38 @@ impl FieldEdit {
         }
     }
 
-    /// The caret and selection for drawing `text`.
-    pub fn caret(&self, text: &str) -> Caret {
+    /// Runs `f` over the field with `text` mirrored in it; `text` follows what `f` did.
+    pub fn with(
+        &mut self,
+        text: &mut String,
+        vim_on: bool,
+        multiline: bool,
+        f: &mut dyn FnMut(&mut FieldMut<'_>),
+    ) {
+        self.sync(text);
+        f(&mut FieldMut {
+            input: &mut self.input,
+            vim: vim_on.then_some(&mut self.vim),
+            multiline,
+        });
+        if self.input.text() != text.as_str() {
+            *text = self.input.text().to_owned();
+        }
+    }
+
+    /// What the field's element draws for `text`: its caret and selection while it follows
+    /// `text`, else (`text` was set by code) a caret at the end.
+    pub fn state(&self, text: &str, vim_on: bool) -> FieldState {
+        let vim = vim_on.then_some(&self.vim);
         if self.input.text() == text {
-            Caret::of(&self.vim, &self.input)
+            FieldState::of(&self.input, vim)
         } else {
-            Caret {
-                cursor: text.len(),
-                mode: self.vim.mode(),
-                selection: None,
-            }
+            FieldState::plain(text, vim)
         }
     }
 
     /// Applies `event` to `text`. [`Outcome::Ignored`] means the field's own key handling
-    /// applies (Enter, Tab, Escape in Normal mode, ↑ ↓ in Insert mode).
+    /// applies (Enter, Tab, Escape in Normal mode, ↑ ↓ in a single line).
     pub fn key(
         &mut self,
         text: &mut String,
@@ -329,53 +235,14 @@ impl FieldEdit {
         single_line: bool,
         cx: &mut App,
     ) -> Outcome {
-        self.sync(text);
-        let ks = &event.keystroke;
-        let outcome = if ks.modifiers.platform {
-            self.command_key(event, single_line, cx)
+        let mut used = false;
+        self.with(text, config.enabled, !single_line, &mut |field| {
+            used = edit_field(field, config, event, cx);
+        });
+        if used {
+            Outcome::Handled
         } else {
-            apply(
-                &mut self.vim,
-                &mut self.input,
-                event,
-                config.options(single_line, false),
-                cx,
-            )
-        };
-        if self.input.text() != text.as_str() {
-            *text = self.input.text().to_owned();
-        }
-        outcome
-    }
-
-    /// ⌘V, ⌘Z and ⌘⇧Z.
-    fn command_key(&mut self, event: &KeyDownEvent, single_line: bool, cx: &mut App) -> Outcome {
-        let ks = &event.keystroke;
-        if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.function {
-            return Outcome::Ignored;
-        }
-        match ks.key.as_str() {
-            "v" => {
-                let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-                    return Outcome::Handled;
-                };
-                let text = if single_line {
-                    text.replace(['\r', '\n'], " ")
-                } else {
-                    text
-                };
-                self.input.insert(&text);
-                Outcome::Handled
-            }
-            "z" => {
-                if ks.modifiers.shift {
-                    self.input.redo();
-                } else {
-                    self.input.undo();
-                }
-                Outcome::Handled
-            }
-            _ => Outcome::Ignored,
+            Outcome::Ignored
         }
     }
 
@@ -390,28 +257,32 @@ impl FieldEdit {
     }
 }
 
-/// What a single-line field of a panel shows under Vim mode: the text with its caret in the
-/// shape of the mode (growing to fill the field) and the mode pill. `None` while Vim mode is
-/// off, when the field draws itself as ever.
-pub fn field_content(
-    settings: &SettingsStore,
+/// A single-line field of a panel or overlay as its parts: the text (growing to fill the
+/// field, caret and selection drawn while `focused`, editable by the mouse and the platform's
+/// text input through `field`), and the mode pill under Vim mode.
+#[allow(clippy::too_many_arguments)] // the field's state and its look, one call per field
+pub fn string_field(
+    id: impl Into<gpui::ElementId>,
     edit: &FieldEdit,
     text: &str,
+    vim_on: bool,
+    placeholder: &str,
+    focused: bool,
+    masked: bool,
+    field: FieldRef,
     theme: &Theme,
     tokens: &Tokens,
-) -> Option<Vec<AnyElement>> {
-    if !VimConfig::of(settings).enabled {
-        return None;
+) -> Vec<AnyElement> {
+    let element = EditableText::new(id, edit.state(text, vim_on), theme)
+        .placeholder(placeholder.to_owned())
+        .focused(focused)
+        .masked(masked)
+        .field(Some(field));
+    let mut parts = vec![div().flex_1().min_w_0().child(element).into_any_element()];
+    if vim_on && focused {
+        parts.push(mode_pill(edit.mode(), theme, tokens).into_any_element());
     }
-    let caret = edit.caret(text);
-    Some(vec![
-        div()
-            .flex_1()
-            .min_w_0()
-            .child(field_text(text, &caret, theme, tokens))
-            .into_any_element(),
-        mode_pill(caret.mode, theme, tokens).into_any_element(),
-    ])
+    parts
 }
 
 // ---- the workbench's overlays ----------------------------------------------------------------
@@ -426,6 +297,23 @@ pub struct OverlayEdits {
     pub modal: FieldEdit,
     pub sheet_query: FieldEdit,
     pub sheet_value: FieldEdit,
+}
+
+/// A text field of one of the workbench's overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayField {
+    /// The command palette's filter.
+    Palette,
+    /// The ⌘O / ⌘J / worktree picker's filter.
+    Picker,
+    /// The model filter of the switch-model dialog.
+    Agent,
+    /// The input of a prompt dialog (a secret's is masked and has no Vim).
+    Modal,
+    /// The settings sheet's search.
+    SheetQuery,
+    /// The value being edited in the settings sheet.
+    SheetValue,
 }
 
 impl Workbench {
@@ -453,90 +341,191 @@ impl Workbench {
         cx.notify();
     }
 
-    /// The text of a single-line field of an overlay and the mode pill, when Vim mode is on.
-    pub(crate) fn vim_text(&self, edit: &FieldEdit, text: &str) -> Option<(AnyElement, gpui::Div)> {
-        if !self.vim_config().enabled {
-            return None;
+    /// The edit state and text of an overlay's field (`None` while it is not there) and whether
+    /// Vim applies to it.
+    fn overlay_text(&mut self, which: OverlayField) -> Option<(&mut FieldEdit, &mut String, bool)> {
+        let edits = &mut self.edits;
+        match which {
+            OverlayField::Palette => {
+                Some((&mut edits.palette, &mut self.palette.as_mut()?.query, true))
+            }
+            OverlayField::Picker => {
+                Some((&mut edits.picker, &mut self.picker.as_mut()?.query, true))
+            }
+            OverlayField::Agent => Some((
+                &mut edits.agent,
+                &mut self.agent_picker.as_mut()?.model_query,
+                true,
+            )),
+            OverlayField::Modal => {
+                let modal = self.modal.as_mut()?;
+                let vim = !modal.secure_input;
+                Some((&mut edits.modal, modal.input.as_mut()?, vim))
+            }
+            OverlayField::SheetQuery => {
+                let sheet = self.sheet.as_mut()?;
+                if sheet.edit.is_some() {
+                    return None;
+                }
+                Some((&mut edits.sheet_query, &mut sheet.query, true))
+            }
+            OverlayField::SheetValue => {
+                let edit = self.sheet.as_mut()?.edit.as_mut()?;
+                Some((&mut edits.sheet_value, &mut edit.text, true))
+            }
         }
+    }
+
+    /// [`overlay_text`](Self::overlay_text) for reading.
+    fn overlay_view(&self, which: OverlayField) -> Option<(&FieldEdit, &str, bool)> {
+        let edits = &self.edits;
+        match which {
+            OverlayField::Palette => Some((&edits.palette, &self.palette.as_ref()?.query, true)),
+            OverlayField::Picker => Some((&edits.picker, &self.picker.as_ref()?.query, true)),
+            OverlayField::Agent => {
+                Some((&edits.agent, &self.agent_picker.as_ref()?.model_query, true))
+            }
+            OverlayField::Modal => {
+                let modal = self.modal.as_ref()?;
+                Some((&edits.modal, modal.input.as_deref()?, !modal.secure_input))
+            }
+            OverlayField::SheetQuery => {
+                let sheet = self.sheet.as_ref()?;
+                if sheet.edit.is_some() {
+                    return None;
+                }
+                Some((&edits.sheet_query, &sheet.query, true))
+            }
+            OverlayField::SheetValue => {
+                let edit = self.sheet.as_ref()?.edit.as_ref()?;
+                Some((&edits.sheet_value, &edit.text, true))
+            }
+        }
+    }
+
+    fn overlay_focus(&self, which: OverlayField) -> gpui::FocusHandle {
+        match which {
+            OverlayField::Palette => self.palette_focus.clone(),
+            OverlayField::Picker => self.picker_focus.clone(),
+            OverlayField::Agent => self.agent_focus.clone(),
+            OverlayField::Modal => self.modal_focus.clone(),
+            OverlayField::SheetQuery | OverlayField::SheetValue => self.sheet_focus.clone(),
+        }
+    }
+
+    /// What an edit of an overlay's text changes elsewhere: the lists it filters, an error it
+    /// clears.
+    fn overlay_changed(&mut self, which: OverlayField, cx: &mut Context<Self>) {
+        match which {
+            OverlayField::Palette => {
+                if let Some(query) = self.palette.as_ref().map(|p| p.query.clone()) {
+                    self.set_palette_query(&query, cx);
+                }
+            }
+            OverlayField::Picker => {
+                if let Some(query) = self.picker.as_ref().map(|p| p.query.clone()) {
+                    self.set_picker_query(&query, cx);
+                }
+            }
+            OverlayField::Agent => {
+                if let Some(picker) = &mut self.agent_picker {
+                    picker.selected = 0;
+                }
+            }
+            OverlayField::SheetQuery => {
+                if let Some(query) = self.sheet.as_ref().map(|s| s.query.clone()) {
+                    self.set_settings_query(&query, cx);
+                }
+            }
+            OverlayField::SheetValue => {
+                if let Some(edit) = self.sheet.as_mut().and_then(|s| s.edit.as_mut()) {
+                    edit.error = None;
+                }
+            }
+            OverlayField::Modal => {}
+        }
+    }
+
+    /// Runs `f` over an overlay's field, then [`overlay_changed`](Self::overlay_changed) when its
+    /// text changed.
+    fn with_overlay(
+        &mut self,
+        which: OverlayField,
+        f: &mut dyn FnMut(&mut FieldMut<'_>),
+        cx: &mut Context<Self>,
+    ) {
+        let vim_on = self.vim_config().enabled;
+        let Some((edit, text, vim)) = self.overlay_text(which) else {
+            return;
+        };
+        let before = text.clone();
+        edit.with(text, vim_on && vim, false, f);
+        if *text != before {
+            self.overlay_changed(which, cx);
+        }
+    }
+
+    /// How the element of an overlay's field reaches its text.
+    pub(crate) fn overlay_field(&self, which: OverlayField, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.overlay_focus(which),
+            move |workbench, cx, f| workbench.with_overlay(which, f, cx),
+        )
+    }
+
+    /// The parts of an overlay's single-line field: the text (editable, caret drawn) and the mode
+    /// pill under Vim mode.
+    pub(crate) fn overlay_parts(
+        &self,
+        which: OverlayField,
+        placeholder: &str,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some((edit, text, vim)) = self.overlay_view(which) else {
+            return Vec::new();
+        };
         let tokens = self.density.ui();
-        let caret = edit.caret(text);
-        Some((
-            field_text(text, &caret, &self.theme, &tokens),
-            mode_pill(caret.mode, &self.theme, &tokens),
-        ))
+        let masked = which == OverlayField::Modal && !vim;
+        string_field(
+            format!("overlay-field-{which:?}"),
+            edit,
+            text,
+            self.vim_config().enabled && vim,
+            placeholder,
+            true,
+            masked,
+            self.overlay_field(which, cx),
+            &self.theme,
+            &tokens,
+        )
     }
 
-    /// A key in the command palette's filter.
-    pub(crate) fn palette_vim_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+    /// A key in an overlay's field: Vim's commands under Vim mode, then the editing keys. `true`
+    /// when it was used (Enter, Tab and the arrows of a list are not).
+    pub(crate) fn overlay_key(
+        &mut self,
+        which: OverlayField,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let config = self.vim_config();
-        let Some(mut query) = self.palette.as_ref().map(|p| p.query.clone()) else {
+        let Some((edit, text, vim)) = self.overlay_text(which) else {
             return false;
         };
-        if !config.enabled {
-            return false;
-        }
-        self.edits.palette.key(&mut query, event, config, true, cx);
-        if self.palette.as_ref().is_some_and(|p| p.query != query) {
-            self.set_palette_query(&query, cx);
-        }
-        cx.notify();
-        true
-    }
-
-    /// A key in the ⌘O / ⌘J picker's filter.
-    pub(crate) fn picker_vim_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let config = self.vim_config();
-        let Some(mut query) = self.picker.as_ref().map(|p| p.query.clone()) else {
-            return false;
+        let config = VimConfig {
+            enabled: config.enabled && vim,
+            ..config
         };
-        if !config.enabled {
-            return false;
+        let before = text.clone();
+        let handled = edit.key(text, event, config, true, cx) == Outcome::Handled;
+        if *text != before {
+            self.overlay_changed(which, cx);
         }
-        self.edits.picker.key(&mut query, event, config, true, cx);
-        if self.picker.as_ref().is_some_and(|p| p.query != query) {
-            self.set_picker_query(&query, cx);
+        if handled {
+            cx.notify();
         }
-        cx.notify();
-        true
-    }
-
-    /// A key in the model filter of the new-agent dialog.
-    pub(crate) fn agent_vim_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let config = self.vim_config();
-        let Some(picker) = &mut self.agent_picker else {
-            return false;
-        };
-        if !config.enabled {
-            return false;
-        }
-        let before = picker.model_query.clone();
-        self.edits
-            .agent
-            .key(&mut picker.model_query, event, config, true, cx);
-        if picker.model_query != before {
-            picker.selected = 0;
-        }
-        cx.notify();
-        true
-    }
-
-    /// A key in a prompt dialog's input (not in a secret's: those are typed as ever).
-    pub(crate) fn modal_vim_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let config = self.vim_config();
-        if !config.enabled {
-            return false;
-        }
-        let Some(Modal {
-            input: Some(input),
-            secure_input: false,
-            ..
-        }) = &mut self.modal
-        else {
-            return false;
-        };
-        self.edits.modal.key(input, event, config, true, cx);
-        cx.notify();
-        true
+        handled
     }
 
     /// Escape in the palette, the pickers: Insert goes to Normal first. `true` when Vim used it.
@@ -584,56 +573,28 @@ impl Workbench {
 mod tests {
     use super::*;
 
-    fn caret(cursor: usize, selection: Option<std::ops::Range<usize>>) -> Caret {
-        Caret {
-            cursor,
-            mode: Mode::Normal,
-            selection,
-        }
-    }
-
-    #[test]
-    fn the_block_covers_the_character_under_the_caret() {
-        let (shown, runs) = block_layout("héllo", &caret(1, None));
-        assert_eq!(shown, "héllo");
-        assert_eq!(
-            runs,
-            vec![(1, Paint::Plain), (2, Paint::Block), (3, Paint::Plain)]
-        );
-    }
-
-    #[test]
-    fn the_block_at_a_line_end_is_a_space() {
-        let (shown, runs) = block_layout("ab\ncd", &caret(2, None));
-        assert_eq!(shown, "ab \ncd");
-        assert_eq!(
-            runs,
-            vec![(2, Paint::Plain), (1, Paint::Block), (3, Paint::Plain)]
-        );
-        let (shown, runs) = block_layout("", &caret(0, None));
-        assert_eq!(shown, " ");
-        assert_eq!(runs, vec![(1, Paint::Block)]);
-    }
-
-    #[test]
-    fn the_selection_is_tinted_around_the_block() {
-        let (_, runs) = block_layout("abcdef", &caret(3, Some(1..4)));
-        assert_eq!(
-            runs,
-            vec![
-                (1, Paint::Plain),
-                (2, Paint::Selected),
-                (1, Paint::Block),
-                (2, Paint::Plain)
-            ]
-        );
-        assert_eq!(runs.iter().map(|(n, _)| n).sum::<usize>(), 6);
-    }
-
     #[test]
     fn caret_shape_follows_the_mode() {
         assert_eq!(CaretShape::of(Mode::Insert), CaretShape::Bar);
         assert_eq!(CaretShape::of(Mode::Normal), CaretShape::Block);
         assert_eq!(CaretShape::of(Mode::Visual), CaretShape::Block);
+    }
+
+    #[test]
+    fn a_field_edit_follows_its_string_and_selects_for_a_rename() {
+        let mut edit = FieldEdit::new();
+        edit.reset_selected("old name");
+        let state = edit.state("old name", false);
+        assert_eq!(state.selection, Some(0.."old name".len()));
+        // The string changed behind the field's back: a caret at the end, no selection.
+        let state = edit.state("changed", false);
+        assert_eq!(state.cursor, "changed".len());
+        assert_eq!(state.selection, None);
+        // Typing through the handler's path replaces the selection and the string follows.
+        let mut text = "old name".to_owned();
+        edit.with(&mut text, false, false, &mut |field| {
+            field.input.insert("ы")
+        });
+        assert_eq!(text, "ы");
     }
 }

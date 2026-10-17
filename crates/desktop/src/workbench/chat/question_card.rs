@@ -4,22 +4,22 @@
 //! 1–4, which answer approvals, never answer anything.
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, prelude::*, px,
+    AnyElement, Context, Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::*, px,
 };
 use hutan_chat_view::{Question, QuestionState};
 use hutan_core::question::{FieldKind, QuestionField};
 use hutan_core::{QuestionId, QuestionResponse};
 
+use super::input::TextInput;
 use super::markdown_view::{Ids, Look, blocks};
 use super::question::{Input, QuestionForm};
 use super::view::ChatView;
 use super::widgets::{ButtonKind, button};
 use crate::workbench::render::probe;
+use crate::workbench::text_field::{EditableText, FieldMut, FieldRef, FieldState, edit_keys};
 use crate::workbench::ui::StyledExt as _;
 use crate::workbench::view::Region;
-
-const CARET: &str = "▏";
 
 /// How many options one field offers as buttons before the rest are cut (a form with a hundred
 /// options is not a form a card can hold).
@@ -227,67 +227,20 @@ impl ChatView {
         let Some(text) = form.focused_text() else {
             return true;
         };
-        let typed = keystroke
-            .key_char
-            .clone()
-            .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
-        if mods.platform {
-            match key {
-                "v" => {
-                    if let Some(pasted) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        text.insert(&if multiline {
-                            pasted
-                        } else {
-                            pasted.replace(['\n', '\r'], " ")
-                        });
-                    }
-                }
-                "z" => {
-                    if mods.shift {
-                        text.redo();
-                    } else {
-                        text.undo();
-                    }
-                }
-                "backspace" => text.delete_to_line_start(),
-                "left" => text.home(),
-                "right" => text.end(),
-                _ => return false,
-            }
-        } else if mods.control {
-            match key {
-                "a" => text.home(),
-                "e" => text.end(),
-                "u" => text.delete_to_line_start(),
-                _ => return true,
-            }
-        } else if mods.alt {
-            match key {
-                "left" => text.word_left(),
-                "right" => text.word_right(),
-                "backspace" => text.delete_word_back(),
-                _ => {
-                    if let Some(typed) = typed {
-                        text.insert(&typed);
-                    }
-                }
-            }
-        } else {
-            match key {
-                "enter" if multiline => text.insert("\n"),
-                "enter" => form.move_focus(true),
-                "backspace" => text.backspace(),
-                "delete" => text.delete(),
-                "left" => text.left(),
-                "right" => text.right(),
-                "home" => text.home(),
-                "end" => text.end(),
-                _ => {
-                    if let Some(typed) = typed {
-                        text.insert(&typed);
-                    }
-                }
-            }
+        // Return in a one-line field moves on to the next. The rest is editing; typed text is
+        // no key press: it reaches the field through the platform's text input.
+        if key == "enter" && plain && !multiline {
+            form.move_focus(true);
+        } else if !edit_keys(
+            &mut FieldMut {
+                input: text,
+                vim: None,
+                multiline,
+            },
+            event,
+            cx,
+        ) {
+            return false;
         }
         if let Some(form) = self.forms.get_mut(&id) {
             form.error = None;
@@ -297,6 +250,36 @@ impl ChatView {
         }
         cx.notify();
         true
+    }
+
+    /// Runs `f` over the text field `at` of the question `id`: the platform's text input and the
+    /// mouse edit the card's fields through this.
+    pub(super) fn with_question_field(
+        &mut self,
+        id: QuestionId,
+        at: usize,
+        multiline: bool,
+        f: &mut dyn FnMut(&mut FieldMut<'_>),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(form) = self.forms.get_mut(&id) else {
+            return;
+        };
+        let input = match form.inputs.get_mut(at) {
+            Some(Input::Text(text)) => text,
+            Some(Input::Choice { other, .. }) => other,
+            _ => return,
+        };
+        let before = input.text().to_owned();
+        f(&mut FieldMut {
+            input,
+            vim: None,
+            multiline,
+        });
+        if input.text() != before {
+            form.error = None;
+        }
+        cx.notify();
     }
 
     // ---- the card --------------------------------------------------------------------------
@@ -502,13 +485,14 @@ impl ChatView {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let focused = form.focus == Some(at);
         let label = format!("{}{}", field.label, if field.required { " *" } else { "" });
-        let text_box = |content: String, placeholder: &str, secret: bool, tall: bool| {
-            let shown = if secret {
-                "•".repeat(content.chars().count())
-            } else {
-                content.clone()
-            };
-            let empty = shown.is_empty();
+        let typing = focused && self.question_focus == Some(id);
+        let text_box = |input: &TextInput, placeholder: &str, secret: bool, tall: bool| {
+            let state = FieldState::of(input, None);
+            let field = FieldRef::new(
+                cx.weak_entity(),
+                self.focus_handle(cx),
+                move |this: &mut ChatView, cx, f| this.with_question_field(id, at, tall, f, cx),
+            );
             div()
                 .id(SharedString::from(format!("question-field-{id}-{at}")))
                 .min_h(px(if tall { 72.0 } else { 28.0 }))
@@ -520,17 +504,19 @@ impl ChatView {
                 .cursor_text()
                 .flex()
                 .child(
-                    div()
-                        .text_color(if empty { theme.muted } else { theme.fg })
-                        .child(SharedString::from(if empty {
-                            placeholder.to_owned()
-                        } else {
-                            shown
-                        })),
+                    div().flex_1().min_w_0().child(
+                        EditableText::new(
+                            SharedString::from(format!("question-text-{id}-{at}")),
+                            state,
+                            theme,
+                        )
+                        .placeholder(placeholder.to_owned())
+                        .multiline(tall)
+                        .masked(secret)
+                        .focused(typing)
+                        .field(Some(field)),
+                    ),
                 )
-                .when(focused, |s| {
-                    s.child(div().text_color(theme.accent).child(CARET))
-                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.focus_question_field(id, Some(at), cx);
                 }))
@@ -629,17 +615,12 @@ impl ChatView {
                             .children(buttons),
                     )
                     .when(*allow_other, |s| {
-                        s.child(text_box(
-                            other.text().to_owned(),
-                            "Or type your own answer",
-                            false,
-                            false,
-                        ))
+                        s.child(text_box(other, "Or type your own answer", false, false))
                     })
                     .into_any_element()
             }
             (kind, Input::Text(text)) => text_box(
-                text.text().to_owned(),
+                text,
                 match kind {
                     FieldKind::Number { .. } => "Number",
                     FieldKind::Secret => "Hidden while you type; never kept",

@@ -42,6 +42,7 @@ use crate::workbench::chat::vim::Outcome;
 use crate::workbench::registry::PanelEnv;
 use crate::workbench::render::probe;
 use crate::workbench::style::{TextTooltip, UiStyle};
+use crate::workbench::text_field::FieldRef;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::vim_ui::{self, FieldEdit, VimConfig};
 
@@ -572,38 +573,40 @@ impl ResourcesPanel {
         .detach();
     }
 
+    /// How the filter's element reaches its text: the platform's text input and the mouse.
+    fn filter_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.filter_focus.clone(),
+            |this, cx, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                let mut text = this.filter.clone();
+                this.filter_edit.with(&mut text, vim_on, false, f);
+                this.set_filter(&text, cx);
+            },
+        )
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let vim = VimConfig::of(&self.env.settings);
-        if vim.enabled {
-            let mut text = self.filter.clone();
-            if self.filter_edit.key(&mut text, event, vim, true, cx) == Outcome::Handled {
-                self.set_filter(&text, cx);
-                cx.notify();
-                cx.stop_propagation();
-                return;
-            }
-            // Escape in Normal mode clears the filter below, as ever.
+        // Vim's commands and the editing keys; typed text arrives through the filter's
+        // platform text input (`filter_field`).
+        let mut text = self.filter.clone();
+        if self.filter_edit.key(&mut text, event, vim, true, cx) == Outcome::Handled {
+            self.set_filter(&text, cx);
+            cx.notify();
+            cx.stop_propagation();
+            return;
         }
         let ks = &event.keystroke;
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function {
             return;
         }
-        match ks.key.as_str() {
-            "backspace" => {
-                let mut text = self.filter.clone();
-                text.pop();
-                self.set_filter(&text, cx);
-            }
-            "escape" => self.set_filter("", cx),
-            _ => match &ks.key_char {
-                Some(text) if !text.chars().any(char::is_control) => {
-                    let text = format!("{}{text}", self.filter);
-                    self.set_filter(&text, cx);
-                }
-                _ => return,
-            },
+        // Escape (in Normal mode, under Vim mode) clears the filter.
+        if ks.key == "escape" {
+            self.set_filter("", cx);
+            cx.stop_propagation();
         }
-        cx.stop_propagation();
     }
 }
 
@@ -1228,30 +1231,18 @@ impl Render for ResourcesPanel {
                     });
                 }),
             )
-            .children(
-                match vim_ui::field_content(
-                    &self.env.settings,
-                    &self.filter_edit,
-                    &self.filter,
-                    &theme,
-                    &tokens,
-                )
-                .filter(|_| filter_focused)
-                {
-                    Some(content) => content,
-                    None if self.filter.is_empty() => vec![
-                        div()
-                            .text_color(theme.faint)
-                            .child("⌕ Filter by process, command or session")
-                            .into_any_element(),
-                    ],
-                    None => vec![
-                        div()
-                            .child(SharedString::from(self.filter.clone()))
-                            .into_any_element(),
-                    ],
-                },
-            )
+            .children(vim_ui::string_field(
+                "resources-filter-text",
+                &self.filter_edit,
+                &self.filter,
+                VimConfig::of(&self.env.settings).enabled,
+                "⌕ Filter by process, command or session",
+                filter_focused,
+                false,
+                self.filter_field(cx),
+                &theme,
+                &tokens,
+            ))
             .child(probe(&self.env.regions, Region::ResourceControl("filter")));
 
         let columns = div()

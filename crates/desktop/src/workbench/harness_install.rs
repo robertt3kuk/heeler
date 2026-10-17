@@ -128,7 +128,6 @@ impl Workbench {
             confirm_label: "Install".into(),
             input: None,
             secure_input: false,
-            input_selected: false,
             choice: None,
             checkbox: None,
             on_confirm: std::rc::Rc::new(move |this, _, window, cx| {

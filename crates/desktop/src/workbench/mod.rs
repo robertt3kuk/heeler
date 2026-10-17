@@ -35,6 +35,7 @@ mod settings_sheet;
 mod setup;
 pub mod style;
 mod terminals;
+pub mod text_field;
 pub mod ui;
 mod view;
 pub mod vim_ui;

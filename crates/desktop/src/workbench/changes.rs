@@ -36,6 +36,7 @@ use super::panels::{edit_text, field_box, pill};
 use super::registry::PanelEnv;
 use super::render::probe;
 use super::style::UiStyle;
+use super::text_field::{FieldMut, FieldRef};
 use super::ui::{self, StyledExt as _};
 use super::view::Region;
 use super::vim_ui::{self, VimConfig};
@@ -623,6 +624,24 @@ impl ChangesView {
         }
         cx.stop_propagation();
     }
+
+    /// How the merge message's element reaches its text: the platform's text input and the mouse.
+    fn message_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.message_focus.clone(),
+            |this, _, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                if let Some(form) = &mut this.merge {
+                    f(&mut FieldMut {
+                        input: &mut form.message,
+                        vim: vim_on.then_some(&mut form.vim),
+                        multiline: true,
+                    });
+                }
+            },
+        )
+    }
 }
 
 /// The reason of a refused merge and the files `conflict:` lines name.
@@ -921,6 +940,7 @@ impl ChangesView {
                     "Commit message (empty: git's own)",
                     focused,
                     true,
+                    Some(self.message_field(cx)),
                     theme,
                     tokens,
                 )

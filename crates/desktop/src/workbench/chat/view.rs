@@ -9,7 +9,7 @@ use gpui::{
     AnyElement, App, Bounds, Context, Entity, FocusHandle, Focusable, FollowMode,
     InteractiveElement, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
     MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    StyledText, Subscription, TextRun, Window, div, font, list, prelude::*, px,
+    Subscription, Window, div, list, prelude::*, px,
 };
 use hutan_chat_view::markdown::Block;
 use hutan_client::ConnectionState;
@@ -17,7 +17,7 @@ use hutan_core::{ApprovalId, SessionId, SessionState};
 use hutan_protocol::messages::SessionInfo;
 use hutan_settings::SettingsStore;
 
-use super::attach::Attaching;
+use super::attach::{Attaching, Stage};
 use super::context::{is_gateway_chat, is_harness_chat};
 use super::input::TextInput;
 use super::markdown_view::Look;
@@ -29,9 +29,10 @@ use crate::workbench::actions::{self, RestartSessionById};
 use crate::workbench::harnesses::harness_name;
 use crate::workbench::panels::{kind_icon, recovery_chip, state_dot, tone_color};
 use crate::workbench::render::probe;
+use crate::workbench::text_field::{EditableText, FieldRef, FieldState, edit_keys};
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
-use crate::workbench::vim_ui::{self, Caret, CaretShape, VimConfig};
+use crate::workbench::vim_ui::{self, CaretShape, VimConfig};
 
 pub(crate) type Regions = Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>;
 
@@ -42,8 +43,6 @@ pub const KEY_CONTEXT: &str = "HutanChat";
 const COMPOSER_MAX_HEIGHT: f32 = 220.0;
 /// Diameter of the composer's round send / stop button.
 const SEND_SIZE: f32 = 32.0;
-/// The caret drawn inside the composer's text.
-const CARET: &str = "▏";
 
 pub struct ChatView {
     pub(super) session: SessionId,
@@ -410,6 +409,10 @@ impl ChatView {
             cx.stop_propagation();
             return;
         }
+        if self.question_focus.is_some() {
+            // Its field's text arrives through the platform's text input, not as a key.
+            return;
+        }
         // The attach form's field takes the typing while a form is open.
         if self.on_attach_key(event, cx) {
             cx.stop_propagation();
@@ -448,112 +451,63 @@ impl ChatView {
             return;
         }
 
-        if mods.platform {
-            match key {
-                "v" => {
-                    self.paste(cx);
-                }
-                "z" => {
-                    let shift = mods.shift;
-                    self.edit(
-                        |input| {
-                            if shift {
-                                input.redo();
-                            } else {
-                                input.undo();
-                            }
-                        },
-                        cx,
-                    );
-                }
-                "backspace" => self.edit(TextInput::delete_to_line_start, cx),
-                "left" => self.edit(TextInput::home, cx),
-                "right" => self.edit(TextInput::end, cx),
-                _ => return,
-            }
+        // ⌘V looks for files and images on the clipboard (R-1) before it types the text.
+        if mods.platform && key == "v" {
+            self.paste(cx);
             cx.stop_propagation();
             return;
         }
-        if mods.control {
+        // Return sends or breaks the line; Backspace in an empty composer takes the last
+        // attachment off.
+        if !mods.platform && !mods.control && !mods.alt {
             match key {
-                "a" => self.edit(TextInput::home, cx),
-                "e" => self.edit(TextInput::end, cx),
-                "b" => self.edit(TextInput::left, cx),
-                "f" => self.edit(TextInput::right, cx),
-                "u" => self.edit(TextInput::delete_to_line_start, cx),
-                _ => return,
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if mods.alt {
-            match key {
-                "left" => self.edit(TextInput::word_left, cx),
-                "right" => self.edit(TextInput::word_right, cx),
-                "backspace" => self.edit(TextInput::delete_word_back, cx),
-                _ => {
-                    // Option composes characters (é, ø): handled as typing below.
-                    if !self.type_text(keystroke.key_char.as_deref(), cx) {
-                        return;
+                "enter" => {
+                    let send_on_enter = self.settings.get::<ChatSettings>().send_on_enter;
+                    if send_on_enter && !mods.shift {
+                        self.send(cx);
+                    } else {
+                        self.edit(|input| input.insert("\n"), cx);
                     }
-                }
-            }
-            cx.stop_propagation();
-            return;
-        }
-        match key {
-            "enter" => {
-                let send_on_enter = self.settings.get::<ChatSettings>().send_on_enter;
-                if send_on_enter && !mods.shift {
-                    self.send(cx);
-                } else {
-                    self.edit(|input| input.insert("\n"), cx);
-                }
-            }
-            "backspace" => {
-                if !self.backspace_removes_chip(cx) {
-                    self.edit(TextInput::backspace, cx);
-                }
-            }
-            "delete" => self.edit(TextInput::delete, cx),
-            "left" => self.edit(TextInput::left, cx),
-            "right" => self.edit(TextInput::right, cx),
-            "home" => self.edit(TextInput::home, cx),
-            "end" => self.edit(TextInput::end, cx),
-            "up" => {
-                self.edit(
-                    |input| {
-                        input.up();
-                    },
-                    cx,
-                );
-            }
-            "down" => {
-                self.edit(
-                    |input| {
-                        input.down();
-                    },
-                    cx,
-                );
-            }
-            _ => {
-                if !self.type_text(keystroke.key_char.as_deref(), cx) {
+                    cx.stop_propagation();
                     return;
                 }
+                "backspace" if self.backspace_removes_chip(cx) => {
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
             }
         }
-        cx.stop_propagation();
+        // Vim's Normal and Visual modes use no key Vim left alone, except ⌘ shortcuts.
+        if vim.enabled
+            && !mods.platform
+            && self.model.read(cx).vim().mode() != super::vim::Mode::Insert
+        {
+            return;
+        }
+        // The rest is editing the text (arrows, Backspace, ⌘A/C/X/Z, ⌥ and ⌘ motions, Shift
+        // selection). Typed text is no key press: it reaches the composer through the
+        // platform's text input (`composer_field`), as do input methods and dictation.
+        let used = self.model.update(cx, |model, cx| {
+            model.edit_field(vim.enabled, cx, |field, cx| edit_keys(field, event, cx))
+        });
+        if used {
+            cx.stop_propagation();
+        }
     }
 
-    fn type_text(&mut self, text: Option<&str>, cx: &mut Context<Self>) -> bool {
-        match text {
-            Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => {
-                let text = text.to_owned();
-                self.edit(move |input| input.insert(&text), cx);
-                true
-            }
-            _ => false,
-        }
+    /// How the composer's element reaches the draft: the platform's text input and the mouse.
+    fn composer_field(&self, cx: &mut Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.focus_handle.clone(),
+            |this, cx, f| {
+                let vim = VimConfig::of(&this.settings).enabled;
+                this.model.update(cx, |model, cx| {
+                    model.edit_field(vim, cx, |field, _| f(field))
+                });
+            },
+        )
     }
 
     // ---- rendering -------------------------------------------------------------------------
@@ -952,73 +906,24 @@ impl ChatView {
         ui::empty_state(mascot, text, None, &look.theme, &look.tokens).into_any_element()
     }
 
-    /// The composer's text with the caret in it (when the view has focus), or the placeholder.
-    fn input_text(&self, focused: bool, look: &Look, cx: &App) -> AnyElement {
-        let theme = &look.theme;
-        let model = self.model.read(cx);
-        let input = model.input();
-        // Vim's Normal and Visual modes draw the caret as a block over a character.
-        let block = VimConfig::of(&self.settings).enabled && model.vim().mode().block_caret();
-        if input.is_empty() {
-            let placeholder = div()
-                .text_color(theme.faint)
-                .child(if self.supports_context(cx) {
-                    "Ask the assistant… (@shell @file @search to attach context)"
-                } else {
-                    "Message the agent…"
-                });
-            return if focused {
-                div()
-                    .flex()
-                    .items_center()
-                    .child(if block {
-                        div()
-                            .w(px(look.tokens.font_size * 0.6))
-                            .h(px(look.tokens.font_size + 2.0))
-                            .bg(theme.accent)
-                            .into_any_element()
-                    } else {
-                        div()
-                            .text_color(theme.accent)
-                            .child(CARET)
-                            .into_any_element()
-                    })
-                    .child(placeholder)
-                    .into_any_element()
-            } else {
-                placeholder.into_any_element()
-            };
-        }
-        let text = input.text();
-        if !focused {
-            return div()
-                .child(SharedString::from(text.to_owned()))
-                .into_any_element();
-        }
-        if block {
-            return vim_ui::block_text(text, &Caret::of(model.vim(), input), theme);
-        }
-        let (before, after) = text.split_at(input.cursor());
-        let shown = format!("{before}{CARET}{after}");
-        let run = |len: usize, color: gpui::Hsla| TextRun {
-            len,
-            font: font(".SystemUIFont"),
-            color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
+    /// The composer's text with its caret and selection (while it has the keyboard), or the
+    /// placeholder; editable by the mouse and the platform's text input.
+    fn input_text(&self, focused: bool, look: &Look, cx: &mut Context<Self>) -> AnyElement {
+        let state = {
+            let model = self.model.read(cx);
+            let vim = VimConfig::of(&self.settings).enabled.then(|| model.vim());
+            FieldState::of(model.input(), vim)
         };
-        let runs: Vec<TextRun> = [
-            (before.len(), theme.fg),
-            (CARET.len(), theme.accent),
-            (after.len(), theme.fg),
-        ]
-        .into_iter()
-        .filter(|(len, _)| *len > 0)
-        .map(|(len, color)| run(len, color))
-        .collect();
-        div()
-            .child(StyledText::new(shown).with_runs(runs))
+        let placeholder = if self.supports_context(cx) {
+            "Ask the assistant… (@shell @file @search to attach context)"
+        } else {
+            "Message the agent…"
+        };
+        EditableText::new("chat-composer-text", state, &look.theme)
+            .placeholder(placeholder)
+            .multiline(true)
+            .focused(focused)
+            .field(Some(self.composer_field(cx)))
             .into_any_element()
     }
 
@@ -1031,6 +936,14 @@ impl ChatView {
     ) -> AnyElement {
         let (theme, tokens) = (&look.theme, &look.tokens);
         let focused = self.focus_handle.is_focused(window);
+        // A question card's field or the Attach form takes the typing while it is open.
+        let typing_here = focused
+            && gate.blocked.is_none()
+            && self.question_focus.is_none()
+            && !matches!(
+                self.attach.as_ref().map(|attaching| attaching.stage),
+                Some(Stage::Form(_))
+            );
         let send_on_enter = self.settings.get::<ChatSettings>().send_on_enter;
         let (chips, context, sending, can_send) = {
             let model = self.model.read(cx);
@@ -1100,7 +1013,7 @@ impl ChatView {
             .max_h(px(COMPOSER_MAX_HEIGHT))
             .min_h(px(tokens.font_size * 3.2))
             .overflow_y_scroll()
-            .child(self.input_text(focused && gate.blocked.is_none(), look, cx));
+            .child(self.input_text(typing_here, look, cx));
 
         let send = round_button("chat-send", "↑", true, can_send, SEND_SIZE, look)
             .when(can_send, |s| {

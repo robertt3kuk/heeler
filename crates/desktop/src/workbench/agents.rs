@@ -28,6 +28,7 @@ use super::render::probe;
 use super::terminals::session_of_item;
 use super::ui::{self, StyledExt as _};
 use super::view::{Region, Workbench};
+use super::vim_ui::OverlayField;
 use crate::settings::ChatSettings;
 use crate::theme::DensityExt as _;
 
@@ -584,26 +585,10 @@ impl Workbench {
                         .p(px(tokens.spacing * 2.0))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                            if this.agent_vim_key(event, cx) {
+                            // Typed text arrives through the field's platform text input.
+                            if this.overlay_key(OverlayField::Agent, event, cx) {
                                 cx.stop_propagation();
-                                return;
                             }
-                            let Some(picker) = &mut this.agent_picker else {
-                                return;
-                            };
-                            if event.keystroke.key == "backspace" {
-                                picker.model_query.pop();
-                            } else if !event.keystroke.modifiers.platform
-                                && !event.keystroke.modifiers.control
-                                && let Some(text) = &event.keystroke.key_char
-                            {
-                                picker.model_query.push_str(text);
-                            } else {
-                                return;
-                            }
-                            picker.selected = 0;
-                            cx.stop_propagation();
-                            cx.notify();
                         }))
                         .on_action(cx.listener(|this, _: &palette::SelectNext, _, cx| {
                             this.agent_picker_select(true, cx);
@@ -628,23 +613,16 @@ impl Workbench {
                         .children(providers)
                         .child(section("Model"))
                         .child(
-                            match self.vim_text(&self.edits.agent, &picker.model_query) {
-                                Some((text, pill)) => div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(tokens.spacing))
-                                    .child("Filter:")
-                                    .child(div().flex_1().min_w_0().child(text))
-                                    .child(pill)
-                                    .into_any_element(),
-                                None => div()
-                                    .child(SharedString::from(if picker.model_query.is_empty() {
-                                        "Type to filter models".to_owned()
-                                    } else {
-                                        format!("Filter: {}", picker.model_query)
-                                    }))
-                                    .into_any_element(),
-                            },
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(tokens.spacing))
+                                .child(div().text_color(theme.muted).child("Filter:"))
+                                .children(self.overlay_parts(
+                                    OverlayField::Agent,
+                                    "Type to filter models",
+                                    cx,
+                                )),
                         )
                         .child(
                             div()

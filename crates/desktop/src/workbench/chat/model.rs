@@ -22,6 +22,7 @@ use super::chip::{Chip, compose};
 use super::context::{ContextChip, refused_by};
 use super::input::TextInput;
 use super::vim::{Options, Outcome, Vim};
+use crate::workbench::text_field::FieldMut;
 
 /// Pages of [`HISTORY_MAX_LIMIT`] events a reload reads at most to catch up with what happened
 /// while it was not listening.
@@ -356,6 +357,25 @@ impl ChatModel {
     pub fn edit(&mut self, change: impl FnOnce(&mut TextInput), cx: &mut Context<Self>) {
         change(&mut self.input);
         cx.notify();
+    }
+
+    /// Edits the draft as a text field: `f` gets its text and, with `vim` on, its Vim state.
+    pub fn edit_field<R>(
+        &mut self,
+        vim: bool,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut FieldMut<'_>, &mut Context<Self>) -> R,
+    ) -> R {
+        let out = f(
+            &mut FieldMut {
+                input: &mut self.input,
+                vim: vim.then_some(&mut self.vim),
+                multiline: true,
+            },
+            cx,
+        );
+        cx.notify();
+        out
     }
 
     /// Attaches a terminal block to the next message.

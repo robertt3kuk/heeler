@@ -144,6 +144,7 @@ impl Workbench {
                 &format!("Find a project (now: {project_name})"),
                 true,
                 false,
+                Some(self.launcher_field_ref(LauncherField::Project, cx)),
                 &theme,
                 &tokens,
             )
@@ -566,6 +567,7 @@ impl Workbench {
                 placeholder,
                 stop == stop_of,
                 multiline,
+                Some(self.launcher_field_ref(which, cx)),
                 &theme,
                 &tokens,
             )

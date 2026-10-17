@@ -223,7 +223,6 @@ impl Workbench {
                 confirm_label: "Create".into(),
                 input: Some(String::new()),
                 secure_input: false,
-                input_selected: false,
                 choice,
                 checkbox: None,
                 on_confirm: Rc::new(move |this, result, window, cx| {

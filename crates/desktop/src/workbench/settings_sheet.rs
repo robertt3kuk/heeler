@@ -24,6 +24,7 @@ use super::settings_schema::{
 };
 use super::ui::StyledExt as _;
 use super::view::Workbench;
+use super::vim_ui::OverlayField;
 use crate::macos::LoginItemStatus;
 use crate::theme::Theme;
 
@@ -51,8 +52,8 @@ pub struct Edit {
 #[derive(Debug)]
 pub struct SettingsSheet {
     namespace: &'static str,
-    query: String,
-    edit: Option<Edit>,
+    pub(super) query: String,
+    pub(super) edit: Option<Edit>,
     dropdown: Option<String>,
     message: Option<String>,
     entries: Vec<CatalogEntry>,
@@ -472,66 +473,27 @@ impl Workbench {
         }
     }
 
+    /// A key in the sheet: the search box or the value being edited takes it. Typed text arrives
+    /// through the field's platform text input.
     fn sheet_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let ks = &event.keystroke;
-        let config = self.vim_config();
-        if !config.enabled
-            && (ks.modifiers.platform || ks.modifiers.control || ks.modifiers.function)
-        {
-            return;
-        }
-        let Some(sheet) = &mut self.sheet else {
+        let Some(sheet) = &self.sheet else {
             return;
         };
-        if ks.key == "enter" {
-            if sheet.edit.is_some() {
+        let editing = sheet.edit.is_some();
+        if event.keystroke.key == "enter" {
+            if editing {
                 self.sheet_commit_edit(cx);
             }
             return;
         }
-        if config.enabled {
-            // Vim owns the typing: Insert, Normal and Visual edit the focused text box.
-            let was_query = sheet.edit.is_none();
-            match &mut sheet.edit {
-                Some(edit) => {
-                    edit.error = None;
-                    self.edits
-                        .sheet_value
-                        .key(&mut edit.text, event, config, true, cx);
-                }
-                None => {
-                    self.edits
-                        .sheet_query
-                        .key(&mut sheet.query, event, config, true, cx);
-                }
-            }
-            if was_query {
-                let query = sheet.query.clone();
-                self.set_settings_query(&query, cx);
-            }
-            cx.notify();
-            return;
-        }
-        let was_query = sheet.edit.is_none();
-        let target: &mut String = match &mut sheet.edit {
-            Some(edit) => {
-                edit.error = None;
-                &mut edit.text
-            }
-            None => &mut sheet.query,
-        };
-        if ks.key == "backspace" {
-            target.pop();
-        } else if let Some(text) = &ks.key_char {
-            target.push_str(text);
+        let which = if editing {
+            OverlayField::SheetValue
         } else {
-            return;
+            OverlayField::SheetQuery
+        };
+        if self.overlay_key(which, event, cx) {
+            cx.stop_propagation();
         }
-        if was_query {
-            let query = sheet.query.clone();
-            self.set_settings_query(&query, cx);
-        }
-        cx.notify();
     }
 
     // ---- save layout as preset --------------------------------------------------------------
@@ -604,16 +566,6 @@ impl Workbench {
             self.start_at_login_status(),
         );
         let editing = sheet.edit.clone();
-        let vim_value = std::cell::RefCell::new(
-            editing
-                .as_ref()
-                .and_then(|e| self.vim_text(&self.edits.sheet_value, &e.text)),
-        );
-        let vim_query = if editing.is_none() {
-            self.vim_text(&self.edits.sheet_query, &sheet.query)
-        } else {
-            None
-        };
         let dropdown = sheet.dropdown.clone();
         let message = sheet.message.clone();
         let query = sheet.query.clone();
@@ -817,28 +769,11 @@ impl Workbench {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.sheet_begin_edit(&k, cx);
                                     }))
-                                    .children(
-                                        match active.and_then(|_| vim_value.borrow_mut().take()) {
-                                            Some((text, pill)) => {
-                                                vec![text, pill.into_any_element()]
-                                            }
-                                            None => {
-                                                let mut shown = vec![
-                                                    SharedString::from(text).into_any_element(),
-                                                ];
-                                                if active.is_some() {
-                                                    shown.push(
-                                                        div()
-                                                            .w(px(1.0))
-                                                            .h(px(tokens.font_size))
-                                                            .bg(accent)
-                                                            .into_any_element(),
-                                                    );
-                                                }
-                                                shown
-                                            }
-                                        },
-                                    ),
+                                    .children(if active.is_some() {
+                                        self.overlay_parts(OverlayField::SheetValue, "", cx)
+                                    } else {
+                                        vec![SharedString::from(text).into_any_element()]
+                                    }),
                             )
                             .when_some(error, |s, error| {
                                 s.child(
@@ -927,18 +862,7 @@ impl Workbench {
                                         accent
                                     })
                                     .min_w(px(80.0))
-                                    .children(match vim_value.borrow_mut().take() {
-                                        Some((text, pill)) => vec![text, pill.into_any_element()],
-                                        None => vec![
-                                            SharedString::from(edit.text.clone())
-                                                .into_any_element(),
-                                            div()
-                                                .w(px(1.0))
-                                                .h(px(tokens.font_size))
-                                                .bg(accent)
-                                                .into_any_element(),
-                                        ],
-                                    })
+                                    .children(self.overlay_parts(OverlayField::SheetValue, "", cx))
                                     .into_any_element(),
                                 None => button(
                                     SharedString::from(format!("add-{key}")),
@@ -1076,21 +1000,22 @@ impl Workbench {
                     cx.notify();
                 }
             }))
-            .child(match vim_query {
-                Some((text, pill)) => div()
+            .child(if editing.is_none() {
+                div()
                     .flex()
                     .items_center()
                     .w_full()
-                    .child(div().flex_1().min_w_0().child(text))
-                    .child(pill)
-                    .into_any_element(),
-                None if query.is_empty() => div()
+                    .children(self.overlay_parts(OverlayField::SheetQuery, "⌕ Search settings", cx))
+                    .into_any_element()
+            } else if query.is_empty() {
+                div()
                     .text_color(theme.faint)
                     .child("⌕ Search settings")
-                    .into_any_element(),
-                None => div()
+                    .into_any_element()
+            } else {
+                div()
                     .child(SharedString::from(query.clone()))
-                    .into_any_element(),
+                    .into_any_element()
             });
 
         Some(

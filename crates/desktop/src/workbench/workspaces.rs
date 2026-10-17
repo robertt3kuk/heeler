@@ -30,6 +30,7 @@ use super::panels::HistoryResume;
 use super::terminals::session_of_item;
 use super::ui::StyledExt as _;
 use super::view::{MenuEntry, Workbench};
+use super::vim_ui::OverlayField;
 use crate::settings::{SidebarOrganize, SidebarSettings, WorkspaceSort, WorkspacesSettings};
 use crate::theme::DensityExt as _;
 
@@ -942,19 +943,6 @@ impl Workbench {
         cx.notify();
     }
 
-    pub(crate) fn picker_type(&mut self, text: &str, cx: &mut Context<Self>) {
-        if let Some(query) = self.picker.as_ref().map(|p| format!("{}{text}", p.query)) {
-            self.set_picker_query(&query, cx);
-        }
-    }
-
-    pub(crate) fn picker_backspace(&mut self, cx: &mut Context<Self>) {
-        if let Some(mut query) = self.picker.as_ref().map(|p| p.query.clone()) {
-            query.pop();
-            self.set_picker_query(&query, cx);
-        }
-    }
-
     pub(crate) fn picker_select(&mut self, next: bool, cx: &mut Context<Self>) {
         if let Some(picker) = &mut self.picker {
             let last = picker.matches.len().saturating_sub(1);
@@ -1149,18 +1137,9 @@ impl Workbench {
                         .p(px(tokens.spacing * 2.0))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                            if this.picker_vim_key(event, cx) {
-                                return;
-                            }
-                            let keystroke = &event.keystroke;
-                            if keystroke.key == "backspace" {
-                                this.picker_backspace(cx);
-                            } else if !keystroke.modifiers.platform
-                                && !keystroke.modifiers.control
-                                && !keystroke.modifiers.function
-                                && let Some(text) = &keystroke.key_char
-                            {
-                                this.picker_type(text, cx);
+                            // Typed text arrives through the field's platform text input.
+                            if this.overlay_key(OverlayField::Picker, event, cx) {
+                                cx.stop_propagation();
                             }
                         }))
                         .on_action(cx.listener(|this, _: &palette::SelectNext, _, cx| {
@@ -1181,20 +1160,7 @@ impl Workbench {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .child(div().text_color(theme.muted).child(format!("{prompt} ")))
-                                .children(match self.vim_text(&self.edits.picker, &picker.query) {
-                                    Some((text, pill)) => vec![
-                                        div().flex_1().min_w_0().child(text).into_any_element(),
-                                        pill.into_any_element(),
-                                    ],
-                                    None => vec![
-                                        picker.query.clone().into_any_element(),
-                                        div()
-                                            .w(px(1.0))
-                                            .h(px(tokens.font_size + 2.0))
-                                            .bg(theme.accent)
-                                            .into_any_element(),
-                                    ],
-                                }),
+                                .children(self.overlay_parts(OverlayField::Picker, "", cx)),
                         )
                         .children(rows)
                         .when_some(hint, |s, hint| {

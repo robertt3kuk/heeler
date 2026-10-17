@@ -245,7 +245,6 @@ impl Workbench {
                 confirm_label: "Remove".into(),
                 input: None,
                 secure_input: false,
-                input_selected: false,
                 choice: None,
                 checkbox: Some(super::modal::ModalCheckbox {
                     label: SharedString::from("Also delete the branch if it is merged"),

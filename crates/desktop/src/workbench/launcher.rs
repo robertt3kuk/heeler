@@ -29,7 +29,7 @@ use super::chat::TextInput;
 use super::chat::vim::Outcome;
 use super::harnesses::{self, Detection, HARNESSES};
 use super::palette::fuzzy_score;
-use super::panels::edit_text;
+use super::text_field::{FieldMut, FieldRef, edit_field};
 use super::view::Workbench;
 use super::vim_ui::VimConfig;
 use super::workspaces::project_root_of;
@@ -1178,6 +1178,41 @@ impl Workbench {
         }
     }
 
+    /// Runs `f` over the text field `field` of the sheet, then lets what follows the text
+    /// follow it when it changed: the platform's text input, the mouse and the keys edit the
+    /// sheet's fields through this.
+    fn with_launcher_field(&mut self, field: LauncherField, f: &mut dyn FnMut(&mut FieldMut<'_>)) {
+        let vim_on = self.vim_config().enabled;
+        let Some(launcher) = &mut self.launcher else {
+            return;
+        };
+        let before = launcher.input_mut(field).text().to_owned();
+        let (vim, input) = launcher.vim_and_input(field);
+        f(&mut FieldMut {
+            input,
+            vim: vim_on.then_some(vim),
+            multiline: field == LauncherField::Prompt,
+        });
+        if launcher.input_mut(field).text() != before {
+            launcher.error = None;
+            Self::launcher_edited(launcher, field);
+            if field == LauncherField::Project {
+                launcher.project_sel = 0;
+            }
+        }
+    }
+
+    /// How the element of the sheet's field `field` reaches its text.
+    pub(crate) fn launcher_field_ref(&self, field: LauncherField, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.launcher_focus.clone(),
+            move |this, _, f| {
+                this.with_launcher_field(field, f);
+            },
+        )
+    }
+
     /// "Start now" or "Queue as task". A direct chat has no task to queue.
     pub fn launcher_set_queue(&mut self, queue: bool, cx: &mut Context<Self>) {
         if let Some(launcher) = &mut self.launcher
@@ -1994,7 +2029,11 @@ impl Workbench {
                 self.launcher_focus_stop(next, window, cx);
             }
             key => match stop {
-                LauncherStop::Project => self.launcher_project_key(key, event, vim, cx),
+                LauncherStop::Project => {
+                    if !self.launcher_project_key(key, event, vim, cx) {
+                        return;
+                    }
+                }
                 LauncherStop::What
                 | LauncherStop::Agent
                 | LauncherStop::Where
@@ -2013,18 +2052,10 @@ impl Workbench {
                         cx.stop_propagation();
                         return;
                     }
-                    let multiline = field == LauncherField::Prompt;
-                    let Some(launcher) = &mut self.launcher else {
+                    let mut used = false;
+                    self.with_launcher_field(field, &mut |f| used = edit_field(f, vim, event, cx));
+                    if !used {
                         return;
-                    };
-                    let before = launcher.input_mut(field).text().to_owned();
-                    let (state, input) = launcher.vim_and_input(field);
-                    if !edit_text(input, state, vim, event, multiline, cx) {
-                        return;
-                    }
-                    if launcher.input_mut(field).text() != before {
-                        launcher.error = None;
-                        Self::launcher_edited(launcher, field);
                     }
                     cx.notify();
                 }
@@ -2033,16 +2064,18 @@ impl Workbench {
         cx.stop_propagation();
     }
 
+    /// A key at the Project stop. `false` when it is none of the list's or the field's (a text
+    /// key: it reaches the field through the platform's text input).
     fn launcher_project_key(
         &mut self,
         key: &str,
         event: &KeyDownEvent,
         vim: VimConfig,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let matches = self.launcher_project_matches(cx);
         let Some(launcher) = &mut self.launcher else {
-            return;
+            return false;
         };
         match key {
             "down" => {
@@ -2057,16 +2090,18 @@ impl Workbench {
                 }
             }
             _ => {
-                let before = launcher.project_query.text().to_owned();
-                let (state, input) = (&mut launcher.vim, &mut launcher.project_query);
-                if edit_text(input, state, vim, event, false, cx)
-                    && launcher.project_query.text() != before
-                {
-                    launcher.project_sel = 0;
+                let mut used = false;
+                self.with_launcher_field(LauncherField::Project, &mut |field| {
+                    used = edit_field(field, vim, event, cx);
+                });
+                if used {
+                    cx.notify();
                 }
+                return used;
             }
         }
         cx.notify();
+        true
     }
 
     /// ← → (↑ ↓) cycle the choices of a row.

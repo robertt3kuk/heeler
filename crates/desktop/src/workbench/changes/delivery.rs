@@ -24,6 +24,7 @@ use crate::workbench::chat::vim::{Outcome, Vim};
 use crate::workbench::chat::{Look, TextInput};
 use crate::workbench::panels::{edit_text, field_box, tone_color};
 use crate::workbench::render::probe;
+use crate::workbench::text_field::{FieldMut, FieldRef};
 use crate::workbench::ui::{self, StyledExt as _};
 use crate::workbench::view::Region;
 use crate::workbench::vim_ui::{self, VimConfig};
@@ -422,6 +423,24 @@ impl ChangesView {
         cx.stop_propagation();
     }
 
+    /// How the form's element reaches its text: the platform's text input and the mouse.
+    fn delivery_field(&self, cx: &Context<Self>) -> FieldRef {
+        FieldRef::new(
+            cx.weak_entity(),
+            self.delivery.focus.clone(),
+            |this, _, f| {
+                let vim_on = VimConfig::of(&this.env.settings).enabled;
+                if let Some(form) = &mut this.delivery.form {
+                    f(&mut FieldMut {
+                        input: &mut form.input,
+                        vim: vim_on.then_some(&mut form.vim),
+                        multiline: true,
+                    });
+                }
+            },
+        )
+    }
+
     // ---- drawing --------------------------------------------------------------------------
 
     /// The delivery pill and the review buttons of the header.
@@ -573,6 +592,7 @@ impl ChangesView {
                     placeholder,
                     focused,
                     true,
+                    Some(self.delivery_field(cx)),
                     theme,
                     tokens,
                 )
