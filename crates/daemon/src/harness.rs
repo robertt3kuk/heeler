@@ -143,7 +143,10 @@ impl Harnesses {
     }
 
     /// `acp_config`'s program and the environment it will run in: `configured`, else the first
-    /// of `candidates` found on `PATH`.
+    /// of `candidates` found on `PATH`, else in the directories installers use (see
+    /// [`install_dirs`]): a daemon started by the app has a short `PATH`, and some shells only
+    /// extend it for interactive sessions, so `omp` in `~/.bun/bin` or `claude` in
+    /// `~/.local/bin` must still be found however they were installed.
     fn locate(
         &self,
         agent: &str,
@@ -151,17 +154,28 @@ impl Harnesses {
         candidates: &[&str],
         env: &BTreeMap<String, String>,
     ) -> Result<PathBuf, ErrorBody> {
-        let path = env
-            .get("PATH")
-            .cloned()
-            .or_else(|| std::env::var("PATH").ok());
+        // The login environment's `PATH` first, then the daemon's own (inherited from whoever
+        // started it: a terminal's full `PATH` when `hutan` autostarted it from a shell).
+        let own = std::env::var("PATH").ok();
+        let path = match (env.get("PATH"), own) {
+            (Some(login), Some(own)) if *login != own => Some(format!("{login}:{own}")),
+            (Some(login), _) => Some(login.clone()),
+            (None, own) => own,
+        };
+        let home = env
+            .get("HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+        let fallback = home.as_deref().map(install_dirs).unwrap_or_default();
         let names: Vec<String> = match configured {
             Some(p) => vec![p.to_string_lossy().into_owned()],
             None => candidates.iter().map(|c| (*c).to_owned()).collect(),
         };
         names
             .iter()
-            .find_map(|name| find_program(name, path.as_deref()))
+            .find_map(|name| {
+                find_program(name, path.as_deref()).or_else(|| find_in(name, &fallback))
+            })
             .ok_or_else(|| {
                 let install = def(agent).map_or("", |d| d.install);
                 let table = if agent == "codex" {
@@ -178,7 +192,11 @@ impl Harnesses {
                     ErrorCode::ProviderError,
                     format!(
                         "{tried} was not found{}; {install}, or set `bin` under `{table}` in daemon.toml",
-                        if configured.is_some() { "" } else { " on PATH" },
+                        if configured.is_some() {
+                            ""
+                        } else {
+                            " on PATH or in the usual install folders"
+                        },
                     ),
                 )
             })
@@ -216,6 +234,7 @@ impl Harnesses {
             ]);
         }
         env.extend(settings.env);
+        with_program_dir(&mut env, &program);
         Ok(AcpConfig {
             agent: agent.to_owned(),
             program,
@@ -238,12 +257,13 @@ impl Harnesses {
             ));
         };
         if agent == "codex" {
-            let env = self.environment();
+            let mut env = self.environment();
             let program = self.locate(agent, Some(codex_bin), &[def.cli], &env)?;
+            with_program_dir(&mut env, &program);
             return Ok((program, env));
         }
         let settings = self.settings_of(agent);
-        let env = self.environment();
+        let mut env = self.environment();
         // OMP's ACP executable is its CLI.
         let configured = settings.cli.as_deref().or_else(|| {
             (agent == AGENT_OMP)
@@ -251,6 +271,7 @@ impl Harnesses {
                 .flatten()
         });
         let program = self.locate(agent, configured, &[def.cli], &env)?;
+        with_program_dir(&mut env, &program);
         Ok((program, env))
     }
 }
@@ -290,6 +311,111 @@ pub fn find_program(name: &str, path: Option<&str>) -> Option<PathBuf> {
         .find(|candidate| executable(candidate))
 }
 
+/// Directories installers put command-line tools in, below `home` and system-wide, newest
+/// version-managed Node first: Bun, `~/.local/bin` (Claude Code, Codex, pipx), Cargo, npm with a
+/// user prefix, pnpm, Yarn, Volta, mise/asdf shims, nvm/fnm Node versions, Nix, Homebrew and
+/// `/usr/local/bin`.
+pub fn install_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [
+        ".bun/bin",
+        ".local/bin",
+        ".cargo/bin",
+        ".npm-global/bin",
+        ".npm/bin",
+        "Library/pnpm",
+        ".local/share/pnpm",
+        ".yarn/bin",
+        ".config/yarn/global/node_modules/.bin",
+        ".volta/bin",
+        ".local/share/mise/shims",
+        ".asdf/shims",
+        ".nix-profile/bin",
+        "bin",
+    ]
+    .iter()
+    .map(|sub| home.join(sub))
+    .collect();
+    for versions in [
+        home.join(".nvm/versions/node"),
+        home.join("Library/Application Support/fnm/node-versions"),
+        home.join(".local/share/fnm/node-versions"),
+        home.join(".fnm/node-versions"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&versions) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        // Newest first: `v22.1.0` sorts after `v20.9.0` by version, not by name.
+        found.sort_by_key(|p| std::cmp::Reverse(node_version(p)));
+        for version in found {
+            for bin in [version.join("bin"), version.join("installation/bin")] {
+                if bin.is_dir() {
+                    dirs.push(bin);
+                }
+            }
+        }
+    }
+    dirs.extend(
+        [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/nix/var/nix/profiles/default/bin",
+        ]
+        .iter()
+        .map(PathBuf::from),
+    );
+    dirs
+}
+
+/// `v20.11.1` → `(20, 11, 1)`; anything else sorts first.
+fn node_version(path: &Path) -> (u32, u32, u32) {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut parts = name
+        .trim_start_matches('v')
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// A bare `name` in one of `dirs`.
+fn find_in(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    if name.contains('/') {
+        return None;
+    }
+    let path = std::env::join_paths(dirs).ok()?;
+    find_program(name, path.to_str())
+}
+
+/// Puts `program`'s folder at the front of `env`'s `PATH` (the daemon's own when `env` has
+/// none) unless it is there: a tool found outside `PATH` is often a script whose interpreter
+/// (`#!/usr/bin/env node`, `bun`) lives next to it.
+fn with_program_dir(env: &mut BTreeMap<String, String>, program: &Path) {
+    let Some(dir) = program.parent().filter(|d| !d.as_os_str().is_empty()) else {
+        return;
+    };
+    let current = env
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    if std::env::split_paths(&current).any(|p| p == dir) {
+        return;
+    }
+    let joined = std::env::join_paths(
+        std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&current)),
+    );
+    if let Ok(joined) = joined {
+        env.insert("PATH".to_owned(), joined.to_string_lossy().into_owned());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +441,63 @@ mod tests {
         assert_eq!(find_program("absent", Some(&path)), None);
         assert_eq!(find_program(&tool.to_string_lossy(), None), Some(tool));
         assert_eq!(find_program("claude-code-acp", None), None);
+    }
+
+    #[test]
+    fn a_tool_missing_from_path_is_found_in_the_install_folders_and_its_folder_joins_path() {
+        let home = tempfile::tempdir().unwrap();
+        let bun = home.path().join(".bun/bin");
+        std::fs::create_dir_all(&bun).unwrap();
+        let tool = executable(&bun, "hutan-discovery-test-tool");
+        let h = harnesses(&[]);
+        let mut env = BTreeMap::new();
+        env.insert(
+            "HOME".to_owned(),
+            home.path().to_string_lossy().into_owned(),
+        );
+        env.insert("PATH".to_owned(), "/nonexistent-hutan-test".to_owned());
+        let found = h
+            .locate("omp", None, &["hutan-discovery-test-tool"], &env)
+            .unwrap();
+        assert_eq!(found, tool);
+
+        with_program_dir(&mut env, &found);
+        assert!(env["PATH"].starts_with(&bun.to_string_lossy().into_owned()));
+        let before = env["PATH"].clone();
+        with_program_dir(&mut env, &found);
+        assert_eq!(env["PATH"], before, "added once");
+
+        let missing = h
+            .locate("omp", None, &["hutan-discovery-absent-tool"], &env)
+            .unwrap_err();
+        assert!(
+            missing.message.contains("usual install folders"),
+            "{}",
+            missing.message
+        );
+    }
+
+    #[test]
+    fn the_newest_version_managed_node_comes_first() {
+        let home = tempfile::tempdir().unwrap();
+        for v in ["v9.11.2", "v20.9.0", "v22.1.0"] {
+            std::fs::create_dir_all(home.path().join(".nvm/versions/node").join(v).join("bin"))
+                .unwrap();
+        }
+        let dirs = install_dirs(home.path());
+        let nvm: Vec<String> = dirs
+            .iter()
+            .filter(|d| d.starts_with(home.path().join(".nvm")))
+            .map(|d| {
+                d.parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(nvm, ["v22.1.0", "v20.9.0", "v9.11.2"]);
     }
 
     fn harnesses(settings: &[(&str, HarnessSettings)]) -> Harnesses {

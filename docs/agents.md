@@ -71,11 +71,11 @@ The `ChatSpec` of a chat (agent, model, policies, **provider thread id**) is the
 
 ```toml
 [codex]
-bin = "/Users/me/.local/bin/codex"                    # default: `codex` on the daemon's PATH
+bin = "/Users/me/.local/bin/codex"                    # default: `codex`, found as described below
 args = ["app-server", "-c", 'model_reasoning_effort="low"']   # default: ["app-server"]
 ```
 
-A GUI-launched daemon may have a shorter `PATH` than a shell: set `bin` when `hutan chat new` says Codex could not be started. `CODEX_HOME` is inherited from the daemon's environment.
+**How agents are found** (Codex, OMP, Claude Code and its ACP adapter alike): `bin` when set, else the name searched along the `PATH` of the user's login environment, then the daemon's own `PATH` (inherited from whoever started it — a terminal's full `PATH` when `hutan` autostarted it from a shell), then the folders installers use: `~/.bun/bin`, `~/.local/bin`, `~/.cargo/bin`, npm/pnpm/Yarn user prefixes, Volta, mise/asdf shims, the newest nvm/fnm Node, Nix, `/opt/homebrew/bin`, `/usr/local/bin`. The agent then runs in the login environment with its own folder at the front of `PATH` (a `#!/usr/bin/env node` script finds the Node next to it). So a daemon started by Hutan.app, whose `PATH` is the short system one, finds agents however they were installed. `CODEX_HOME` is inherited from the daemon's environment.
 
 ## CLI
 
@@ -179,7 +179,7 @@ A turn is `session/prompt` (text, plus attached context as embedded `resource` b
 
 ```toml
 [harness.omp]                     # all keys optional
-bin = "/Users/me/.bun/bin/omp"    # default: `omp` on the PATH of the user's login environment
+bin = "/Users/me/.bun/bin/omp"    # default: `omp`, found like Codex (see § Configuration)
 args = ["acp"]                    # default for omp; none for claude
 env = { OMP_PROFILE = "work" }    # extra environment; not for secrets
 cli = "/Users/me/.bun/bin/omp"    # the harness's own CLI for accounts; default `bin` (omp) / `claude`

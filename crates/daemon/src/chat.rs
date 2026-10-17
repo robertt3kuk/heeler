@@ -336,10 +336,36 @@ impl ChatManager {
     }
 
     /// The Codex command line for the agent of `session`, with `hutan mcp` registered.
-    fn codex_for(&self, session: SessionId) -> CodexConfig {
-        let mut codex = self.codex.clone();
+    async fn codex_for(&self, session: SessionId) -> CodexConfig {
+        let mut codex = self.resolved_codex().await;
         if let Some(server) = self.mcp_server(session) {
             codex.args.extend(server.codex_overrides());
+        }
+        codex
+    }
+
+    /// `[codex]` with its program found the way the harnesses are (`PATH` of the login
+    /// environment, then the usual install folders) and that environment underneath the
+    /// configured one. When it is not found the configuration stays as it is and starting it
+    /// reports the error.
+    async fn resolved_codex(&self) -> CodexConfig {
+        let mut codex = self.codex.clone();
+        let harnesses = self.harnesses.clone();
+        let program = codex.program.clone();
+        let found = tokio::task::spawn_blocking(move || harnesses.cli(AGENT_CODEX, &program))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        if let Some((program, env)) = found {
+            codex.program = program;
+            let configured: std::collections::HashSet<String> =
+                codex.env.iter().map(|(k, _)| k.clone()).collect();
+            let mut merged: Vec<(String, String)> = env
+                .into_iter()
+                .filter(|(k, _)| !configured.contains(k))
+                .collect();
+            merged.append(&mut codex.env);
+            codex.env = merged;
         }
         codex
     }
@@ -389,7 +415,7 @@ impl ChatManager {
             sandbox: spec.sandbox,
             resume_thread_id: spec.thread_id.clone(),
         };
-        let codex = self.codex_for(id);
+        let codex = self.codex_for(id).await;
         let CodexSession {
             adapter,
             started,
@@ -1041,9 +1067,10 @@ impl ChatManager {
         let models = if harness {
             self.harness_models(agent).await?
         } else {
-            hutan_agents::codex::list_models(&self.codex)
+            let codex = self.resolved_codex().await;
+            hutan_agents::codex::list_models(&codex)
                 .await
-                .map_err(|e| provider_error(&e, &self.codex.program))?
+                .map_err(|e| provider_error(&e, &codex.program))?
         };
         lock(&self.models).insert(agent.to_owned(), (Instant::now(), models.clone()));
         Ok(ChatModels {
