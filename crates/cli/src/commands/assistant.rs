@@ -90,7 +90,7 @@ impl Ctx {
                 |chat| {
                     format!(
                         "{} / {}",
-                        chat.provider_id.as_deref().unwrap_or("?"),
+                        chat.provider_id.as_deref().unwrap_or(&chat.agent),
                         chat.model
                     )
                 },
@@ -146,7 +146,7 @@ fn assistant_table(assistants: &[AssistantEntry]) -> String {
                 |chat| {
                     format!(
                         "{} / {}",
-                        chat.provider_id.as_deref().unwrap_or("?"),
+                        chat.provider_id.as_deref().unwrap_or(&chat.agent),
                         chat.model
                     )
                 },
