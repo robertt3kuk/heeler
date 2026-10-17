@@ -13,17 +13,20 @@
 //! menu) is created by the first drain that has something to show, and the item is created
 //! when the first model arrives.
 //!
-//! **Opening Hutan.** [`OpenApp`] runs `open -n <Hutan.app>`: `-n` because a running `hutand`
-//! counts as an instance of the app for Launch Services (same bundle), and the desktop's own
-//! lock (`desktop.lock`) makes a second desktop bring the first one forward and exit. The data
-//! folder of a daemon that was given `HUTAN_HOME` / `HUTAN_SOCKET` is passed on to the desktop
-//! (`--env`), so a daemon on a scratch folder opens a desktop on that folder.
+//! **Opening Hutan.** [`OpenApp`] starts the bundle's desktop executable itself, not through
+//! Launch Services: a running `hutand` checks in as an instance of the app (same bundle), and
+//! with `LSMultipleInstancesProhibited` Launch Services answers `open` (even `open -n`) by
+//! reopening that instance — this daemon — again, which would launch again, forever. Started
+//! directly, the desktop is its own process group (the daemon's signals are not its own), and
+//! inherits the daemon's environment, so a daemon on a scratch `HUTAN_HOME` / `HUTAN_SOCKET`
+//! opens a desktop on that folder. The desktop's own lock (`desktop.lock`) makes a second
+//! desktop bring the first one forward and exit.
 
 #![allow(unsafe_code)] // Objective-C calls and class definition; each block says why it is sound.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::ffi::OsString;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -62,56 +65,40 @@ const MAX_CONFIRMS: usize = 4;
 #[derive(Debug)]
 pub struct OpenApp {
     app: PathBuf,
-    /// `NAME=VALUE` pairs the desktop must start with.
-    env: Vec<String>,
 }
 
 impl OpenApp {
-    /// `app` is `Hutan.app`; `HUTAN_HOME` and `HUTAN_SOCKET` of this process (when set and not
-    /// empty) are handed to the desktop.
+    /// `app` is `Hutan.app`.
     pub fn new(app: &Path) -> Self {
-        let env = ["HUTAN_HOME", "HUTAN_SOCKET"]
-            .into_iter()
-            .filter_map(|name| {
-                let value = std::env::var_os(name).filter(|v| !v.is_empty())?;
-                Some(format!("{name}={}", value.to_string_lossy()))
-            })
-            .collect();
         Self {
             app: app.to_owned(),
-            env,
         }
     }
 
-    /// The arguments of `/usr/bin/open`.
-    pub fn args(&self) -> Vec<OsString> {
-        let mut args = vec![OsString::from("-n")];
-        for pair in &self.env {
-            args.push(OsString::from("--env"));
-            args.push(OsString::from(pair));
-        }
-        args.push(self.app.clone().into_os_string());
-        args
+    /// The desktop executable of the bundle.
+    pub fn desktop(&self) -> PathBuf {
+        self.app.join("Contents/MacOS/hutan-desktop")
     }
 }
 
 impl AppLauncher for OpenApp {
     fn open_hutan(&self) {
-        let spawned = Command::new("/usr/bin/open")
-            .args(self.args())
+        let desktop = self.desktop();
+        let spawned = Command::new(&desktop)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn();
         match spawned {
             Ok(mut child) => {
-                info!(app = %self.app.display(), "opening Hutan");
-                // `open` returns once the app is launched; reap it.
+                info!(desktop = %desktop.display(), pid = child.id(), "opening Hutan");
+                // Reaped when it exits (a desktop that found another one exits at once).
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
             }
-            Err(error) => warn!(%error, app = %self.app.display(), "could not run `open`"),
+            Err(error) => warn!(%error, desktop = %desktop.display(), "could not start Hutan"),
         }
     }
 }
@@ -485,45 +472,5 @@ impl AppDelegate {
         let this = mtm.alloc::<Self>().set_ivars(DelegateIvars { clicks });
         // SAFETY: `init` of `NSObject`, the superclass, on a freshly allocated object.
         unsafe { msg_send![super(this), init] }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsStr;
-
-    use super::*;
-
-    #[test]
-    fn the_launcher_opens_a_new_instance_of_the_app_with_the_data_folder() {
-        let app = OpenApp {
-            app: PathBuf::from("/Users/x/Applications/Hutan.app"),
-            env: vec![
-                "HUTAN_HOME=/tmp/scratch".to_owned(),
-                "HUTAN_SOCKET=/tmp/s.sock".to_owned(),
-            ],
-        };
-        let args = app.args();
-        let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        assert_eq!(
-            args,
-            [
-                "-n",
-                "--env",
-                "HUTAN_HOME=/tmp/scratch",
-                "--env",
-                "HUTAN_SOCKET=/tmp/s.sock",
-                "/Users/x/Applications/Hutan.app",
-            ]
-            .map(OsStr::new)
-        );
-        let plain = OpenApp {
-            app: PathBuf::from("/Applications/Hutan.app"),
-            env: Vec::new(),
-        };
-        assert_eq!(
-            plain.args(),
-            ["-n", "/Applications/Hutan.app"].map(OsString::from)
-        );
     }
 }

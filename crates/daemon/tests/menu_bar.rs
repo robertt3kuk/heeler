@@ -447,6 +447,41 @@ async fn open_hutan_launches_the_app() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn repeated_requests_to_open_hutan_launch_once_until_a_desktop_comes() {
+    let t = Env::start().await;
+    t.shown("the item", |_| true).await;
+    // Launch Services reopening the app while it starts, impatient clicks: one launch.
+    for _ in 0..5 {
+        t.item.click(MenuChoice::OpenHutan);
+    }
+    t.item.click(MenuChoice::OpenSettings);
+    timeout(WAIT, async {
+        while t.launcher.opened() == 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Hutan was not opened");
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(t.launcher.opened(), 1, "a launch under way is not repeated");
+
+    // The desktop came and went: the next request launches again.
+    let desktop = t.desktop().await;
+    t.item.wait_hidden("the item to hide for the desktop").await;
+    drop(desktop);
+    t.shown("the item back", |_| true).await;
+    t.item.click(MenuChoice::OpenHutan);
+    timeout(WAIT, async {
+        while t.launcher.opened() < 2 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Hutan was not opened again");
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_entry_launches_the_app_and_asks_the_desktop_once_its_window_is_up() {
     let t = Env::start().await;
     t.shown("the item", |_| true).await;

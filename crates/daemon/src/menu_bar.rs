@@ -13,7 +13,8 @@
 //!   [`SystemStatusItem`](cocoa::SystemStatusItem) (macOS) is the real one;
 //!   [`fake::FakeStatusItem`] stands in for it in tests. Calls never block: the real host hands
 //!   work to the main thread's run loop that also hosts the native notifications.
-//! - [`AppLauncher`] is the seam to "open Hutan.app" ([`cocoa::OpenApp`] runs `open -n`).
+//! - [`AppLauncher`] is the seam to "open Hutan.app" ([`cocoa::OpenApp`] starts the app's
+//!   desktop executable).
 //! - [`DesktopPresence`] counts the handshaken `desktop` clients; [`start`] is the task that
 //!   follows it.
 //!
@@ -81,6 +82,10 @@ pub const OPEN_PATIENCE: Duration = Duration::from_secs(30);
 pub const REFRESH_DEBOUNCE: Duration = Duration::from_millis(100);
 /// Choices queued between the host and the service.
 pub const CHOICE_QUEUE: usize = 16;
+/// After a launch, further requests to open Hutan (more clicks, Launch Services reopening the
+/// app again) start nothing for this long unless a desktop connected meanwhile: one launch at a
+/// time, never a loop of them.
+pub const LAUNCH_GRACE: Duration = Duration::from_secs(10);
 
 // ---- What the item shows -------------------------------------------------------------------------
 
@@ -372,6 +377,8 @@ struct Service {
     /// When the last desktop went away (Unix ms): what failed since is what the user missed.
     away_since_ms: u64,
     pending: Option<(Handoff, Instant)>,
+    /// When the last launch started; cleared when a desktop connects ([`LAUNCH_GRACE`]).
+    launched_at: Option<Instant>,
 }
 
 impl Service {
@@ -403,6 +410,7 @@ impl Service {
             shown: None,
             away_since_ms: 0,
             pending: None,
+            launched_at: None,
         }
     }
 
@@ -431,6 +439,7 @@ impl Service {
                     if self.desktop_present() {
                         show_at = None;
                         refresh_at = None;
+                        self.launched_at = None;
                         self.hide();
                     } else {
                         self.away_since_ms = now_ms();
@@ -640,7 +649,7 @@ impl Service {
     async fn choose(&mut self, choice: MenuChoice) {
         debug!(?choice, "menu bar choice");
         match choice {
-            MenuChoice::OpenHutan => self.launcher.open_hutan(),
+            MenuChoice::OpenHutan => self.launch(),
             MenuChoice::OpenSettings => self.open(Handoff::Settings).await,
             MenuChoice::OpenSession(session) => {
                 let entry = self
@@ -664,9 +673,23 @@ impl Service {
 
     /// Launches Hutan and asks the desktop for `handoff` as soon as a window is there.
     async fn open(&mut self, handoff: Handoff) {
-        self.launcher.open_hutan();
+        self.launch();
         self.pending = Some((handoff, Instant::now() + self.open_patience));
         self.deliver().await;
+    }
+
+    /// Starts the desktop, unless a launch started less than [`LAUNCH_GRACE`] ago and no
+    /// desktop has connected since.
+    fn launch(&mut self) {
+        if self
+            .launched_at
+            .is_some_and(|at| at.elapsed() < LAUNCH_GRACE)
+        {
+            debug!("a launch of Hutan is under way; not starting another");
+            return;
+        }
+        self.launched_at = Some(Instant::now());
+        self.launcher.open_hutan();
     }
 
     /// Hands the pending request to a window, when there is one and it is still wanted.
