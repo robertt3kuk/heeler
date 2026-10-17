@@ -1,6 +1,6 @@
 # 0012. Embedded code editor (re-scopes the "no editor" non-goal)
 
-- Status: proposed (accept after the license decision, `status.md` open question 1)
+- Status: accepted, option B (2026-10-17: the project is MIT OR Apache-2.0, so Zed's GPL-3.0 editor crates are out; Hutan builds its own editor on permissively licensed crates)
 - Date: 2026-10-14
 - Milestone: M12 (see roadmap)
 
@@ -19,7 +19,7 @@ Constraints:
 | **B. Own editor on GPUI with permissive crates** (rope + tree-sitter + LSP client + own Vim layer) | License freedom; scoped to what an ADE needs; shares our theme/settings/panel model natively | More work; Vim/LSP completeness grows incrementally |
 | C. External editor only (open in Zed/VS Code) | Zero cost | Not what the user wants |
 
-## Proposed decision (B unless the license decision chooses GPL-3.0)
+## Decision: B (the license is MIT OR Apache-2.0)
 - New UI crate `code_view` (GPUI) + non-UI crates `buffer` (rope, edits, undo, selections), `syntax` (tree-sitter: highlighting, folding, structural selection, indentation), `lsp_client` (process supervision, JSON-RPC, capabilities, diagnostics, completion, hover, go-to-definition, references, formatting, rename).
 - LSP servers run **in the daemon** (`runtime` supervision, like agents) so agents and every client share diagnostics; started on demand per workspace + language, stopped when idle. Server config in settings (`languages.<lang>.lsp`).
 - Editor items are workbench items (`ItemRef::File { path }`) — split next to terminals, movable like everything else; one `Theme` drives chrome, terminal palette, and syntax scopes.
@@ -28,4 +28,4 @@ Constraints:
 
 ## Consequences
 - `vision.md` drops "Code editor / LSP host" from non-goals; the editor is a first-class surface.
-- License choice is now on the critical path for this milestone.
+- The license is decided (MIT OR Apache-2.0, 2026-10-17): no Zed editor crates; the V-1 vim layer (`crates/desktop/src/workbench/chat/vim.rs`) is the starting point for the editor's modal layer.

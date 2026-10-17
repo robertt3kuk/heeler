@@ -31,7 +31,7 @@ allow = [
   "Zlib",
 ]
 
-# Workspace crates are `publish = false`; project license is an open question (status.md).
+# Workspace crates are `publish = false` and licensed MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 [licenses.private]
 ignore = true
 

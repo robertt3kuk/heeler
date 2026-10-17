@@ -119,7 +119,7 @@ Exit demo: in zsh, bash, and fish (no user config edits) commands become blocks 
 
 ## M11 — Embedded editor (ADR 0012)
 Exit demo: open a file from the sessions panel/⌘P next to a terminal; tree-sitter highlighting with the shared theme; LSP diagnostics, completion, hover, go-to-definition, rename, format (rust-analyzer, typescript-language-server); Vim mode on/off; agent edits reload the buffer.
-- Depends on the license decision (ADR 0012 options A vs B).
+- License decided (MIT OR Apache-2.0): ADR 0012 option B, own editor on permissive crates.
 - Crates per ADR 0012: `buffer`, `syntax`, `lsp_client` (servers supervised by the daemon), `code_view` (GPUI); `ItemRef::File` in the workbench; one theme for chrome/terminal/syntax.
 
 ## M12 — Projects and workspaces

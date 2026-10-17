@@ -196,4 +196,13 @@ just fmt
 
 ## License
 
-Not decided yet. It depends on whether the embedded editor (M11) reuses GPL-3.0 crates from Zed ([ADR 0012](docs/adr/0012-embedded-editor.md)). Until a license is added, all rights are reserved.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Hutan by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+
+Hutan links no GPL code: Zed's GPL editor crates are not used, and cargo-deny checks the dependency licenses on every gate. The embedded editor (M11) is built on permissively licensed parts ([ADR 0012](docs/adr/0012-embedded-editor.md)).
