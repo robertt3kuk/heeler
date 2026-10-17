@@ -604,7 +604,30 @@ impl Workbench {
             })
         });
 
+        let modal_guard = {
+            let this = cx.weak_entity();
+            let window_handle = window.window_handle();
+            cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle() != window_handle {
+                    return;
+                }
+                let modifiers = &event.keystroke.modifiers;
+                let shortcut = modifiers.platform || modifiers.control || modifiers.alt;
+                // ⌘Q stays: quitting must always work.
+                let quit = modifiers.platform && event.keystroke.key == "q";
+                if !shortcut || quit {
+                    return;
+                }
+                let setup_open = this
+                    .upgrade()
+                    .is_some_and(|wb| wb.read(cx).setup_blocks_shortcuts());
+                if setup_open {
+                    cx.stop_propagation();
+                }
+            })
+        };
         let subscriptions = vec![
+            modal_guard,
             cx.observe_window_appearance(window, |_, _, cx| cx.notify()),
             cx.on_app_quit(|this, cx| this.on_platform_quit(cx)),
             cx.observe_in(&sessions, window, |this, _, window, cx| {

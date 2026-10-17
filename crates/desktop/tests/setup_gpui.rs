@@ -268,6 +268,40 @@ fn a_workbench_not_asked_for_the_setup_never_shows_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_setup_is_modal_shortcuts_wait_and_escape_skips_it(cx: &mut TestAppContext) {
+    let daemon = TestDaemon::start();
+    let env = Env::new();
+    let (view, cx) = open_first_run(cx, &daemon, &env);
+    assert!(setup_open(&view, cx));
+    let sessions = |cx: &VisualTestContext| {
+        view.read_with(cx, |wb, cx| wb.sessions().read(cx).sessions().len())
+    };
+
+    // ⌘T and ⌘B do nothing behind the sheet.
+    let left = view.read_with(cx, |wb, _| wb.state().docks.left.visible);
+    cx.simulate_keystrokes("cmd-t cmd-b");
+    pump_for(cx, Duration::from_millis(300));
+    assert_eq!(sessions(cx), 0, "no terminal started behind the setup");
+    assert_eq!(
+        view.read_with(cx, |wb, _| wb.state().docks.left.visible),
+        left
+    );
+    assert!(setup_open(&view, cx));
+
+    // Escape skips it; the shortcuts work again.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!setup_open(&view, cx));
+    assert!(
+        saved(&daemon).contains("setup_done = true"),
+        "{}",
+        saved(&daemon)
+    );
+    cx.simulate_keystrokes("cmd-t");
+    wait_until(cx, "the terminal after the setup", |cx| sessions(cx) == 1);
+}
+
+#[gpui::test]
 fn back_continue_and_skip_walk_the_six_steps(cx: &mut TestAppContext) {
     let daemon = TestDaemon::start();
     let env = Env::new();

@@ -260,6 +260,12 @@ impl Workbench {
         cx.notify();
     }
 
+    /// The first-run setup is on screen: it is modal, so the workbench's shortcuts (⌘T, ⌘B, …)
+    /// do nothing until it is finished or skipped (Escape skips).
+    pub(crate) fn setup_blocks_shortcuts(&self) -> bool {
+        self.setup.state.as_ref().is_some_and(|s| !s.suspended)
+    }
+
     /// The harness login of the Agents step started: the window shows its terminal, so the
     /// setup steps aside until it is opened again.
     pub(crate) fn suspend_setup(&mut self, cx: &mut Context<Self>) {
@@ -718,6 +724,11 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let state = self.setup.state.clone().filter(|s| !s.suspended)?;
+        // The sheet is modal: the keyboard stays in it (a terminal that starts or a daemon that
+        // connects behind it must not take the focus and the keys).
+        if !self.setup.focus.contains_focused(window, cx) {
+            window.focus(&self.setup.focus, cx);
+        }
         let theme = self.theme;
         let tokens = self.density.ui();
         let step = state.step;
@@ -810,6 +821,9 @@ impl Workbench {
                                 this.setup_continue(window, cx);
                             }),
                         )
+                        .on_action(cx.listener(|this, _: &setup_actions::Skip, window, cx| {
+                            this.skip_setup(window, cx);
+                        }))
                         .child(
                             div()
                                 .id("setup-body")

@@ -137,7 +137,7 @@ pub mod sheet {
 /// Actions of the first-run setup (`Setup` key context).
 pub mod setup {
     use gpui::actions;
-    actions!(setup, [Continue]);
+    actions!(setup, [Continue, Skip]);
 }
 
 /// Daemon controls (design.md § Daemon lifecycle). The `Daemon` menu, the status-bar popover
@@ -750,6 +750,7 @@ fn context_bindings() -> Vec<BindingSpec> {
         bind::<palette::Confirm>("enter", Some("Picker")),
         bind::<palette::Dismiss>("escape", Some("Picker")),
         bind::<setup::Continue>("enter", Some("Setup")),
+        bind::<setup::Skip>("escape", Some("Setup")),
     ]
 }
 
