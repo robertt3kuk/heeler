@@ -81,6 +81,23 @@ pub struct SessionRow {
 pub struct EpochRecord {
     pub epoch: Epoch,
     pub started_at_ms: u64,
+    /// How the run ended, as far as the run itself could say.
+    #[serde(default)]
+    pub end: EpochEnd,
+}
+
+/// How a daemon run ended. A run notes its clean stop itself, so a run that is over but never
+/// did was killed or crashed; runs of builds that did not note it cannot be told either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EpochEnd {
+    /// Recorded by a build that did not track how runs end.
+    #[default]
+    Untracked,
+    /// Started by a build that tracks it; no stop was recorded (yet).
+    Open,
+    /// The daemon shut itself down at `at_ms`: its sessions were hung up on purpose.
+    Clean { at_ms: u64 },
 }
 
 /// One journaled event of a chat session. The event itself is JSON (the core `AgentEvent`) so

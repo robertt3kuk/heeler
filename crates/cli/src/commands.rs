@@ -30,6 +30,7 @@ mod integration;
 mod notify;
 mod projects;
 mod providers;
+mod recovery;
 mod resources;
 mod sessions;
 mod tasks;
@@ -77,6 +78,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Send(args) => ctx?.send(args).await,
         Command::Stop(args) => ctx?.stop(&args.target).await,
         Command::Restart(args) => ctx?.restart(&args.target).await,
+        Command::Recovery(args) => ctx?.recovery(args).await,
         Command::Rename(args) => ctx?.rename(args).await,
         Command::History(args) => ctx?.history(args).await,
         Command::Search(args) => ctx?.search(args).await,

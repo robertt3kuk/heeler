@@ -785,6 +785,14 @@ async fn a_daemon_restart_continues_the_session_with_session_load_and_keeps_the_
     let restored = t.wait_state(created.id, SessionState::Idle).await;
     assert_eq!(restored.id, created.id, "the same session");
     assert!(!restored.restored, "the journal has the whole conversation");
+    let recovery = restored.recovery.clone().expect("the restart is reported");
+    assert_eq!(
+        recovery.kind,
+        hutan_protocol::recovery::RecoveryKind::ChatResumed {
+            thread_id: Some(SESSION.to_owned()),
+            last_turn: hutan_protocol::recovery::LastTurn::Completed,
+        }
+    );
     let chat = restored.chat.unwrap();
     assert_eq!(chat.agent_session_id.as_deref(), Some(SESSION));
     let loads = t.received_of("session/load");

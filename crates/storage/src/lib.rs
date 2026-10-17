@@ -30,9 +30,9 @@ use tracing::{debug, error};
 pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
 pub use rows::{
-    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow, WorkspaceKind,
-    WorkspaceRow, WorktreeRow,
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochEnd,
+    EpochRecord, ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow,
+    WorkspaceKind, WorkspaceRow, WorktreeRow,
 };
 pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
@@ -474,6 +474,12 @@ impl Approvals<'_> {
             .read(move |conn| sql::approvals(conn, session, false))
     }
 
+    /// Requests resolved at or after `since_ms`, oldest first.
+    pub fn resolved_since(&self, since_ms: u64) -> Result<Vec<ApprovalRow>> {
+        self.0
+            .read(move |conn| sql::approvals_resolved_since(conn, since_ms))
+    }
+
     /// Requests never resolved (what a crashed daemon left behind).
     pub fn unresolved(&self) -> Result<Vec<ApprovalRow>> {
         self.0.read(|conn| sql::approvals(conn, None, true))
@@ -494,6 +500,12 @@ impl Questions<'_> {
     pub fn list(&self, session: Option<SessionId>) -> Result<Vec<QuestionRow>> {
         self.0
             .read(move |conn| sql::questions(conn, session, false))
+    }
+
+    /// Questions resolved at or after `since_ms`, oldest first.
+    pub fn resolved_since(&self, since_ms: u64) -> Result<Vec<QuestionRow>> {
+        self.0
+            .read(move |conn| sql::questions_resolved_since(conn, since_ms))
     }
 
     /// Questions never resolved (what a crashed daemon left behind).
@@ -590,7 +602,17 @@ impl AppMeta<'_> {
         self.0.write(Write::RecordEpoch(EpochRecord {
             epoch,
             started_at_ms,
+            end: EpochEnd::Open,
         }))
+    }
+
+    /// Notes that the run `epoch` shut itself down cleanly at `stopped_at_ms`. A run that never
+    /// did is, once another one started, a crash or a kill.
+    pub fn record_epoch_stop(&self, epoch: Epoch, stopped_at_ms: u64) -> Result<()> {
+        self.0.write(Write::RecordEpochStop {
+            epoch,
+            stopped_at_ms,
+        })
     }
 
     /// Oldest first.

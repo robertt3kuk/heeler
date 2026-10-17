@@ -407,6 +407,17 @@ fn listed_state_text(session: &SessionInfo) -> String {
     }
 }
 
+/// The recovery column of `hutan ls`: what the last daemon restart did to the session
+/// (`respawned`, `resumed`, `interrupted`, `not restarted`, `ended before`); `-` when it did
+/// nothing worth saying or the user dismissed it.
+fn recovery_text(session: &SessionInfo) -> String {
+    match hutan_client::recovery::chip(session) {
+        Some(chip) => chip.label.to_owned(),
+        None if session.recovery.is_some() => "ended before".to_owned(),
+        None => "-".to_owned(),
+    }
+}
+
 /// The placement column of `hutan ls`: `main` or `wt <branch>` (`wt (detached)` without a
 /// branch), `⚠ shared` added while another live agent works in the same checkout; `-` when the
 /// session is not in a git checkout.
@@ -445,13 +456,14 @@ fn session_table(
     if sessions.is_empty() {
         return "no sessions".to_owned();
     }
-    let rows: Vec<[String; 8]> = sessions
+    let rows: Vec<[String; 9]> = sessions
         .iter()
         .map(|s| {
             [
                 s.id.to_string(),
                 terminal_text(s),
                 listed_state_text(s),
+                recovery_text(s),
                 projects
                     .get(&s.workspace_id)
                     .cloned()
@@ -464,10 +476,10 @@ fn session_table(
         })
         .collect();
     let header = [
-        "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE",
+        "ID", "TERMINAL", "STATE", "RECOVERY", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE",
     ]
     .map(str::to_owned);
-    let mut widths = [0; 8];
+    let mut widths = [0; 9];
     for row in std::iter::once(&header).chain(&rows) {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -479,10 +491,10 @@ fn session_table(
             table.push('\n');
         }
         let mut line = String::new();
-        for (cell, width) in row.iter().zip(widths).take(7) {
+        for (cell, width) in row.iter().zip(widths).take(8) {
             line.push_str(&format!("{cell:<width$}  "));
         }
-        line.push_str(&row[7]);
+        line.push_str(&row[8]);
         table.push_str(&line);
     }
     table
@@ -528,6 +540,7 @@ mod tests {
             chat: None,
             placement: None,
             folder: None,
+            recovery: None,
         }
     }
 
@@ -618,7 +631,7 @@ mod tests {
         assert_eq!(
             header,
             [
-                "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
+                "ID", "TERMINAL", "STATE", "RECOVERY", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
             ]
         );
         let row = table.lines().nth(1).unwrap();

@@ -26,7 +26,9 @@ use std::rc::Rc;
 
 pub use agents::{AgentsPanel, RowView, SectionView, TICK as AGENTS_TICK};
 pub use assistant::{AssistantPanel, Choice as AssistantChoice, Failure, Opened, ScopeKey};
-pub use common::{age_label, agent_badge, kind_icon, placement_badge, state_dot, tone_color};
+pub use common::{
+    age_label, agent_badge, kind_icon, placement_badge, recovery_chip, state_dot, tone_color,
+};
 pub(crate) use common::{edit_text, field_box};
 pub(crate) use history::pill;
 pub use history::{Confirm as HistoryConfirm, HistoryPanel};

@@ -439,6 +439,7 @@ mod tests {
             chat: None,
             placement: None,
             folder: None,
+            recovery: None,
         }
     }
 

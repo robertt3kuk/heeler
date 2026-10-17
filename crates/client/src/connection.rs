@@ -495,6 +495,14 @@ impl Connection {
             .is_some_and(|client| client.supports_task_review())
     }
 
+    /// True while connected to a daemon that advertised capability `session.recovery`
+    /// ([`Client::supports_recovery`]); false when disconnected.
+    pub fn supports_recovery(&self) -> bool {
+        self.shared
+            .client()
+            .is_some_and(|client| client.supports_recovery())
+    }
+
     /// The number of the current connection: it grows each time the connection is made again
     /// (see [`client_focus`](Self::client_focus)); `0` before the first one.
     pub fn generation(&self) -> u64 {

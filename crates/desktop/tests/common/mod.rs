@@ -402,13 +402,16 @@ impl TestDaemon {
 
     /// A new daemon on the same home: new epoch; stored workspaces and sessions are restored.
     pub fn restart(&mut self) {
+        self.restart_with(|_| {});
+    }
+
+    /// [`restart`](Self::restart) with `tweak` applied to the new daemon's config (a `codex`
+    /// that replays the next transcript, say).
+    pub fn restart_with(&mut self, tweak: impl FnOnce(&mut DaemonConfig)) {
         assert!(self.daemon.is_none(), "daemon is already running");
-        let paths = self.paths.clone();
-        self.daemon = Some(
-            self.rt()
-                .block_on(hutan_daemon::start(DaemonConfig::new(paths)))
-                .unwrap(),
-        );
+        let mut config = DaemonConfig::new(self.paths.clone());
+        tweak(&mut config);
+        self.daemon = Some(self.rt().block_on(hutan_daemon::start(config)).unwrap());
     }
 }
 

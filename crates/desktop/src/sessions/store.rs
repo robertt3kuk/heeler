@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
+use hutan_client::recovery::{self, Summary};
 use hutan_client::{Connection, ConnectionState, Notice, StoreState};
 use hutan_core::agent::ModelInfo;
 use hutan_core::{
@@ -24,6 +25,7 @@ use hutan_protocol::messages::{
     WorkspaceRename, WorkspaceRoot,
 };
 use hutan_protocol::project::{WorkspaceAssign, WorkspaceDelete};
+use hutan_protocol::recovery::{RecoveryAck, RecoveryAcked};
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskRef, TaskResult,
     TaskReview, TaskReviewed, TaskStarted, TaskUpdate,
@@ -66,10 +68,52 @@ pub struct AccountsChanged {
     pub harness: String,
 }
 
+/// Emitted by [`SessionsStore`] when the summary of what a daemon restart did to the sessions
+/// should be put in front of the user: once for each restart this window gets to know about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoverySummaryDue {
+    /// When the daemon that restored the sessions started; identifies the restart.
+    pub restarted_at_ms: u64,
+}
+
 /// Whether a `ui.open` sent at `at_ms` is still current at `now_ms` (both Unix milliseconds on
 /// this machine; a stamp from the future counts as current).
 fn ui_open_is_fresh(at_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(at_ms) <= UI_OPEN_MAX_AGE_MS
+}
+
+/// The text of the newest user message in the chat's journal.
+async fn last_user_message(connection: &Connection, session: SessionId) -> Result<String, String> {
+    use hutan_core::AgentEventKind;
+    use hutan_core::agent::MessageRole;
+    let mut before = None;
+    // The newest turns are at the end; a long answer is a few events, so a few pages are plenty.
+    for _ in 0..5 {
+        let page = connection
+            .chat_history(session, before, hutan_protocol::chat::HISTORY_DEFAULT_LIMIT)
+            .await
+            .map_err(|e| e.to_string())?;
+        let found = page
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                AgentEventKind::MessageEnd {
+                    role: MessageRole::User,
+                    text,
+                    ..
+                } if !text.trim().is_empty() => Some(text.clone()),
+                _ => None,
+            });
+        if let Some(text) = found {
+            return Ok(text);
+        }
+        match page.events.first() {
+            Some(first) if page.has_more => before = Some(first.seq),
+            _ => break,
+        }
+    }
+    Err("There is no message of yours in this chat to send again".to_owned())
 }
 
 fn unix_ms() -> u64 {
@@ -119,6 +163,9 @@ pub struct SessionsStore {
     focus_task: Option<(u64, Task<()>)>,
     /// The session of the Assistant panel while the panel has the focus.
     assistant_focused: Option<SessionId>,
+    /// The restart whose summary was already put up (`restarted_at_ms`): it is not shown again,
+    /// whatever the user did with it.
+    recovery_shown: Option<u64>,
     /// The daemon's tasks (`task.list`, then `task.updated` / `task.removed`).
     tasks: TaskBook,
     /// The `task.list` in flight; dropped (cancelled) with the connection.
@@ -129,6 +176,7 @@ pub struct SessionsStore {
 impl EventEmitter<AgentAttentionChanged> for SessionsStore {}
 impl EventEmitter<UiOpenRequested> for SessionsStore {}
 impl EventEmitter<AccountsChanged> for SessionsStore {}
+impl EventEmitter<RecoverySummaryDue> for SessionsStore {}
 
 impl std::fmt::Debug for SessionsStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,6 +251,7 @@ impl SessionsStore {
             focus_sent: None,
             focus_task: None,
             assistant_focused: None,
+            recovery_shown: None,
             tasks: TaskBook::default(),
             tasks_loading: None,
             _tasks: vec![state_task, notice_task],
@@ -228,6 +277,7 @@ impl SessionsStore {
             self.attention
                 .observe(self.state.epoch, &self.state.sessions);
             self.observe_blocked_nodes(cx);
+            self.observe_recovery(cx);
             let known: Vec<SessionId> = self.state.sessions.iter().map(|s| s.id).collect();
             self.recent.retain(|id, _| !known.contains(id));
         }
@@ -261,6 +311,62 @@ impl SessionsStore {
             self.focus_task = None;
         }
         cx.notify();
+    }
+
+    /// Emits [`RecoverySummaryDue`] once per restart that left something unacknowledged.
+    /// A window that opens after the restart is told too: what a restart did is news until it is
+    /// acknowledged, wherever the user was.
+    fn observe_recovery(&mut self, cx: &mut Context<Self>) {
+        let Some(summary) = recovery::summary(&self.state.sessions, recovery::clock_text) else {
+            return;
+        };
+        if self.recovery_shown == Some(summary.restarted_at_ms) {
+            return;
+        }
+        self.recovery_shown = Some(summary.restarted_at_ms);
+        cx.emit(RecoverySummaryDue {
+            restarted_at_ms: summary.restarted_at_ms,
+        });
+    }
+
+    /// What the daemon restart did to the sessions that are not acknowledged yet; `None` when
+    /// there is nothing to say.
+    pub fn recovery_summary(&self) -> Option<Summary> {
+        recovery::summary(&self.state.sessions, recovery::clock_text)
+    }
+
+    /// `session.recovery_ack` for one session, or for all of them.
+    pub fn ack_recovery(
+        &self,
+        session: Option<SessionId>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<SessionId>, String>> {
+        self.call(
+            Request::SessionRecoveryAck(RecoveryAck {
+                session_id: session,
+            }),
+            |acked: RecoveryAcked| acked.sessions,
+            cx,
+        )
+    }
+
+    /// Sends the last message the user wrote in the chat again: what "Retry last message" of a
+    /// turn the restart interrupted does. The journal is the source, so it works for a chat no
+    /// tab has open.
+    pub fn retry_last_message(
+        &self,
+        session: SessionId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        let connection = self.connection.clone();
+        cx.background_spawn(async move {
+            let text = last_user_message(&connection, session).await?;
+            connection
+                .chat_send_with(session, text, Vec::new())
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     /// Emits [`AgentAttentionChanged`] for every session in which a node became blocked since

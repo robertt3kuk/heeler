@@ -56,6 +56,7 @@ pub const CAPABILITIES: &[&str] = &[
     "chat.rich_input",
     "chat.questions",
     "task.review",
+    "session.recovery",
 ];
 
 /// How long a closing connection may take to flush already queued messages.

@@ -21,6 +21,7 @@ pub mod panels;
 pub mod persistence;
 mod projects;
 mod providers;
+mod recovery_summary;
 pub mod registry;
 mod remote;
 mod render;

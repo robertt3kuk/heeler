@@ -593,4 +593,45 @@ async fn daemon_restart_refuses_live_sessions_unless_asked_to_stop_them() {
     assert_eq!(sessions[0]["id"], before["sessions"][0]["id"], "{list}");
     assert_eq!(sessions[0]["state"]["state"], "running", "{list}");
     assert!(sessions[0].get("restored").is_none(), "{list}");
+
+    // The restart is said on the session: `ls` has a RECOVERY column, `hutan recovery` the
+    // summary (it was a clean stop), and `recovery ack` dismisses it.
+    assert_eq!(
+        sessions[0]["recovery"]["kind"]["type"], "shell_respawned",
+        "{list}"
+    );
+    assert_eq!(
+        sessions[0]["recovery"]["daemon_stop"]["state"], "clean",
+        "{list}"
+    );
+    let table = run(&["ls"]).await.ok();
+    assert!(
+        table.stdout.contains("RECOVERY") && table.stdout.contains("respawned"),
+        "{table:?}"
+    );
+    let summary = run(&["recovery"]).await.ok();
+    assert!(
+        summary.stdout.contains("hutand restarted at")
+            && summary.stdout.contains("(it was stopped)")
+            && summary.stdout.contains("1 session: 1 shell respawned"),
+        "{summary:?}"
+    );
+    assert!(!summary.stdout.contains("still running"), "{summary:?}");
+    let refused = run(&["recovery", "ack"]).await;
+    assert_ne!(
+        refused.code, 0,
+        "a target or --all is required: {refused:?}"
+    );
+    let acked = run(&["recovery", "ack", "--all", "--json"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(acked["sessions"].as_array().unwrap().len(), 1, "{acked}");
+    let after = run(&["ls", "--json"]).await.ok().json();
+    assert!(after["sessions"][0].get("recovery").is_none(), "{after}");
+    let nothing = run(&["recovery"]).await.ok();
+    assert!(
+        nothing.stdout.contains("no session was changed"),
+        "{nothing:?}"
+    );
 }

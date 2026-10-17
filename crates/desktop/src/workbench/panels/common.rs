@@ -138,6 +138,38 @@ pub fn placement_badge(
         .into_any_element()
 }
 
+/// The small chip a session wears after a daemon restart until it is acknowledged:
+/// `respawned`, `resumed`, `interrupted`, `not restarted`. Its tooltip says what happened. The
+/// session's other chips are the caller's; this one only says what the restart did.
+pub fn recovery_chip(
+    theme: &Theme,
+    chip: &hutan_client::recovery::Chip,
+    site: BadgeSite,
+    session: SessionId,
+    regions: &Rc<RefCell<HashMap<Region, gpui::Bounds<gpui::Pixels>>>>,
+    cx: &App,
+) -> AnyElement {
+    let tokens = UiStyle::get(cx).density.ui();
+    let tip = SharedString::from(chip.detail.clone());
+    let color = match chip.tone {
+        hutan_client::recovery::ChipTone::Info => theme.accent,
+        hutan_client::recovery::ChipTone::Warn => theme.warning,
+    };
+    div()
+        .id(SharedString::from(format!("recovery-chip-{session}")))
+        .relative()
+        .flex_none()
+        .px(px(tokens.spacing * 2.0))
+        .rounded(px(crate::theme::PILL_RADIUS))
+        .bg(color.opacity(0.14))
+        .text_size(px(tokens.secondary_font_size))
+        .text_color(color)
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tip.clone())).into())
+        .child(chip.label)
+        .child(probe(regions, Region::RecoveryChip(site, session)))
+        .into_any_element()
+}
+
 pub fn kind_icon(kind: SessionKind) -> &'static str {
     match kind {
         SessionKind::Terminal => "❯",

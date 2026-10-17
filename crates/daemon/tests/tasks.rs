@@ -1351,6 +1351,23 @@ async fn running_tasks_keep_running_when_their_session_is_restored_and_fail_when
     assert!(failed.ended_at_ms.is_some());
     assert_eq!(failed.sessions, running.sessions);
     assert_eq!(t.task(b.id).await.state, TaskState::Todo);
+    // The session that carried it says what it cost.
+    let recovery = t.session(session).await.recovery.expect("a recovery");
+    assert!(
+        matches!(
+            recovery.kind,
+            hutan_protocol::recovery::RecoveryKind::NotRestarted { .. }
+        ),
+        "{:?}",
+        recovery.kind
+    );
+    assert_eq!(
+        recovery.lost,
+        [hutan_protocol::recovery::Lost::Task {
+            task_id: a.id,
+            title: "Survivor".into()
+        }]
+    );
     // The restart is told like any other failure.
     let pending = t.client.notify_list().await.unwrap();
     let intent = pending

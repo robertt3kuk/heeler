@@ -207,7 +207,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "worktree.review",
             "chat.rich_input",
             "chat.questions",
-            "task.review"
+            "task.review",
+            "session.recovery"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

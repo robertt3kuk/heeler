@@ -30,6 +30,7 @@ use hutan_protocol::messages::{
     SessionResult,
 };
 use hutan_protocol::notify::{ACTION_OPEN, IntentKind, NotifyList};
+use hutan_protocol::recovery::{DaemonStop, LastTurn, Lost, RecoveryKind};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
@@ -837,6 +838,16 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
     let restored = chat.wait_state(created.id, SessionState::Idle).await;
     assert_eq!(restored.id, created.id, "the same session");
     assert!(!restored.restored, "the journal has the whole conversation");
+    let recovery = restored.recovery.clone().expect("the restart is reported");
+    assert_eq!(
+        recovery.kind,
+        RecoveryKind::ChatResumed {
+            thread_id: Some(thread_id.clone()),
+            last_turn: LastTurn::Completed,
+        }
+    );
+    assert!(matches!(recovery.daemon_stop, DaemonStop::Clean { .. }));
+    assert!(recovery.lost.is_empty());
     assert_eq!(restored.chat.unwrap().model, "gpt-6.1-sol");
 
     let spawns: Vec<_> = chat
@@ -855,6 +866,8 @@ async fn a_daemon_restart_resumes_the_agent_and_keeps_the_history() {
     let last_before = before.events.last().unwrap().seq;
     chat.send(created.id, "again").await;
     next_chat_event(&mut events, "the resumed turn to end", is_turn_end).await;
+    // Going on with the conversation is the user's next action: the restart is old news.
+    assert_eq!(chat.session(created.id).await.recovery, None);
     let all = chat.history(created.id, None, 500).await;
     let resumed_seqs: Vec<u64> = all
         .events
@@ -949,6 +962,237 @@ async fn approvals_pending_at_a_daemon_restart_are_expired() {
         kinds.contains(&"permission_resolved")
             && (kinds.contains(&"turn_cancelled") || kinds.contains(&"turn_failed")),
         "{kinds:?}"
+    );
+    chat.stop().await;
+}
+
+/// Stops the chat's daemon and returns its home, so the database can be changed before the
+/// next start.
+async fn stop_chat_daemon(
+    chat: Chat,
+) -> (tempfile::TempDir, tempfile::TempDir, hutan_daemon::Paths) {
+    let Chat { daemon, work, .. } = chat;
+    let TestDaemon {
+        _dir,
+        paths,
+        daemon,
+    } = daemon;
+    daemon.shutdown();
+    timeout(WAIT, daemon.wait()).await.unwrap().unwrap();
+    (_dir, work, paths)
+}
+
+async fn start_chat_daemon(
+    dir: tempfile::TempDir,
+    work: tempfile::TempDir,
+    paths: hutan_daemon::Paths,
+    config: CodexConfig,
+) -> Chat {
+    let mut daemon_config = hutan_daemon::DaemonConfig::new(paths.clone());
+    daemon_config.codex = Some(config);
+    let daemon = hutan_daemon::start(daemon_config).await.unwrap();
+    let daemon = TestDaemon {
+        _dir: dir,
+        paths,
+        daemon,
+    };
+    let (client, events) = daemon.connect_subscribed().await;
+    Chat {
+        daemon,
+        work,
+        client,
+        events,
+    }
+}
+
+/// A chat with an approval pending in its first turn, stopped; the agent transcript for the
+/// resume is the second one.
+async fn chat_stopped_mid_turn() -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    hutan_daemon::Paths,
+    CodexConfig,
+    SessionId,
+) {
+    let work = tempfile::tempdir().unwrap();
+    let scripted = script(
+        work.path(),
+        &["approval-touch", "resume-turn", "resume-turn"],
+    );
+    let config = replay(&scripted, &work.path().join("received.jsonl"));
+    let daemon = TestDaemon::start_with("", {
+        let config = config.clone();
+        move |c| c.codex = Some(config)
+    })
+    .await;
+    let (client, mut events) = daemon.connect_subscribed().await;
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events: events.resubscribe(),
+    };
+    let created = chat.create().await;
+    chat.send(created.id, "go").await;
+    wait_event(&mut events, "approval.required", |event| match event {
+        Event::ApprovalRequired { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    let (dir, work, paths) = stop_chat_daemon(chat).await;
+    (dir, work, paths, config, created.id)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clean_restart_in_the_middle_of_a_turn_says_the_turn_was_interrupted() {
+    let (dir, work, paths, config, id) = chat_stopped_mid_turn().await;
+    let chat = start_chat_daemon(dir, work, paths, config).await;
+    let restored = chat.wait_state(id, SessionState::Idle).await;
+    let recovery = restored.recovery.expect("the restart is reported");
+    let RecoveryKind::ChatResumed {
+        thread_id,
+        last_turn,
+    } = &recovery.kind
+    else {
+        panic!("{:?}", recovery.kind);
+    };
+    assert!(thread_id.is_some());
+    assert_eq!(*last_turn, LastTurn::Interrupted);
+    assert!(matches!(recovery.daemon_stop, DaemonStop::Clean { .. }));
+    assert_eq!(recovery.lost, [Lost::Approvals { count: 1 }, Lost::Turn]);
+    // The user dismisses it.
+    let acked = chat
+        .client
+        .call::<hutan_protocol::recovery::RecoveryAcked>(Request::SessionRecoveryAck(
+            hutan_protocol::recovery::RecoveryAck {
+                session_id: Some(id),
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(acked.sessions, [id]);
+    assert_eq!(chat.session(id).await.recovery, None);
+
+    // A second restart with the turn long over has nothing interrupted to report.
+    let (dir, work, paths) = stop_chat_daemon(chat).await;
+    let config = replay(
+        &work.path().join("script"),
+        &work.path().join("received.jsonl"),
+    );
+    let chat = start_chat_daemon(dir, work, paths, config).await;
+    let again = chat.wait_state(id, SessionState::Idle).await;
+    let recovery = again.recovery.expect("reported again");
+    assert!(
+        matches!(
+            recovery.kind,
+            RecoveryKind::ChatResumed {
+                last_turn: LastTurn::Completed,
+                ..
+            }
+        ),
+        "{:?}",
+        recovery.kind
+    );
+    assert!(recovery.lost.is_empty(), "{:?}", recovery.lost);
+    chat.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_in_the_middle_of_a_turn_is_told_apart_from_a_clean_stop() {
+    let (dir, work, paths, config, id) = chat_stopped_mid_turn().await;
+    // What a killed daemon leaves: the turn and the approval never ended, and no stop was
+    // recorded for the run.
+    let storage = hutan_storage::Storage::open(&paths.database).unwrap();
+    let db = rusqlite::Connection::open(&paths.database).unwrap();
+    db.execute(
+        "UPDATE chat_turns SET status = 'running', ended_at_ms = NULL, error = NULL",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE approvals SET resolved_at_ms = NULL, outcome = NULL, decided_by = NULL",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let mut history: Vec<serde_json::Value> =
+        serde_json::from_str(&storage.app_meta().get("epoch_history").unwrap().unwrap()).unwrap();
+    history.last_mut().unwrap()["end"] = serde_json::json!({"state": "open"});
+    storage
+        .app_meta()
+        .set("epoch_history", &serde_json::to_string(&history).unwrap())
+        .unwrap();
+    storage.close();
+
+    let chat = start_chat_daemon(dir, work, paths, config).await;
+    let restored = chat.wait_state(id, SessionState::Idle).await;
+    let recovery = restored.recovery.expect("the restart is reported");
+    assert_eq!(recovery.daemon_stop, DaemonStop::Crashed);
+    assert!(
+        matches!(
+            recovery.kind,
+            RecoveryKind::ChatResumed {
+                last_turn: LastTurn::Interrupted,
+                ..
+            }
+        ),
+        "{:?}",
+        recovery.kind
+    );
+    assert!(recovery.lost.contains(&Lost::Turn), "{:?}", recovery.lost);
+    assert!(
+        recovery.lost.contains(&Lost::Approvals { count: 1 }),
+        "{:?}",
+        recovery.lost
+    );
+    chat.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_whose_agent_cannot_resume_is_listed_as_not_restarted_with_the_error() {
+    let (dir, work, paths, _config, id) = chat_stopped_mid_turn().await;
+    let missing = CodexConfig {
+        program: PathBuf::from("/definitely/not/a/codex"),
+        args: Vec::new(),
+        env: Vec::new(),
+    };
+    let chat = start_chat_daemon(dir, work, paths, missing).await;
+    let failed = timeout(WAIT, async {
+        loop {
+            let session = chat.session(id).await;
+            if matches!(session.state, SessionState::Failed { .. }) {
+                return session;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the chat fails to start");
+    let recovery = failed.recovery.expect("the restart is reported");
+    let RecoveryKind::NotRestarted { reason } = &recovery.kind else {
+        panic!("said it resumed: {:?}", recovery.kind);
+    };
+    assert!(reason.contains("resuming failed"), "{reason}");
+    assert!(reason.contains("/definitely/not/a/codex"), "{reason}");
+    chat.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stopped_mode_lists_a_chat_without_starting_its_agent() {
+    let (dir, work, paths, config, id) = chat_stopped_mid_turn().await;
+    std::fs::write(
+        &paths.config_file,
+        "[daemon]\nrestore_sessions = \"stopped\"\n",
+    )
+    .unwrap();
+    let chat = start_chat_daemon(dir, work, paths, config).await;
+    let listed = chat.session(id).await;
+    assert_eq!(listed.state, SessionState::Stopped);
+    let recovery = listed.recovery.expect("the restart is reported");
+    assert!(
+        matches!(&recovery.kind, RecoveryKind::NotRestarted { reason } if reason.contains("restore_sessions")),
+        "{:?}",
+        recovery.kind
     );
     chat.stop().await;
 }
@@ -1882,6 +2126,9 @@ async fn questions_pending_at_a_daemon_restart_are_expired() {
         events,
     };
     let restored = chat.wait_state(created.id, SessionState::Idle).await;
+    // The restart says what it cost: the question and the turn it was asked in.
+    let recovery = restored.recovery.clone().expect("the restart is reported");
+    assert_eq!(recovery.lost, [Lost::Questions { count: 1 }, Lost::Turn]);
     assert_eq!(restored.chat.unwrap().pending_questions, 0);
     assert!(chat.questions(&chat.client).await.is_empty());
     let late = answer(&chat.client, info.id, QuestionResponse::Decline).await;

@@ -28,6 +28,7 @@ use crate::project::{ProjectInfo, WorkspaceAssign, WorkspaceDelete};
 use crate::provider::{
     ChatSetModel, ProviderAdd, ProviderRef, ProviderSetCredential, ProviderUpdate,
 };
+use crate::recovery::{Recovery, RecoveryAck};
 use crate::render::Row;
 use crate::resources::{
     AgentInterrupt, ProcessSignal, ResourceSample, ResourcesListRequest, ResourcesSubscribe,
@@ -107,6 +108,10 @@ pub enum Request {
     SessionRestart(SessionRef),
     #[serde(rename = "session.rename")]
     SessionRename(SessionRename),
+    /// Capability `session.recovery` (protocol 0.26): dismiss what a daemon restart did to one
+    /// session, or to all; answered with `RecoveryAcked`.
+    #[serde(rename = "session.recovery_ack")]
+    SessionRecoveryAck(RecoveryAck),
     #[serde(rename = "terminal.attach")]
     TerminalAttach(TerminalAttach),
     #[serde(rename = "terminal.detach")]
@@ -832,6 +837,10 @@ pub struct SessionInfo {
     /// The session's project is the one it started in and does not follow this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
+    /// Protocol 0.26 (capability `session.recovery`): what the daemon start that restored this
+    /// session did to it, until the user dismisses it or acts in the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Recovery>,
 }
 
 /// The latest report of a coding agent running in a session: the main agent, with the state

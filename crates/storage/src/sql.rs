@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use hutan_core::{
-    AfterPolicy, DeliveryRecord, DeliveryState, SessionId, SessionKind, SessionState, Task, TaskId,
-    TaskPlacement, TaskRun, TaskState, WorkspaceId,
+    AfterPolicy, DeliveryRecord, DeliveryState, Epoch, SessionId, SessionKind, SessionState, Task,
+    TaskId, TaskPlacement, TaskRun, TaskState, WorkspaceId,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -13,9 +13,9 @@ use serde::de::DeserializeOwned;
 
 use crate::error::{Result, StorageError};
 use crate::rows::{
-    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow, WorkspaceKind,
-    WorkspaceRow, WorktreeRow,
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochEnd,
+    EpochRecord, ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow,
+    WorkspaceKind, WorkspaceRow, WorktreeRow,
 };
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
@@ -86,6 +86,11 @@ pub enum Write {
     },
     /// Appends to the epoch history, keeping the newest [`EPOCH_HISTORY_KEPT`].
     RecordEpoch(EpochRecord),
+    /// Marks a recorded run as cleanly stopped (nothing happens for an unknown or untracked one).
+    RecordEpochStop {
+        epoch: Epoch,
+        stopped_at_ms: u64,
+    },
     /// Adds one event to a chat journal (an existing `(session, seq)` is left alone).
     AppendChatItem(Box<ChatItemRow>),
     /// Removes one event of a chat journal (a snapshot that a final event supersedes).
@@ -248,6 +253,10 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         }
         Write::SetMeta { key, value } => set_meta(conn, key, value)?,
         Write::RecordEpoch(record) => record_epoch(conn, *record)?,
+        Write::RecordEpochStop {
+            epoch,
+            stopped_at_ms,
+        } => record_epoch_stop(conn, *epoch, *stopped_at_ms)?,
         Write::AppendChatItem(row) => append_chat_item(conn, row)?,
         Write::DeleteChatItem { session_id, seq } => {
             conn.execute(
@@ -420,6 +429,24 @@ fn record_epoch(conn: &Connection, record: EpochRecord) -> Result<()> {
     history.push(record);
     let excess = history.len().saturating_sub(EPOCH_HISTORY_KEPT);
     history.drain(..excess);
+    let json = serde_json::to_string(&history).map_err(|e| StorageError::Encode {
+        what: "epoch history",
+        detail: e.to_string(),
+    })?;
+    set_meta(conn, EPOCH_HISTORY_KEY, &json)
+}
+
+fn record_epoch_stop(conn: &Connection, epoch: Epoch, stopped_at_ms: u64) -> Result<()> {
+    let mut history = epoch_history(conn)?;
+    let Some(record) = history
+        .iter_mut()
+        .find(|r| r.epoch == epoch && r.end == EpochEnd::Open)
+    else {
+        return Ok(());
+    };
+    record.end = EpochEnd::Clean {
+        at_ms: stopped_at_ms,
+    };
     let json = serde_json::to_string(&history).map_err(|e| StorageError::Encode {
         what: "epoch history",
         detail: e.to_string(),
@@ -839,6 +866,21 @@ pub fn approvals(
     collect(rows, context)
 }
 
+pub fn approvals_resolved_since(conn: &Connection, since_ms: u64) -> Result<Vec<ApprovalRow>> {
+    let context = "reading approvals";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, turn_id, kind, title, options_json, requested_at_ms, \
+                 resolved_at_ms, outcome, option_id, decided_by FROM approvals \
+             WHERE resolved_at_ms >= ?1 ORDER BY requested_at_ms, id",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map(params![ms(since_ms)], |row| Ok(approval_from(row)))
+        .map_err(StorageError::sqlite(context))?;
+    collect(rows, context)
+}
+
 fn approval_from(row: &Row<'_>) -> Result<ApprovalRow> {
     let id: String = row.get(0).map_err(read_err)?;
     let session: String = row.get(1).map_err(read_err)?;
@@ -915,6 +957,21 @@ pub fn questions(
         .query_map(params![session.map(|s| s.to_string()), only_open], |row| {
             Ok(question_from(row))
         })
+        .map_err(StorageError::sqlite(context))?;
+    collect(rows, context)
+}
+
+pub fn questions_resolved_since(conn: &Connection, since_ms: u64) -> Result<Vec<QuestionRow>> {
+    let context = "reading questions";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, turn_id, title, requested_at_ms, resolved_at_ms, outcome, \
+                 decided_by FROM questions WHERE resolved_at_ms >= ?1 \
+             ORDER BY requested_at_ms, id",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map(params![ms(since_ms)], |row| Ok(question_from(row)))
         .map_err(StorageError::sqlite(context))?;
     collect(rows, context)
 }

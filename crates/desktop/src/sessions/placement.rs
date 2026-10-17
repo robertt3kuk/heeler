@@ -73,6 +73,7 @@ mod tests {
             chat: None,
             placement,
             folder: None,
+            recovery: None,
         }
     }
 

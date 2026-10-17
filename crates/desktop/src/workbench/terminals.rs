@@ -892,7 +892,86 @@ impl Workbench {
             ));
             root = root.child(bar);
         }
+        if !self.daemon.stopped
+            && let Some(bar) = self.render_terminal_recovery(id, ended, cx)
+        {
+            root = root.child(bar);
+        }
         root.into_any_element()
+    }
+
+    /// What the last daemon restart did to this terminal, until the user dismisses it or types:
+    /// the chip, one sentence, and Dismiss. Below the Restart / Close bar of an ended session.
+    fn render_terminal_recovery(
+        &mut self,
+        id: SessionId,
+        ended: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let info = self.sessions.read(cx).session(id).cloned()?;
+        let chip = hutan_client::recovery::chip(&info)?;
+        let theme = self.theme;
+        let tokens = self.density.ui();
+        let chip_element = crate::workbench::panels::recovery_chip(
+            &theme,
+            &chip,
+            crate::workbench::BadgeSite::Tab,
+            id,
+            &self.regions,
+            cx,
+        );
+        let dismiss = self
+            .action_button(
+                "recovery-dismiss",
+                "Dismiss",
+                ui::ButtonKind::Ghost,
+                cx,
+                move |this, _, cx| {
+                    let ack = this
+                        .sessions
+                        .update(cx, |store, cx| store.ack_recovery(Some(id), cx));
+                    cx.spawn(async move |_, _| {
+                        // The session's next update says it; a failure leaves the chip.
+                        let _ = ack.await;
+                    })
+                    .detach();
+                },
+            )
+            .child(crate::workbench::render::probe(
+                &self.regions,
+                crate::workbench::Region::Recovery("terminal-dismiss"),
+            ));
+        Some(
+            div()
+                .absolute()
+                .top(px(tokens.spacing * 2.0 + if ended { 36.0 } else { 0.0 }))
+                .right(px(tokens.spacing * 3.0))
+                .max_w(px(560.0))
+                .flex()
+                .items_center()
+                .gap(px(tokens.spacing * 2.0))
+                .px(px(tokens.spacing * 2.0))
+                .py(px(tokens.spacing))
+                .rounded(px(tokens.radius))
+                .bg(theme.surface)
+                .border_1()
+                .border_color(theme.border)
+                .text_size(px(tokens.secondary_font_size))
+                .text_color(theme.muted)
+                .child(chip_element)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(gpui::SharedString::from(chip.detail.clone())),
+                )
+                .child(dismiss)
+                .child(crate::workbench::render::probe(
+                    &self.regions,
+                    crate::workbench::Region::Recovery("terminal"),
+                ))
+                .into_any_element(),
+        )
     }
 
     fn action_button(

@@ -24,7 +24,7 @@ use crate::cli_link::CliLink;
 use crate::harness_install::PackageRunner;
 use crate::integrations::IntegrationInstaller;
 use crate::macos::MacServices;
-use crate::sessions::{SessionsStore, TerminalSession, UiOpenRequested};
+use crate::sessions::{RecoverySummaryDue, SessionsStore, TerminalSession, UiOpenRequested};
 use crate::settings::{AppearanceSettings, LayoutSettings, PresetDef, TerminalSettings};
 use crate::theme::{Density, DensityExt as _, Theme};
 use gpui::Window;
@@ -226,6 +226,14 @@ pub enum Region {
     /// A control of the resources panel (`panel`, `filter`, `sort-cpu`, `sort-memory`,
     /// `sort-name`).
     ResourceControl(&'static str),
+    /// The chip a restarted session wears (`respawned`, `resumed`, `interrupted`, `not
+    /// restarted`) at one of its places.
+    RecoveryChip(BadgeSite, SessionId),
+    /// A control of the restart summary, by name (`sheet`, `close`, `dismiss-all`).
+    Recovery(&'static str),
+    /// A control of row `index` of the restart summary: `open`, `action` (Retry last message or
+    /// Restart), `dismiss`.
+    RecoveryRow(usize, &'static str),
     /// The agent badge of a session at one of its places.
     AgentBadge(BadgeSite, SessionId),
     /// The placement badge (`main` / `wt <branch>`) of a session at one of its places.
@@ -423,6 +431,8 @@ pub struct Workbench {
     pub(crate) changes_views: HashMap<String, Entity<super::changes::ChangesView>>,
     pub(crate) changes_subscriptions: Vec<Subscription>,
     pub(crate) notice: Option<SharedString>,
+    /// The restart summary is on screen (`recovery_summary.rs`).
+    pub(crate) recovery_open: bool,
     pub(crate) last_title: String,
     pub(crate) regions: Rc<RefCell<HashMap<Region, Bounds<Pixels>>>>,
     state_path: Option<PathBuf>,
@@ -588,6 +598,9 @@ impl Workbench {
                     this.on_ui_open(event, window, cx);
                 },
             ),
+            cx.subscribe(&sessions, |this, _, _: &RecoverySummaryDue, cx| {
+                this.show_recovery_summary(cx);
+            }),
         ];
 
         let remote = super::remote::RemoteControl::start(&sessions, window, cx);
@@ -671,6 +684,7 @@ impl Workbench {
             changes_views: HashMap::new(),
             changes_subscriptions: Vec::new(),
             notice: None,
+            recovery_open: false,
             last_title: String::new(),
             regions,
             state_path: options.state_path,

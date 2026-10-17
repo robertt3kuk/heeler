@@ -225,6 +225,7 @@ impl Router {
             Request::SessionRename(req) => ok(&SessionResult {
                 session: self.registry.rename_session(req).await?,
             }),
+            Request::SessionRecoveryAck(req) => ok(&self.registry.ack_recovery(req).await?),
             Request::TerminalAttach(req) => ok(&self.hub.attach(conn, req)?),
             Request::TerminalDetach(req) => {
                 self.hub.detach(conn.id(), req.terminal_id)?;
@@ -281,6 +282,10 @@ impl Router {
                     .chats()
                     .send(req.session_id, req.text, attached)
                     .await?;
+                // The user went on with the conversation: what a restart did to it is old news.
+                if self.agent_origin(conn).await.is_none() {
+                    self.registry.note_user_action(req.session_id);
+                }
                 ok(&ChatSent { turn_id })
             }
             Request::ChatInterrupt(req) => {
@@ -378,7 +383,9 @@ impl Router {
             }
             Request::ProviderModels(req) => ok(&self.providers().models(&req.provider_id).await?),
             Request::ProviderDiscover(_) => ok(&self.providers().discover().await?),
-            Request::SessionSendText(req) => ok(&self.send_text(req).await?),
+            Request::SessionSendText(req) => ok(&self
+                .send_text(req, self.agent_origin(conn).await.is_none())
+                .await?),
             Request::UiPublish(req) => {
                 self.ui.publish(conn, req)?;
                 ok(&Empty {})
@@ -411,7 +418,11 @@ impl Router {
     }
 
     /// `session.send_text`: types into the terminal of a live terminal session.
-    async fn send_text(&self, req: SessionSendText) -> Result<SessionTextSent, ErrorBody> {
+    async fn send_text(
+        &self,
+        req: SessionSendText,
+        by_user: bool,
+    ) -> Result<SessionTextSent, ErrorBody> {
         if req.text.len() > hutan_protocol::chat::SEND_MAX_BYTES {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
@@ -454,7 +465,7 @@ impl Router {
         }
         let sent = bytes.len() as u64;
         if self.hub.input(terminal, Bytes::from(bytes)).await {
-            self.registry.note_activity(terminal);
+            self.registry.note_input(terminal, by_user);
         }
         Ok(SessionTextSent { bytes: sent })
     }
@@ -467,7 +478,8 @@ impl Router {
         // Input frames have no response to carry an approval's outcome: an agent-originated
         // connection types only where policy (or an earlier "allow for this session" of
         // `session.send_text`) lets it.
-        if let Some(origin) = self.agent_origin(conn).await
+        let agent = self.agent_origin(conn).await;
+        if let Some(origin) = agent
             && !self.control.input_allowed(origin)
         {
             tracing::debug!(
@@ -478,7 +490,7 @@ impl Router {
             return Ok(());
         }
         if self.hub.input(terminal, bytes).await {
-            self.registry.note_activity(terminal);
+            self.registry.note_input(terminal, agent.is_none());
         }
         Ok(())
     }
@@ -562,6 +574,8 @@ fn classification(request: &Request) -> (&'static str, Access) {
         Request::SessionStop(_) => ("session.stop", Mutate),
         Request::SessionRestart(_) => ("session.restart", Mutate),
         Request::SessionRename(_) => ("session.rename", Mutate),
+        // Dismissing what a restart did is the user's: an agent must not hide it.
+        Request::SessionRecoveryAck(_) => ("session.recovery_ack", UserOnly),
         Request::SessionSendText(_) => ("session.send_text", Mutate),
         Request::TerminalAttach(_) => ("terminal.attach", Read),
         Request::TerminalDetach(_) => ("terminal.detach", Read),

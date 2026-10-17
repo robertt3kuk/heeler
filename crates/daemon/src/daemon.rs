@@ -439,6 +439,7 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         held,
         storage,
         menu_bar,
+        epoch,
     ));
     Ok(RunningDaemon {
         socket: paths.socket.clone(),
@@ -529,6 +530,7 @@ async fn accept_loop(
     held: Held,
     storage: Storage,
     menu_bar: Option<JoinHandle<()>>,
+    epoch: Epoch,
 ) {
     let mut conns = JoinSet::new();
     loop {
@@ -585,9 +587,21 @@ async fn accept_loop(
     }
     // Records from the sessions that just ended are applied before the indexer stops.
     ctx.router.stop_history().await;
-    // Everything the registry queued while stopping the sessions reaches the disk before the
-    // lock is released and a successor opens the database.
-    if let Err(error) = tokio::task::spawn_blocking(move || storage.close()).await {
+    // A run that reaches this point hung up on its sessions on purpose; the next start tells
+    // that from a crash by this note (`session.recovery`). Everything the registry queued while
+    // stopping the sessions reaches the disk before the lock is released and a successor opens
+    // the database.
+    let closed = tokio::task::spawn_blocking(move || {
+        if let Err(error) = storage
+            .app_meta()
+            .record_epoch_stop(epoch, registry::now_ms())
+        {
+            warn!(%error, "could not record the stop");
+        }
+        storage.close()
+    })
+    .await;
+    if let Err(error) = closed {
         error!(%error, "closing the database failed");
     }
     drop(held);
@@ -607,9 +621,13 @@ async fn open_storage(database: &Path) -> Result<(Storage, Stored), DaemonError>
     let path = database.to_owned();
     tokio::task::spawn_blocking(move || {
         let storage = Storage::open(&path)?;
-        let stored = restore::load(&storage)?;
+        let mut stored = restore::load(&storage)?;
         // Agents died with the previous daemon; whatever they asked can no longer be answered.
-        chat::expire_dangling_approvals(&storage)?;
+        let (expired, expired_questions) = chat::expire_dangling_approvals(&storage)?;
+        // Before this run records its own epoch: the latest one in the history is the run
+        // that ended.
+        stored.facts =
+            crate::recovery::load(&storage, &stored.sessions, &expired, &expired_questions)?;
         Ok((storage, stored))
     })
     .await?

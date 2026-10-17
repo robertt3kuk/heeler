@@ -14,6 +14,7 @@ mod chat;
 mod client;
 mod connection;
 mod error;
+pub mod recovery;
 mod socket;
 mod store;
 mod supervisor;

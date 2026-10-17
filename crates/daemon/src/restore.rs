@@ -22,6 +22,8 @@ pub struct Stored {
     /// Tasks, oldest first, with their stored states (`todo`, `running`, `done`, `failed`,
     /// `cancelled`).
     pub tasks: Vec<Task>,
+    /// What the database says about the run that ended (`session.recovery`).
+    pub facts: crate::recovery::Facts,
 }
 
 /// Blocking: reads the whole durable state. Run it off the async threads.
@@ -33,6 +35,7 @@ pub fn load(storage: &Storage) -> Result<Stored, StorageError> {
         agent_trees: crate::tree::load(storage)?,
         providers: storage.providers().list()?,
         tasks: storage.tasks().list()?,
+        facts: crate::recovery::Facts::default(),
     })
 }
 

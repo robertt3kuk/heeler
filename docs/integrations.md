@@ -95,6 +95,8 @@ Sources are `codex-hooks`, `claude-hooks`, `omp-extension`. `PostToolUse` is hoo
 
 Resume commands are what the agents document: `codex resume <id>`, `claude --resume <id>`, `omp --resume=<id>`. For other agents (`opencode --session <id>`, …) call `hutan agent report` from their own hooks.
 
+A restart that runs a resume command says so on the session (`recovery.kind = agent_resumed` with the argv; `hutan ls` shows `resumed`): the screen and the agent's process of the previous run are gone, the agent continues its own conversation. See `docs/protocol.md` § Recovery.
+
 ## Observation tree
 
 Every session has a tree of agents: the main agent and the subagents it spawned, as the daemon observes them (`hutan agents [--json] [--watch]`, protocol `agent.tree`, `docs/protocol.md` § Agent observation tree). Reporters name a node with `hutan agent report --node ID [--parent ID --kind sub --name N --agent-type T --model M --activity A --usage-json '{"kind":"omp.tokens","input":1200}' --outcome completed|failed|interrupted|disconnected]`, and end one with `hutan agent release --node ID [--outcome O]`; without `--node` a report is about the main agent, as before. Sequence numbers count per session, source and node; reports are ordered by `seq`, not arrival. A reporter that runs as a process of the session adds `--pid PID` (protocol 0.18): `hutan ps` marks that process and `hutan agent interrupt SESSION NODE` can signal it (`docs/resources.md`).

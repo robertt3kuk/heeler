@@ -31,6 +31,7 @@ use hutan_protocol::messages::{
 };
 use hutan_protocol::project::{ProjectInfo, WorkspaceAssign, WorkspaceDelete};
 use hutan_protocol::provider::ChatSetModel;
+use hutan_protocol::recovery::{Lost, Recovery, RecoveryAck, RecoveryAcked, RecoveryKind};
 use hutan_protocol::tree::{AgentTree, NodeReport};
 use hutan_protocol::worktree::Placement;
 use hutan_storage::{self as stored_rows, SessionRow, Storage, StorageError, WorkspaceRow, Write};
@@ -51,12 +52,16 @@ use crate::harness::{Harnesses, is_harness_agent};
 use crate::placement::{Occupant, PlacementCache, shared_with};
 use crate::projects::{self, Assignment, Folder, HomeRules, Ident};
 use crate::providers::ProviderService;
+use crate::recovery;
 use crate::restore::{self, Stored};
 use crate::terminals::{TerminalEntry, TerminalHub};
 use crate::tree::{self, TreeState};
 
 /// Commands waiting in the mailbox before senders wait their turn.
 const MAILBOX_CAPACITY: usize = 256;
+
+/// Why a session that was alive is listed, not started, under `restore_sessions = "stopped"`.
+const STOPPED_MODE_REASON: &str = "restore_sessions is \"stopped\"";
 
 /// Time a terminal gets to react to SIGHUP before it is killed.
 pub const STOP_GRACE: Duration = Duration::from_secs(3);
@@ -105,6 +110,15 @@ enum Command {
     DeleteWorkspace(WorkspaceDelete, Reply<()>),
     /// Input or output of a terminal; from its watcher task and the input path.
     Activity(TerminalId),
+    /// Input reached a terminal; the flag says it was the user's, not an agent's.
+    Input(TerminalId, bool),
+    /// The user acted in the session (`chat.send`): what a restart did to it is old news.
+    UserAction(SessionId),
+    /// `session.recovery_ack`.
+    RecoveryAck(RecoveryAck, Reply<RecoveryAcked>),
+    /// Something a restart cost the session, found after the registry restored it (a task
+    /// that failed with it).
+    RecoveryLost(SessionId, Lost),
     Snapshot(Reply<SessionSnapshot>),
     SessionCounts(Reply<SessionCounts>),
     /// The assignment is present when the request names no workspace.
@@ -356,9 +370,25 @@ impl RegistryHandle {
         self.ask(|r| Command::DeleteWorkspace(req, r)).await
     }
 
-    /// Input reached `terminal`. Never waits: a full mailbox just misses one activity note.
-    pub fn note_activity(&self, terminal: TerminalId) {
-        let _ = self.tx.try_send(Command::Activity(terminal));
+    /// Input reached `terminal`; `by_user` unless an agent typed it. Never waits: a full
+    /// mailbox just misses one note (the next keystroke makes it again).
+    pub fn note_input(&self, terminal: TerminalId, by_user: bool) {
+        let _ = self.tx.try_send(Command::Input(terminal, by_user));
+    }
+
+    /// The user acted in a session that is not a terminal (`chat.send`).
+    pub fn note_user_action(&self, session: SessionId) {
+        let _ = self.tx.try_send(Command::UserAction(session));
+    }
+
+    /// `session.recovery_ack`: dismisses what the last restart did to one session, or to all.
+    pub async fn ack_recovery(&self, req: RecoveryAck) -> Result<RecoveryAcked, ErrorBody> {
+        self.ask(|r| Command::RecoveryAck(req, r)).await
+    }
+
+    /// A restart cost the session something the registry could not know when it restored it.
+    pub async fn note_recovery_loss(&self, session: SessionId, lost: Lost) {
+        let _ = self.tx.send(Command::RecoveryLost(session, lost)).await;
     }
 
     pub async fn snapshot(&self) -> Result<SessionSnapshot, ErrorBody> {
@@ -523,6 +553,9 @@ struct SessionEntry {
     tree: TreeState,
     /// What an agent chat session is (`kind` harness); such a session has no terminal.
     chat: Option<ChatSpec>,
+    /// The command line running in the foreground of the terminal (the last running block,
+    /// secrets removed), for the next start's `session.recovery`.
+    running_command: Option<String>,
 }
 
 impl SessionEntry {
@@ -548,7 +581,11 @@ impl SessionEntry {
             warn!(session = %self.info.id, %error, "could not signal the terminal");
         }
         if self.chat.is_some() {
-            chats.stop(self.info.id);
+            if self.keep_live.is_some() {
+                chats.stop_for_daemon(self.info.id);
+            } else {
+                chats.stop(self.info.id);
+            }
         }
     }
 
@@ -633,6 +670,8 @@ struct SessionRegistry {
     activity_flush_at: Option<Instant>,
     /// When the earliest held-back `agent.tree_updated` may go out.
     tree_flush_at: Option<Instant>,
+    /// The commands running in terminals changed since they were stored.
+    commands_dirty: bool,
     /// The git checkout of the directories sessions work in (`SessionInfo.placement`).
     placements: PlacementCache,
 }
@@ -719,9 +758,15 @@ pub fn spawn(
         flush_at: None,
         activity_flush_at: None,
         tree_flush_at: None,
+        commands_dirty: false,
         placements: PlacementCache::default(),
     };
-    registry.restore_sessions(stored.sessions, config.restore, stored.agent_trees);
+    registry.restore_sessions(
+        stored.sessions,
+        config.restore,
+        stored.agent_trees,
+        stored.facts,
+    );
     tokio::spawn(registry.run(rx));
     RegistryHandle {
         tx,
@@ -1024,6 +1069,25 @@ impl SessionRegistry {
                     let _ = reply.send(self.delete_workspace(req));
                 }
                 Command::Activity(terminal) => self.on_activity(terminal),
+                Command::Input(terminal, by_user) => {
+                    self.on_activity(terminal);
+                    if by_user && let Some(index) = self.terminal_index(terminal) {
+                        self.clear_recovery(index);
+                    }
+                }
+                Command::UserAction(session) => {
+                    if let Ok(index) = self.session_index(session) {
+                        self.clear_recovery(index);
+                    }
+                }
+                Command::RecoveryAck(req, reply) => {
+                    let _ = reply.send(self.ack_recovery(req));
+                }
+                Command::RecoveryLost(session, lost) => {
+                    if let Ok(index) = self.session_index(session) {
+                        self.add_recovery_loss(index, lost);
+                    }
+                }
                 Command::Snapshot(reply) => {
                     // The actor is the only publisher of the state it snapshots, so the bus's
                     // last seq is exactly the watermark of this state.
@@ -1884,6 +1948,7 @@ impl SessionRegistry {
             chat: None,
             placement: self.placement_of(spec.cwd.as_deref()),
             folder: spec.cwd.clone(),
+            recovery: None,
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -1907,6 +1972,7 @@ impl SessionRegistry {
             agent_session_id: None,
             tree: TreeState::new(session_id),
             chat: None,
+            running_command: None,
         });
         let index = self.sessions.len() - 1;
         // A new session is activity; the workspace announcement that follows the session's
@@ -1991,6 +2057,7 @@ impl SessionRegistry {
                 self.sessions[index].advance(SessionEvent::Failed {
                     reason: error.to_string(),
                 });
+                self.recovery_failed(index, error.to_string());
             }
         }
         self.emit_session(index);
@@ -2015,6 +2082,7 @@ impl SessionRegistry {
         }
         session.request_stop(&self.chats);
         session.stop_waiters.push(reply);
+        self.clear_recovery(index);
     }
 
     fn restart_session(&mut self, id: SessionId) -> Result<SessionInfo, ErrorBody> {
@@ -2026,6 +2094,7 @@ impl SessionRegistry {
                 format!("session {id} is still running; stop it first"),
             ));
         }
+        session.info.recovery = None;
         if session.chat.is_some() {
             return Ok(self.restart_chat(index));
         }
@@ -2055,6 +2124,94 @@ impl SessionRegistry {
         self.emit_session(index);
         self.start_terminal(index);
         Ok(self.sessions[index].info.clone())
+    }
+
+    // Recovery --------------------------------------------------------------------------------
+
+    /// Remembers the command a terminal runs in the foreground, until it finishes: what the
+    /// next start can say was running when the daemon ended. A stop in progress freezes it
+    /// (the hang-up makes the shell prompt again, which is not the command finishing).
+    fn note_running_command(&mut self, index: usize, block: &hutan_protocol::blocks::Block) {
+        use hutan_protocol::blocks::BlockState;
+        let session = &mut self.sessions[index];
+        if session.stopping || session.keep_live.is_some() {
+            return;
+        }
+        let command = match block.state {
+            BlockState::Running => block.command.as_deref().and_then(recovery::bounded_command),
+            BlockState::Finished | BlockState::Prompt => None,
+            BlockState::Truncated => return,
+        };
+        if session.running_command != command {
+            session.running_command = command;
+            self.commands_dirty = true;
+            self.flush_at
+                .get_or_insert_with(|| Instant::now() + DIRTY_WRITE_INTERVAL);
+        }
+    }
+
+    /// Tells the clients what changed in the session's `recovery` (it is not stored).
+    fn announce_recovery(&mut self, index: usize) {
+        let session = self.sessions[index].info.clone();
+        self.emit(&Event::SessionUpdated { session });
+    }
+
+    /// What a restart did to the session no longer needs to be said: the user dismissed it or
+    /// acted in the session. Returns whether there was something.
+    fn clear_recovery(&mut self, index: usize) -> bool {
+        if self.sessions[index].info.recovery.take().is_none() {
+            return false;
+        }
+        self.announce_recovery(index);
+        true
+    }
+
+    /// `session.recovery_ack`.
+    fn ack_recovery(&mut self, req: RecoveryAck) -> Result<RecoveryAcked, ErrorBody> {
+        if let Some(id) = req.session_id {
+            self.session_index(id)?;
+        }
+        let mut sessions = Vec::new();
+        for index in 0..self.sessions.len() {
+            if req
+                .session_id
+                .is_some_and(|id| id != self.sessions[index].info.id)
+            {
+                continue;
+            }
+            if self.clear_recovery(index) {
+                sessions.push(self.sessions[index].info.id);
+            }
+        }
+        Ok(RecoveryAcked { sessions })
+    }
+
+    /// Adds what a restart cost the session; only a session that has a recovery has one.
+    fn add_recovery_loss(&mut self, index: usize, lost: Lost) {
+        let Some(recovery) = &mut self.sessions[index].info.recovery else {
+            return;
+        };
+        if recovery.lost.contains(&lost) {
+            return;
+        }
+        recovery.lost.push(lost);
+        self.announce_recovery(index);
+    }
+
+    /// The session came back as asked but then did not stay: a recovery that says it runs
+    /// is replaced by what happened (`reason`).
+    fn recovery_failed(&mut self, index: usize, reason: String) {
+        let Some(recovery) = &mut self.sessions[index].info.recovery else {
+            return;
+        };
+        if matches!(
+            recovery.kind,
+            RecoveryKind::ShellRespawned { .. }
+                | RecoveryKind::AgentResumed { .. }
+                | RecoveryKind::ChatResumed { .. }
+        ) {
+            recovery.kind = RecoveryKind::NotRestarted { reason };
+        }
     }
 
     fn rename_session(&mut self, req: SessionRename) -> Result<SessionInfo, ErrorBody> {
@@ -2286,10 +2443,13 @@ impl SessionRegistry {
                     self.persist_session(index);
                 }
             }
-            TerminalMeta::Block(block) => self.emit(&Event::TerminalBlock {
-                terminal_id: terminal,
-                block,
-            }),
+            TerminalMeta::Block(block) => {
+                self.note_running_command(index, &block);
+                self.emit(&Event::TerminalBlock {
+                    terminal_id: terminal,
+                    block,
+                });
+            }
             TerminalMeta::PromptMark(_) => {}
         }
     }
@@ -2302,11 +2462,20 @@ impl SessionRegistry {
         let code = status.code;
         let signal = status.signal;
         let session = &mut self.sessions[index];
+        let on_its_own = !session.stopping && session.keep_live.is_none();
         session.advance(if session.stopping {
             SessionEvent::StopCompleted
         } else {
             SessionEvent::ProcessExited { code, signal }
         });
+        if on_its_own {
+            // Kept while the daemon shuts down: that exit is ours; the program still has no
+            // command running that the next start should remember either way.
+            session.running_command = None;
+            self.commands_dirty = true;
+            self.recovery_failed(index, terminal_exit_reason(code, signal));
+        }
+        let session = &mut self.sessions[index];
         // The agent died with the process. A daemon shutdown keeps the resume reference and
         // the tree as it was: the next daemon starts the agent again and marks the tree
         // restored.
@@ -2548,6 +2717,7 @@ impl SessionRegistry {
             chat: Some(chat_info(&spec)),
             placement: self.placement_of(Some(&req.cwd)),
             folder: Some(req.cwd.clone()),
+            recovery: None,
         };
         self.publish(&Event::SessionUpdated {
             session: info.clone(),
@@ -2575,6 +2745,7 @@ impl SessionRegistry {
             agent_session_id: None,
             tree: TreeState::new(session_id),
             chat: Some(spec),
+            running_command: None,
         });
         let index = self.sessions.len() - 1;
         let workspace = self.sessions[index].info.workspace_id;
@@ -2854,6 +3025,16 @@ impl SessionRegistry {
         let session = &mut self.sessions[index];
         match outcome {
             Ok(started) => {
+                if !started.resumed
+                    && let Some(Recovery {
+                        kind: RecoveryKind::ChatResumed { thread_id, .. },
+                        ..
+                    }) = &mut session.info.recovery
+                {
+                    // Asked to continue a conversation, got a new one: the journal still has
+                    // the old one.
+                    *thread_id = None;
+                }
                 if let Some(spec) = &mut session.chat {
                     spec.thread_id = Some(started.thread_id.clone());
                     spec.model = Some(started.model.clone());
@@ -2887,6 +3068,8 @@ impl SessionRegistry {
             Err(error) => {
                 warn!(session = %id, message = %error.message, "chat agent failed to start");
                 let stopping = session.stopping;
+                self.recovery_failed(index, format!("resuming failed: {}", error.message));
+                let session = &mut self.sessions[index];
                 session.advance(if stopping {
                     SessionEvent::StopCompleted
                 } else {
@@ -2986,6 +3169,10 @@ impl SessionRegistry {
         if !session.info.state.is_live() {
             return;
         }
+        if !session.stopping && session.keep_live.is_none() {
+            self.recovery_failed(index, exit_reason(exit));
+        }
+        let session = &mut self.sessions[index];
         session.advance(if session.stopping {
             SessionEvent::StopCompleted
         } else if exit.code == Some(0) && exit.signal.is_none() {
@@ -3046,7 +3233,13 @@ impl SessionRegistry {
 
     /// Rebuilds a stored chat session. A live one is started again (the agent resumes its
     /// conversation, the journal keeps the history) unless `mode` says to list it as stopped.
-    fn restore_chat(&mut self, row: SessionRow, mode: RestoreMode) -> ChatRestore {
+    fn restore_chat(
+        &mut self,
+        row: SessionRow,
+        mode: RestoreMode,
+        context: &recovery::Context,
+        facts: &recovery::Facts,
+    ) -> ChatRestore {
         let was_live = row.state.is_live();
         let (spec, unusable) = match serde_json::from_str::<ChatSpec>(&row.spec_json) {
             Ok(spec) => (spec, None),
@@ -3071,23 +3264,36 @@ impl SessionRegistry {
         let mut state = row.state.clone();
         let mut ended_at_ms = row.ended_at_ms;
         let mut action = ChatRestoreKind::Keep;
+        let cut_off = facts.interrupted_turns.contains(&row.id);
+        let mut recovery = context.ended(row.ended_at_ms);
         if was_live {
             ended_at_ms = Some(now_ms());
-            match (unusable, mode) {
+            let kind = match (unusable, mode) {
                 (Some(reason), _) => {
-                    state = SessionState::Failed { reason };
+                    state = SessionState::Failed {
+                        reason: reason.clone(),
+                    };
                     action = ChatRestoreKind::Rewrite;
+                    RecoveryKind::NotRestarted { reason }
                 }
                 (None, RestoreMode::Stopped) => {
                     state = SessionState::Stopped;
                     action = ChatRestoreKind::Rewrite;
+                    RecoveryKind::NotRestarted {
+                        reason: STOPPED_MODE_REASON.to_owned(),
+                    }
                 }
                 (None, RestoreMode::Respawn) => {
                     state = SessionState::Starting;
                     ended_at_ms = None;
                     action = ChatRestoreKind::Start;
+                    RecoveryKind::ChatResumed {
+                        thread_id: spec.thread_id.clone(),
+                        last_turn: recovery::last_turn(cut_off),
+                    }
                 }
-            }
+            };
+            recovery = Some(context.recovery(kind, recovery::lost(facts, row.id, cut_off)));
         }
         let default_title = format!("{} · chat", spec.agent);
         self.sessions.push(SessionEntry {
@@ -3107,6 +3313,7 @@ impl SessionRegistry {
                 chat: Some(chat_info(&spec)),
                 placement: None,
                 folder: row.cwd.clone(),
+                recovery,
             },
             spec: TerminalSpec {
                 command: vec![spec.agent.clone()],
@@ -3128,6 +3335,7 @@ impl SessionRegistry {
             agent_session_id: None,
             tree: TreeState::new(row.id),
             chat: Some(spec),
+            running_command: None,
         });
         let index = self.sessions.len() - 1;
         match action {
@@ -3180,7 +3388,9 @@ impl SessionRegistry {
         rows: Vec<SessionRow>,
         mode: RestoreMode,
         trees: HashMap<SessionId, ObservationTree>,
+        facts: recovery::Facts,
     ) {
+        let context = recovery::Context::new(facts.previous.as_ref(), now_ms());
         let mut respawn = Vec::new();
         let mut rewrite = Vec::new();
         let mut chat_starts = Vec::new();
@@ -3195,7 +3405,7 @@ impl SessionRegistry {
             }
             let moved = self.follow_moved_project(&mut row);
             if row.kind == SessionKind::Harness {
-                match self.restore_chat(row, mode) {
+                match self.restore_chat(row, mode, &context, &facts) {
                     ChatRestore::Start(index) => chat_starts.push(index),
                     ChatRestore::Rewrite(index) => rewrite.push(index),
                     ChatRestore::Keep => {}
@@ -3227,16 +3437,23 @@ impl SessionRegistry {
             let mut restore_argv = None;
             let mut cwd = row.cwd.clone();
             let mut action = None;
+            let mut recovery = context.ended(row.ended_at_ms);
             if was_live {
                 ended_at_ms = Some(now_ms());
-                match (unusable, mode) {
+                let kind = match (unusable, mode) {
                     (Some(reason), _) => {
-                        state = SessionState::Failed { reason };
+                        state = SessionState::Failed {
+                            reason: reason.clone(),
+                        };
                         action = Some(false);
+                        RecoveryKind::NotRestarted { reason }
                     }
                     (None, RestoreMode::Stopped) => {
                         state = SessionState::Stopped;
                         action = Some(false);
+                        RecoveryKind::NotRestarted {
+                            reason: STOPPED_MODE_REASON.to_owned(),
+                        }
                     }
                     (None, RestoreMode::Respawn) => {
                         state = SessionState::Starting;
@@ -3252,8 +3469,18 @@ impl SessionRegistry {
                             .filter(|dir| dir.is_dir())
                             .or_else(|| spec.cwd.clone().filter(|dir| dir.is_dir()));
                         action = Some(true);
+                        match &restore_argv {
+                            Some(argv) => RecoveryKind::AgentResumed {
+                                resume_argv: argv.clone(),
+                            },
+                            None => RecoveryKind::ShellRespawned {
+                                cwd: cwd.clone(),
+                                was_running: facts.running_commands.get(&row.id).cloned(),
+                            },
+                        }
                     }
-                }
+                };
+                recovery = Some(context.recovery(kind, recovery::lost(&facts, row.id, false)));
             }
             let default_title = default_title(&spec);
             let state_is_live = state.is_live();
@@ -3273,6 +3500,7 @@ impl SessionRegistry {
                     chat: None,
                     placement: None,
                     folder: cwd,
+                    recovery,
                 },
                 spec,
                 default_title,
@@ -3291,6 +3519,7 @@ impl SessionRegistry {
                 agent_session_id: None,
                 tree: TreeState::new(row.id),
                 chat: None,
+                running_command: None,
             });
             let index = self.sessions.len() - 1;
             match action {
@@ -3301,6 +3530,8 @@ impl SessionRegistry {
                 None => {}
             }
         }
+        // What the sessions ran when the previous daemon ended is not running now.
+        recovery::store_running_commands(&self.storage, std::iter::empty());
         // Before the respawns announce anything: the counts of a restored workspace are right
         // from the start.
         self.recount_sessions();
@@ -3387,6 +3618,14 @@ impl SessionRegistry {
 
     fn flush_dirty(&mut self) {
         self.flush_at = None;
+        if std::mem::take(&mut self.commands_dirty) {
+            recovery::store_running_commands(
+                &self.storage,
+                self.sessions
+                    .iter()
+                    .filter_map(|s| Some((s.info.id, s.running_command.clone()?))),
+            );
+        }
         for index in 0..self.sessions.len() {
             if self.sessions[index].dirty {
                 self.persist_session(index);
@@ -3783,6 +4022,15 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
 }
 
 /// Why a chat agent that ended on its own is a failure.
+/// What became of a respawned terminal's process that ended by itself.
+fn terminal_exit_reason(code: Option<i32>, signal: Option<i32>) -> String {
+    match (code, signal) {
+        (_, Some(signal)) => format!("it was killed by signal {signal} after the restart"),
+        (Some(code), None) => format!("it exited with code {code} after the restart"),
+        (None, None) => "it exited after the restart".to_owned(),
+    }
+}
+
 fn exit_reason(exit: &ExitInfo) -> String {
     let how = match (exit.code, exit.signal) {
         (_, Some(signal)) => format!("killed by signal {signal}"),

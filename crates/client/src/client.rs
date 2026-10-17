@@ -39,6 +39,7 @@ use hutan_protocol::provider::{
     ChatSetModel, DiscoveredProvider, ProviderAdd, ProviderDiscovery, ProviderInfo, ProviderList,
     ProviderModels, ProviderRef, ProviderResult, ProviderSetCredential, ProviderUpdate,
 };
+use hutan_protocol::recovery::{RecoveryAck, RecoveryAcked};
 use hutan_protocol::render::TerminalRender;
 use hutan_protocol::resources::{
     AgentInterrupt, AgentInterrupted, ProcessSignal, ProcessSignaled, ResourceSample,
@@ -123,6 +124,8 @@ pub(crate) const QUESTIONS_CAPABILITY: &str = "chat.questions";
 /// Capability for `task.review`, `worktree.commit`, the delivery facet of tasks and the scope
 /// of `worktree.diff` (protocol 0.25).
 pub(crate) const TASK_REVIEW_CAPABILITY: &str = "task.review";
+/// Capability for `SessionInfo.recovery` and `session.recovery_ack` (protocol 0.26).
+pub(crate) const RECOVERY_CAPABILITY: &str = "session.recovery";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -148,6 +151,7 @@ const CAPABILITIES: &[&str] = &[
     RICH_INPUT_CAPABILITY,
     QUESTIONS_CAPABILITY,
     TASK_REVIEW_CAPABILITY,
+    RECOVERY_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -712,6 +716,24 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == TASK_REVIEW_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `session.recovery` (protocol 0.26): sessions
+    /// say what a daemon restart did to them.
+    pub fn supports_recovery(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == RECOVERY_CAPABILITY)
+    }
+
+    /// Dismisses what a restart did to one session, or to every session (`session.recovery_ack`).
+    pub async fn session_recovery_ack(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<RecoveryAcked, ClientError> {
+        self.call(Request::SessionRecoveryAck(RecoveryAck { session_id }))
+            .await
     }
 
     /// The files a checkout changed against its base (`worktree.diff`).

@@ -92,6 +92,7 @@ impl Render for Workbench {
         let menu = self.render_context_menu(cx);
         let modal = self.render_modal(cx);
         let daemon_popover = self.render_daemon_popover(cx);
+        let recovery = self.render_recovery_summary(cx);
         let sheet = self.render_settings_sheet(cx);
         let setup = self.render_setup(window, cx);
 
@@ -149,6 +150,7 @@ impl Render for Workbench {
         )
         .child(status)
         .children(daemon_popover)
+        .children(recovery)
         .children(edge_targets)
         .children(palette)
         .children(picker)

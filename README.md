@@ -125,6 +125,7 @@ hutan new --title demo -- /bin/sh -c 'echo hello; exec $SHELL'
 hutan ls
 hutan attach demo           # detach with ctrl+\ then d
 hutan history demo          # scrollback as plain text
+hutan recovery              # what the last hutand restart did to each session
 hutan ws ls                 # workspaces (Home is always there)
 hutan notify watch          # notification intents as they happen
 hutan daemon stop --stop-sessions

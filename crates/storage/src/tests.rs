@@ -837,6 +837,38 @@ fn app_meta_and_epoch_history() {
 }
 
 #[test]
+fn a_clean_stop_is_noted_on_its_epoch_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let meta = storage.app_meta();
+    let (first, second, unknown) = (Epoch::new(), Epoch::new(), Epoch::new());
+    meta.record_epoch(first, 10).unwrap();
+    meta.record_epoch(second, 20).unwrap();
+    meta.record_epoch_stop(first, 15).unwrap();
+    // A stop of a run that is not recorded changes nothing, and neither does a second one.
+    meta.record_epoch_stop(unknown, 16).unwrap();
+    meta.record_epoch_stop(first, 99).unwrap();
+    let history = meta.epoch_history().unwrap();
+    assert_eq!(history[0].end, crate::EpochEnd::Clean { at_ms: 15 });
+    assert_eq!(
+        history[1].end,
+        crate::EpochEnd::Open,
+        "never stopped: a crash"
+    );
+
+    // Records of builds that did not track the end read back as untracked.
+    meta.set(
+        "epoch_history",
+        &format!(r#"[{{"epoch":"{first}","started_at_ms":1}}]"#),
+    )
+    .unwrap();
+    assert_eq!(
+        meta.epoch_history().unwrap()[0].end,
+        crate::EpochEnd::Untracked
+    );
+}
+
+#[test]
 fn concurrent_submitters_keep_per_entity_order() {
     const THREADS: usize = 8;
     const ROUNDS: usize = 200;

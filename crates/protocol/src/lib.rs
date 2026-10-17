@@ -11,6 +11,8 @@
 //! - [`task`] also carries the delivery facet (`delivery`, `delivery_history`, `after_policy`),
 //!   `task.review` and `worktree.commit`, and [`worktree`]'s `worktree.diff` says what is
 //!   committed and what is not (protocol 0.25, capability `task.review`).
+//! - [`recovery`]: what a daemon restart did to each session, `session.recovery_ack` (protocol
+//!   0.26, capability `session.recovery`).
 //! - [`assistant`] also carries rich input: `image` and `pasted_text` attachments, `file` for
 //!   every chat, `ChatInfo.images`, error code `unsupported` (protocol 0.23, capability
 //!   `chat.rich_input`).
@@ -45,6 +47,7 @@ pub mod messages;
 pub mod notify;
 pub mod project;
 pub mod provider;
+pub mod recovery;
 pub mod render;
 pub mod resources;
 pub mod task;
@@ -62,7 +65,7 @@ use serde::{Deserialize, Serialize};
 /// Version spoken by this build. Minor = additive, major = breaking (ADR 0002).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 25,
+    minor: 26,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

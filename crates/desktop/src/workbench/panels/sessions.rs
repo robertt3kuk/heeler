@@ -19,8 +19,8 @@ use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
 
 use super::common::{
-    age_label, agent_badge, kind_icon, panel_header_with, placement, placement_badge, state_dot,
-    tone_color,
+    age_label, agent_badge, kind_icon, panel_header_with, placement, placement_badge,
+    recovery_chip, state_dot, tone_color,
 };
 use crate::sessions::tree::{self, Node, ProjectNode, folder_label, session_folder};
 use crate::settings::{
@@ -1289,6 +1289,16 @@ impl SessionsPanel {
             &self.env.regions,
             cx,
         );
+        let mut recovery = hutan_client::recovery::chip(info).map(|chip| {
+            recovery_chip(
+                &theme,
+                &chip,
+                BadgeSite::Row,
+                info.id,
+                &self.env.regions,
+                cx,
+            )
+        });
         let has = |field: &str| settings.row.iter().any(|f| f == field);
 
         let mut line = div()
@@ -1314,7 +1324,8 @@ impl SessionsPanel {
                             .truncate()
                             .child(SharedString::from(info.title.clone())),
                     )
-                    .children(badge.take()),
+                    .children(badge.take())
+                    .children(recovery.take()),
                 "age" => line.child(
                     div()
                         .flex_none()

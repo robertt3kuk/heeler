@@ -41,7 +41,7 @@ async fn new_then_ls_json_shows_a_running_session() {
     assert_eq!(
         header,
         [
-            "ID", "TERMINAL", "STATE", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
+            "ID", "TERMINAL", "STATE", "RECOVERY", "PROJECT", "PLACE", "TITLE", "FOLDER", "AGE"
         ]
     );
     let row = lines.next().unwrap();

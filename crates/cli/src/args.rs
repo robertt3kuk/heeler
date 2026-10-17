@@ -63,6 +63,9 @@ pub enum Command {
     Stop(TargetArgs),
     /// Start an ended session again (new terminal, same id)
     Restart(TargetArgs),
+    /// What the last hutand restart did to each session (shells respawned, agents resumed, turns
+    /// interrupted, sessions not restarted); `hutan recovery ack` dismisses it
+    Recovery(RecoveryArgs),
     /// Change a session's title
     Rename(RenameArgs),
     /// Print a session's output (scrollback and screen) as plain text, oldest first
@@ -947,6 +950,28 @@ const TARGET_HELP: &str =
 pub struct TargetArgs {
     #[arg(help = TARGET_HELP)]
     pub target: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RecoveryArgs {
+    #[command(subcommand)]
+    pub command: Option<RecoveryCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RecoveryCommand {
+    /// Dismiss what a restart did to one session, or to every session (the chips of the desktop
+    /// and the RECOVERY column of `hutan ls` go away; nothing else changes)
+    Ack(RecoveryAckArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RecoveryAckArgs {
+    /// Dismiss every session's recovery
+    #[arg(long, conflicts_with = "target")]
+    pub all: bool,
+    #[arg(help = TARGET_HELP, required_unless_present = "all")]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Args)]

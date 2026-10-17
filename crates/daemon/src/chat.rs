@@ -59,6 +59,11 @@ use crate::registry::{self, ChatNotifier};
 pub const AGENT_CODEX: &str = "codex";
 /// Names of the temporary files that hold clipboard images for Codex (`<home>/tmp/`).
 const TEMP_IMAGE_PREFIX: &str = "img-";
+/// The `error` of a turn row that a daemon shutdown cancelled; the next start tells such a turn
+/// from one the user cancelled (`session.recovery`, `last_turn: interrupted`).
+pub const DAEMON_STOP_TURN_ERROR: &str = "hutand stopped during the turn";
+/// The `decided_by` of an approval row that a daemon shutdown expired.
+pub const DAEMON_STOP_DECIDER: &str = "daemon_stop";
 /// The model gateway: no agent, a provider's chat API.
 pub use hutan_protocol::assistant::AGENT_ASSISTANT;
 pub use hutan_protocol::provider::AGENT_DIRECT;
@@ -139,6 +144,10 @@ struct Live {
     open_turn: Mutex<Option<TurnId>>,
     /// The user (or a daemon shutdown) asked to end the session.
     stopping: AtomicBool,
+    /// The stop is the daemon's own shutdown, not the user's: the session is meant to come
+    /// back with the next daemon, and what the shutdown cut off is marked as such (see
+    /// [`DAEMON_STOP_TURN_ERROR`]).
+    daemon_stop: AtomicBool,
     /// The open messages and reasoning blocks of the running turn. Numbering an event and
     /// folding it in happen under this lock, so a snapshot is exact (see [`crate::partial`]).
     partials: Mutex<Partials>,
@@ -395,6 +404,7 @@ impl ChatManager {
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            daemon_stop: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
             delivery: Mutex::new(Delivery::default()),
         });
@@ -450,6 +460,7 @@ impl ChatManager {
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            daemon_stop: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
             delivery: Mutex::new(Delivery::default()),
         });
@@ -512,6 +523,7 @@ impl ChatManager {
             busy: AtomicBool::new(false),
             open_turn: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            daemon_stop: AtomicBool::new(false),
             partials: Mutex::new(Partials::default()),
             delivery: Mutex::new(Delivery::default()),
         });
@@ -574,6 +586,15 @@ impl ChatManager {
                 Backend::Direct(session) => session.shutdown().await,
             }
         });
+    }
+
+    /// [`stop`](Self::stop) for the daemon's own shutdown: the session comes back with the next
+    /// daemon, so a turn and approvals it cuts off are marked as the daemon's doing.
+    pub fn stop_for_daemon(&self, id: SessionId) {
+        if let Some(live) = lock(&self.live).get(&id) {
+            live.daemon_stop.store(true, Ordering::Release);
+        }
+        self.stop(id);
     }
 
     /// Ends the session's agent now: SIGKILL for the harness process and everything below it
@@ -1293,7 +1314,12 @@ impl ChatManager {
                     AgentEventKind::TurnFailed { message, .. } => {
                         (ChatTurnStatus::Failed, Some(message.clone()))
                     }
-                    _ => (ChatTurnStatus::Cancelled, None),
+                    _ => (
+                        ChatTurnStatus::Cancelled,
+                        live.daemon_stop
+                            .load(Ordering::Acquire)
+                            .then(|| DAEMON_STOP_TURN_ERROR.to_owned()),
+                    ),
                 };
                 self.write_turn(&event, status, error);
                 turn_flag = Some(false);
@@ -1332,7 +1358,12 @@ impl ChatManager {
             } => {
                 let pending = lock(&self.approvals).remove(approval_id);
                 if let Some(pending) = pending {
-                    self.write_approval_outcome(&pending, outcome, ts_ms);
+                    self.write_approval_outcome(
+                        &pending,
+                        outcome,
+                        ts_ms,
+                        live.daemon_stop.load(Ordering::Acquire),
+                    );
                     resolved = Some((*approval_id, outcome.clone(), decided_by.clone()));
                 }
             }
@@ -1361,7 +1392,12 @@ impl ChatManager {
             } => {
                 let pending = lock(&self.questions).remove(question_id);
                 if let Some(pending) = pending {
-                    self.write_question_outcome(&pending, outcome, ts_ms);
+                    self.write_question_outcome(
+                        &pending,
+                        outcome,
+                        ts_ms,
+                        live.daemon_stop.load(Ordering::Acquire),
+                    );
                     settled = Some((*question_id, outcome.clone(), decided_by.clone()));
                 }
             }
@@ -1534,7 +1570,13 @@ impl ChatManager {
         registry::log_write(self.storage.approvals().upsert(row), "an approval request");
     }
 
-    fn write_approval_outcome(&self, pending: &Pending, outcome: &PermissionOutcome, at_ms: u64) {
+    fn write_approval_outcome(
+        &self,
+        pending: &Pending,
+        outcome: &PermissionOutcome,
+        at_ms: u64,
+        daemon_stop: bool,
+    ) {
         let info = &pending.info;
         let options_json = serde_json::to_string(&info.options).unwrap_or_else(|_| "[]".to_owned());
         let (outcome, option_id, decided_by) = match outcome {
@@ -1543,7 +1585,11 @@ impl ChatManager {
                 Some(option_id.clone()),
                 Some(pending.decided_by.unwrap_or("other").to_owned()),
             ),
-            PermissionOutcome::Expired => (ApprovalOutcome::Expired, None, None),
+            PermissionOutcome::Expired => (
+                ApprovalOutcome::Expired,
+                None,
+                daemon_stop.then(|| DAEMON_STOP_DECIDER.to_owned()),
+            ),
         };
         let row = ApprovalRow {
             id: info.id,
@@ -1583,6 +1629,7 @@ impl ChatManager {
         pending: &PendingQuestion,
         outcome: &QuestionOutcome,
         at: u64,
+        daemon_stop: bool,
     ) {
         let info = &pending.info;
         let (stored, decided_by) = match outcome {
@@ -1591,6 +1638,8 @@ impl ChatManager {
             QuestionOutcome::Cancelled => (StoredOutcome::Cancelled, true),
             QuestionOutcome::Expired => (StoredOutcome::Expired, false),
         };
+        // An expiry the daemon's own shutdown caused says so (`session.recovery`).
+        let stopped_by_daemon = daemon_stop && matches!(outcome, QuestionOutcome::Expired);
         let row = QuestionRow {
             id: info.id,
             session_id: info.session_id,
@@ -1599,26 +1648,37 @@ impl ChatManager {
             requested_at_ms: info.requested_at_ms,
             resolved_at_ms: Some(at),
             outcome: Some(stored),
-            decided_by: decided_by.then(|| pending.decided_by.unwrap_or("other").to_owned()),
+            decided_by: if stopped_by_daemon {
+                Some(DAEMON_STOP_DECIDER.to_owned())
+            } else {
+                decided_by.then(|| pending.decided_by.unwrap_or("other").to_owned())
+            },
         };
         registry::log_write(self.storage.questions().upsert(row), "a question outcome");
     }
 }
 
-/// Marks approvals and questions a crashed daemon left open as expired (their agents are gone).
-pub fn expire_dangling_approvals(storage: &Storage) -> Result<(), hutan_storage::StorageError> {
+/// Marks approvals and questions a crashed daemon left open as expired (their agents are gone)
+/// and returns them as they were.
+pub fn expire_dangling_approvals(
+    storage: &Storage,
+) -> Result<(Vec<ApprovalRow>, Vec<QuestionRow>), hutan_storage::StorageError> {
     let now = registry::now_ms();
-    for mut row in storage.approvals().unresolved()? {
-        row.resolved_at_ms = Some(now);
-        row.outcome = Some(ApprovalOutcome::Expired);
-        storage.approvals().upsert(row)?;
+    let open = storage.approvals().unresolved()?;
+    for row in &open {
+        let mut expired = row.clone();
+        expired.resolved_at_ms = Some(now);
+        expired.outcome = Some(ApprovalOutcome::Expired);
+        storage.approvals().upsert(expired)?;
     }
-    debug!("dangling approvals expired");
-    for mut row in storage.questions().unresolved()? {
-        row.resolved_at_ms = Some(now);
-        row.outcome = Some(StoredOutcome::Expired);
-        storage.questions().upsert(row)?;
+    debug!(count = open.len(), "dangling approvals expired");
+    let open_questions = storage.questions().unresolved()?;
+    for row in &open_questions {
+        let mut expired = row.clone();
+        expired.resolved_at_ms = Some(now);
+        expired.outcome = Some(StoredOutcome::Expired);
+        storage.questions().upsert(expired)?;
     }
-    debug!("dangling questions expired");
-    Ok(())
+    debug!(count = open_questions.len(), "dangling questions expired");
+    Ok((open, open_questions))
 }

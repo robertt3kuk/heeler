@@ -40,6 +40,7 @@ use hutan_protocol::notify::{
 };
 use hutan_protocol::project::*;
 use hutan_protocol::provider::*;
+use hutan_protocol::recovery::*;
 use hutan_protocol::render::*;
 use hutan_protocol::resources::*;
 use hutan_protocol::task::*;
@@ -82,6 +83,21 @@ fn session_info() -> SessionInfo {
         chat: None,
         placement: None,
         folder: None,
+        recovery: None,
+    }
+}
+
+/// A session a daemon start restored.
+fn recovered(kind: RecoveryKind, lost: Vec<Lost>) -> SessionInfo {
+    SessionInfo {
+        recovery: Some(Recovery {
+            kind,
+            previous_epoch: Some(epoch()),
+            daemon_stop: DaemonStop::Crashed,
+            restarted_at_ms: 1_791_894_300_000,
+            lost,
+        }),
+        ..session_info()
     }
 }
 
@@ -2051,6 +2067,16 @@ fn requests() -> Vec<(&'static str, Request)> {
                 message: "Add login".into(),
             }),
         ),
+        (
+            "session_recovery_ack",
+            Request::SessionRecoveryAck(RecoveryAck {
+                session_id: Some(sid()),
+            }),
+        ),
+        (
+            "session_recovery_ack_all",
+            Request::SessionRecoveryAck(RecoveryAck { session_id: None }),
+        ),
     ]
 }
 
@@ -2725,6 +2751,92 @@ fn events() -> Vec<(&'static str, Event)> {
             "task_updated_merged",
             Event::TaskUpdated {
                 task: merged_task(),
+            },
+        ),
+        (
+            "session_updated_recovery_shell",
+            Event::SessionUpdated {
+                session: recovered(
+                    RecoveryKind::ShellRespawned {
+                        cwd: Some("/repo".into()),
+                        was_running: Some("npm run dev".into()),
+                    },
+                    vec![],
+                ),
+            },
+        ),
+        (
+            "session_updated_recovery_agent",
+            Event::SessionUpdated {
+                session: recovered(
+                    RecoveryKind::AgentResumed {
+                        resume_argv: vec!["claude".into(), "--resume".into(), "abc".into()],
+                    },
+                    vec![],
+                ),
+            },
+        ),
+        (
+            "session_updated_recovery_chat_interrupted",
+            Event::SessionUpdated {
+                session: recovered(
+                    RecoveryKind::ChatResumed {
+                        thread_id: Some("thr_1".into()),
+                        last_turn: LastTurn::Interrupted,
+                    },
+                    vec![
+                        Lost::Turn,
+                        Lost::Approvals { count: 2 },
+                        Lost::Questions { count: 1 },
+                        Lost::Task {
+                            task_id: "01K7F3B5N2Q9W8E4R6T1Y0V3TK".parse().unwrap(),
+                            title: "fix the build".into(),
+                        },
+                    ],
+                ),
+            },
+        ),
+        (
+            "session_updated_recovery_not_restarted",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    state: SessionState::Stopped,
+                    terminal_id: None,
+                    restored: true,
+                    recovery: Some(Recovery {
+                        kind: RecoveryKind::NotRestarted {
+                            reason: "restore_sessions is \"stopped\"".into(),
+                        },
+                        previous_epoch: None,
+                        daemon_stop: DaemonStop::Clean {
+                            at_ms: 1_791_894_290_000,
+                        },
+                        restarted_at_ms: 1_791_894_300_000,
+                        lost: vec![],
+                    }),
+                    ..session_info()
+                },
+            },
+        ),
+        (
+            "session_updated_recovery_ended_before",
+            Event::SessionUpdated {
+                session: SessionInfo {
+                    state: SessionState::Exited {
+                        code: Some(0),
+                        signal: None,
+                    },
+                    terminal_id: None,
+                    restored: true,
+                    recovery: Some(Recovery {
+                        kind: RecoveryKind::EndedBefore,
+                        previous_epoch: Some(epoch()),
+                        daemon_stop: DaemonStop::Unknown,
+                        restarted_at_ms: 1_791_894_300_000,
+                        lost: vec![],
+                    }),
+                    ..session_info()
+                },
             },
         ),
     ]
@@ -3948,6 +4060,16 @@ fn responses_match_fixtures() {
                 19,
                 &QuestionList {
                     questions: vec![question_info()],
+                },
+            )
+            .unwrap(),
+        ),
+        (
+            "recovery_acked",
+            ControlMessage::ok(
+                14,
+                &RecoveryAcked {
+                    sessions: vec![sid()],
                 },
             )
             .unwrap(),

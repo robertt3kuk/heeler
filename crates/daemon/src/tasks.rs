@@ -40,6 +40,7 @@ use hutan_protocol::messages::{
     AgentState, Event, SessionCreate, SessionInfo, SessionListFilter, SessionSpec, TerminalSpec,
     WorkspaceInfo, WorkspaceKind,
 };
+use hutan_protocol::recovery::Lost;
 use hutan_protocol::task::{
     TaskCreate, TaskDelete, TaskDeleted, TaskList, TaskListRequest, TaskReview, TaskReviewed,
     TaskStarted, TaskUpdate,
@@ -352,6 +353,7 @@ impl TaskService {
             .list_sessions(SessionListFilter::default())
             .await?
             .sessions;
+        let mut lost = Vec::new();
         {
             let mut st = this.state.lock();
             let running: Vec<TaskId> = st
@@ -380,10 +382,30 @@ impl TaskService {
                     }
                     None => {
                         info!(task = %id, "a running task lost its session with the last daemon");
+                        // The session that carried it says so (`session.recovery`).
+                        if let Some(slot) = st.tasks.get(&id)
+                            && let Some(session) = slot
+                                .task
+                                .sessions
+                                .iter()
+                                .rev()
+                                .find(|session| sessions.iter().any(|s| s.id == **session))
+                        {
+                            lost.push((
+                                *session,
+                                Lost::Task {
+                                    task_id: id,
+                                    title: slot.task.title.clone(),
+                                },
+                            ));
+                        }
                         this.apply(&mut st, id, TaskEvent::Fail, "interrupted".to_owned());
                     }
                 }
             }
+        }
+        for (session, lost) in lost {
+            this.registry.note_recovery_loss(session, lost).await;
         }
         Ok(this)
     }

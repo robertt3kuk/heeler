@@ -9,6 +9,7 @@
 //! - [`registry`]: the `SessionRegistry` actor (workspaces and terminal sessions, written
 //!   through to `hutan-storage` and restored from it at start).
 //! - [`restore`]: loading durable state and the rules for what is stored.
+//! - [`recovery`]: what a start did to each restored session (`SessionInfo.recovery`).
 //! - [`placement`]: which git checkout a session works in and which agents share one.
 //! - [`worktrees`]: git worktrees (`worktree.*`) on top of the git command line.
 //! - [`tasks`]: tasks with dependencies (`task.*`): finish detection, auto-start, restart.
@@ -63,6 +64,7 @@ pub mod placement;
 pub mod project_migration;
 pub mod projects;
 pub mod providers;
+pub mod recovery;
 pub mod registry;
 pub mod resources;
 pub mod restore;

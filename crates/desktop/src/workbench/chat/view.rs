@@ -27,7 +27,7 @@ use crate::sessions::SessionsStore;
 use crate::settings::ChatSettings;
 use crate::workbench::actions::{self, RestartSessionById};
 use crate::workbench::harnesses::harness_name;
-use crate::workbench::panels::{kind_icon, state_dot, tone_color};
+use crate::workbench::panels::{kind_icon, recovery_chip, state_dot, tone_color};
 use crate::workbench::render::probe;
 use crate::workbench::ui::{self, Mascot, StyledExt as _};
 use crate::workbench::view::Region;
@@ -758,6 +758,117 @@ impl ChatView {
         )
     }
 
+    /// What the last daemon restart did to this conversation, until the user dismisses it or
+    /// goes on: the chip, one sentence, and "Retry last message" when the turn was cut off.
+    fn render_recovery(
+        &self,
+        info: Option<&SessionInfo>,
+        look: &Look,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let info = info?;
+        let chip = hutan_client::recovery::chip(info)?;
+        let recovery = info.recovery.as_ref()?;
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let session = self.session;
+        let interrupted = matches!(
+            recovery.kind,
+            hutan_protocol::recovery::RecoveryKind::ChatResumed {
+                last_turn: hutan_protocol::recovery::LastTurn::Interrupted,
+                ..
+            }
+        );
+        let retry =
+            interrupted && info.state == SessionState::Idle && !self.model.read(cx).sending();
+        let tone = match chip.tone {
+            hutan_client::recovery::ChipTone::Info => theme.accent,
+            hutan_client::recovery::ChipTone::Warn => theme.warning,
+        };
+        let chip_element = recovery_chip(
+            theme,
+            &chip,
+            crate::workbench::view::BadgeSite::Tab,
+            session,
+            &self.regions,
+            cx,
+        );
+        Some(
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(tokens.spacing * 2.0))
+                .px(px(tokens.spacing * 3.0))
+                .py(px(tokens.spacing))
+                .border_b_1()
+                .border_color(theme.border)
+                .text_color(theme.muted)
+                .text_size(px(tokens.secondary_font_size))
+                .child(chip_element)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(tone)
+                        .child(SharedString::from(chip.detail.clone())),
+                )
+                .when(retry, |s| {
+                    s.child(
+                        button(
+                            "chat-recovery-retry",
+                            "Retry last message",
+                            ButtonKind::Secondary,
+                            true,
+                            look,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.retry_last_message(cx)))
+                        .child(probe(&self.regions, Region::Chat("retry-last"))),
+                    )
+                })
+                .child(
+                    button(
+                        "chat-recovery-dismiss",
+                        "Dismiss",
+                        ButtonKind::Ghost,
+                        true,
+                        look,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let ack = this
+                            .sessions
+                            .update(cx, |store, cx| store.ack_recovery(Some(this.session), cx));
+                        cx.spawn(async move |_, _| {
+                            // The session's next update says it; a failure leaves the chip.
+                            let _ = ack.await;
+                        })
+                        .detach();
+                    }))
+                    .child(probe(&self.regions, Region::Chat("recovery-dismiss"))),
+                )
+                .child(probe(&self.regions, Region::Chat("recovery")))
+                .into_any_element(),
+        )
+    }
+
+    /// Sends the last message of the conversation again (the restart cut its turn off).
+    fn retry_last_message(&mut self, cx: &mut Context<Self>) {
+        let task = self
+            .sessions
+            .update(cx, |store, cx| store.retry_last_message(self.session, cx));
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = task.await {
+                this.update(cx, |this, cx| {
+                    this.model.update(cx, |model, cx| {
+                        model.set_error(format!("Could not retry: {error}"), cx);
+                    });
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// The row above the transcript while the journal has events before the first one shown:
     /// "Load earlier" reads the page before it (scrolling to the top does the same).
     fn render_earlier(&self, look: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1077,6 +1188,7 @@ impl Render for ChatView {
         let gate = self.gate(info.as_ref(), cx);
         let header = self.render_header(info.as_ref(), &look, cx);
         let banner = self.render_banner(&look, cx);
+        let recovery = self.render_recovery(info.as_ref(), &look, cx);
         let earlier = self.render_earlier(&look, cx);
         let attach = self.render_attach(&look, cx);
         let composer = self.render_composer(&gate, window, &look, cx);
@@ -1133,6 +1245,7 @@ impl Render for ChatView {
             .flex_col()
             .bg(theme.bg)
             .child(header)
+            .children(recovery)
             .children(banner)
             .children(earlier)
             .child(div().relative().flex_1().min_h_0().child(body))
