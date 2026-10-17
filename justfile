@@ -25,7 +25,7 @@ deny:
 update-golden:
     UPDATE_GOLDEN=1 cargo nextest run -p hutan-protocol --locked
 
-# Measure the performance budgets B1-B6 (docs/perf.md); not part of the gate. Extra args: `just bench --only B1,B4`.
+# Measure the performance budgets B1-B6, B3p, B7-B10 (docs/perf.md); not part of the gate. Extra args: `just bench --only B1,B4`.
 bench *args:
     cargo run -p xtask --release --locked -- bench {{args}}
 

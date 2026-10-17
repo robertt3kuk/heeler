@@ -38,6 +38,105 @@ painted 213.
 
 `xtask bench` exits non-zero while a budget is missed. The gate (`just check`) does not run it.
 
+## Desktop surfaces: B3p, B7–B10 (slice P-1)
+
+Budgets from the P-1 brief; scenarios in `xtask/src/bench_ui.rs`, driven by the window itself
+(`HUTAN_BENCH_UI`, `crates/desktop/src/bench_ui.rs`) and timed by `crates/desktop/src/frames.rs`.
+Medians of 3 runs (`just bench --only B3,B7,B8,B9,B10`), release, same Mac as above, display
+60 Hz (16.67 ms, limit one frame + 2 ms = 18.67 ms). **Load:** a second agent tested the app and
+other agents built and ran tests at the same time (1-minute load average 2.4–15 during the
+runs); the harness repeats a run whose window was covered or not presented. Before = this
+harness on the code without the fixes below; after = with them.
+
+| # | Metric | Budget | Before | After | Result |
+|---|---|---|---|---|---|
+| B3 | Idle CPU, default layout, 30 s (see the setup note) | ≤ 0.5 % | 0.72 % (0.72, 0.75, 0.71) | 0.70 % (0.70, 0.68, 0.70) | **miss: platform floor** (below) |
+| B3p | Idle CPU, 20 projects, 3 workspaces, 56 terminals + 4 chats, 6 tasks; sidebar, Tasks, Resources, Agents open | ≤ 0.5 % | 0.76 % (0.84, 0.75, 0.76) | 0.82 % (0.78, 0.82, 0.83) | **miss: platform floor** |
+| B7a | Chat of 5 603 journal events (markdown, code, command and patch cards): open → first paint | ≤ 150 ms | 44.7 ms (38.6, 55.2, 44.7) | 54.0 ms (55.4, 44.6, 54.0) | pass (spread is load) |
+| B7b | Same: scroll to the top (all pages load) and back, frame interval p95 | ≤ 18.7 ms | 19.69 ms | 19.89 ms | **miss by 1.2 ms** (below) |
+| B7c | Same: desktop RSS growth | ≤ 60 MB | 10.8 MB | 15.1 MB | pass |
+| B8a | Reply streamed at 200 deltas/s for 24 s, composer typed into: frame interval p95 | ≤ 18.7 ms | 18.43 ms | 18.46 ms | pass |
+| B8b | Same: longest frame | ≤ 50 ms | 21.5 ms | 20.9 ms | pass |
+| B8c | Same: key → frame p95 (handlers + frame work) | ≤ 16 ms | 8.2 ms | 8.4 ms | pass |
+| B9a | 300 sessions / 40 projects: filter key p95 (handlers + frame work) | ≤ 16 ms | **54.1 ms** (64.8, 54.1, 39.8; p50 32.5) | **11.9 ms** (11.9, 16.5, 11.8; p50 7.3) | fixed (1 run in 3 at 16.5) |
+| B9b | Same: drag a project onto a workspace, frame interval p95 | ≤ 18.7 ms | **20.96 ms** (frame work p50 18.2 ms) | **18.81 ms** (frame work p50 3.0 ms) | 0.1 ms over: display floor |
+| B10 | ⌘1…⌘9 and ⌘P jumps over 10 terminals and 5 chats: key → first frame of the new item, p95 | ≤ 50 ms | 29.5 ms | 26.7 ms | pass |
+
+"Frame" = frame interval: the time between the ends of two consecutive frames (the paint of the
+last element of the window root), recorded for every frame while a phase runs. Frames are
+drawn at the display tick, so the p95 of the interval is one display period plus the spread of the
+frame's own work and of when the tick arrives; a window that does ≤ 5 ms of work per frame
+still measures 18.4–18.5 ms (B4b above, B8a, B9b). That is the floor on this Mac under this load:
+B7b, B8a and B9b sit on it, and B7b is 1.2 ms above (its frame work p50/p95 is 3.3/5.4 ms, which
+makes the interval p95 ≈ 16.7 + 2 + noise). "Key → frame" counts the handlers plus the frame's own
+work, not the wait for the display tick (B4a's definition); the total including the wait is in the
+report as `*_key_total_*`.
+
+### What was measured and what was fixed
+
+1. **Sidebar (B9a, B9b): rebuilt and laid out every row on every frame.** `sample(1)` of the
+   typing phase: 108 of 167 draw samples in taffy layout of ~300 session rows, plus a clone of
+   every `SessionInfo` into new entries in each `render`, every frame (a frame cost 18–48 ms
+   with 300 sessions). Fix (`panels/sessions.rs`): the entries are cached and rebuilt only when
+   the store notified, the filter, the folds or the settings changed (`LayoutKey`); the rows
+   are a `gpui::list` so only the ones in view are built, and `sync_list` splices only the rows
+   that changed so the reader keeps their place. Frame work in the drag: p50 18.2 → 3.0 ms;
+   filter key p50 32.5 → 7.3 ms. Tests (`tests/perf_gpui.rs`):
+   `the_sidebar_builds_only_the_rows_in_view` (a frame builds ≤ 40 rows of 150 sessions),
+   `a_frame_does_not_lay_the_sidebar_out_again` (no layout without a change, one per filter key).
+   The after numbers were taken before the last two touch-ups of the list (a full-width wrapper
+   per row; layout probes record their bounds when painted, because a list measures items off
+   to the side first); they change no work per frame. A placement badge wider than the dock
+   overflows the row (it already did); the list clips to its width, so `tasks_gpui` clicks the
+   visible part of the badge.
+2. **Hidden timers.** The sessions and history panels redrew the window every 30 s for relative
+   ages even when no one could see them; now the tick only notifies a panel that was drawn since
+   the last tick (as the Agents, Tasks and Resources panels already did; Resources
+   unsubscribes from the daemon while hidden, `resources_gpui`).
+3. **Checked, nothing to fix:** the chat transcript is already a `gpui::list` with markdown
+   cached per entry and revision (B7: first paint 45–54 ms for 5 603 events, 10–15 MB growth;
+   B8: frame work p95 4.6 ms while streaming). Tests: `a_long_transcript_builds_only_the_cards_in_view`
+   (300 messages, a frame builds ≤ 40 cards), `markdown_is_parsed_once_per_message_revision`
+   (frames that change nothing parse nothing). Image thumbnails of composer chips go through GPUI's
+   image asset cache (`img(path)` / `img(Arc<Image>)`), decoded once, not per frame
+   [INFERENCE from the source: no benchmark has image chips].
+
+### Misses and follow-ups
+
+- **B3, B3p: GPUI's display link, not Hutan.** With the window visible, a `CVDisplayLink` thread
+  fires at 60 Hz and wakes the main thread (`display_link_output_callback` →
+  `dispatch_source_merge_data`); the pinned GPUI has no on-demand path on macOS (`frame_waker` is
+  `None`, `gpui_macos/src/window.rs`). `sample` of the idle desktop (B3, B3p): every busy sample is
+  in that thread or in `window::step` on the main thread; no Hutan code runs. With
+  `HUTAN_BENCH_IDLE_FRAMES=1` the idle window traces 0 frames in 20 s (only the two of the start),
+  so no timer or notify storm keeps the window drawing. Follow-up (unchanged from B3 above):
+  stop the link while no frame is wanted, in the GPUI platform layer; that is outside this slice.
+  The number is ~0.2 % higher than the M2 table (0.48 %) with the same method, on a busier
+  machine; B3p adds ~0.1 % (more main-thread wakeups, 19 vs 2 per second, none of them frames).
+- **B7b, B9b: display floor** (above). Further reduction needs less per-frame work (`sample` of the
+  scroll: ~35 % of the busy samples are taffy layout of the whole window tree) and the frames
+  draw the whole window each time: proposal, wrap the dock panels, terminal views and chat view in
+  `AnyView::cached` so a frame that only scrolls the transcript re-lays out only it. Not done here:
+  a cached view reads window state (focus, activity) that is not an entity, so each view needs
+  an audit.
+- **First-run setup** (found while building the harness): a fresh `HUTAN_HOME` shows the setup sheet
+  over the whole window, and it blocks the mouse. The B1–B6 numbers above were measured with it
+  showing; B3 above and every scenario of this section seed `[app] setup_done = true` (the way
+  a user runs Hutan), which is why B3 reads 0.72 % here and 0.48 % in the table above.
+
+### Method
+
+`HUTAN_BENCH_UI=<scenario.json>` (needs `HUTAN_TRACE_LATENCY`; scenarios `transcript`, `stream`,
+`sidebar`, `switch`, `idle`) makes the window dispatch GPUI keystrokes, mouse and scroll events
+and actions to itself. Operations are timed from dispatch to the end of the first frame that
+shows their result (`frames.rs`: `frame` and `op` trace lines, recorded only inside a scenario's
+phases). Seeding: projects are real `git init` folders, terminals run `sh`, chats run
+`xtask fake-codex`, a stand-in for `codex app-server` (no model, no network, no login) that
+plays 9 journal events per unit of `bench:fill` and a paced stream for `bench:stream`. The
+trace of every run is kept next to the report (`target/bench/trace-*.jsonl`); `--sample` samples
+the desktop during B3p, the sidebar phase and the transcript scroll. A run whose window was
+covered, inactive or not presented is repeated.
+
 ## Method
 
 `cargo run -p xtask --release -- bench [--only B1,B4] [--runs N] [--json] [--sample]

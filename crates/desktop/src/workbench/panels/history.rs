@@ -75,6 +75,8 @@ pub enum Confirm {
 pub struct HistoryPanel {
     env: PanelEnv,
     search_focus: FocusHandle,
+    /// Drawn since the age timer last looked.
+    drawn: bool,
     query: String,
     /// Vim state of the search field (`editor.vim_mode`).
     query_edit: FieldEdit,
@@ -135,7 +137,13 @@ impl HistoryPanel {
                 cx.background_executor()
                     .timer(Duration::from_secs(30))
                     .await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                // The ages of a panel nobody saw since the last look are not worth a frame.
+                let alive = this.update(cx, |this, cx| {
+                    if std::mem::take(&mut this.drawn) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -145,6 +153,7 @@ impl HistoryPanel {
         let mut panel = Self {
             env,
             search_focus: cx.focus_handle(),
+            drawn: false,
             query: String::new(),
             query_edit: FieldEdit::new(),
             filters,
@@ -692,6 +701,7 @@ fn row_meta(hit: &HistoryHit, home: Option<&std::path::Path>) -> String {
 
 impl Render for HistoryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn = true;
         let style = UiStyle::get(cx);
         let (theme, tokens) = (style.theme, style.density.ui());
         let body = match &self.index {

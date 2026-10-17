@@ -47,11 +47,13 @@ pub(super) fn probe(
     region: Region,
 ) -> impl IntoElement {
     let regions = Rc::clone(regions);
+    // Recorded when painted, not when laid out: a list measures its items off to the side before
+    // it places them, and only the painted bounds are where the element is.
     canvas(
-        move |bounds, _, _| {
+        |bounds, _, _| bounds,
+        move |_, bounds, _, _| {
             regions.borrow_mut().insert(region, bounds);
         },
-        |_, _, _, _| {},
     )
     .absolute()
     .top_0()

@@ -6,14 +6,18 @@
 //! context menus (`workbench/projects.rs` holds the verbs).
 
 use crate::theme::DensityExt as _;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     AnyElement, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::*, px,
+    KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::*,
+    px,
 };
 use hutan_core::{SessionId, WorkspaceId};
 use hutan_protocol::messages::{SessionInfo, WorkspaceInfo, WorkspaceKind};
@@ -108,26 +112,67 @@ enum SectionKey {
 }
 
 /// A workspace, project or Home row with what the layout decided about it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ContainerRow {
     info: WorkspaceInfo,
     depth: usize,
     needs: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct SessionRow {
     info: SessionInfo,
     depth: usize,
     in_needs_you: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Entry {
-    Section { key: SectionKey, title: String },
+    Section {
+        key: SectionKey,
+        title: String,
+    },
     Container(ContainerRow),
     NoWorkspace,
     Session(Box<SessionRow>),
+    /// "No projects yet": under Home when nothing else is listed.
+    EmptyHint,
+}
+
+/// What the list's rows need besides their entry, fixed for one frame.
+#[derive(Clone)]
+struct RowContext {
+    entries: Rc<Vec<Entry>>,
+    settings: Arc<SessionsPanelSettings>,
+    focused: Option<SessionId>,
+    active: Option<WorkspaceId>,
+    active_project: Option<WorkspaceId>,
+    manual: bool,
+    multi: bool,
+}
+
+/// What the entries are a function of: when none of it changed, the entries are the same.
+struct LayoutKey {
+    /// Bumped whenever the sessions store notifies.
+    store: u64,
+    query: String,
+    collapsed: HashSet<WorkspaceId>,
+    settings: (
+        Arc<SessionsPanelSettings>,
+        Arc<WorkspacesSettings>,
+        Arc<SidebarSettings>,
+    ),
+}
+
+impl LayoutKey {
+    fn same_as(&self, other: &Self) -> bool {
+        self.store == other.store
+            && self.query == other.query
+            && self.collapsed == other.collapsed
+            && Arc::ptr_eq(&self.settings.0, &other.settings.0)
+            && Arc::ptr_eq(&self.settings.1, &other.settings.1)
+            && Arc::ptr_eq(&self.settings.2, &other.settings.2)
+    }
 }
 
 /// An inline rename in progress; losing focus confirms it.
@@ -152,6 +197,22 @@ pub struct SessionsPanel {
     selection: Vec<WorkspaceId>,
     anchor: Option<WorkspaceId>,
     renaming: Option<Renaming>,
+    /// Counts the store's notifications: part of what the cached entries are keyed by.
+    store_rev: u64,
+    /// Drawn since the age timer last looked.
+    drawn: bool,
+    /// The entries of the last layout and what they were made from. A frame never rebuilds
+    /// them (that clones every session of the daemon); a change of the store, the filter, the
+    /// folds or the settings does.
+    layout_cache: RefCell<Option<(LayoutKey, Rc<Vec<Entry>>)>>,
+    layout_builds: Cell<usize>,
+    /// The virtualized list: only the rows in view (and a little around) are built and laid out.
+    list: ListState,
+    /// The entries the list's heights are for, and the filter they were laid out under.
+    listed: Rc<Vec<Entry>>,
+    listed_query: String,
+    rows: RowContext,
+    rows_rendered: Cell<usize>,
     _ages: Task<()>,
 }
 
@@ -165,11 +226,22 @@ impl std::fmt::Debug for SessionsPanel {
 
 impl SessionsPanel {
     pub fn new(env: PanelEnv, cx: &mut Context<Self>) -> Self {
-        cx.observe(&env.sessions, |_, _, cx| cx.notify()).detach();
+        cx.observe(&env.sessions, |this, _, cx| {
+            this.store_rev += 1;
+            cx.notify();
+        })
+        .detach();
         let ages = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(AGE_REFRESH).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                // Nobody sees the ages of a panel that was not drawn since the last look (its
+                // dock is hidden, another panel is on top): no frame for them.
+                let alive = this.update(cx, |this, cx| {
+                    if std::mem::take(&mut this.drawn) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -185,8 +257,35 @@ impl SessionsPanel {
             selection: Vec::new(),
             anchor: None,
             renaming: None,
+            store_rev: 0,
+            drawn: false,
+            layout_cache: RefCell::new(None),
+            layout_builds: Cell::new(0),
+            list: ListState::new(0, ListAlignment::Top, px(300.0)),
+            listed: Rc::new(Vec::new()),
+            listed_query: String::new(),
+            rows: RowContext {
+                entries: Rc::new(Vec::new()),
+                settings: Arc::new(SessionsPanelSettings::default()),
+                focused: None,
+                active: None,
+                active_project: None,
+                manual: false,
+                multi: false,
+            },
+            rows_rendered: Cell::new(0),
             _ages: ages,
         }
+    }
+
+    /// How many times the entries were built (tests: a frame must not build them).
+    pub fn layout_builds(&self) -> usize {
+        self.layout_builds.get()
+    }
+
+    /// How many rows were built for the list so far (tests: only the rows in view are).
+    pub fn rows_rendered(&self) -> usize {
+        self.rows_rendered.get()
     }
 
     /// The search text (tests, inspection).
@@ -226,78 +325,80 @@ impl SessionsPanel {
 
     /// Every row currently listed, top to bottom.
     pub fn visible_rows(&self, cx: &gpui::App) -> Vec<SidebarRow> {
-        let settings = self.env.settings.get::<SessionsPanelSettings>();
         let store = self.env.sessions.read(cx);
         let (active, project) = (store.active_workspace_id(), store.active_project_id());
-        self.layout(&settings, cx)
+        self.entries(cx)
             .iter()
-            .map(|entry| match entry {
-                Entry::Section { title, .. } => SidebarRow {
-                    kind: RowKind::Section,
-                    depth: 0,
-                    title: title.clone(),
-                    folder: None,
-                    badge: None,
-                    shared: false,
-                    pinned: false,
-                    count: None,
-                    needs: 0,
-                    active: false,
-                    selected: false,
-                    collapsed: false,
-                },
-                Entry::NoWorkspace => SidebarRow {
-                    kind: RowKind::NoWorkspace,
-                    depth: 0,
-                    title: "No workspace".to_owned(),
-                    folder: None,
-                    badge: None,
-                    shared: false,
-                    pinned: false,
-                    count: None,
-                    needs: 0,
-                    active: false,
-                    selected: false,
-                    collapsed: false,
-                },
-                Entry::Container(row) => SidebarRow {
-                    kind: match row.info.kind {
-                        WorkspaceKind::Workspace => RowKind::Workspace,
-                        WorkspaceKind::Project => RowKind::Project,
-                        WorkspaceKind::Home => RowKind::Home,
-                    },
-                    depth: row.depth,
-                    title: row.info.name.clone(),
-                    folder: (row.info.kind == WorkspaceKind::Project)
-                        .then(|| crate::workbench::workspaces::project_root_of(&row.info))
-                        .flatten()
-                        .map(|root| folder_label(&root)),
-                    badge: None,
-                    shared: false,
-                    pinned: row.info.pinned,
-                    count: count_text(&row.info),
-                    needs: row.needs,
-                    active: self.is_active(&row.info, active, project),
-                    selected: self.selection.contains(&row.info.id),
-                    collapsed: self.collapsed.contains(&row.info.id),
-                },
-                Entry::Session(row) => {
-                    let badge = crate::sessions::placement_badge(&row.info);
-                    SidebarRow {
-                        kind: RowKind::Session,
-                        depth: row.depth,
-                        title: row.info.title.clone(),
-                        folder: session_folder(&row.info).map(folder_label),
-                        shared: badge.as_ref().is_some_and(|b| b.shared),
-                        badge: badge.map(|b| b.text),
+            .filter_map(|entry| {
+                Some(match entry {
+                    Entry::EmptyHint => return None,
+                    Entry::Section { title, .. } => SidebarRow {
+                        kind: RowKind::Section,
+                        depth: 0,
+                        title: title.clone(),
+                        folder: None,
+                        badge: None,
+                        shared: false,
                         pinned: false,
                         count: None,
                         needs: 0,
                         active: false,
-                        selected: store.focused() == Some(row.info.id),
+                        selected: false,
                         collapsed: false,
+                    },
+                    Entry::NoWorkspace => SidebarRow {
+                        kind: RowKind::NoWorkspace,
+                        depth: 0,
+                        title: "No workspace".to_owned(),
+                        folder: None,
+                        badge: None,
+                        shared: false,
+                        pinned: false,
+                        count: None,
+                        needs: 0,
+                        active: false,
+                        selected: false,
+                        collapsed: false,
+                    },
+                    Entry::Container(row) => SidebarRow {
+                        kind: match row.info.kind {
+                            WorkspaceKind::Workspace => RowKind::Workspace,
+                            WorkspaceKind::Project => RowKind::Project,
+                            WorkspaceKind::Home => RowKind::Home,
+                        },
+                        depth: row.depth,
+                        title: row.info.name.clone(),
+                        folder: (row.info.kind == WorkspaceKind::Project)
+                            .then(|| crate::workbench::workspaces::project_root_of(&row.info))
+                            .flatten()
+                            .map(|root| folder_label(&root)),
+                        badge: None,
+                        shared: false,
+                        pinned: row.info.pinned,
+                        count: count_text(&row.info),
+                        needs: row.needs,
+                        active: self.is_active(&row.info, active, project),
+                        selected: self.selection.contains(&row.info.id),
+                        collapsed: self.collapsed.contains(&row.info.id),
+                    },
+                    Entry::Session(row) => {
+                        let badge = crate::sessions::placement_badge(&row.info);
+                        SidebarRow {
+                            kind: RowKind::Session,
+                            depth: row.depth,
+                            title: row.info.title.clone(),
+                            folder: session_folder(&row.info).map(folder_label),
+                            shared: badge.as_ref().is_some_and(|b| b.shared),
+                            badge: badge.map(|b| b.text),
+                            pinned: false,
+                            count: None,
+                            needs: 0,
+                            active: false,
+                            selected: store.focused() == Some(row.info.id),
+                            collapsed: false,
+                        }
                     }
-                }
+                })
             })
             .collect()
     }
@@ -363,8 +464,7 @@ impl SessionsPanel {
 
     /// The listed projects, top to bottom.
     fn project_order(&self, cx: &gpui::App) -> Vec<WorkspaceId> {
-        let settings = self.env.settings.get::<SessionsPanelSettings>();
-        self.layout(&settings, cx)
+        self.entries(cx)
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Container(row) if row.info.kind == WorkspaceKind::Project => {
@@ -552,8 +652,32 @@ impl SessionsPanel {
         query.split_whitespace().all(|word| haystack.contains(word))
     }
 
+    /// The entries in display order (see [`build_layout`](Self::build_layout)), from the cache
+    /// while nothing they are made from changed.
+    fn entries(&self, cx: &gpui::App) -> Rc<Vec<Entry>> {
+        let key = LayoutKey {
+            store: self.store_rev,
+            query: self.query.clone(),
+            collapsed: self.collapsed.clone(),
+            settings: (
+                self.env.settings.get::<SessionsPanelSettings>(),
+                self.env.settings.get::<WorkspacesSettings>(),
+                self.env.settings.get::<SidebarSettings>(),
+            ),
+        };
+        if let Some((cached, entries)) = &*self.layout_cache.borrow()
+            && cached.same_as(&key)
+        {
+            return entries.clone();
+        }
+        let entries = Rc::new(self.build_layout(&key.settings.0, cx));
+        self.layout_builds.set(self.layout_builds.get() + 1);
+        *self.layout_cache.borrow_mut() = Some((key, entries.clone()));
+        entries
+    }
+
     /// Entries in display order, after the filters, the search and the grouping.
-    fn layout(&self, settings: &SessionsPanelSettings, cx: &gpui::App) -> Vec<Entry> {
+    fn build_layout(&self, settings: &SessionsPanelSettings, cx: &gpui::App) -> Vec<Entry> {
         let store = self.env.sessions.read(cx);
         let ws_settings = self.env.settings.get::<WorkspacesSettings>();
         let organize = self.env.settings.get::<SidebarSettings>().organize;
@@ -665,7 +789,47 @@ impl SessionsPanel {
                 self.flatten(&built.nodes, &mut entries);
             }
         }
+        let only_home = store.sessions().is_empty()
+            && store
+                .workspaces()
+                .iter()
+                .all(|w| w.kind == WorkspaceKind::Home);
+        if only_home && self.query.trim().is_empty() && !entries.is_empty() {
+            entries.push(Entry::EmptyHint);
+        }
         entries
+    }
+
+    /// Brings the list's row heights in line with the entries: a filter that changed starts the
+    /// list over (from the top); otherwise only the rows that differ are measured again, so
+    /// that the reader keeps their place while sessions come and go.
+    fn sync_list(&mut self, entries: &Rc<Vec<Entry>>) {
+        if Rc::ptr_eq(&self.listed, entries) {
+            return;
+        }
+        let old = std::mem::replace(&mut self.listed, entries.clone());
+        if self.listed_query != self.query {
+            self.listed_query.clone_from(&self.query);
+            self.list.reset(entries.len());
+            return;
+        }
+        let prefix = old
+            .iter()
+            .zip(entries.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let room = old.len().min(entries.len()) - prefix;
+        let suffix = old
+            .iter()
+            .rev()
+            .zip(entries.iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let (removed, added) = (old.len() - prefix - suffix, entries.len() - prefix - suffix);
+        if removed > 0 || added > 0 {
+            self.list.splice(prefix..prefix + removed, added);
+        }
     }
 
     /// The rows of the tree, honouring what the user folded.
@@ -789,18 +953,15 @@ impl Render for SessionsPanel {
         let (theme, tokens) = (style.theme, style.density.ui());
         let settings = self.env.settings.get::<SessionsPanelSettings>();
         let ws_settings = self.env.settings.get::<WorkspacesSettings>();
-        let entries = self.layout(&settings, cx);
-        let (focused, active, active_project, only_home) = {
+        self.drawn = true;
+        let entries = self.entries(cx);
+        self.sync_list(&entries);
+        let (focused, active, active_project) = {
             let store = self.env.sessions.read(cx);
             (
                 store.focused(),
                 store.active_workspace_id(),
                 store.active_project_id(),
-                store.sessions().is_empty()
-                    && store
-                        .workspaces()
-                        .iter()
-                        .all(|w| w.kind == WorkspaceKind::Home),
             )
         };
         // The selection and the rename only name rows that still exist.
@@ -816,16 +977,24 @@ impl Render for SessionsPanel {
         let hover = theme.surface_hover;
         let manual = ws_settings.sort == WorkspaceSort::Manual;
         let hint_query = !self.query.trim().is_empty();
+        self.rows = RowContext {
+            entries: entries.clone(),
+            settings,
+            focused,
+            active,
+            active_project,
+            manual,
+            multi: self.selection.len() > 1,
+        };
 
-        let mut list = div()
+        let list = div()
             .id("sessions-list")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .flex()
             .flex_col();
-        if entries.is_empty() {
-            list = list.child(
+        let list = if entries.is_empty() {
+            list.child(
                 ui::empty_state(
                     Mascot::Empty,
                     if hint_query {
@@ -838,85 +1007,12 @@ impl Render for SessionsPanel {
                     &tokens,
                 )
                 .h(px(260.0)),
-            );
-        }
-        let multi = self.selection.len() > 1;
-        for entry in &entries {
-            match entry {
-                Entry::Section { key, title } => {
-                    if title.is_empty() {
-                        continue;
-                    }
-                    let color = if *key == SectionKey::NeedsYou {
-                        theme.warning
-                    } else {
-                        theme.muted
-                    };
-                    list = list.child(
-                        div()
-                            .id(SharedString::from(format!("section-{key:?}")))
-                            .flex()
-                            .items_center()
-                            .h(px(tokens.sidebar_row))
-                            .px(px(tokens.spacing * 2.0))
-                            .mt(px(tokens.spacing))
-                            .text_size(px(tokens.section_font_size))
-                            .medium()
-                            .text_color(color)
-                            .child(title.clone()),
-                    );
-                }
-                Entry::NoWorkspace => list = list.child(self.render_no_workspace(cx)),
-                Entry::Container(row) => {
-                    let current = self.is_active(&row.info, active, active_project);
-                    let renaming = self
-                        .renaming
-                        .as_ref()
-                        .filter(|r| r.workspace == row.info.id)
-                        .map(|r| (r.text.clone(), r.select_all));
-                    list = list.child(self.render_container(
-                        row,
-                        self.collapsed.contains(&row.info.id),
-                        current,
-                        multi && self.selection.contains(&row.info.id),
-                        manual,
-                        renaming,
-                        cx,
-                    ));
-                }
-                Entry::Session(row) => {
-                    list = list.child(self.render_row(
-                        row,
-                        &settings,
-                        focused == Some(row.info.id),
-                        cx,
-                    ));
-                }
-            }
-        }
-        if only_home && !hint_query && !entries.is_empty() {
-            list = list.child(
-                ui::empty_state(
-                    Mascot::Empty,
-                    "No projects yet. Open a folder, or press ⌘T for a terminal.",
-                    Some(
-                        ui::button(
-                            "sessions-empty-open",
-                            "Open Folder…",
-                            ButtonKind::Secondary,
-                            true,
-                            &theme,
-                            &tokens,
-                        )
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenFolder), cx))
-                        .into_any_element(),
-                    ),
-                    &theme,
-                    &tokens,
-                )
-                .h(px(260.0)),
-            );
-        }
+            )
+        } else {
+            // Only the rows in view are built: a frame costs what the window shows, not what the
+            // daemon has.
+            list.child(gpui::list(self.list.clone(), cx.processor(Self::render_entry)).size_full())
+        };
 
         let sort_button = div()
             .id("workspaces-sort")
@@ -1051,6 +1147,87 @@ impl Render for SessionsPanel {
 }
 
 impl SessionsPanel {
+    /// One row of the list: what entry `ix` of the frame's entries is.
+    fn render_entry(
+        &mut self,
+        ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.rows_rendered.set(self.rows_rendered.get() + 1);
+        let rows = self.rows.clone();
+        let style = UiStyle::get(cx);
+        let (theme, tokens) = (style.theme, style.density.ui());
+        let Some(entry) = rows.entries.get(ix) else {
+            return div().into_any_element();
+        };
+        match entry {
+            Entry::Section { key, title } => {
+                if title.is_empty() {
+                    return div().into_any_element();
+                }
+                let color = if *key == SectionKey::NeedsYou {
+                    theme.warning
+                } else {
+                    theme.muted
+                };
+                div()
+                    .id(SharedString::from(format!("section-{key:?}")))
+                    .flex()
+                    .items_center()
+                    .h(px(tokens.sidebar_row))
+                    .px(px(tokens.spacing * 2.0))
+                    .mt(px(tokens.spacing))
+                    .text_size(px(tokens.section_font_size))
+                    .medium()
+                    .text_color(color)
+                    .child(title.clone())
+                    .into_any_element()
+            }
+            Entry::NoWorkspace => self.render_no_workspace(cx),
+            Entry::Container(row) => {
+                let current = self.is_active(&row.info, rows.active, rows.active_project);
+                let renaming = self
+                    .renaming
+                    .as_ref()
+                    .filter(|r| r.workspace == row.info.id)
+                    .map(|r| (r.text.clone(), r.select_all));
+                self.render_container(
+                    row,
+                    self.collapsed.contains(&row.info.id),
+                    current,
+                    rows.multi && self.selection.contains(&row.info.id),
+                    rows.manual,
+                    renaming,
+                    cx,
+                )
+            }
+            Entry::Session(row) => {
+                self.render_row(row, &rows.settings, rows.focused == Some(row.info.id), cx)
+            }
+            Entry::EmptyHint => ui::empty_state(
+                Mascot::Empty,
+                "No projects yet. Open a folder, or press ⌘T for a terminal.",
+                Some(
+                    ui::button(
+                        "sessions-empty-open",
+                        "Open Folder…",
+                        ButtonKind::Secondary,
+                        true,
+                        &theme,
+                        &tokens,
+                    )
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenFolder), cx))
+                    .into_any_element(),
+                ),
+                &theme,
+                &tokens,
+            )
+            .h(px(260.0))
+            .into_any_element(),
+        }
+    }
+
     /// The "No workspace" label above the projects that belong to none: a project dropped on
     /// it leaves its workspace.
     fn render_no_workspace(&self, cx: &mut Context<Self>) -> AnyElement {

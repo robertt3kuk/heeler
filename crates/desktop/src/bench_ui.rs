@@ -11,6 +11,7 @@
 //! | `transcript` | opens a chat session from its id, then scrolls its transcript up to the top of what is loaded (paging earlier events in) and back | `open` op (B7 first paint), frames of the `scroll` phase |
 //! | `stream` | clicks the composer of the chat that is open, then types while the harness streams a reply into it | `key` ops and frames of the `type` phase (B8) |
 //! | `sidebar` | clicks the sessions filter, types a query and erases it, then drags a project onto a workspace | `key` ops of the `filter` phase, frames of the `drag` phase (B9) |
+//! | `idle` | nothing: the frames drawn while the window idles (diagnosis of B3) | frames of the `idle` phase |
 //! | `switch` | jumps between the tabs with ⌘1…⌘9 and to sessions with ⌘P | `switch` and `jump` ops (B10) |
 //!
 //! The windows must be in front and the display awake, as for the keystroke benchmarks.
@@ -70,6 +71,12 @@ pub enum Scenario {
         /// Frames the drag takes.
         frames: u32,
     },
+    /// Nothing happens: the frames drawn while the window idles are what is measured.
+    Idle {
+        #[serde(default)]
+        start_delay_ms: u64,
+        seconds: u64,
+    },
     Switch {
         #[serde(default)]
         start_delay_ms: u64,
@@ -94,6 +101,9 @@ impl Scenario {
             _ => Vec::new(),
         };
         for key in keys {
+            if key.is_empty() {
+                return Err("empty key".to_owned());
+            }
             Keystroke::parse(key).map_err(|e| format!("key {key:?}: {e}"))?;
         }
         Ok(scenario)
@@ -326,6 +336,17 @@ impl Driver<'_> {
                     this,
                 )
                 .await;
+            }
+            Scenario::Idle {
+                start_delay_ms,
+                seconds,
+            } => {
+                self.sleep(Duration::from_millis(start_delay_ms)).await;
+                self.frame_event("bench_start");
+                frames::set_recording(true);
+                Self::phase("idle", "start");
+                self.sleep(Duration::from_secs(seconds)).await;
+                Self::phase("idle", "end");
             }
             Scenario::Switch {
                 start_delay_ms,
@@ -633,7 +654,7 @@ mod tests {
     #[test]
     fn rejects_unknown_scenarios_and_bad_keys() {
         assert!(Scenario::parse(r#"{"scenario":"nope"}"#).is_err());
-        let json = r#"{"scenario":"switch","steps":["cmd-"],"interval_ms":1}"#;
+        let json = r#"{"scenario":"switch","steps":[""],"interval_ms":1}"#;
         assert!(Scenario::parse(json).is_err());
     }
 

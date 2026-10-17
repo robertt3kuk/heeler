@@ -1066,7 +1066,14 @@ fn a_task_row_session_badge_and_the_palette_open_the_changes_view(cx: &mut TestA
     let badge =
         Region::PlacementBadge(hutan_desktop::workbench::BadgeSite::Row, started.session.id);
     wait_until(cx, "the badge", |cx| region(&view, cx, badge).is_some());
-    click(&view, cx, badge);
+    // The badge is wider than the dock; the sidebar list clips to its own width, so click the
+    // part that shows.
+    let bounds = region(&view, cx, badge).unwrap();
+    cx.simulate_click(
+        gpui::point(bounds.origin.x + gpui::px(8.0), bounds.center().y),
+        Modifiers::none(),
+    );
+    draw(cx);
     let entries: Vec<String> = view
         .read_with(cx, |wb, _| wb.context_menu_entries())
         .expect("the badge opens a menu")

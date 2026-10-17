@@ -88,6 +88,7 @@ impl ChatView {
         {
             return parsed.clone();
         }
+        self.markdown_parsed += 1;
         let parsed = Rc::new(markdown::parse(text));
         self.parsed.insert(entry.id, (entry.rev, parsed.clone()));
         parsed
@@ -100,6 +101,7 @@ impl ChatView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.entries_built += 1;
         let look = Look::of(cx);
         let model = self.model.clone();
         let transcript = model.read(cx).transcript();

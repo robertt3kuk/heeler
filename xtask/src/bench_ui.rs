@@ -363,8 +363,8 @@ pub async fn idle_panels(stack: &mut Stack<'_>) -> Result<Metrics> {
         let project = &projects[n % projects.len()];
         sessions.push(terminal(stack, project, &format!("term-{n:02}")).await?);
     }
-    for n in 0..4 {
-        chat(stack, &projects[n], &format!("agent-{n}")).await?;
+    for (n, project) in projects.iter().take(4).enumerate() {
+        chat(stack, project, &format!("agent-{n}")).await?;
     }
     let mut previous = None;
     for n in 0..6 {
@@ -385,7 +385,16 @@ pub async fn idle_panels(stack: &mut Stack<'_>) -> Result<Metrics> {
     }
     sleep(Duration::from_secs(2)).await;
     let first = sessions.first().context("no sessions")?;
-    stack.launch_layout(&panels_layout(first), false, None, None)?;
+    // `HUTAN_BENCH_IDLE_FRAMES=1` traces the frames of the window while it idles (diagnosis:
+    // the trace costs a little, so the number is not B3p's).
+    let frames = std::env::var_os("HUTAN_BENCH_IDLE_FRAMES").is_some();
+    let scenario = json!({ "scenario": "idle", "start_delay_ms": 12_000, "seconds": 20 });
+    stack.launch_layout(
+        &panels_layout(first),
+        frames,
+        None,
+        frames.then_some(&scenario),
+    )?;
     let started = Instant::now();
     while stack.clients().await? < 2 {
         stack.check_desktop()?;
@@ -442,7 +451,17 @@ pub async fn transcript(stack: &mut Stack<'_>) -> Result<Metrics> {
     });
     stack.launch_layout(&layout, true, None, Some(&scenario))?;
     let before = settled_rss(stack).await?;
+    stack
+        .wait_trace("bench_start", DONE_PATIENCE, |e| is_event(e, "bench_start"))
+        .await?;
+    // `--sample`: ten seconds of the scroll, after the open.
+    sleep(Duration::from_secs(2)).await;
+    let desktop = stack.desktop()?.pid();
+    let sampled = stack.sample(desktop, 10, "transcript-desktop");
     wait_done(stack).await?;
+    if let Some(mut child) = sampled {
+        let _ = child.wait();
+    }
     let after = proc::usage(stack.desktop()?.pid())?.rss_bytes as f64 / MIB;
 
     let trace = stack.trace();

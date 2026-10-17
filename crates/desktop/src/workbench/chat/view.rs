@@ -62,6 +62,10 @@ pub struct ChatView {
     pub(super) toggled: HashSet<(u64, u32)>,
     /// Parsed markdown by entry id, with the entry revision it was parsed at.
     pub(super) parsed: HashMap<u64, (u64, Rc<Vec<Block>>)>,
+    /// Cards built and markdown parsed so far (tests: a frame builds what is in view and parses
+    /// each message revision once).
+    pub(super) entries_built: usize,
+    pub(super) markdown_parsed: usize,
     /// Requests waiting for an answer, oldest first (the keys 1–4 answer the first).
     pub(super) pending: Vec<ApprovalId>,
     /// What the user has typed or chosen in each question card (protocol 0.24).
@@ -138,12 +142,24 @@ impl ChatView {
             synced_rev: 0,
             toggled: HashSet::new(),
             parsed: HashMap::new(),
+            entries_built: 0,
+            markdown_parsed: 0,
             pending: Vec::new(),
             forms: HashMap::new(),
             question_focus: None,
             attach: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Transcript cards built so far.
+    pub fn entries_rendered(&self) -> usize {
+        self.entries_built
+    }
+
+    /// Markdown texts parsed so far.
+    pub fn markdown_parses(&self) -> usize {
+        self.markdown_parsed
     }
 
     pub fn session_id(&self) -> SessionId {
