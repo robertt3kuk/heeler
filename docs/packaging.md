@@ -159,11 +159,20 @@ open Hutan, then use **System Settings → Privacy & Security → Open Anyway**,
 authenticate if requested and confirm **Open**. There is no cask quarantine
 removal, re-signing, `--no-quarantine` advice or global Gatekeeper bypass.
 This does **not** meet official `homebrew/cask` Gatekeeper eligibility.
+The bundled CLI may require approval separately; whether allowing the app once
+also allows `Contents/MacOS/hutan` needs a user-present first-open test. The local
+quarantined CLI execution was blocked, so packaging does not promise otherwise.
 
 Before uninstalling, turn off **Start daemon at login** in Hutan Settings so
 `SMAppService` unregisters it. The cask also unloads `dev.hutan.daemon`, quits
-`dev.hutan.Hutan` and runs the bundled `hutan daemon stop` (a stopped daemon is
-not an uninstall error). Normal uninstall preserves data; `brew uninstall
+`dev.hutan.Hutan`, sends TERM to registered processes with that bundle ID, and
+uses system `pkill -TERM` scoped to the current user and the exact installed
+`Contents/MacOS/hutand` path for a daemon not registered with Launch Services.
+Homebrew 7's `signal` only discovers application labels in `launchctl list`,
+not arbitrary processes with a matching code-signing identifier. Uninstall
+never executes a quarantined Hutan binary, which could block awaiting approval.
+A missing/stopped daemon is not an uninstall error. Normal uninstall preserves
+data; `brew uninstall
 --cask --zap robertt3kuk/hutan/hutan` also removes Hutan's application support,
 logs, preferences and a legacy user LaunchAgent plist if present. A bundled
 SMAppService plist is not copied to `~/Library/LaunchAgents` by Hutan.

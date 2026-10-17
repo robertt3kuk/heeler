@@ -15,9 +15,13 @@ cask "hutan" do
 
   uninstall launchctl: "dev.hutan.daemon",
             quit:      "dev.hutan.Hutan",
+            signal:    [["TERM", "dev.hutan.Hutan"]],
             script:    {
-              executable:   "#{appdir}/Hutan.app/Contents/MacOS/hutan",
-              args:         ["daemon", "stop"],
+              executable:   "/usr/bin/pkill",
+              args:         [
+                "-TERM", "-u", Process.uid.to_s, "-f",
+                "^#{Regexp.escape("#{appdir}/Hutan.app/Contents/MacOS/hutand")}([[:space:]]|$)",
+              ],
               must_succeed: false,
             }
 
@@ -32,6 +36,8 @@ cask "hutan" do
     Hutan is ad-hoc signed, not notarized. macOS may block its first launch.
     If you trust this release, open it once, then use System Settings >
     Privacy & Security > Open Anyway and confirm Open. Quarantine is retained.
+    The bundled CLI may also need macOS approval; approving the app has not
+    been verified to approve the CLI. Developer ID signing/notarization is pending.
     Install either this cask or the hutan formula, not both (both provide hutan).
     Before uninstalling, turn off Start daemon at login in Hutan Settings.
   EOS
