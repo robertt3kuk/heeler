@@ -1,0 +1,39 @@
+class Hutan < Formula
+  desc "Command-line client and daemon for the Hutan development environment"
+  homepage "https://github.com/robertt3kuk/hutan"
+  url "https://github.com/robertt3kuk/hutan/releases/download/v@VERSION@/Hutan-@VERSION@-source.tar.gz"
+  version "@VERSION@"
+  sha256 "@SHA256@"
+  # Upstream has not chosen a license; do not invent an SPDX identifier.
+
+  depends_on "rust" => :build
+  depends_on arch: :arm64
+  depends_on macos: :ventura
+
+  def fetch
+    system "cargo", "fetch", *std_cargo_fetch_args
+  end
+
+  def install
+    ENV["MACOSX_DEPLOYMENT_TARGET"] = "13.0"
+    system "cargo", "build", "--frozen", "--release", "-p", "hutan-cli", "-p", "hutan-daemon"
+    bin.install "target/release/hutan", "target/release/hutand"
+  end
+
+  def caveats
+    <<~EOS
+      This formula installs only the CLI and daemon, not Hutan.app or native notifications.
+      Start explicitly with: hutan daemon start
+      Stop before uninstalling with: hutan daemon stop
+      Install either this formula or the hutan cask, not both (both provide hutan).
+    EOS
+  end
+
+  test do
+    ENV["HUTAN_HOME"] = testpath/"home"
+    assert_match version.to_s, shell_output("#{bin}/hutan --version")
+    assert_match version.to_s, shell_output("#{bin}/hutand --version")
+    assert_match "daemon", shell_output("#{bin}/hutan --help")
+    assert_match "Hutan", shell_output("#{bin}/hutand --help")
+  end
+end

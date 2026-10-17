@@ -103,6 +103,105 @@ Code: `crates/daemon/src/menu_bar.rs`, `menu_bar/cocoa.rs` (real), `menu_bar/fak
 
 `assets/macos/MenuBarIcon.png` (18 px) and `MenuBarIcon@2x.png` (36 px) are committed, black template images (only the alpha channel counts; macOS tints them for light, dark and highlighted states). `just menubar-icon` (`cargo run -p xtask -- menubar-icon`) renders them from `assets/brand/05-mascot/svg/favicon.svg` without its background tile and cuts the eyes and nostrils out; an xtask test checks sizes, that every pixel is black, and that rendering again reproduces the committed files. The desktop and the daemon (its own menu bar item) embed them (`include_bytes!`), so the executables need no resource folder.
 
+## Homebrew
+
+The upstream tap is `robertt3kuk/homebrew-hutan`. It is a third-party tap, not
+`homebrew/core` or `homebrew/cask`. After publishing the first release:
+
+```sh
+brew install --cask robertt3kuk/hutan/hutan
+# Or, CLI + daemon only (not alongside the cask):
+brew install robertt3kuk/hutan/hutan
+```
+
+The cask links `hutan` from `Hutan.app`; its CLI finds the adjacent bundled
+`hutand`. The formula builds only `hutan-cli` and `hutan-daemon` with locked
+dependencies, never the GPUI desktop. Cargo still resolves/fetches the pinned
+workspace Git dependencies, but does not compile GPUI for those two packages.
+The formula requires Homebrew Rust (upstream MSRV 1.98), Apple Silicon and
+macOS 13+. It does not register a service; start/stop with `hutan daemon start`
+and `hutan daemon stop`. No native notifications are available outside the app.
+Do not install both packages: both own the `hutan` command.
+
+### Prepare a release locally
+
+From a clean, committed Apple Silicon checkout with Rust 1.98.0:
+
+```sh
+cargo run -p xtask -- release --tap /path/to/homebrew-hutan
+```
+
+This uses the same release bundle builder as `bundle --release`, with
+`MACOSX_DEPLOYMENT_TARGET=13.0`, signs ad hoc and verifies the bundle, runs
+`ditto -c -k --keepParent`, creates a source archive of **HEAD** with `git archive`,
+and writes these files under `target/release-artifacts/` (or `$CARGO_TARGET_DIR`):
+
+- `Hutan-0.1.0-arm64.zip`
+- `Hutan-0.1.0-source.tar.gz`
+- `Hutan.app` (the bundle used to make the zip)
+
+The version comes from the workspace package version, not a separately maintained
+release constant. The command prints both SHA-256 checksums and writes
+`Casks/hutan.rb` and `Formula/hutan.rb` into `--tap`, using the templates in
+`xtask/src/hutan.*.rb.in`. It never launches, installs, tags, uploads or publishes.
+Archive names/checksums are reproducible release inputs; signed ZIP bytes are not
+promised to be bit-for-bit identical across machines/toolchains or rebuilds.
+Upload the **exact** archives whose checksums were generated, never recreate
+GitHub's automatic source download in place of the source asset.
+
+### Security and uninstall
+
+The release is ad-hoc signed, not Developer-ID signed or notarized. Homebrew
+keeps quarantine enabled. A quarantined first launch may be blocked as an
+unidentified/unverified developer or because Apple cannot check it for malicious
+software (wording depends on macOS). If the user trusts the release, attempt to
+open Hutan, then use **System Settings → Privacy & Security → Open Anyway**,
+authenticate if requested and confirm **Open**. There is no cask quarantine
+removal, re-signing, `--no-quarantine` advice or global Gatekeeper bypass.
+This does **not** meet official `homebrew/cask` Gatekeeper eligibility.
+
+Before uninstalling, turn off **Start daemon at login** in Hutan Settings so
+`SMAppService` unregisters it. The cask also unloads `dev.hutan.daemon`, quits
+`dev.hutan.Hutan` and runs the bundled `hutan daemon stop` (a stopped daemon is
+not an uninstall error). Normal uninstall preserves data; `brew uninstall
+--cask --zap robertt3kuk/hutan/hutan` also removes Hutan's application support,
+logs, preferences and a legacy user LaunchAgent plist if present. A bundled
+SMAppService plist is not copied to `~/Library/LaunchAgents` by Hutan.
+The formula has no uninstall hook: stop its daemon explicitly before uninstall.
+
+### Publish after review (maintainer only)
+
+Merge the source changes before preparing the final release, review both tap
+definitions, and run the local tap checks documented in its README. The source
+archive must represent the commit to tag. From the Hutan checkout:
+
+```sh
+cargo run -p xtask -- release --tap /path/to/homebrew-hutan
+git tag -a v0.1.0 -m "Hutan 0.1.0"
+git push origin master
+git push origin v0.1.0
+gh release create v0.1.0 \
+  target/release-artifacts/Hutan-0.1.0-arm64.zip \
+  target/release-artifacts/Hutan-0.1.0-source.tar.gz \
+  --repo robertt3kuk/hutan --verify-tag --title "Hutan 0.1.0" --generate-notes
+```
+
+Then, from the tap checkout, commit the generated definitions and publish:
+
+```sh
+git add Casks/hutan.rb Formula/hutan.rb README.md .github/workflows/check.yml
+git commit -m "feat: package Hutan 0.1.0"
+gh repo create robertt3kuk/homebrew-hutan --public --source . --remote origin
+git push -u origin main
+```
+
+If the tap commit already exists, omit the `git add`/`git commit` pair.
+These are manual publishing commands, not actions performed by `xtask release`.
+Before public redistribution, resolve the project license (there is no LICENSE;
+the formula intentionally does not invent an SPDX identifier) and review
+dependency redistribution obligations. Developer ID signing and notarization
+remain open distribution decisions (ADR 0007/0008).
+
 ## What is still open
 
 - The Keychain behavior across rebuilds.

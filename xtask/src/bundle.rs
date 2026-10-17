@@ -93,7 +93,9 @@ fn build(root: &Path, release: bool) -> Result<PathBuf> {
     let profile = if release { "release" } else { "debug" };
     eprintln!("building the {profile} binaries");
     let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
-    cargo.args(["build", "--locked"]);
+    cargo
+        .args(["build", "--locked"])
+        .env("MACOSX_DEPLOYMENT_TARGET", "13.0");
     if release {
         cargo.arg("--release");
     }

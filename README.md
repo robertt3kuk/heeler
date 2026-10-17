@@ -65,6 +65,25 @@ flowchart LR
 
 Crates live in `crates/` (`core`, `protocol`, `daemon`, `client`, `cli`, `terminal`, `terminal_view`, `desktop`, `agents`, `gateway`, `storage`, `index`, `settings`, `chat_view`). Details are in [`docs/architecture.md`](docs/architecture.md), and the decisions behind them in [`docs/adr/`](docs/adr).
 
+## Install
+
+Apple Silicon, macOS 13 (Ventura) or later. Once the first release and tap are
+published, choose **one** (both provide the `hutan` command):
+
+```sh
+brew install --cask robertt3kuk/hutan/hutan # Hutan.app, bundled daemon and CLI
+# OR, without the desktop:
+brew install robertt3kuk/hutan/hutan        # CLI + daemon, built from source
+```
+
+The app is ad-hoc signed, **not notarized**. Homebrew retains quarantine; macOS
+may refuse the first open because Apple cannot verify the developer or check the
+app for malicious software. If you trust the release, attempt to open it, then
+use **System Settings → Privacy & Security → Open Anyway**, authenticate if
+asked, and confirm **Open**. Do not disable Gatekeeper or remove quarantine.
+The formula does not include native notifications or login-item registration.
+See [packaging and release instructions](docs/packaging.md#homebrew).
+
 ## Requirements
 
 - macOS 13 or later; developed on Apple Silicon.

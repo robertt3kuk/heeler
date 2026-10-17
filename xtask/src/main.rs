@@ -9,6 +9,7 @@ mod icon;
 mod install;
 mod menubar;
 mod proc;
+mod release;
 mod seed;
 mod stats;
 
@@ -55,6 +56,13 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         bin_dir: Option<std::path::PathBuf>,
     },
+    /// Build the release bundle and source archives, print SHA-256 and update a local tap.
+    /// Does not tag, upload, install, launch or publish anything.
+    Release {
+        /// Existing Homebrew tap checkout to receive Casks/hutan.rb and Formula/hutan.rb.
+        #[arg(long, value_name = "DIR")]
+        tap: std::path::PathBuf,
+    },
     /// Render assets/macos/Hutan.icns from the brand icon SVG.
     Icon,
     /// Render the menu bar glyph (assets/macos/MenuBarIcon.png and @2x) from the brand favicon.
@@ -99,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
             out,
             bin_dir,
         }),
+        Command::Release { tap } => release::run(tap),
         Command::Icon => icon::run(&bundle::workspace_root()),
         Command::MenubarIcon => menubar::run(&bundle::workspace_root()),
         Command::Install { debug, dest } => install::run(install::Options { debug, dest }),
