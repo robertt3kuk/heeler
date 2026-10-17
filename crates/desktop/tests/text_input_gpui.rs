@@ -6,7 +6,9 @@
 mod common;
 
 use common::{offline_connection, open_with};
-use gpui::{ClipboardItem, Entity, TestAppContext, VisualTestContext};
+use gpui::{
+    ClipboardItem, Entity, KeyDownEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext,
+};
 use hutan_desktop::workbench::Workbench;
 
 fn open(cx: &mut TestAppContext) -> (Entity<Workbench>, &mut VisualTestContext) {
@@ -73,4 +75,26 @@ fn select_all_copy_and_paste_work_in_the_jump_query(cx: &mut TestAppContext) {
         "a",
         "a one-line field takes the first line of a paste"
     );
+}
+
+/// The platform's key-down carries the key's layout letter as `key_char` ("ф" on the Russian
+/// layout, whatever string a driver synthesized); the text arrives afterwards through the input
+/// handler (`insertText:`). Only the handler's text may land.
+#[gpui::test]
+fn only_the_input_handlers_text_lands_not_the_layouts_key_char(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_event(KeyDownEvent {
+        keystroke: Keystroke {
+            modifiers: Modifiers::default(),
+            key: "a".into(),
+            key_char: Some("ф".into()),
+        },
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert_eq!(query(&view, cx), "", "a key press alone inserts nothing");
+    // What the platform then commits for that key press.
+    cx.simulate_input("п");
+    assert_eq!(query(&view, cx), "п");
 }
