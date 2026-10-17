@@ -451,6 +451,60 @@ pub struct FileChangeApprovalParams {
     pub available_decisions: Option<Vec<Value>>,
 }
 
+/// `item/tool/requestUserInput` (EXPERIMENTAL in the 0.162 schema).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInputParams {
+    pub turn_id: String,
+    pub item_id: String,
+    #[serde(default)]
+    pub questions: Vec<ToolInputQuestion>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInputQuestion {
+    pub id: String,
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub question: String,
+    /// The user may type an answer that is none of the options.
+    #[serde(default)]
+    pub is_other: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+    #[serde(default)]
+    pub options: Option<Vec<ToolInputOption>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ToolInputOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// `mcpServer/elicitation/request`: an MCP server asks the user something (`mode` `form`,
+/// `openai/form`, `openaiForm` or `url`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationParams {
+    #[serde(default)]
+    pub server_name: String,
+    /// Absent when app-server could not tie the request to a turn.
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub requested_schema: Option<Value>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionsApprovalParams {

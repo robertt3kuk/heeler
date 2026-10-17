@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use hutan_core::{ApprovalId, Epoch, SessionId, SessionKind, SessionState, WorkspaceId};
+use hutan_core::{
+    ApprovalId, Epoch, QuestionId, SessionId, SessionKind, SessionState, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 
 /// What a workspace row is. The database holds at most one `Home`; a `Project` is a repository
@@ -137,6 +139,29 @@ pub struct ApprovalRow {
     pub outcome: Option<ApprovalOutcome>,
     pub option_id: Option<String>,
     /// Which client answered (`cli`, `desktop`, ...); absent for expiries.
+    pub decided_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionOutcome {
+    Answered,
+    Declined,
+    Cancelled,
+    Expired,
+}
+
+/// A question of an agent and, once it is over, how it ended. Never the answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionRow {
+    pub id: QuestionId,
+    pub session_id: SessionId,
+    pub turn_id: Option<String>,
+    pub title: String,
+    pub requested_at_ms: u64,
+    pub resolved_at_ms: Option<u64>,
+    pub outcome: Option<QuestionOutcome>,
+    /// Which client decided (`cli`, `desktop`, ...); absent for expiries.
     pub decided_by: Option<String>,
 }
 

@@ -1,4 +1,4 @@
-//! `hutan chat …`, `hutan approvals`, `hutan approve` against a real daemon whose codex is
+//! `hutan chat …`, `hutan approvals`, `hutan approve`, `hutan questions`, `hutan answer` against a real daemon whose codex is
 //! the fake app server replaying transcripts recorded from codex 0.162.1.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -283,6 +283,196 @@ async fn a_command_approval_is_listed_answered_and_the_reply_streams() {
     assert!(
         log.contains(&format!("approval {approval_id}: accept (decided by cli)")),
         "{log}"
+    );
+    c.t.stop().await;
+}
+
+impl Chat {
+    async fn pending_questions(&self) -> Vec<Value> {
+        let out = self.t.hutan(&["questions", "--json"]).await.ok();
+        out.json()["questions"].as_array().unwrap().clone()
+    }
+
+    async fn wait_for_question(&self) -> Value {
+        timeout(WAIT, async {
+            loop {
+                if let Some(first) = self.pending_questions().await.into_iter().next() {
+                    return first;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("a question never showed up")
+    }
+}
+
+const SECRET: &str = "s3cr3t-token";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_is_listed_answered_by_field_with_the_secret_from_stdin() {
+    use tokio::io::AsyncWriteExt;
+
+    let c = Chat::with_fixture("question-user-input").await;
+    let id = c.new_chat(&[]).await;
+    let waiting = c.spawn(&["chat", "send", &id, "Ask me something.", "--wait"]);
+    let question = c.wait_for_question().await;
+    let question_id = question["id"].as_str().unwrap().to_owned();
+    assert_eq!(question["session_id"], id.as_str());
+
+    let table = c.t.hutan(&["questions"]).await.ok().stdout;
+    let mut lines = table.lines();
+    let header: Vec<_> = lines.next().unwrap().split_whitespace().collect();
+    assert_eq!(header, ["ID", "SESSION", "QUESTION", "FIELDS"]);
+    let row = lines.next().unwrap();
+    assert!(
+        row.contains(&question_id)
+            && row.contains("Codex has 3 questions")
+            && row.contains("scope=Only the CLI|CLI and daemon")
+            && row.contains("token=(secret)"),
+        "{table}"
+    );
+
+    // What does not fit is refused before it reaches the daemon or the agent.
+    let unknown =
+        c.t.hutan(&["answer", &question_id[..8], "nonsense=1"])
+            .await;
+    assert_eq!(unknown.code, 2, "{unknown:?}");
+    assert!(
+        unknown.stderr.contains("no field `nonsense`"),
+        "{unknown:?}"
+    );
+    let missing =
+        c.t.hutan(&["answer", &question_id[..8], "scope=Only the CLI"])
+            .await;
+    assert_eq!(missing.code, 1, "{missing:?}");
+    assert!(missing.stderr.contains("required"), "{missing:?}");
+    let conflicting =
+        c.t.hutan(&["answer", &question_id[..8], "--decline", "scope=x"])
+            .await;
+    assert_eq!(conflicting.code, 2, "{conflicting:?}");
+    let no_such = c.t.hutan(&["answer", "0000", "--decline"]).await;
+    assert_eq!(no_such.code, 1);
+    assert!(
+        no_such.stderr.contains("no pending question"),
+        "{no_such:?}"
+    );
+    assert_eq!(c.pending_questions().await.len(), 1, "still pending");
+
+    // The secret is read from stdin, so it is on no command line.
+    let mut cmd = command(
+        Path::new(HUTAN),
+        Some(&c.t.paths.socket),
+        &[
+            "answer",
+            &question_id[..8],
+            "scope=Only the CLI",
+            "note=none",
+            "token=-",
+        ],
+    );
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(format!("{SECRET}\n").as_bytes())
+        .await
+        .unwrap();
+    drop(stdin);
+    let answered = finished(child).await;
+    assert_eq!(answered.code, 0, "{answered:?}");
+    assert_eq!(
+        answered.stdout,
+        format!("{question_id} answered: note, scope, token (secret)\n")
+    );
+    assert!(!answered.stdout.contains(SECRET) && !answered.stderr.contains(SECRET));
+
+    let out = finished(waiting).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stdout
+            .contains(&format!("? question {question_id}: Codex has 3 questions")),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(&format!(
+            "hutan answer {question_id} <field=value ...|--decline|--cancel>"
+        )),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(&format!(
+            "question {question_id}: answered (secret: token) (decided by cli)"
+        )),
+        "{}",
+        out.stdout
+    );
+    assert!(!out.stdout.contains(SECRET));
+    assert!(c.pending_questions().await.is_empty());
+    assert_eq!(
+        c.t.hutan(&["questions"]).await.ok().stdout,
+        "no pending questions\n"
+    );
+
+    // The log tells the same, and the journal's JSON holds no secret.
+    let log = c.t.hutan(&["chat", "log", &id]).await.ok().stdout;
+    assert!(
+        log.contains(&format!(
+            "question {question_id}: answered (secret: token) (decided by cli)"
+        )),
+        "{log}"
+    );
+    let json = c.t.hutan(&["--json", "chat", "log", &id]).await.ok().stdout;
+    assert!(!json.contains(SECRET));
+    c.t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_can_be_declined_and_typed_values_are_parsed_by_field() {
+    let c = Chat::with_fixture("question-elicitation").await;
+    let id = c.new_chat(&[]).await;
+    let waiting = c.spawn(&["chat", "send", &id, "Deploy.", "--wait"]);
+    let question = c.wait_for_question().await;
+    let question_id = question["id"].as_str().unwrap().to_owned();
+    // Numbers and booleans are typed by their fields: a wrong one is a usage error.
+    let bad_number =
+        c.t.hutan(&[
+            "answer",
+            &question_id[..8],
+            "environment=staging",
+            "replicas=many",
+        ])
+        .await;
+    assert_eq!(bad_number.code, 2, "{bad_number:?}");
+    let bad_bool =
+        c.t.hutan(&[
+            "answer",
+            &question_id[..8],
+            "environment=staging",
+            "notify=maybe",
+        ])
+        .await;
+    assert_eq!(bad_bool.code, 2, "{bad_bool:?}");
+    let declined =
+        c.t.hutan(&["--json", "answer", &question_id[..8], "--decline"])
+            .await
+            .ok();
+    assert_eq!(
+        declined.json(),
+        serde_json::json!({"question_id": question_id, "action": "decline"})
+    );
+    let out = finished(waiting).await;
+    assert_eq!(out.code, 0, "{out:?}");
+    assert!(
+        out.stdout.contains(&format!(
+            "question {question_id}: declined (decided by cli)"
+        )),
+        "{}",
+        out.stdout
     );
     c.t.stop().await;
 }

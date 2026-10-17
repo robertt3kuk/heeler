@@ -299,6 +299,14 @@ impl Router {
                     .await?;
                 ok(&Empty {})
             }
+            Request::QuestionList(req) => ok(&self.registry.chats().question_list(req.session_id)),
+            Request::QuestionAnswer(req) => {
+                self.registry
+                    .chats()
+                    .answer_question(req.question_id, req.response, conn.client_kind())
+                    .await?;
+                ok(&Empty {})
+            }
             Request::ChatSetModel(req) => ok(&SessionResult {
                 session: self.registry.set_chat_model(req).await?,
             }),
@@ -552,6 +560,9 @@ fn classification(request: &Request) -> (&'static str, Access) {
         Request::ApprovalList(_) => ("approval.list", Read),
         // An agent never answers approvals, its own included.
         Request::ApprovalRespond(_) => ("approval.respond", UserOnly),
+        Request::QuestionList(_) => ("question.list", Read),
+        // An agent never answers questions, its own included.
+        Request::QuestionAnswer(_) => ("question.answer", UserOnly),
         Request::ProviderList(_) => ("provider.list", Read),
         // Provider configuration decides where credentials are sent: the user's.
         Request::ProviderAdd(_) => ("provider.add", UserOnly),

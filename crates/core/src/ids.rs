@@ -93,6 +93,11 @@ ulid_id!(
     "approval"
 );
 ulid_id!(
+    /// One question an agent put to the user (protocol 0.25); stable across clients.
+    QuestionId,
+    "question"
+);
+ulid_id!(
     /// A task: a unit of work with dependencies, run as one or more sessions.
     TaskId,
     "task"

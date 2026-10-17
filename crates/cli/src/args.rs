@@ -100,6 +100,11 @@ pub enum Command {
     Approvals,
     /// Answer a permission request with one of the options it offers (see `hutan approvals`)
     Approve(ApproveArgs),
+    /// List the questions agents ask that wait for an answer
+    Questions,
+    /// Answer a question of an agent (`hutan answer <id> field=value ...`), or decline or cancel
+    /// it (see `hutan questions`)
+    Answer(AnswerArgs),
     /// Notification intents the daemon raises when something needs you: list, acknowledge, act
     /// on, or watch them
     #[command(subcommand)]
@@ -653,6 +658,23 @@ pub struct ApproveArgs {
     pub approval: String,
     /// One of the options the request offers (`accept`, `cancel`, ...)
     pub option: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AnswerArgs {
+    /// Question id or unique id prefix (at least 4 characters)
+    pub question: String,
+    /// `field=value` for each field to answer (`hutan questions` shows them). Repeat a field
+    /// for a multi-select. A secret field takes `field=-` and reads the value from stdin, so
+    /// it never shows in the process list or the shell history.
+    #[arg(value_name = "FIELD=VALUE", conflicts_with_all = ["decline", "cancel"])]
+    pub values: Vec<String>,
+    /// Answer nothing and let the agent go on without it
+    #[arg(long, conflicts_with = "cancel")]
+    pub decline: bool,
+    /// Answer nothing and stop the turn where the agent allows it
+    #[arg(long)]
+    pub cancel: bool,
 }
 
 fn parse_policy(text: &str) -> Result<ApprovalPolicy, String> {

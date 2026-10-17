@@ -119,6 +119,10 @@ impl ChatView {
                 Some(approval) => self.approval_card(approval, true, &look, cx),
                 None => div().into_any_element(),
             },
+            Body::Question(id) => match transcript.question(*id) {
+                Some(question) => self.question_card(question, &look, cx),
+                None => div().into_any_element(),
+            },
             Body::Plan(plan) => plan_card(plan, &look),
             Body::TurnDiff(turn_diff) => self.turn_diff_card(
                 index,

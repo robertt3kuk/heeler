@@ -13,6 +13,8 @@ mod context;
 mod input;
 mod markdown_view;
 mod model;
+mod question;
+mod question_card;
 mod rich;
 mod rich_view;
 mod view;

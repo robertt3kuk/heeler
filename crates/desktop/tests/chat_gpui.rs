@@ -1860,3 +1860,156 @@ fn a_window_opened_mid_stream_shows_the_text_so_far_and_ends_with_the_final_text
         "one message, not one per snapshot"
     );
 }
+
+// ---- questions (protocol 0.25) --------------------------------------------------------------
+
+fn pending_questions(
+    model: &Entity<ChatModel>,
+    cx: &VisualTestContext,
+) -> Vec<hutan_core::QuestionId> {
+    transcript(model, cx, |t| {
+        t.pending_questions().iter().map(|q| q.id).collect()
+    })
+}
+
+fn question_state(
+    model: &Entity<ChatModel>,
+    cx: &VisualTestContext,
+    id: hutan_core::QuestionId,
+) -> hutan_chat_view::QuestionState {
+    transcript(model, cx, |t| t.question(id).unwrap().state.clone())
+}
+
+#[gpui::test]
+fn a_question_card_is_filled_with_clicks_and_keys_and_submitted_with_cmd_enter(
+    cx: &mut TestAppContext,
+) {
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("question-user-input"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "ask me");
+    pump(cx, "the question to be pending", |cx| {
+        !pending_questions(&model, cx).is_empty()
+    });
+    let id = pending_questions(&model, cx)[0];
+    // The session says it waits for the user, and says why.
+    wait_until(cx, "the session to wait", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .session(info.id)
+                .and_then(|s| s.chat.as_ref().map(|c| c.pending_questions))
+                == Some(1)
+        })
+    });
+    pump(cx, "the card", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatQuestion(0)).is_some()
+    });
+
+    // An incomplete form is refused here, with the reason on the card; nothing is sent.
+    click(&view, cx, Region::ChatQuestion(0));
+    pump(cx, "the refusal", |cx| {
+        draw(cx);
+        chat.read_with(cx, |c, _| c.question_error(id).is_some())
+    });
+    assert!(env.received().iter().all(|(m, _)| m != "response"));
+
+    // Choose an option, type into the note field (digits are text there, never an approval's
+    // answer), Tab into the secret field and type it; ⌘↩ submits.
+    click(&view, cx, Region::ChatQuestion(100));
+    click(&view, cx, Region::ChatQuestion(8 + 1));
+    cx.simulate_input("none1");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("hunter2");
+    cx.simulate_keystrokes("cmd-enter");
+    pump(cx, "the answer", |cx| {
+        question_state(&model, cx, id) != hutan_chat_view::QuestionState::Pending
+            || chat.read_with(cx, |c, _| c.question_error(id).is_some())
+    });
+    let error = chat.read_with(cx, |c, _| c.question_error(id));
+    let state = question_state(&model, cx, id);
+    assert!(error.is_none(), "the card says: {error:?}");
+    let hutan_chat_view::QuestionState::Answered { values, withheld } = state else {
+        panic!("{state:?}")
+    };
+    assert_eq!(values["scope"], "Only the CLI");
+    assert_eq!(values["note"], "none1");
+    assert_eq!(withheld, ["token"], "the secret is not in the transcript");
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    let response = env
+        .received()
+        .into_iter()
+        .find(|(m, _)| m == "response")
+        .expect("the answer reached the agent");
+    assert_eq!(
+        response.1["result"]["answers"]["token"],
+        json!({"answers": ["hunter2"]})
+    );
+    assert!(!format!("{:?}", model.read_with(cx, |m, _| m.transcript().len())).is_empty());
+    let attention = view.read_with(cx, |wb, cx| wb.sessions().read(cx).attention_entries());
+    assert!(attention.is_empty(), "{attention:?}");
+}
+
+#[gpui::test]
+fn a_question_can_be_declined_from_its_card_and_counts_as_attention_while_it_waits(
+    cx: &mut TestAppContext,
+) {
+    use hutan_desktop::sessions::AttentionKind;
+
+    let env = ChatEnv::new();
+    let daemon = TestDaemon::start_with_codex(env.fixture("question-elicitation"));
+    let info = daemon.create_chat(&env.cwd());
+    let (view, cx) = open(cx, &daemon);
+    let (_chat, model) = open_chat(&view, cx, info.id);
+    say(cx, "deploy");
+    pump(cx, "the question to be pending", |cx| {
+        !pending_questions(&model, cx).is_empty()
+    });
+    let id = pending_questions(&model, cx)[0];
+    // It counts for the badge and the menu bar like an approval does.
+    wait_until(cx, "the attention entry", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions()
+                .read(cx)
+                .attention_entries()
+                .iter()
+                .any(|e| e.session == info.id && e.kind == AttentionKind::Question)
+        })
+    });
+    // 1–4 answer approvals only: with a question pending they do nothing.
+    cx.simulate_input("1");
+    assert_eq!(
+        question_state(&model, cx, id),
+        hutan_chat_view::QuestionState::Pending
+    );
+    pump(cx, "the card", |cx| {
+        draw(cx);
+        region(&view, cx, Region::ChatQuestion(1)).is_some()
+    });
+    click(&view, cx, Region::ChatQuestion(1));
+    pump(cx, "the decline", |cx| {
+        question_state(&model, cx, id) == hutan_chat_view::QuestionState::Declined
+    });
+    pump(cx, "the turn to end", |cx| {
+        count(&model, cx, is_footer) == 1
+    });
+    let response = env
+        .received()
+        .into_iter()
+        .find(|(m, _)| m == "response")
+        .unwrap();
+    assert_eq!(
+        response.1["result"],
+        json!({"action": "decline", "content": null})
+    );
+    wait_until(cx, "the attention to clear", |cx| {
+        view.read_with(cx, |wb, cx| {
+            wb.sessions().read(cx).attention_entries().is_empty()
+        })
+    });
+}

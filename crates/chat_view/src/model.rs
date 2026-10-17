@@ -18,7 +18,10 @@ use hutan_core::agent::{
     DecidedBy, FileChange, NoticeLevel, PermissionKind, PermissionOption, PermissionOptionKind,
     PermissionOutcome, PlanStep, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
-use hutan_core::{AgentEvent, AgentEventKind, ApprovalId, ItemId, TurnId};
+use hutan_core::question::QuestionSpec;
+use hutan_core::{
+    AgentEvent, AgentEventKind, ApprovalId, ItemId, QuestionId, QuestionOutcome, TurnId,
+};
 use serde_json::Value;
 
 /// Bytes of live command output kept per tool; the final output replaces it at the end.
@@ -237,6 +240,73 @@ impl Approval {
     }
 }
 
+/// How a question of the agent stands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuestionState {
+    Pending,
+    /// Answered: `values` are the answers except those of secret fields, which the journal
+    /// never held (`withheld` names them).
+    Answered {
+        values: hutan_core::question::Values,
+        withheld: Vec<String>,
+    },
+    Declined,
+    Cancelled,
+    /// The turn ended, the agent went away, or the daemon restarted before anyone answered.
+    Expired,
+}
+
+impl QuestionState {
+    fn of(outcome: &QuestionOutcome) -> Self {
+        match outcome {
+            QuestionOutcome::Answered { values, withheld } => Self::Answered {
+                values: values.clone(),
+                withheld: withheld.clone(),
+            },
+            QuestionOutcome::Declined => Self::Declined,
+            QuestionOutcome::Cancelled => Self::Cancelled,
+            QuestionOutcome::Expired => Self::Expired,
+        }
+    }
+}
+
+/// A question the agent put to the user (protocol 0.25).
+#[derive(Debug, Clone)]
+pub struct Question {
+    pub id: QuestionId,
+    pub turn: Option<TurnId>,
+    pub spec: QuestionSpec,
+    pub state: QuestionState,
+    /// Who decided; absent while pending, after an expiry, and when the daemon could not tell.
+    pub decided_by: Option<DecidedBy>,
+}
+
+impl Question {
+    /// What was decided, in the past tense.
+    pub fn decision_text(&self) -> &'static str {
+        match self.state {
+            QuestionState::Pending => "Waiting for your answer",
+            QuestionState::Answered { .. } => "Answered",
+            QuestionState::Declined => "Declined",
+            QuestionState::Cancelled => "Cancelled",
+            QuestionState::Expired => "Expired",
+        }
+    }
+
+    /// Where the answer came from ("from CLI"); `here`: this window sent it.
+    pub fn answered_from(&self, here: bool) -> &'static str {
+        if here {
+            return "from this window";
+        }
+        match self.decided_by.as_ref().map(|by| by.client_kind.as_str()) {
+            Some("cli") => "from CLI",
+            Some("desktop") => "from another window",
+            Some("notifier") => "from a notification",
+            _ => "from another client",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub explanation: Option<String>,
@@ -287,6 +357,8 @@ pub enum Body {
     Tool(Tool),
     /// An approval whose tool is not in the transcript.
     Approval(ApprovalId),
+    /// A question of the agent (protocol 0.25).
+    Question(QuestionId),
     Plan(Plan),
     TurnDiff(TurnDiff),
     Footer(Footer),
@@ -313,6 +385,8 @@ pub struct Transcript {
     by_item: HashMap<ItemId, usize>,
     approvals: HashMap<ApprovalId, Approval>,
     approval_entry: HashMap<ApprovalId, usize>,
+    questions: HashMap<QuestionId, Question>,
+    question_entry: HashMap<QuestionId, usize>,
     turn_plan: HashMap<TurnId, usize>,
     turn_diff: HashMap<TurnId, usize>,
     seen: HashSet<u64>,
@@ -332,6 +406,8 @@ pub struct Transcript {
     usage_baseline_unknown: bool,
     /// Answers that arrived before their request (the request is in an older page).
     early_answers: HashMap<ApprovalId, (ApprovalState, Option<DecidedBy>)>,
+    /// The same for questions.
+    early_decisions: HashMap<QuestionId, (QuestionState, Option<DecidedBy>)>,
     /// A page older than the transcript is being folded in.
     backfill: bool,
     /// ... and the page before that one is not known either.
@@ -406,6 +482,40 @@ impl Transcript {
             .collect();
         pending.sort_by_key(|(at, a)| (*at, a.id));
         pending.into_iter().map(|(_, a)| a).collect()
+    }
+
+    pub fn question(&self, id: QuestionId) -> Option<&Question> {
+        self.questions.get(&id)
+    }
+
+    /// Questions still waiting for an answer, oldest first.
+    pub fn pending_questions(&self) -> Vec<&Question> {
+        let mut pending: Vec<(usize, &Question)> = self
+            .questions
+            .values()
+            .filter(|q| q.state == QuestionState::Pending)
+            .map(|q| {
+                (
+                    self.question_entry.get(&q.id).copied().unwrap_or(usize::MAX),
+                    q,
+                )
+            })
+            .collect();
+        pending.sort_by_key(|(at, q)| (*at, q.id));
+        pending.into_iter().map(|(_, q)| q).collect()
+    }
+
+    /// Questions the journal shows as open that the daemon no longer holds are over.
+    pub fn expire_missing_questions(&mut self, pending: &HashSet<QuestionId>) {
+        let stale: Vec<QuestionId> = self
+            .questions
+            .values()
+            .filter(|q| q.state == QuestionState::Pending && !pending.contains(&q.id))
+            .map(|q| q.id)
+            .collect();
+        for id in stale {
+            self.resolve_question(id, QuestionState::Expired, None);
+        }
     }
 
     /// Requests the journal shows as open that the daemon no longer holds are over (a daemon
@@ -486,6 +596,7 @@ impl Transcript {
             .by_item
             .values_mut()
             .chain(self.approval_entry.values_mut())
+            .chain(self.question_entry.values_mut())
             .chain(self.turn_plan.values_mut())
             .chain(self.turn_diff.values_mut())
         {
@@ -710,6 +821,30 @@ impl Transcript {
                     PermissionOutcome::Expired => ApprovalState::Expired,
                 };
                 self.resolve_approval(*approval_id, state, decided_by.clone());
+            }
+            AgentEventKind::QuestionRequested { question_id, spec } => {
+                self.question_requested(
+                    turn,
+                    Question {
+                        id: *question_id,
+                        turn,
+                        spec: spec.clone(),
+                        state: QuestionState::Pending,
+                        decided_by: None,
+                    },
+                    event.ts_ms,
+                );
+            }
+            AgentEventKind::QuestionResolved {
+                question_id,
+                outcome,
+                decided_by,
+            } => {
+                self.resolve_question(
+                    *question_id,
+                    QuestionState::of(outcome),
+                    decided_by.clone(),
+                );
             }
             AgentEventKind::Plan {
                 explanation,
@@ -975,6 +1110,45 @@ impl Transcript {
         };
         self.approval_entry.insert(id, at);
         self.touch(at);
+    }
+
+    fn question_requested(&mut self, turn: Option<TurnId>, question: Question, ts_ms: u64) {
+        let id = question.id;
+        if self.questions.contains_key(&id) {
+            return;
+        }
+        let mut question = question;
+        // Its answer may have been read first (the request is in an older page).
+        if let Some((state, decided_by)) = self.early_decisions.remove(&id) {
+            question.state = state;
+            question.decided_by = decided_by;
+        }
+        self.questions.insert(id, question);
+        let at = self.push(turn, ts_ms, Body::Question(id));
+        self.question_entry.insert(id, at);
+        self.touch(at);
+    }
+
+    fn resolve_question(
+        &mut self,
+        id: QuestionId,
+        state: QuestionState,
+        decided_by: Option<DecidedBy>,
+    ) {
+        match self.questions.get_mut(&id) {
+            Some(question) => {
+                question.state = state;
+                if decided_by.is_some() {
+                    question.decided_by = decided_by;
+                }
+            }
+            None => {
+                self.early_decisions.insert(id, (state, decided_by));
+            }
+        }
+        if let Some(at) = self.question_entry.get(&id).copied() {
+            self.touch(at);
+        }
     }
 
     fn set_approval_state(&mut self, id: ApprovalId, state: ApprovalState) {
@@ -1556,6 +1730,96 @@ mod tests {
             &t.entries()[0].body,
             Body::Plan(p) if p.steps[0].status == hutan_core::agent::PlanStepStatus::Completed
         ));
+    }
+
+    fn ask(s: &mut Script, id: QuestionId) -> AgentEvent {
+        s.event(
+            None,
+            AgentEventKind::QuestionRequested {
+                question_id: id,
+                spec: QuestionSpec {
+                    title: "Which branch?".into(),
+                    prompt: String::new(),
+                    fields: Vec::new(),
+                    raw_schema: None,
+                    source: None,
+                    expires: hutan_core::question::QuestionExpiry::Turn,
+                },
+            },
+        )
+    }
+
+    fn settle(s: &mut Script, id: QuestionId, outcome: QuestionOutcome) -> AgentEvent {
+        s.event(
+            None,
+            AgentEventKind::QuestionResolved {
+                question_id: id,
+                outcome,
+                decided_by: Some(DecidedBy {
+                    client_kind: "cli".into(),
+                    client_name: None,
+                }),
+            },
+        )
+    }
+
+    #[test]
+    fn a_question_is_its_own_entry_and_resolves_in_place() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let id = QuestionId::new();
+        t.apply(&ask(&mut s, id));
+        assert!(matches!(t.entries()[0].body, Body::Question(q) if q == id));
+        assert_eq!(t.pending_questions().len(), 1);
+        let before = t.entries()[0].rev;
+        t.apply(&settle(&mut s, id, QuestionOutcome::Declined));
+        assert!(t.pending_questions().is_empty());
+        let question = t.question(id).unwrap();
+        assert_eq!(question.state, QuestionState::Declined);
+        assert_eq!(question.decision_text(), "Declined");
+        assert_eq!(question.answered_from(false), "from CLI");
+        assert_eq!(question.answered_from(true), "from this window");
+        assert!(t.entries()[0].rev > before, "the card is drawn again");
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn an_answer_read_before_its_question_is_applied_to_it() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let id = QuestionId::new();
+        let request = ask(&mut s, id);
+        let answer = settle(
+            &mut s,
+            id,
+            QuestionOutcome::Answered {
+                values: hutan_core::question::Values::new(),
+                withheld: vec!["token".into()],
+            },
+        );
+        // The newer page first, then the older one with the request.
+        t.apply(&answer);
+        assert!(t.question(id).is_none());
+        t.prepend(&[request], true);
+        let question = t.question(id).unwrap();
+        assert!(matches!(
+            &question.state,
+            QuestionState::Answered { withheld, .. } if withheld == &["token".to_owned()]
+        ));
+        assert!(t.pending_questions().is_empty());
+    }
+
+    #[test]
+    fn expire_missing_questions_ends_what_the_daemon_no_longer_holds() {
+        let mut s = Script::new();
+        let mut t = Transcript::new();
+        let (a, b) = (QuestionId::new(), QuestionId::new());
+        t.apply(&ask(&mut s, a));
+        t.apply(&ask(&mut s, b));
+        t.expire_missing_questions(&HashSet::from([b]));
+        assert_eq!(t.question(a).unwrap().state, QuestionState::Expired);
+        assert_eq!(t.question(b).unwrap().state, QuestionState::Pending);
+        assert_eq!(t.pending_questions().len(), 1);
     }
 
     #[test]

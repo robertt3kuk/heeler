@@ -19,12 +19,17 @@ use hutan_core::agent::{
     PermissionKind, PermissionOption, PermissionOptionKind, PermissionOutcome, PlanStep,
     PlanStepStatus, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
-use hutan_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
+use hutan_core::question::{QuestionExpiry, QuestionField};
+use hutan_core::{
+    AgentEventDraft, AgentEventKind, ApprovalId, ItemId, QuestionId, QuestionOutcome,
+    QuestionResponse, QuestionSpec, TurnId,
+};
 use serde_json::{Value, json};
 
 use super::udiff;
 use super::wire::PromptResult;
 use crate::codex::{AnswerError, Mapped, Reply};
+use crate::elicit::{self, Shape};
 use crate::error::AgentError;
 
 /// JSON-RPC "method not found".
@@ -80,6 +85,19 @@ struct PendingPermission {
     cancelled: bool,
 }
 
+/// An `elicitation/create` waiting for the user.
+#[derive(Debug)]
+struct PendingQuestion {
+    rpc_id: Value,
+    question: QuestionId,
+    shape: Shape,
+    fields: Vec<QuestionField>,
+    /// What the user decided, once the response was sent.
+    answered: Option<QuestionOutcome>,
+    /// The turn was cancelled: the agent was told so, nothing can be answered any more.
+    cancelled: bool,
+}
+
 /// What a finished prompt turn produced.
 #[derive(Debug, Default)]
 pub struct Finished {
@@ -107,6 +125,8 @@ pub struct Mapper {
     tool_order: VecDeque<String>,
     /// By the JSON text of the request id.
     pending: HashMap<String, PendingPermission>,
+    /// Elicitations, by the JSON text of the request id.
+    questions: HashMap<String, PendingQuestion>,
     model: Option<String>,
     mode: Option<String>,
 }
@@ -121,6 +141,7 @@ impl Mapper {
             tools: HashMap::new(),
             tool_order: VecDeque::new(),
             pending: HashMap::new(),
+            questions: HashMap::new(),
             model: None,
             mode: None,
         }
@@ -155,7 +176,7 @@ impl Mapper {
     }
 
     pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.questions.is_empty()
     }
 
     // Turns -----------------------------------------------------------------------------------
@@ -753,10 +774,12 @@ impl Mapper {
     // Permission requests -----------------------------------------------------------------------
 
     /// A request of the agent. `session/request_permission` becomes a pending approval, answered
-    /// through [`answer`](Self::answer); everything else is refused, so the agent never waits for
-    /// a client that cannot answer (Hutan serves no file system and no terminal).
+    /// through [`answer`](Self::answer), and `elicitation/create` (form mode, which is all the
+    /// handshake offers) a pending question, answered through
+    /// [`answer_question`](Self::answer_question); everything else is refused, so the agent never
+    /// waits for a client that cannot answer (Hutan serves no file system and no terminal).
     pub fn request(&mut self, id: Value, method: &str, params: Value) -> Mapped {
-        if method != "session/request_permission" {
+        if !matches!(method, "session/request_permission" | "elicitation/create") {
             let notice = self.notice(
                 NoticeLevel::Warning,
                 format!("the agent sent `{method}`, which Hutan does not offer; it was declined"),
@@ -787,6 +810,9 @@ impl Mapper {
                     )),
                 }),
             };
+        }
+        if method == "elicitation/create" {
+            return self.elicitation(id, params);
         }
         self.permission(id, params)
     }
@@ -936,6 +962,135 @@ impl Mapper {
         Some(self.resolved_draft(&pending))
     }
 
+    fn elicitation(&mut self, rpc_id: Value, params: Value) -> Mapped {
+        let mode = params.get("mode").and_then(Value::as_str).unwrap_or("form");
+        if mode != "form" {
+            // The handshake offers form mode only: a url elicitation is the agent's mistake.
+            return Mapped {
+                drafts: vec![self.notice(
+                    NoticeLevel::Warning,
+                    format!("the agent sent a `{mode}` elicitation, which Hutan does not offer; it was declined"),
+                )],
+                reply: Some(Reply {
+                    id: rpc_id,
+                    outcome: Ok(json!({"action": "decline"})),
+                }),
+            };
+        }
+        let message = params
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let form = elicit::parse(params.get("requestedSchema").unwrap_or(&Value::Null));
+        let in_turn = self.turn.is_some();
+        let (title, prompt) = split_message(&message);
+        let spec = QuestionSpec {
+            title,
+            prompt,
+            fields: form.fields.clone(),
+            raw_schema: form.raw_schema,
+            source: None,
+            expires: if in_turn {
+                QuestionExpiry::Turn
+            } else {
+                QuestionExpiry::Process
+            },
+        };
+        let item = params
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .map(|id| self.tool_item(id, ToolKind::Other));
+        let question = QuestionId::new();
+        let mut drafts = self.close_open();
+        let mut draft = self.draft(
+            item,
+            AgentEventKind::QuestionRequested {
+                question_id: question,
+                spec,
+            },
+        );
+        draft.provider.request_id = Some(rpc_id.to_string());
+        draft.payload = bounded(params);
+        drafts.push(draft);
+        self.questions.insert(
+            rpc_id.to_string(),
+            PendingQuestion {
+                rpc_id,
+                question,
+                shape: form.shape,
+                fields: form.fields,
+                answered: None,
+                cancelled: false,
+            },
+        );
+        Mapped {
+            drafts,
+            reply: None,
+        }
+    }
+
+    /// The response to send for the user's decision on a pending question; marks it answered.
+    /// Returns the JSON-RPC id to answer and the result to send.
+    pub fn answer_question(
+        &mut self,
+        question: QuestionId,
+        response: &QuestionResponse,
+    ) -> Result<(Value, Value), AnswerError> {
+        let pending = self
+            .questions
+            .values_mut()
+            .find(|p| p.question == question && p.answered.is_none() && !p.cancelled)
+            .ok_or(AnswerError::Unknown)?;
+        let (result, outcome) = match response {
+            QuestionResponse::Submit { values } => {
+                let content = elicit::content(pending.shape, &pending.fields, values)
+                    .map_err(AnswerError::Invalid)?;
+                (
+                    json!({"action": "accept", "content": content}),
+                    QuestionOutcome::answered(&pending.fields, values),
+                )
+            }
+            QuestionResponse::Decline => (json!({"action": "decline"}), QuestionOutcome::Declined),
+            QuestionResponse::Cancel => (json!({"action": "cancel"}), QuestionOutcome::Cancelled),
+        };
+        pending.answered = Some(outcome);
+        Ok((pending.rpc_id.clone(), result))
+    }
+
+    /// Undoes [`answer_question`](Self::answer_question) when the response could not be sent.
+    pub fn unanswer_question(&mut self, question: QuestionId) {
+        if let Some(pending) = self.questions.values_mut().find(|p| p.question == question) {
+            pending.answered = None;
+        }
+    }
+
+    /// The answer to `question` reached the agent: ACP has no "resolved" notification, so the
+    /// question is resolved now.
+    pub fn question_answered(&mut self, question: QuestionId) -> Option<AgentEventDraft> {
+        let key = self
+            .questions
+            .iter()
+            .find(|(_, p)| p.question == question)
+            .map(|(key, _)| key.clone())?;
+        let pending = self.questions.remove(&key)?;
+        Some(self.question_resolved_draft(&pending))
+    }
+
+    fn question_resolved_draft(&self, pending: &PendingQuestion) -> AgentEventDraft {
+        let mut draft = self.draft(
+            None,
+            AgentEventKind::QuestionResolved {
+                question_id: pending.question,
+                outcome: pending.answered.clone().unwrap_or(QuestionOutcome::Expired),
+                // The daemon knows who answered; the agent does not.
+                decided_by: None,
+            },
+        );
+        draft.provider.request_id = Some(pending.rpc_id.to_string());
+        draft
+    }
+
     /// The model was switched by the user: the notice that says so, unless the agent already
     /// announced it.
     pub fn model_switched(&mut self, model: &str) -> Option<AgentEventDraft> {
@@ -966,6 +1121,15 @@ impl Mapper {
                 replies.push(Reply {
                     id: pending.rpc_id.clone(),
                     outcome: Ok(json!({"outcome": {"outcome": "cancelled"}})),
+                });
+            }
+        }
+        for pending in self.questions.values_mut() {
+            if pending.answered.is_none() && !pending.cancelled {
+                pending.cancelled = true;
+                replies.push(Reply {
+                    id: pending.rpc_id.clone(),
+                    outcome: Ok(json!({"action": "cancel"})),
                 });
             }
         }
@@ -1007,17 +1171,45 @@ impl Mapper {
             }
             drafts.push(self.resolved_draft(p));
         }
+        let asked: Vec<PendingQuestion> = self.questions.drain().map(|(_, q)| q).collect();
+        for q in &asked {
+            if q.answered.is_none() && !q.cancelled {
+                replies.push(Reply {
+                    id: q.rpc_id.clone(),
+                    outcome: Ok(json!({"action": "cancel"})),
+                });
+            }
+            drafts.push(self.question_resolved_draft(q));
+        }
         (drafts, replies)
     }
 
     /// The process is gone: nothing pending can be answered any more.
     pub fn expire_all(&mut self) -> Vec<AgentEventDraft> {
         let pending: Vec<PendingPermission> = self.pending.drain().map(|(_, p)| p).collect();
-        pending.iter().map(|p| self.resolved_draft(p)).collect()
+        let mut drafts: Vec<AgentEventDraft> =
+            pending.iter().map(|p| self.resolved_draft(p)).collect();
+        let asked: Vec<PendingQuestion> = self.questions.drain().map(|(_, q)| q).collect();
+        drafts.extend(asked.iter().map(|q| self.question_resolved_draft(q)));
+        drafts
     }
 }
 
 // Helpers -------------------------------------------------------------------------------------
+
+/// An elicitation's `message` as the card's title and markdown body: a one-line message is the
+/// title alone, otherwise its first line titles the rest.
+fn split_message(message: &str) -> (String, String) {
+    let message = message.trim();
+    match message.split_once('\n') {
+        None if message.is_empty() => ("The agent has a question".to_owned(), String::new()),
+        None => (message.chars().take(120).collect(), String::new()),
+        Some((first, rest)) => (
+            first.trim().chars().take(120).collect(),
+            rest.trim().to_owned(),
+        ),
+    }
+}
 
 /// The text of a content block; a stand-in line for what has none.
 fn block_text(content: &Value) -> Option<String> {

@@ -43,6 +43,11 @@ pub enum AgentError {
     OptionNotOffered { option: String },
     #[error("no pending request with that id (already answered or expired)")]
     UnknownApproval,
+    #[error("no pending question with that id (already answered or expired)")]
+    UnknownQuestion,
+    /// The answer cannot be put into the shape the agent asked for.
+    #[error("{0}")]
+    BadAnswer(String),
     #[error("no turn is in progress")]
     NoTurn,
     #[error("a turn is already in progress")]

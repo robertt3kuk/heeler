@@ -18,7 +18,7 @@
 //!   follows it.
 //!
 //! **Who needs the user.** Entries are one per session, strongest first: a permission request
-//! waits for an answer (`approval.list`), an agent is blocked (the session's agent report), or
+//! waits for an answer (`approval.list`), an agent's question waits (`question.list`), an agent is blocked (the session's agent report), or
 //! the session failed while no desktop was around (a pending `session_exited_with_error` intent
 //! raised since the last desktop left; the desktop knows what you have seen, the daemon only
 //! what happened while you were away, so it follows `[notify]`: `enabled = false` or a `kinds`
@@ -89,6 +89,8 @@ pub const CHOICE_QUEUE: usize = 16;
 pub enum Need {
     /// A permission request waits for an answer.
     Approval,
+    /// An agent asks a question (protocol 0.25) that waits for an answer.
+    Question,
     /// An agent in the session is blocked.
     Blocked,
     /// The session ended with an error while nobody had the desktop open.
@@ -99,6 +101,7 @@ impl Need {
     fn word(self) -> &'static str {
         match self {
             Self::Approval => "approval",
+            Self::Question => "question",
             Self::Blocked => "blocked",
             Self::Failed => "failed",
         }
@@ -516,6 +519,7 @@ impl Service {
             }
         };
         let approvals = self.registry.chats().approval_list(None).approvals;
+        let questions = self.registry.chats().question_list(None).questions;
         let intents = self.notify.list();
         let away_since = self.away_since_ms;
 
@@ -546,6 +550,26 @@ impl Service {
                     format!("{count} approvals")
                 } else {
                     shorten(&approval.title)
+                },
+                intent: None,
+            });
+        }
+        // Then questions of agents, the same way.
+        for question in &questions {
+            let session = question.session_id;
+            if !taken.insert(session) {
+                continue;
+            }
+            let count = questions.iter().filter(|q| q.session_id == session).count();
+            entries.push(NeedsYou {
+                session,
+                workspace: workspace_of(session),
+                title: title_of(session),
+                need: Need::Question,
+                detail: if count > 1 {
+                    format!("{count} questions")
+                } else {
+                    shorten(&question.spec.title)
                 },
                 intent: None,
             });

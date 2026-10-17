@@ -14,7 +14,8 @@ use serde::de::DeserializeOwned;
 use crate::error::{Result, StorageError};
 use crate::rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow, WorktreeRow,
+    ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow, WorkspaceKind,
+    WorkspaceRow, WorktreeRow,
 };
 
 pub const EPOCH_HISTORY_KEY: &str = "epoch_history";
@@ -96,6 +97,8 @@ pub enum Write {
     UpsertChatTurn(ChatTurnRow),
     /// Inserts an approval or replaces how it ended.
     UpsertApproval(Box<ApprovalRow>),
+    /// Inserts a question of an agent or replaces how it ended.
+    UpsertQuestion(Box<QuestionRow>),
     /// Inserts a provider or replaces everything but its creation time.
     UpsertProvider(Box<ProviderRow>),
     DeleteProvider(String),
@@ -255,6 +258,7 @@ pub fn apply(conn: &Connection, write: &Write) -> Result<()> {
         }
         Write::UpsertChatTurn(row) => upsert_chat_turn(conn, row)?,
         Write::UpsertApproval(row) => upsert_approval(conn, row)?,
+        Write::UpsertQuestion(row) => upsert_question(conn, row)?,
         Write::UpsertProvider(row) => {
             conn.execute(
                 "INSERT INTO providers (id, kind, name, base_url, default_model, keychain_ref, \
@@ -861,6 +865,83 @@ fn approval_from(row: &Row<'_>) -> Result<ApprovalRow> {
             .transpose()?,
         option_id: row.get(9).map_err(read_err)?,
         decided_by: row.get(10).map_err(read_err)?,
+    })
+}
+
+fn upsert_question(conn: &Connection, row: &QuestionRow) -> Result<()> {
+    let outcome = row
+        .outcome
+        .as_ref()
+        .map(|o| to_text(o, "question outcome"))
+        .transpose()?;
+    conn.execute(
+        "INSERT INTO questions (id, session_id, turn_id, title, requested_at_ms, resolved_at_ms, \
+             outcome, decided_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT (id) DO UPDATE SET resolved_at_ms = excluded.resolved_at_ms, \
+             outcome = excluded.outcome, decided_by = excluded.decided_by",
+        params![
+            row.id.to_string(),
+            row.session_id.to_string(),
+            row.turn_id,
+            row.title,
+            ms(row.requested_at_ms),
+            row.resolved_at_ms.map(ms),
+            outcome,
+            row.decided_by
+        ],
+    )
+    .map_err(StorageError::sqlite("writing a question"))?;
+    Ok(())
+}
+
+/// Questions of one session (or of all, when `None`), oldest first; `only_open` keeps those
+/// not resolved yet.
+pub fn questions(
+    conn: &Connection,
+    session: Option<SessionId>,
+    only_open: bool,
+) -> Result<Vec<QuestionRow>> {
+    let context = "reading questions";
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, turn_id, title, requested_at_ms, resolved_at_ms, outcome, \
+                 decided_by FROM questions \
+             WHERE (?1 IS NULL OR session_id = ?1) AND (?2 = 0 OR resolved_at_ms IS NULL) \
+             ORDER BY requested_at_ms, id",
+        )
+        .map_err(StorageError::sqlite(context))?;
+    let rows = stmt
+        .query_map(params![session.map(|s| s.to_string()), only_open], |row| {
+            Ok(question_from(row))
+        })
+        .map_err(StorageError::sqlite(context))?;
+    collect(rows, context)
+}
+
+fn question_from(row: &Row<'_>) -> Result<QuestionRow> {
+    let id: String = row.get(0).map_err(read_err)?;
+    let session: String = row.get(1).map_err(read_err)?;
+    let at = |column: &str| format!("questions.{column} of {id}");
+    let outcome: Option<String> = row.get(6).map_err(read_err)?;
+    Ok(QuestionRow {
+        id: id
+            .parse()
+            .map_err(|e| StorageError::corrupt("questions.id", e))?,
+        session_id: session
+            .parse()
+            .map_err(|e| StorageError::corrupt(at("session_id"), e))?,
+        turn_id: row.get(2).map_err(read_err)?,
+        title: row.get(3).map_err(read_err)?,
+        requested_at_ms: unms(row.get(4).map_err(read_err)?),
+        resolved_at_ms: row.get::<_, Option<i64>>(5).map_err(read_err)?.map(unms),
+        outcome: outcome
+            .map(|text| {
+                from_text::<QuestionOutcome>(&text)
+                    .map_err(|e| StorageError::corrupt(at("outcome"), e))
+            })
+            .transpose()?,
+        decided_by: row.get(7).map_err(read_err)?,
     })
 }
 

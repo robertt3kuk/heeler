@@ -163,7 +163,7 @@ fn opens_an_empty_database_and_migrates_it() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
 
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     assert!(storage.workspaces().list().unwrap().is_empty());
     assert!(storage.sessions().list().unwrap().is_empty());
     assert!(backups(&dir).is_empty(), "a fresh database needs no backup");
@@ -213,7 +213,7 @@ fn reopening_is_idempotent_and_keeps_the_data() {
     }
     for _ in 0..2 {
         let storage = Storage::open(db(&dir)).unwrap();
-        assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+        assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
         assert_eq!(
             storage.workspaces().list().unwrap(),
             std::slice::from_ref(&ws)
@@ -479,7 +479,7 @@ fn migrating_v1_turns_the_default_workspace_into_home() {
     seed_v1(&db(&dir), default, api);
 
     let storage = Storage::open(db(&dir)).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     let rows = storage.workspaces().list().unwrap();
     assert_eq!(rows.len(), 2);
     let home = &rows[0];
@@ -680,7 +680,7 @@ fn migrating_to_projects_rebuilds_the_table_without_losing_dependents() {
     }
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     // The sessions and tasks of the old table's rows were not cascaded away.
     assert_eq!(storage.sessions().list().unwrap().len(), 1);
     assert_eq!(storage.tasks().list().unwrap().len(), 1);
@@ -1079,6 +1079,54 @@ fn chat_turns_are_updated_in_place() {
 }
 
 #[test]
+fn questions_record_the_request_and_how_it_ended_never_the_answer() {
+    use crate::{QuestionOutcome, QuestionRow};
+    use hutan_core::QuestionId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(db(&dir)).unwrap();
+    let id = chat_session(&storage);
+    let open = QuestionRow {
+        id: QuestionId::new(),
+        session_id: id,
+        turn_id: Some("t1".to_owned()),
+        title: "Which branch?".to_owned(),
+        requested_at_ms: 200,
+        resolved_at_ms: None,
+        outcome: None,
+        decided_by: None,
+    };
+    let mut decided = open.clone();
+    decided.id = QuestionId::new();
+    decided.requested_at_ms = 100;
+    storage.questions().upsert(open.clone()).unwrap();
+    storage.questions().upsert(decided.clone()).unwrap();
+    assert_eq!(storage.questions().unresolved().unwrap().len(), 2);
+
+    decided.resolved_at_ms = Some(300);
+    decided.outcome = Some(QuestionOutcome::Answered);
+    decided.decided_by = Some("desktop".to_owned());
+    storage.questions().upsert(decided.clone()).unwrap();
+    assert_eq!(
+        storage.questions().unresolved().unwrap(),
+        std::slice::from_ref(&open)
+    );
+    assert_eq!(
+        storage.questions().list(Some(id)).unwrap(),
+        [decided, open],
+        "oldest request first, decision recorded"
+    );
+    assert!(
+        storage
+            .questions()
+            .list(Some(SessionId::new()))
+            .unwrap()
+            .is_empty()
+    );
+    storage.close();
+}
+
+#[test]
 fn approvals_record_the_request_and_the_decision() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(db(&dir)).unwrap();
@@ -1359,7 +1407,7 @@ fn migrating_v4_adds_the_provider_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "providers"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     storage.close();
     assert!(table_exists(&db(&dir), "providers"));
     integrity_ok(&db(&dir));
@@ -1426,7 +1474,7 @@ fn migrating_v5_adds_the_worktree_table_and_keeps_the_data() {
     assert!(!table_exists(&db(&dir), "worktrees"));
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     storage.close();
     assert!(table_exists(&db(&dir), "worktrees"));
     integrity_ok(&db(&dir));
@@ -1534,7 +1582,7 @@ fn migrating_v6_adds_the_task_tables_and_keeps_the_data() {
     }
     let storage = Storage::open(db(&dir)).unwrap();
     assert_eq!(storage.workspaces().list().unwrap(), [ws]);
-    assert_eq!(storage.app_meta().schema_version().unwrap(), 8);
+    assert_eq!(storage.app_meta().schema_version().unwrap(), 9);
     assert!(storage.tasks().list().unwrap().is_empty());
     storage.close();
     for table in ["tasks", "task_deps", "task_sessions"] {

@@ -247,6 +247,47 @@ Protocol 0.23, capability `chat.rich_input`. Files, images and pasted text can b
 
 Tests: `crates/chat_view` (unit), `crates/desktop/tests/chat_gpui.rs` (an in-process daemon over `hutan-codex-fixture replay`).
 
+## Questions (protocol 0.25, capability `chat.questions`)
+
+Agents sometimes ask the user something that is not a permission. Hutan answers those requests instead of declining them.
+
+### What the agents actually send
+
+Read from the installed packages (no model turn was run); each fact was checked against the schema or source named.
+
+| Agent | Request | Shape |
+|---|---|---|
+| Codex 0.162.1 (`codex app-server generate-json-schema`) | `item/tool/requestUserInput` (server→client, EXPERIMENTAL) | params `{threadId, turnId, itemId, isBlocking, autoResolutionMs?, questions: [{id, header, question, isOther, isSecret, options: [{label, description}] \| null}]}`; response `{answers: {<question id>: {answers: [string]}}}`. There is no decline or cancel in the schema. |
+| Codex 0.162.1 | `mcpServer/elicitation/request` | params `{threadId, turnId \| null, serverName, mode, message, requestedSchema?, url?, elicitationId?}`; `mode` is `form` (MCP 2025-11-25 `requestedSchema`: object of string / `enum` / `oneOf` of `{const, title}` / number / integer / boolean / array of enum), `openai/form` and `openaiForm` (any schema) or `url`; response `{action: accept \| decline \| cancel, content?: object}`. |
+| Codex | `serverRequest/resolved {requestId}` | notification that ends either request (also after an interrupt). |
+| OMP 18.11.2 (`src/modes/acp/acp-agent.ts`) | ACP `elicitation/create` (unstable), only when the client advertised `clientCapabilities.elicitation.form` | `mode: "form"`, `sessionId`, `message`, `requestedSchema`. OMP's `ask` tool (`askDialog`) sends fields `q<n>` (`oneOf` of `{const, title, description}`, `default` for the recommended option, or an `array` of `anyOf` for multi-select) each with a `q<n>__other` free-text field; `select`, `confirm`, `input`, `editor` and the plan-mode approval ("Approve plan … ?", an `enum` of two strings) send one field `value`. Without the capability OMP's `ask` returns nothing and plan approval auto-approves. |
+| Claude Code through `@agentclientprotocol/claude-agent-acp` 0.67 (`dist/elicitation.js`) | `elicitation/create` for the `AskUserQuestion` tool (fields `question_<n>`: `oneOf`, or `array` of `anyOf` for multi-select, each with a `question_<n>_custom` free-text field marked in `_meta`), for MCP elicitations (form and url modes), and for the refusal-fallback consent prompt | the tool is disabled for clients that do not advertise `elicitation.form`. |
+| ACP schema 1.3.0 | `CreateElicitationResponse` | `{action: "accept", content?} \| {action: "decline"} \| {action: "cancel"}`; content values are string, integer, number, boolean or string array. |
+
+### What Hutan does
+
+`question_requested` / `question_resolved` events join the journal; `question.list` and `question.answer` (protocol.md § Questions) are the requests. A question has a title, a markdown prompt and typed fields (`text`, `multiline`, `choice {options, multi, allow_other}`, `number`, `boolean`, `secret`) mapped from the provider's schema by `crates/agents/src/elicit.rs`; what has no mapping (a nested object, `$ref`, a non-object schema, Codex's `openai/form` modes) becomes one free-text field that takes the answer as a JSON object, with the schema shown beside it. A `requestUserInput` question with `isSecret` is a `secret` field; so is a string with `format: password` or `writeOnly`.
+
+Replies are the provider's own: Codex `requestUserInput` gets `{answers: {id: {answers: [text]}}}` (a multi value is several strings); decline is an empty `answers` and cancel is the same plus `turn/interrupt`, because the schema has no better words; an MCP elicitation gets `accept {content}`, `decline` or `cancel`; ACP `elicitation/create` gets the same actions, and Hutan advertises `elicitation.form` (not `url`: a url-mode elicitation is declined with a notice). Answers are checked against the fields by the daemon (`bad_request` for an unknown field, a missing required one or a wrong type) and defaults fill the fields that were left out.
+
+Lifecycle, like approvals: a question lives in the daemon, survives client disconnects, is answered once (`not_found` afterwards; the first answer to reach the agent is the one that counts), and ends as `answered`, `declined`, `cancelled` or `expired`: when its turn ends, when the user interrupts (ACP: the agent is told `cancel`), when the agent process exits, and when the daemon restarts (an elicitation outside any turn, `expires: process`, lives as long as the process). Requests and outcomes are stored in the `questions` table (never the answers) with `decided_by`, the answering client's kind, also on the event.
+
+**Secrets.** The values of `secret` fields reach the agent and nothing else: the `question_resolved` event, the journal, the `questions` table, `question.resolved` and the logs say `withheld: ["token"]` ("answered (secret)"); `QuestionResponse` prints only field names in `Debug`; the CLI reads a secret from stdin (`field=-`); the card masks it and drops it with the form. A test scans every file of the daemon's home for the value.
+
+### Desktop, CLI, notifications
+
+A question is a card in the chat (`workbench/chat/question_card.rs`): the prompt, a control per field (option buttons or checkboxes, a free-answer box, a text box, a Yes/No toggle, a masked box for a secret), **Submit ⌘↩**, **Decline**, **Cancel**; Tab with an empty composer moves into the oldest card, Tab/⇧Tab walk the fields, Escape leaves. While a card has the keyboard typing is its field's, digits included; the `1–4` approval shortcut only ever answers approvals. The session shows `blocked · question`, counts in *Needs you*, the menu bar item, the Dock badge (`AttentionKind::Question`) and the daemon's own menu bar item (`Need::Question`); notification intent `question_required` (kind enabled by default under `[notify]`) offers *Open* only. The inspector's *Approvals* tab is now **Requests** (its id in `[inspector] tabs` is still `approvals`) and lists questions with a link to their chat.
+
+```text
+hutan questions                                   # pending questions: id, session, title, fields (--json)
+hutan answer <id|prefix> field=value ...          # repeat a field for a multi-select; secret: field=-  (value from stdin)
+hutan answer <id|prefix> --decline | --cancel
+```
+
+### Tests and fixtures
+
+`codex-0.162/question-*.jsonl` and `acp-omp-18.11/question-*.jsonl` are **hand-built from the schemas and sources above** (a real recording of `requestUserInput`, an MCP elicitation or `AskUserQuestion` needs a paid model turn) on top of the recorded handshake and turn of `approval-touch` / `permission-allow`, scrubbed with the same scrubbers (the Codex scrubber now keeps the `serverName` of an MCP elicitation). Tests: the schema mapping (`elicit.rs`), adapter mapping (`tests/mapper.rs`, `tests/codex.rs`, `tests/acp.rs`: reply shapes, decline/cancel, expiry on interrupt, process-scoped elicitations, urls), daemon lifecycle (`daemon/tests/chat.rs`: answer, validation, provenance, decline, expiry, restart, secret not in any file), the CLI (`cli/tests/chat.rs`) and the card (`desktop/tests/chat_gpui.rs`, `chat/question.rs`).
+
 ## Limits
 
-Codex and the ACP harnesses (OMP, Claude Code; direct model chat has its own page, `docs/gateway.md`), one conversation per session, text input only (no images; terminal blocks are quoted into the text). What a harness exposes over ACP is what Hutan shows: an agent without model options has no model switching, OMP's subagent progress is inferred from its `task` tool calls (ACP has no subagent events), and Hutan as an MCP server for agents is not there yet. Questions of the agent (`requestUserInput`) and MCP elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: hutan`).
+Codex and the ACP harnesses (OMP, Claude Code; direct model chat has its own page, `docs/gateway.md`), one conversation per session, text input only (no images; terminal blocks are quoted into the text). What a harness exposes over ACP is what Hutan shows: an agent without model options has no model switching, OMP's subagent progress is inferred from its `task` tool calls (ACP has no subagent events), and Hutan as an MCP server for agents is not there yet. Questions of the agent (`requestUserInput`, MCP and ACP elicitations) are answered (§ Questions); url-mode elicitations are declined. History search over chat journals is not wired into the M17 index yet: the journal has user, assistant and tool rows with the shape the indexer needs (`source: hutan`).

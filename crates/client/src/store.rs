@@ -9,7 +9,7 @@ use hutan_core::{
     WorkspaceId,
 };
 use hutan_protocol::blocks::Block;
-use hutan_protocol::chat::ApprovalInfo;
+use hutan_protocol::chat::{ApprovalInfo, QuestionInfo};
 use hutan_protocol::messages::{Event, SessionInfo, SessionSnapshot, WorkspaceInfo};
 use hutan_protocol::notify::NotificationIntent;
 use hutan_protocol::resources::ResourceSample;
@@ -41,6 +41,9 @@ pub struct StoreState {
     /// Permission requests of agent chats waiting for an answer, oldest first (capability
     /// `chat.codex`). The daemon keeps them across client disconnects.
     pub approvals: Vec<ApprovalInfo>,
+    /// Questions of agents waiting for an answer, oldest first (capability `chat.questions`);
+    /// kept by the daemon like approvals.
+    pub questions: Vec<QuestionInfo>,
     /// The observation tree of every session that has agents (capability `agent.tree`):
     /// the main agent and its subagents.
     pub trees: BTreeMap<SessionId, AgentObservation>,
@@ -159,6 +162,7 @@ impl StoreState {
             workspaces: Vec::new(),
             sessions: Vec::new(),
             approvals: Vec::new(),
+            questions: Vec::new(),
             trees: BTreeMap::new(),
         }
     }
@@ -188,6 +192,16 @@ impl StoreState {
                 .then_with(|| a.id.cmp(&b.id))
         });
         self.approvals = approvals;
+    }
+
+    /// Replaces the pending questions with what `question.list` answered.
+    pub(crate) fn install_questions(&mut self, mut questions: Vec<QuestionInfo>) {
+        questions.sort_by(|a, b| {
+            a.requested_at_ms
+                .cmp(&b.requested_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        self.questions = questions;
     }
 
     /// Replaces workspaces and sessions with `snapshot` (the daemon's view at one seq).
@@ -250,6 +264,7 @@ impl StoreState {
         self.workspaces.clear();
         self.sessions.clear();
         self.approvals.clear();
+        self.questions.clear();
         self.trees.clear();
     }
 
@@ -280,6 +295,8 @@ impl StoreState {
                 let sessions = &self.sessions;
                 self.approvals
                     .retain(|a| sessions.iter().any(|s| s.id == a.session_id));
+                self.questions
+                    .retain(|q| sessions.iter().any(|s| s.id == q.session_id));
                 self.trees
                     .retain(|id, _| sessions.iter().any(|s| s.id == *id));
             }
@@ -332,6 +349,14 @@ impl StoreState {
             }
             Event::ApprovalResolved { approval_id, .. } => {
                 self.approvals.retain(|a| a.id != approval_id);
+            }
+            Event::QuestionRequired { question } => {
+                if !self.questions.iter().any(|q| q.id == question.id) {
+                    self.questions.push(*question);
+                }
+            }
+            Event::QuestionResolved { question_id, .. } => {
+                self.questions.retain(|q| q.id != question_id);
             }
             // Chat events are not state of the sessions list: they go to whoever renders the
             // chat (`Connection::chat_updates`).

@@ -995,7 +995,7 @@ impl TaskService {
             || info
                 .chat
                 .as_ref()
-                .is_some_and(|chat| chat.pending_approvals > 0);
+                .is_some_and(|chat| chat.pending_approvals > 0 || chat.pending_questions > 0);
         match st.tasks.get_mut(&id) {
             Some(slot) if slot.blocked != blocked && slot.task.state.is_active() => {
                 slot.blocked = blocked;

@@ -22,11 +22,21 @@ pub struct InitializeParams {
 }
 
 /// Hutan serves no file system and no terminal to the agent: the agent uses its own tools
-/// (ADR 0015), and Hutan's approvals gate them.
+/// (ADR 0015), and Hutan's approvals gate them. It does answer form-mode elicitations
+/// (`elicitation/create`): that is what turns on OMP's `ask` tool and Claude Code's
+/// `AskUserQuestion`, and what makes OMP ask before it leaves plan mode (`docs/agents.md`
+/// § Questions).
 #[derive(Debug, Serialize)]
 pub struct ClientCapabilities {
     pub fs: FsCapabilities,
     pub terminal: bool,
+    pub elicitation: ElicitationCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ElicitationCapabilities {
+    /// `{}`: form mode.
+    pub form: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]

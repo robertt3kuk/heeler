@@ -6,6 +6,7 @@
 //! | kind | raised when |
 //! |---|---|
 //! | `approval_required` | `approval.required`; answered by `notify.act` through `approval.respond` |
+//! | `question_required` | `question.required` (protocol 0.25); "Open" only, the form is answered in the chat; withdrawn when the question is resolved |
 //! | `agent_blocked` | a node of a session's agent tree becomes `blocked` |
 //! | `agent_finished` | the main agent goes `working` → `idle` with outcome `completed` after `min_turn_secs` |
 //! | `session_exited_with_error` | a session's process exits with a non-zero code |
@@ -14,10 +15,10 @@
 //!
 //! Every candidate passes the same gate: the `[notify]` settings (`enabled`, `kinds`), dedup by
 //! `(kind, session, node)` against the pending intents, and a rate limit of one intent per
-//! session per [`RATE_LIMIT_MS`] (approvals are exempt from it and never counted by it). Pending
+//! session per [`RATE_LIMIT_MS`] (approvals and questions are exempt from it and never counted by it). Pending
 //! intents are kept in memory, at most [`MAX_PENDING`]; they are lost with the daemon, which is
 //! right for something that says "look now". An intent leaves the list when it is acknowledged,
-//! acted on, expires, or (approvals) is resolved.
+//! acted on, expires, or (approvals, questions) is resolved.
 //!
 //! [`Core`] is the whole decision logic, synchronous and driven by explicit timestamps, so its
 //! rules are unit-tested without a clock; [`NotifyService`] feeds it from the event bus and
@@ -29,10 +30,10 @@ use std::time::Duration;
 
 use hutan_core::agent::{Delivery, MessageRole, PermissionOptionKind};
 use hutan_core::{
-    AgentEventKind, AgentNode, ApprovalId, Liveness, NodeKind, NodeOutcome, NodeState, SessionId,
-    Task, TaskId, TaskState, WorkspaceId,
+    AgentEventKind, AgentNode, ApprovalId, Liveness, NodeKind, NodeOutcome, NodeState, QuestionId,
+    SessionId, Task, TaskId, TaskState, WorkspaceId,
 };
-use hutan_protocol::chat::ApprovalInfo;
+use hutan_protocol::chat::{ApprovalInfo, QuestionInfo};
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::messages::{ClientKind, Event, SessionListFilter};
 use hutan_protocol::notify::{
@@ -90,6 +91,9 @@ struct Candidate {
     body: String,
     actions: Vec<IntentAction>,
     approval: Option<ApprovalId>,
+    /// The question this intent is about (`question_required`): it lives as long as the
+    /// question does.
+    question: Option<QuestionId>,
     /// The ids of the actions that refuse (an approval's deny and cancel kinds); the native
     /// notification shows them in the destructive style.
     destructive: Vec<String>,
@@ -101,6 +105,7 @@ struct Entry {
     /// The dedup key's node part.
     node: String,
     approval: Option<ApprovalId>,
+    question: Option<QuestionId>,
     destructive: Vec<String>,
 }
 
@@ -157,6 +162,11 @@ impl Core {
                 self.withdraw_where(|e| e.approval == Some(*approval_id));
                 Vec::new()
             }
+            Event::QuestionRequired { question } => vec![question_candidate(question)],
+            Event::QuestionResolved { question_id, .. } => {
+                self.withdraw_where(|e| e.question == Some(*question_id));
+                Vec::new()
+            }
             Event::AgentTreeUpdated {
                 session_id,
                 nodes_changed,
@@ -175,6 +185,7 @@ impl Core {
                         body: format!("The process exited with code {code}."),
                         actions: vec![open_action()],
                         approval: None,
+                        question: None,
                         destructive: Vec::new(),
                     }],
                     _ => Vec::new(),
@@ -212,6 +223,7 @@ impl Core {
                             body,
                             actions: vec![open_action()],
                             approval: None,
+                            question: None,
                             destructive: Vec::new(),
                         }]
                     }
@@ -265,6 +277,7 @@ impl Core {
                         .unwrap_or_else(|| "It needs a decision from you.".to_owned()),
                     actions: vec![open_action()],
                     approval: None,
+                    question: None,
                     destructive: Vec::new(),
                 });
             }
@@ -289,6 +302,7 @@ impl Core {
                     ),
                     actions: vec![open_action()],
                     approval: None,
+                    question: None,
                     destructive: Vec::new(),
                 });
             }
@@ -357,6 +371,7 @@ impl Core {
             body,
             actions: vec![open_action()],
             approval: None,
+            question: None,
             destructive: Vec::new(),
         }]
     }
@@ -376,7 +391,12 @@ impl Core {
             return None;
         }
         self.expire(now_ms);
-        let approval = candidate.kind == IntentKind::ApprovalRequired;
+        // An approval and a question wait for the user: they are not rate limited (the second of
+        // two in a row matters as much as the first) and live as long as what they are about.
+        let approval = matches!(
+            candidate.kind,
+            IntentKind::ApprovalRequired | IntentKind::QuestionRequired
+        );
         // A task ends once; the gate's rate limit is about chatty sessions, and a finished task
         // should not be lost because the session's own exit raised an intent a moment before.
         let rate_limited = !approval
@@ -439,6 +459,7 @@ impl Core {
             intent,
             node: candidate.node,
             approval: candidate.approval,
+            question: candidate.question,
             destructive: candidate.destructive,
         };
         self.pending.push_back(entry.clone());
@@ -513,6 +534,7 @@ fn approval_candidate(approval: &ApprovalInfo) -> Candidate {
             })
             .collect(),
         approval: Some(approval.id),
+        question: None,
         destructive: approval
             .options
             .iter()
@@ -526,6 +548,41 @@ fn approval_candidate(approval: &ApprovalInfo) -> Candidate {
             })
             .map(|option| option.id.clone())
             .collect(),
+    }
+}
+
+/// A question of an agent: the intent says that there is one and opens the chat. Its fields are
+/// answered there, never from a notification (a form does not fit a button).
+fn question_candidate(question: &QuestionInfo) -> Candidate {
+    let spec = &question.spec;
+    let body = if spec.prompt.trim().is_empty() {
+        // Markdown is no use in a banner: the first line of the prompt, or what the fields ask.
+        spec.fields
+            .iter()
+            .map(|f| f.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        spec.prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Candidate {
+        kind: IntentKind::QuestionRequired,
+        session: question.session_id,
+        node: question.id.to_string(),
+        headline: "question".to_owned(),
+        body: if body.trim().is_empty() {
+            spec.title.clone()
+        } else {
+            format!("{}: {body}", spec.title)
+        },
+        actions: vec![open_action()],
+        approval: None,
+        question: Some(question.id),
+        destructive: Vec::new(),
     }
 }
 

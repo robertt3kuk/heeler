@@ -175,12 +175,15 @@ impl Renamer {
             Value::Array(items) => Value::Array(items.into_iter().map(|v| self.value(v)).collect()),
             Value::Object(map) => {
                 let mut out = Map::new();
+                // `serverName` is the machine's name in the remote-control status (which also
+                // has the installation id); in an MCP elicitation it names an MCP server.
+                let host_status = map.contains_key("installationId");
                 for (key, inner) in map {
                     if DROPPED_KEYS.contains(&key.as_str()) {
                         continue;
                     }
                     let inner = match key.as_str() {
-                        "serverName" if inner.is_string() => json!(FIXTURE_HOST),
+                        "serverName" if host_status && inner.is_string() => json!(FIXTURE_HOST),
                         "installationId" if inner.is_string() => json!(ZERO_UUID),
                         "codexHome" if inner.is_string() => json!(FIXTURE_CODEX_HOME),
                         "planType" => Value::Null,

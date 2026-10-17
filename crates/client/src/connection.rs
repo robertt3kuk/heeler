@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use hutan_core::{ApprovalId, SessionId, TerminalId};
+use hutan_core::{ApprovalId, QuestionId, QuestionResponse, SessionId, TerminalId};
 use hutan_protocol::account::{AccountInfo, AccountSession};
 use hutan_protocol::assistant::{
     AssistantConfig, AssistantConfigure, AssistantEntry, AssistantListRequest, AssistantOpen,
@@ -19,7 +19,9 @@ use hutan_protocol::assistant::{
 use hutan_protocol::blocks::{
     BlockPart, TerminalBlockText, TerminalBlockTextResult, TerminalBlocks, TerminalBlocksResult,
 };
-use hutan_protocol::chat::{ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent};
+use hutan_protocol::chat::{
+    ApprovalInfo, ChatCreate, ChatHistory, ChatModels, ChatSent, QuestionInfo,
+};
 use hutan_protocol::history::{HistoryHits, HistorySearch, HistorySetEnabled, HistoryStatusInfo};
 use hutan_protocol::messages::{
     AgentReleaseRequest, AgentReportRequest, Empty, Request, SessionInfo, TerminalSize,
@@ -668,6 +670,25 @@ impl Connection {
     ) -> Result<(), ClientError> {
         let client = self.shared.client().ok_or(ClientError::Disconnected)?;
         client.approve(approval, option_id).await
+    }
+
+    /// `question.list`: questions of agents waiting for an answer (of one session, or of all).
+    pub async fn questions(
+        &self,
+        session: Option<SessionId>,
+    ) -> Result<Vec<QuestionInfo>, ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.questions(session).await
+    }
+
+    /// `question.answer`: values by field id, a decline, or a cancel.
+    pub async fn answer_question(
+        &self,
+        question: QuestionId,
+        response: QuestionResponse,
+    ) -> Result<(), ClientError> {
+        let client = self.shared.client().ok_or(ClientError::Disconnected)?;
+        client.answer_question(question, response).await
     }
 
     /// A durable view of `terminal` that re-attaches across reconnects. Returns at once; the

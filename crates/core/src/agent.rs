@@ -11,7 +11,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{ApprovalId, ItemId, SessionId, TurnId};
+use crate::ids::{ApprovalId, ItemId, QuestionId, SessionId, TurnId};
+use crate::question::{QuestionOutcome, QuestionSpec};
 
 /// Whether a client sees the event as it happens or from the journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -382,6 +383,22 @@ pub enum AgentEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decided_by: Option<DecidedBy>,
     },
+    /// Protocol 0.25 (capability `chat.questions`): the agent asks the user something that is
+    /// not a permission (Codex `requestUserInput`, an MCP or ACP elicitation).
+    QuestionRequested {
+        question_id: QuestionId,
+        #[serde(flatten)]
+        spec: QuestionSpec,
+    },
+    /// A question is over. A secret answer is never in here (`secret` names its fields).
+    QuestionResolved {
+        question_id: QuestionId,
+        #[serde(flatten)]
+        outcome: QuestionOutcome,
+        /// The client that answered; absent when nobody did (expiry).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<DecidedBy>,
+    },
     Plan {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         explanation: Option<String>,
@@ -455,6 +472,8 @@ impl AgentEventKind {
             Self::FileDiff { .. } => "file_diff",
             Self::PermissionRequested { .. } => "permission_requested",
             Self::PermissionResolved { .. } => "permission_resolved",
+            Self::QuestionRequested { .. } => "question_requested",
+            Self::QuestionResolved { .. } => "question_resolved",
             Self::Plan { .. } => "plan",
             Self::Usage { .. } => "usage",
             Self::TurnCompleted { .. } => "turn_completed",
@@ -664,6 +683,55 @@ mod tests {
         .unwrap();
         assert_eq!(expired["outcome"], "expired");
         assert!(expired.get("decided_by").is_none());
+    }
+
+    #[test]
+    fn question_events_flatten_their_spec_and_outcome() {
+        use crate::question::{FieldKind, QuestionExpiry, QuestionField};
+
+        let question = QuestionId::new();
+        let requested = AgentEventKind::QuestionRequested {
+            question_id: question,
+            spec: QuestionSpec {
+                title: "Which branch?".into(),
+                prompt: "Pick **one**".into(),
+                fields: vec![QuestionField {
+                    id: "branch".into(),
+                    label: "Branch".into(),
+                    description: None,
+                    kind: FieldKind::Text,
+                    required: true,
+                    default: None,
+                }],
+                raw_schema: None,
+                source: Some("MCP server git".into()),
+                expires: QuestionExpiry::Turn,
+            },
+        };
+        let json = serde_json::to_value(&requested).unwrap();
+        assert_eq!(json["type"], "question_requested");
+        assert_eq!(json["title"], "Which branch?");
+        assert_eq!(json["fields"][0]["kind"]["type"], "text");
+        assert_eq!(
+            serde_json::from_value::<AgentEventKind>(json).unwrap(),
+            requested
+        );
+
+        let resolved = AgentEventKind::QuestionResolved {
+            question_id: question,
+            outcome: QuestionOutcome::Declined,
+            decided_by: Some(DecidedBy {
+                client_kind: "cli".into(),
+                client_name: None,
+            }),
+        };
+        let json = serde_json::to_value(&resolved).unwrap();
+        assert_eq!(json["type"], "question_resolved");
+        assert_eq!(json["outcome"], "declined");
+        assert_eq!(
+            serde_json::from_value::<AgentEventKind>(json).unwrap(),
+            resolved
+        );
     }
 
     #[test]

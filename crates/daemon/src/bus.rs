@@ -295,7 +295,7 @@ impl Inner {
 }
 
 /// The events that may change what the menu bar item of the daemon lists as needing the user:
-/// session states and agent reports, exits, approvals, and raised intents.
+/// session states and agent reports, exits, approvals, questions, and raised intents.
 fn feeds_attention(event: &Event) -> bool {
     matches!(
         event,
@@ -303,6 +303,8 @@ fn feeds_attention(event: &Event) -> bool {
             | Event::SessionExited { .. }
             | Event::ApprovalRequired { .. }
             | Event::ApprovalResolved { .. }
+            | Event::QuestionRequired { .. }
+            | Event::QuestionResolved { .. }
             | Event::NotifyIntent { .. }
     )
 }
@@ -322,7 +324,7 @@ fn feeds_tasks(event: &Event) -> bool {
     }
 }
 
-/// The events notification intents are derived from: approvals, agent tree changes, session
+/// The events notification intents are derived from: approvals, questions, agent tree changes, session
 /// exits, task updates, and the journaled end of a chat turn or of an assistant message (never
 /// streaming deltas, never replays).
 fn feeds_notifications(event: &Event) -> bool {
@@ -331,6 +333,8 @@ fn feeds_notifications(event: &Event) -> bool {
     match event {
         Event::ApprovalRequired { .. }
         | Event::ApprovalResolved { .. }
+        | Event::QuestionRequired { .. }
+        | Event::QuestionResolved { .. }
         | Event::AgentTreeUpdated { .. }
         | Event::SessionExited { .. }
         | Event::TaskUpdated { .. } => true,

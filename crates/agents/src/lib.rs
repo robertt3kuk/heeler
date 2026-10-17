@@ -14,6 +14,7 @@
 pub mod acp;
 pub mod adapter;
 pub mod codex;
+pub mod elicit;
 pub mod error;
 pub mod fixture;
 pub mod jsonrpc;

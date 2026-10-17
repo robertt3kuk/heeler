@@ -51,7 +51,7 @@ impl std::fmt::Debug for InspectorPanel {
 
 fn tab_title(id: &str) -> &str {
     match id {
-        "approvals" => "Approvals",
+        "approvals" => "Requests",
         "changes" => "Changes",
         "info" => "Info",
         other => other,
@@ -174,6 +174,55 @@ impl InspectorPanel {
 }
 
 impl InspectorPanel {
+    /// One pending question: what is asked and in which session; it is answered in the chat.
+    fn question_row(
+        &self,
+        question: &hutan_protocol::chat::QuestionInfo,
+        theme: &crate::theme::Theme,
+        tokens: &crate::theme::Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self
+            .env
+            .sessions
+            .read(cx)
+            .session(question.session_id)
+            .map_or_else(|| "a session that is gone".to_owned(), |s| s.title.clone());
+        let session = question.session_id.to_string();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .p(px(tokens.spacing * 2.5))
+            .card(theme, tokens)
+            .border_color(theme.warning)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(SharedString::from(format!(
+                        "Question: {}",
+                        question.spec.title
+                    ))),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "inspector-open-question-{}",
+                        question.id
+                    )))
+                    .text_color(theme.accent)
+                    .cursor_pointer()
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(crate::workbench::actions::OpenSession(session.clone())),
+                            cx,
+                        );
+                    })
+                    .child(SharedString::from(format!("answer in {title} →"))),
+            )
+            .into_any_element()
+    }
+
     /// One pending request: what is asked, in which session, and a button per offered option.
     fn approval_row(
         &self,
@@ -332,7 +381,8 @@ impl Render for InspectorPanel {
         let body: AnyElement = match active.as_str() {
             "approvals" => {
                 let approvals = self.env.sessions.read(cx).approvals().to_vec();
-                if approvals.is_empty() {
+                let questions = self.env.sessions.read(cx).questions().to_vec();
+                if approvals.is_empty() && questions.is_empty() {
                     ui::empty_state(
                         Mascot::Success,
                         "Nothing is waiting for you.",
@@ -352,6 +402,11 @@ impl Render for InspectorPanel {
                             approvals
                                 .iter()
                                 .map(|approval| self.approval_row(approval, &theme, &tokens, cx)),
+                        )
+                        .children(
+                            questions
+                                .iter()
+                                .map(|question| self.question_row(question, &theme, &tokens, cx)),
                         )
                         .into_any_element()
                 }

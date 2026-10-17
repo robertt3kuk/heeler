@@ -13,17 +13,23 @@ use common::{TestDaemon, WAIT, create, remote_code, spec, stop, wait_event};
 use hutan_agents::CodexConfig;
 use hutan_client::Client;
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
-use hutan_core::{AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode, SessionId};
+use hutan_core::question::{QuestionResponse, Values};
+use hutan_core::{
+    AgentEvent, AgentEventKind, ApprovalId, ApprovalPolicy, QuestionId, QuestionOutcome,
+    SandboxMode, SessionId,
+};
 use hutan_core::{Seq, SessionState};
 use hutan_protocol::ErrorCode;
 use hutan_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
-    ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent,
+    ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, QuestionAnswer,
+    QuestionInfo, QuestionList, QuestionListRequest,
 };
 use hutan_protocol::messages::{
     ClientKind, Empty, Event, Request, SessionInfo, SessionList, SessionListFilter, SessionRef,
     SessionResult,
 };
+use hutan_protocol::notify::{ACTION_OPEN, IntentKind, NotifyList};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
@@ -1507,4 +1513,397 @@ async fn a_client_that_joins_mid_stream_gets_the_text_so_far_and_then_the_live_d
     assert_eq!(finals, [full.as_str()]);
     drop(late);
     t.stop().await;
+}
+
+// Questions (protocol 0.25) -------------------------------------------------------------------
+
+const SECRET: &str = "s3cr3t-token";
+
+impl Chat {
+    async fn questions(&self, client: &Client) -> Vec<QuestionInfo> {
+        client
+            .call::<QuestionList>(Request::QuestionList(QuestionListRequest {
+                session_id: None,
+            }))
+            .await
+            .unwrap()
+            .questions
+    }
+
+    async fn asked(&mut self) -> QuestionInfo {
+        wait_event(&mut self.events, "question.required", |event| match event {
+            Event::QuestionRequired { question } => Some((**question).clone()),
+            _ => None,
+        })
+        .await
+    }
+
+    async fn resolved(&mut self, question: QuestionId) -> (QuestionOutcome, Option<DecidedBy>) {
+        wait_event(&mut self.events, "question.resolved", |event| match event {
+            Event::QuestionResolved {
+                question_id,
+                outcome,
+                decided_by,
+                ..
+            } if *question_id == question => Some((outcome.clone(), decided_by.clone())),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Every file of the daemon's home (database, its write-ahead log, logs) that holds `text`.
+    fn files_holding(&self, text: &str) -> Vec<PathBuf> {
+        fn walk(dir: &Path, text: &[u8], found: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, text, found);
+                } else if let Ok(bytes) = std::fs::read(&path)
+                    && bytes.windows(text.len()).any(|w| w == text)
+                {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(self.daemon._dir.path(), text.as_bytes(), &mut found);
+        found
+    }
+}
+
+fn values(pairs: &[(&str, Value)]) -> Values {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect()
+}
+
+async fn answer(
+    client: &Client,
+    question: QuestionId,
+    response: QuestionResponse,
+) -> Result<Empty, hutan_client::ClientError> {
+    client
+        .call::<Empty>(Request::QuestionAnswer(QuestionAnswer {
+            question_id: question,
+            response,
+        }))
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_is_pending_in_the_daemon_checked_answered_once_and_the_secret_never_kept() {
+    let mut t = Chat::with_fixture("question-user-input").await;
+    let created = t.create().await;
+    t.send(created.id, "Ask me something.").await;
+    let info = t.asked().await;
+    assert_eq!(info.session_id, created.id);
+    assert_eq!(info.spec.fields.len(), 3);
+
+    // The session waits for the user; the question is listed, and survives a client leaving.
+    let waiting = t
+        .wait_state(created.id, SessionState::WaitingApproval)
+        .await;
+    let chat = waiting.chat.unwrap();
+    assert_eq!((chat.pending_questions, chat.pending_approvals), (1, 0));
+    assert_eq!(t.questions(&t.client).await, std::slice::from_ref(&info));
+    let other = t.daemon.connect().await;
+    assert_eq!(t.questions(&other).await, std::slice::from_ref(&info));
+    // Its intent says so, with "Open" only: a form is not answered from a notification.
+    let intents = t
+        .client
+        .call::<NotifyList>(Request::NotifyList(Empty {}))
+        .await
+        .unwrap()
+        .intents;
+    let intent = intents
+        .iter()
+        .find(|i| i.kind == IntentKind::QuestionRequired)
+        .expect("a question_required intent");
+    assert_eq!(intent.session_id, created.id);
+    assert_eq!(
+        intent
+            .actions
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect::<Vec<_>>(),
+        [ACTION_OPEN]
+    );
+    assert_eq!(intent.expires_at_ms, None, "lives as long as the question");
+
+    // What does not fit the form is refused and reaches nobody.
+    for (what, wrong) in [
+        (
+            "an unknown field",
+            values(&[("nonsense", Value::from("x"))]),
+        ),
+        (
+            "a missing required field",
+            values(&[("scope", Value::from("Only the CLI"))]),
+        ),
+        (
+            "a value of the wrong type",
+            values(&[
+                ("scope", Value::from(7)),
+                ("note", Value::from("n")),
+                ("token", Value::from("t")),
+            ]),
+        ),
+    ] {
+        let refused = answer(
+            &t.client,
+            info.id,
+            QuestionResponse::Submit { values: wrong },
+        )
+        .await;
+        assert_eq!(remote_code(refused), ErrorCode::BadRequest, "{what}");
+    }
+    let unknown = answer(&t.client, QuestionId::new(), QuestionResponse::Decline).await;
+    assert_eq!(remote_code(unknown), ErrorCode::NotFound);
+    assert!(t.received().iter().all(|(m, _)| m != "response"));
+    assert_eq!(
+        t.questions(&t.client).await.len(),
+        1,
+        "refusals leave it pending"
+    );
+
+    // The desktop answers; everyone is told, and the secret is in nobody's copy.
+    let desktop = t.daemon.connect_as(ClientKind::Desktop).await;
+    answer(
+        &desktop,
+        info.id,
+        QuestionResponse::Submit {
+            values: values(&[
+                ("scope", Value::from("Only the CLI")),
+                ("note", Value::from("none")),
+                ("token", Value::from(SECRET)),
+            ]),
+        },
+    )
+    .await
+    .unwrap();
+    let (outcome, decided_by) = t.resolved(info.id).await;
+    assert_eq!(
+        outcome,
+        QuestionOutcome::Answered {
+            values: values(&[
+                ("scope", Value::from("Only the CLI")),
+                ("note", Value::from("none")),
+            ]),
+            withheld: vec!["token".to_owned()],
+        }
+    );
+    assert_eq!(
+        decided_by,
+        Some(DecidedBy {
+            client_kind: "desktop".into(),
+            client_name: None
+        })
+    );
+    // Answered once.
+    let twice = answer(&t.client, info.id, QuestionResponse::Decline).await;
+    assert_eq!(remote_code(twice), ErrorCode::NotFound);
+    next_chat_event(&mut t.events, "the turn to end", is_turn_end).await;
+    let idle = t.wait_state(created.id, SessionState::Idle).await;
+    assert_eq!(idle.chat.unwrap().pending_questions, 0);
+    assert!(t.questions(&t.client).await.is_empty());
+    let intents = t
+        .client
+        .call::<NotifyList>(Request::NotifyList(Empty {}))
+        .await
+        .unwrap()
+        .intents;
+    assert!(
+        intents
+            .iter()
+            .all(|i| i.kind != IntentKind::QuestionRequired),
+        "resolving the question withdrew its intent"
+    );
+
+    // Codex got the real answer (the fake server logged it); Hutan kept none of it.
+    let response = t
+        .received()
+        .into_iter()
+        .find(|(m, _)| m == "response")
+        .expect("the answer reached the agent");
+    assert_eq!(
+        response.1["result"]["answers"]["token"],
+        serde_json::json!({"answers": [SECRET]})
+    );
+    let history = t.history(created.id, None, 500).await;
+    let journaled: Vec<_> = history
+        .events
+        .iter()
+        .filter(|e| e.kind.name().starts_with("question_"))
+        .collect();
+    assert_eq!(journaled.len(), 2, "{journaled:?}");
+    assert!(matches!(
+        &journaled[1].kind,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Answered { withheld, .. },
+            decided_by: Some(by),
+            ..
+        } if withheld == &["token".to_owned()] && by.client_kind == "desktop"
+    ));
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    let (outcome, decided_by): (String, Option<String>) = db
+        .query_row(
+            "SELECT outcome, decided_by FROM questions WHERE id = ?1",
+            [info.id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (outcome.as_str(), decided_by.as_deref()),
+        ("answered", Some("desktop"))
+    );
+    drop(db);
+    assert_eq!(
+        t.files_holding(SECRET),
+        Vec::<PathBuf>::new(),
+        "the secret is in no file of the daemon's home"
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_an_mcp_elicitation_says_who_declined_and_the_agent_gets_decline() {
+    let mut t = Chat::with_fixture("question-elicitation").await;
+    let created = t.create().await;
+    t.send(created.id, "Deploy.").await;
+    let info = t.asked().await;
+    assert_eq!(info.spec.source.as_deref(), Some("MCP server deployer"));
+    answer(&t.client, info.id, QuestionResponse::Decline)
+        .await
+        .unwrap();
+    let (outcome, decided_by) = t.resolved(info.id).await;
+    assert_eq!(outcome, QuestionOutcome::Declined);
+    assert_eq!(decided_by.unwrap().client_kind, "cli");
+    next_chat_event(&mut t.events, "the turn to end", is_turn_end).await;
+    let response = t
+        .received()
+        .into_iter()
+        .find(|(m, _)| m == "response")
+        .unwrap();
+    assert_eq!(
+        response.1["result"],
+        serde_json::json!({"action": "decline", "content": null})
+    );
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    let (outcome, decided_by): (String, Option<String>) = db
+        .query_row(
+            "SELECT outcome, decided_by FROM questions WHERE id = ?1",
+            [info.id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (outcome.as_str(), decided_by.as_deref()),
+        ("declined", Some("cli"))
+    );
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_question_expires_when_its_turn_ends() {
+    let mut t = Chat::with_fixture("question-interrupt").await;
+    let created = t.create().await;
+    t.send(created.id, "Ask.").await;
+    let info = t.asked().await;
+    t.wait_state(created.id, SessionState::WaitingApproval)
+        .await;
+    t.client
+        .call::<Empty>(Request::ChatInterrupt(SessionRef {
+            session_id: created.id,
+        }))
+        .await
+        .unwrap();
+    let (outcome, decided_by) = t.resolved(info.id).await;
+    assert_eq!(outcome, QuestionOutcome::Expired);
+    assert_eq!(decided_by, None, "nobody answered");
+    next_chat_event(&mut t.events, "turn_cancelled", |e| {
+        matches!(e.kind, AgentEventKind::TurnCancelled)
+    })
+    .await;
+    t.wait_state(created.id, SessionState::Idle).await;
+    assert!(t.questions(&t.client).await.is_empty());
+    let late = answer(&t.client, info.id, QuestionResponse::Decline).await;
+    assert_eq!(remote_code(late), ErrorCode::NotFound);
+    assert!(t.received().iter().all(|(m, _)| m != "response"));
+    let db = rusqlite::Connection::open(&t.daemon.paths.database).unwrap();
+    let (outcome, decided_by): (String, Option<String>) = db
+        .query_row(
+            "SELECT outcome, decided_by FROM questions WHERE id = ?1",
+            [info.id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((outcome.as_str(), decided_by), ("expired", None));
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn questions_pending_at_a_daemon_restart_are_expired() {
+    let work = tempfile::tempdir().unwrap();
+    let scripted = script(work.path(), &["question-user-input", "resume-turn"]);
+    let config = replay(&scripted, &work.path().join("received.jsonl"));
+    let daemon = TestDaemon::start_with("", {
+        let config = config.clone();
+        move |c| c.codex = Some(config)
+    })
+    .await;
+    let (client, mut events) = daemon.connect_subscribed().await;
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events: events.resubscribe(),
+    };
+    let created = chat.create().await;
+    chat.send(created.id, "go").await;
+    let info = wait_event(&mut events, "question.required", |event| match event {
+        Event::QuestionRequired { question } => Some((**question).clone()),
+        _ => None,
+    })
+    .await;
+
+    let Chat { daemon, work, .. } = chat;
+    let daemon = daemon
+        .restart_with({
+            let config = config.clone();
+            move |c| c.codex = Some(config)
+        })
+        .await;
+    let (client, events) = daemon.connect_subscribed().await;
+    let chat = Chat {
+        daemon,
+        work,
+        client,
+        events,
+    };
+    let restored = chat.wait_state(created.id, SessionState::Idle).await;
+    assert_eq!(restored.chat.unwrap().pending_questions, 0);
+    assert!(chat.questions(&chat.client).await.is_empty());
+    let late = answer(&chat.client, info.id, QuestionResponse::Decline).await;
+    assert_eq!(remote_code(late), ErrorCode::NotFound);
+    let db = rusqlite::Connection::open(&chat.daemon.paths.database).unwrap();
+    let outcome: String = db
+        .query_row(
+            "SELECT outcome FROM questions WHERE id = ?1",
+            [info.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome, "expired");
+    // The journal closes the question like the turn: nothing is left asking.
+    let history = chat.history(created.id, None, 500).await;
+    assert!(history.events.iter().any(|e| matches!(
+        &e.kind,
+        AgentEventKind::QuestionResolved {
+            question_id,
+            outcome: QuestionOutcome::Expired,
+            ..
+        } if *question_id == info.id
+    )));
+    chat.stop().await;
 }

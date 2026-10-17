@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use hutan_core::{AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, SandboxMode, TurnId};
+use hutan_core::{
+    AgentEventDraft, ApprovalId, ApprovalPolicy, NodeUpdate, QuestionId, QuestionResponse,
+    SandboxMode, TurnId,
+};
 
 use crate::error::AgentError;
 
@@ -145,6 +148,24 @@ pub trait AgentAdapter: Send + Sync + std::fmt::Debug {
         approval: ApprovalId,
         option_id: String,
     ) -> BoxFuture<'_, Result<(), AgentError>>;
+
+    /// Answers a pending question (Codex `requestUserInput`, an MCP or ACP elicitation) in the
+    /// shape the agent asked for: values, a decline, or a cancel. Agents that never ask refuse.
+    /// [`AgentError::UnknownQuestion`] when the question is not pending,
+    /// [`AgentError::BadAnswer`] when the values cannot be put into the agent's shape.
+    fn answer_question(
+        &self,
+        question: QuestionId,
+        response: QuestionResponse,
+    ) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async move {
+            let _ = (question, response);
+            Err(AgentError::Unsupported(format!(
+                "{} does not ask questions",
+                self.agent()
+            )))
+        })
+    }
 
     /// Ends the process (politely first); the stream ends with [`AdapterMessage::Exited`].
     fn shutdown(&self) -> BoxFuture<'_, ()>;

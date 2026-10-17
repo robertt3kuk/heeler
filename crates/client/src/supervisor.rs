@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use hutan_core::{Epoch, Seq, SessionId, TerminalId};
 use hutan_protocol::ErrorCode;
-use hutan_protocol::chat::{ApprovalList, ApprovalListRequest};
+use hutan_protocol::chat::{ApprovalList, ApprovalListRequest, QuestionList, QuestionListRequest};
 use hutan_protocol::messages::{
     Empty, Event, Request, ResumeOutcome, ResumePoint, SessionInfo, SessionSnapshot, Subscribed,
     TerminalAck, TerminalAttach, TerminalAttached, TerminalColors, TerminalRef, TerminalResize,
@@ -528,6 +528,14 @@ impl Supervisor {
             } else {
                 None
             };
+            let questions = if client.supports_questions() {
+                let listed: QuestionList = client
+                    .call(Request::QuestionList(QuestionListRequest::default()))
+                    .await?;
+                Some(listed.questions)
+            } else {
+                None
+            };
             let trees = if client.supports_agent_tree() {
                 Some(
                     client
@@ -546,6 +554,9 @@ impl Supervisor {
                     let mut effects = self.state.install_snapshot(snapshot);
                     if let Some(approvals) = approvals {
                         self.state.install_approvals(approvals);
+                    }
+                    if let Some(questions) = questions {
+                        self.state.install_questions(questions);
                     }
                     if let Some(trees) = trees {
                         self.state.install_trees(trees.observations);

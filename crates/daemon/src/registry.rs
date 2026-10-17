@@ -140,11 +140,12 @@ enum Command {
         reply: Option<Reply<SessionInfo>>,
     },
     /// From a chat session's pump: a turn started or ended (`turn`), and how many approvals
-    /// are pending now.
+    /// and questions are pending now.
     ChatState {
         session: SessionId,
         turn: Option<bool>,
         pending: u32,
+        questions: u32,
     },
     /// From a chat session's pump: the agent process is gone.
     ChatExited {
@@ -186,11 +187,18 @@ impl ChatNotifier {
         }
     }
 
-    pub(crate) async fn state(&self, session: SessionId, turn: Option<bool>, pending: u32) {
+    pub(crate) async fn state(
+        &self,
+        session: SessionId,
+        turn: Option<bool>,
+        pending: u32,
+        questions: u32,
+    ) {
         self.send(Command::ChatState {
             session,
             turn,
             pending,
+            questions,
         })
         .await;
     }
@@ -1084,7 +1092,8 @@ impl SessionRegistry {
                     session,
                     turn,
                     pending,
-                } => self.on_chat_state(session, turn, pending),
+                    questions,
+                } => self.on_chat_state(session, turn, pending, questions),
                 Command::ChatExited { session, exit } => self.on_chat_exited(session, &exit),
                 Command::ChatNode { session, update } => self.on_chat_node(session, *update),
                 Command::InvalidatePlacements(reply) => {
@@ -2900,7 +2909,7 @@ impl SessionRegistry {
     }
 
     /// Records what the pump reports and moves the session's state to match.
-    fn on_chat_state(&mut self, id: SessionId, turn: Option<bool>, pending: u32) {
+    fn on_chat_state(&mut self, id: SessionId, turn: Option<bool>, pending: u32, questions: u32) {
         let Ok(index) = self.session_index(id) else {
             return;
         };
@@ -2910,6 +2919,7 @@ impl SessionRegistry {
                 chat.turn_active = active;
             }
             chat.pending_approvals = pending;
+            chat.pending_questions = questions;
         }
         self.sync_chat_state(index);
         if self.sessions[index].info != before {
@@ -2934,14 +2944,15 @@ impl SessionRegistry {
     }
 
     /// Moves a live chat session to the state its turn and approval counts call for:
-    /// `waiting_approval` while anything is pending, else `running` during a turn, else `idle`.
+    /// `waiting_approval` while an approval or a question (protocol 0.25) is pending (the state
+    /// means "waiting for the user"), else `running` during a turn, else `idle`.
     /// A session still starting keeps its state until it is ready.
     fn sync_chat_state(&mut self, index: usize) {
         let session = &mut self.sessions[index];
         let Some(chat) = &session.info.chat else {
             return;
         };
-        let target = if chat.pending_approvals > 0 {
+        let target = if chat.pending_approvals > 0 || chat.pending_questions > 0 {
             SessionState::WaitingApproval
         } else if chat.turn_active {
             SessionState::Running
@@ -2990,6 +3001,7 @@ impl SessionRegistry {
         if let Some(chat) = &mut session.info.chat {
             chat.turn_active = false;
             chat.pending_approvals = 0;
+            chat.pending_questions = 0;
         }
         session.stopping = false;
         // A daemon shutdown keeps the tree as it was: the next daemon marks it restored.
@@ -3024,6 +3036,7 @@ impl SessionRegistry {
         if let Some(chat) = &mut session.info.chat {
             chat.turn_active = false;
             chat.pending_approvals = 0;
+            chat.pending_questions = 0;
         }
         self.emit_session(index);
         self.persist_session(index);
@@ -3759,6 +3772,7 @@ fn chat_info(spec: &ChatSpec) -> ChatInfo {
         sandbox: spec.sandbox,
         turn_active: false,
         pending_approvals: 0,
+        pending_questions: 0,
         provider_id: spec.provider_id.clone(),
         assistant: spec.assistant,
         images: None,

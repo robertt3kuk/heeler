@@ -16,8 +16,10 @@ use hutan_core::agent::{
     FileChangeKind, MessageRole, NoticeLevel, PermissionKind, PermissionOptionKind,
     PermissionOutcome, PlanStepStatus, ToolKind, ToolStatus,
 };
+use hutan_core::question::{FieldKind, QuestionExpiry, Values};
 use hutan_core::{
-    AgentEventKind, ApprovalId, ApprovalPolicy, NodeKind, NodeOutcome, NodeState, SandboxMode,
+    AgentEventKind, ApprovalId, ApprovalPolicy, NodeKind, NodeOutcome, NodeState, QuestionId,
+    QuestionOutcome, QuestionResponse, SandboxMode,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -220,6 +222,11 @@ async fn the_handshake_with_a_recorded_omp_names_the_session_and_its_models() {
         false
     );
     assert_eq!(init["params"]["clientCapabilities"]["terminal"], false);
+    // Form elicitations are served (OMP's `ask`, Claude Code's `AskUserQuestion`); urls are not.
+    assert_eq!(
+        init["params"]["clientCapabilities"]["elicitation"],
+        json!({"form": {}})
+    );
     assert_eq!(init["params"]["clientInfo"]["name"], "hutan");
     let new = &h.received_of("session/new")[0];
     assert_eq!(new["params"]["cwd"], h.dir.path().display().to_string());
@@ -1179,6 +1186,319 @@ async fn images_are_refused_when_the_agent_does_not_take_them() {
     adapter.shutdown().await;
 }
 
+// Questions: `elicitation/create` ----------------------------------------------------------------
+//
+// OMP 18.11.2 (`src/modes/acp/acp-agent.ts`) and `@agentclientprotocol/claude-agent-acp` 0.67
+// (`dist/elicitation.js`) send these when the client advertises `elicitation.form`; the
+// transcripts are built from their sources and the ACP schema (1.3.0), not recorded, because a
+// recording needs a model turn.
+
+fn is_question_request(message: &AdapterMessage) -> bool {
+    matches!(message, AdapterMessage::Event(d) if matches!(d.kind, AgentEventKind::QuestionRequested { .. }))
+}
+
+fn question_of(messages: &[AdapterMessage]) -> QuestionId {
+    kinds(messages)
+        .into_iter()
+        .find_map(|k| match k {
+            AgentEventKind::QuestionRequested { question_id, .. } => Some(*question_id),
+            _ => None,
+        })
+        .expect("a question")
+}
+
+fn values(pairs: &[(&str, Value)]) -> Values {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn an_omp_ask_dialog_becomes_a_form_and_the_answer_reaches_omp_as_accept_with_content() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-ask").await;
+    initial(&mut events).await;
+    adapter.send_message("decide".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let question = question_of(&first);
+    // The open message ends before the question, like before a permission request.
+    assert!(names(&first).contains(&"message_end"));
+    let Some(AgentEventKind::QuestionRequested { spec, .. }) = kinds(&first).into_iter().last()
+    else {
+        panic!()
+    };
+    assert_eq!(spec.title, "Which database should the migration target?");
+    assert_eq!(spec.expires, QuestionExpiry::Turn);
+    assert_eq!(
+        spec.fields
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>(),
+        ["q0", "q0__other"]
+    );
+    assert_eq!(spec.fields[0].description.as_deref(), Some("Database"));
+    assert_eq!(
+        spec.fields[0].default,
+        Some(Value::from("PostgreSQL (Recommended)"))
+    );
+    assert!(matches!(
+        &spec.fields[0].kind,
+        FieldKind::Choice { options, multi: false, .. }
+            if options[0].description.as_deref() == Some("Production default")
+    ));
+    assert!(matches!(spec.fields[1].kind, FieldKind::Text));
+
+    adapter
+        .answer_question(
+            question,
+            QuestionResponse::Submit {
+                values: values(&[("q0", Value::from("SQLite"))]),
+            },
+        )
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            question_id,
+            outcome: QuestionOutcome::Answered { values, withheld },
+            ..
+        } if *question_id == question && values["q0"] == "SQLite" && withheld.is_empty()
+    )));
+    adapter.shutdown().await;
+    assert_eq!(
+        h.received_of("response")[0]["result"],
+        json!({"action": "accept", "content": {"q0": "SQLite"}})
+    );
+}
+
+#[tokio::test]
+async fn claude_codes_ask_user_question_maps_choices_multi_selects_and_its_custom_boxes() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-claude-ask").await;
+    initial(&mut events).await;
+    adapter.send_message("ask".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let question = question_of(&first);
+    let Some(AgentEventKind::QuestionRequested { spec, .. }) = kinds(&first).into_iter().last()
+    else {
+        panic!()
+    };
+    assert_eq!(spec.title, "Please answer the following questions.");
+    let ids: Vec<&str> = spec.fields.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "question_0",
+            "question_0_custom",
+            "question_1",
+            "question_1_custom"
+        ]
+    );
+    assert_eq!(spec.fields[0].label, "Scope");
+    assert_eq!(
+        spec.fields[0].description.as_deref(),
+        Some("Which part should change?")
+    );
+    assert!(matches!(
+        &spec.fields[2].kind,
+        FieldKind::Choice { options, multi: true, .. } if options.len() == 3
+    ));
+    // The question hangs off the tool call it came from.
+    let tool_item = kinds(&first)
+        .iter()
+        .position(|k| matches!(k, AgentEventKind::ToolStart { .. }))
+        .unwrap();
+    let AdapterMessage::Event(request) =
+        first.iter().rev().find(|m| is_question_request(m)).unwrap()
+    else {
+        panic!()
+    };
+    let AdapterMessage::Event(tool) = first
+        .iter()
+        .filter(|m| matches!(m, AdapterMessage::Event(_)))
+        .nth(tool_item)
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(request.item_id, tool.item_id);
+
+    // Decline: Claude tells the model the user skipped.
+    adapter
+        .answer_question(question, QuestionResponse::Decline)
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Declined,
+            ..
+        }
+    )));
+    adapter.shutdown().await;
+    assert_eq!(
+        h.received_of("response")[0]["result"],
+        json!({"action": "decline"})
+    );
+}
+
+#[tokio::test]
+async fn omps_plan_approval_is_a_choice_question() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-plan-approval").await;
+    initial(&mut events).await;
+    adapter.send_message("plan".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let question = question_of(&first);
+    let Some(AgentEventKind::QuestionRequested { spec, .. }) = kinds(&first).into_iter().last()
+    else {
+        panic!()
+    };
+    // The first line titles the card, the rest (the plan's preview) is its body.
+    assert!(
+        spec.title
+            .starts_with("Approve plan \"Add the questions card\""),
+        "{}",
+        spec.title
+    );
+    assert!(
+        spec.prompt.starts_with("1. Map the schema"),
+        "{}",
+        spec.prompt
+    );
+    let FieldKind::Choice { options, .. } = &spec.fields[0].kind else {
+        panic!("{:?}", spec.fields[0].kind)
+    };
+    assert_eq!(options.len(), 2);
+    assert!(spec.fields[0].required);
+    adapter
+        .answer_question(
+            question,
+            QuestionResponse::Submit {
+                values: values(&[("value", Value::from("Approve and execute"))]),
+            },
+        )
+        .await
+        .unwrap();
+    collect_until(&mut events, ends_turn).await;
+    adapter.shutdown().await;
+    assert_eq!(
+        h.received_of("response")[0]["result"],
+        json!({"action": "accept", "content": {"value": "Approve and execute"}})
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_question_expires_with_its_turn_and_the_agent_is_told_cancel() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-expires").await;
+    initial(&mut events).await;
+    adapter.send_message("ask".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    let all = kinds(&seen);
+    let expired = all.iter().position(|k| {
+        matches!(
+            k,
+            AgentEventKind::QuestionResolved {
+                outcome: QuestionOutcome::Expired,
+                ..
+            }
+        )
+    });
+    let completed = all
+        .iter()
+        .position(|k| matches!(k, AgentEventKind::TurnCompleted { .. }));
+    assert!(expired.unwrap() < completed.unwrap(), "{:?}", names(&seen));
+    adapter.shutdown().await;
+    assert_eq!(
+        h.received_of("response")[0]["result"],
+        json!({"action": "cancel"})
+    );
+    // Too late to answer.
+    let error = adapter
+        .answer_question(question_of(&seen), QuestionResponse::Decline)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::UnknownQuestion), "{error}");
+}
+
+#[tokio::test]
+async fn interrupting_cancels_a_waiting_question_before_the_turn_ends() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-cancel").await;
+    initial(&mut events).await;
+    adapter.send_message("ask".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let question = question_of(&first);
+    adapter.interrupt().await.unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Expired,
+            ..
+        }
+    )));
+    // The agent was told to cancel: the user cannot answer any more.
+    let error = adapter
+        .answer_question(question, QuestionResponse::Decline)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::UnknownQuestion), "{error}");
+    let received = h.received();
+    let names: Vec<_> = received.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(&names[names.len() - 2..], ["session/cancel", "response"]);
+    assert_eq!(
+        received[received.len() - 1].1["result"],
+        json!({"action": "cancel"})
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_url_elicitation_is_declined_with_a_notice_because_only_forms_are_offered() {
+    let h = Harness::new();
+    let AcpSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-url").await;
+    initial(&mut events).await;
+    adapter.send_message("auth".into()).await.unwrap();
+    let seen = collect_until(&mut events, ends_turn).await;
+    assert!(names(&seen).contains(&"notice"));
+    assert!(!names(&seen).contains(&"question_requested"));
+    adapter.shutdown().await;
+    assert_eq!(
+        h.received_of("response")[0]["result"],
+        json!({"action": "decline"})
+    );
+}
+
 #[test]
 fn committed_fixtures_are_already_scrubbed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-omp-18.11");
@@ -1194,5 +1514,5 @@ fn committed_fixtures_are_already_scrubbed() {
         assert_eq!(scrubbed, text, "{} is not scrubbed", path.display());
         seen += 1;
     }
-    assert!(seen >= 20, "{seen} fixtures");
+    assert!(seen >= 25, "{seen} fixtures");
 }

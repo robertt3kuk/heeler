@@ -55,6 +55,8 @@ pub enum AttentionKind {
     Blocked,
     /// A permission request waits for an answer.
     Approval,
+    /// An agent's question waits for an answer (protocol 0.25).
+    Question,
     /// Exited non-zero, was killed, or failed to start, and the user has not looked.
     Failed,
 }
@@ -64,6 +66,7 @@ impl AttentionKind {
         match self {
             AttentionKind::Blocked => "blocked",
             AttentionKind::Approval => "approval",
+            AttentionKind::Question => "question",
             AttentionKind::Failed => "failed",
         }
     }
@@ -90,11 +93,18 @@ impl AttentionEntry {
     }
 }
 
-/// How a session that `presentation` describes, with `pending_approvals` requests waiting,
-/// counts for the macOS surfaces; `None` when it does not.
-pub fn classify(presentation: &Presentation, pending_approvals: usize) -> Option<AttentionKind> {
+/// How a session that `presentation` describes, with `pending_approvals` requests and
+/// `pending_questions` questions waiting, counts for the macOS surfaces; `None` when it does not.
+pub fn classify(
+    presentation: &Presentation,
+    pending_approvals: usize,
+    pending_questions: usize,
+) -> Option<AttentionKind> {
     if pending_approvals > 0 {
         return Some(AttentionKind::Approval);
+    }
+    if pending_questions > 0 {
+        return Some(AttentionKind::Question);
     }
     if !presentation.needs_you {
         return None;
@@ -156,11 +166,15 @@ pub fn present(info: &SessionInfo, unread: Option<Unread>) -> Presentation {
         }
         SessionState::WaitingApproval if info.chat.is_some() => {
             let pending = info.chat.as_ref().map_or(0, |chat| chat.pending_approvals);
+            let asked = info.chat.as_ref().map_or(0, |chat| chat.pending_questions);
             Presentation {
                 label: "blocked".into(),
-                detail: match pending {
-                    0 | 1 => "approval".to_owned(),
-                    n => format!("{n} approvals"),
+                detail: match (pending, asked) {
+                    (0, 0) | (1, 0) => "approval".to_owned(),
+                    (0, 1) => "question".to_owned(),
+                    (0, n) => format!("{n} questions"),
+                    (n, 0) => format!("{n} approvals"),
+                    (a, q) => format!("{a} approvals, {q} questions"),
                 },
                 tone: Tone::Warning,
                 filled: true,
@@ -401,26 +415,26 @@ mod tests {
     #[test]
     fn only_blocked_approval_and_failed_sessions_count_for_the_macos_surfaces() {
         let failed = presentation_of(exited(2), Some(Unread::Failed));
-        assert_eq!(classify(&failed, 0), Some(AttentionKind::Failed));
+        assert_eq!(classify(&failed, 0, 0), Some(AttentionKind::Failed));
         let done = presentation_of(exited(0), Some(Unread::Done));
         assert!(done.needs_you);
         assert_eq!(
-            classify(&done, 0),
+            classify(&done, 0, 0),
             None,
             "a finished session is not a badge"
         );
         let seen = presentation_of(exited(2), None);
         assert_eq!(
-            classify(&seen, 0),
+            classify(&seen, 0, 0),
             None,
             "a failure the user looked at is over"
         );
         let idle = presentation_of(SessionState::Idle, None);
-        assert_eq!(classify(&idle, 0), None);
+        assert_eq!(classify(&idle, 0, 0), None);
         let waiting = presentation_of(SessionState::WaitingApproval, None);
-        assert_eq!(classify(&waiting, 0), Some(AttentionKind::Blocked));
-        assert_eq!(classify(&idle, 1), Some(AttentionKind::Approval));
-        assert_eq!(classify(&failed, 1), Some(AttentionKind::Approval));
+        assert_eq!(classify(&waiting, 0, 0), Some(AttentionKind::Blocked));
+        assert_eq!(classify(&idle, 1, 0), Some(AttentionKind::Approval));
+        assert_eq!(classify(&failed, 1, 0), Some(AttentionKind::Approval));
     }
 
     #[test]
@@ -430,7 +444,7 @@ mod tests {
         };
         let chat_failed = present(&chat(failed(), false, 0), Some(Unread::Failed));
         assert!(chat_failed.needs_you);
-        assert_eq!(classify(&chat_failed, 0), Some(AttentionKind::Failed));
+        assert_eq!(classify(&chat_failed, 0, 0), Some(AttentionKind::Failed));
 
         let mut assistant = chat(failed(), false, 0);
         if let Some(c) = assistant.chat.as_mut() {
@@ -439,9 +453,9 @@ mod tests {
         let shown = present(&assistant, Some(Unread::Failed));
         assert_eq!(shown.label, "failed", "the row still says what happened");
         assert!(!shown.needs_you);
-        assert_eq!(classify(&shown, 0), None, "no badge for it either");
+        assert_eq!(classify(&shown, 0, 0), None, "no badge for it either");
         assert_eq!(
-            classify(&shown, 1),
+            classify(&shown, 1, 0),
             Some(AttentionKind::Approval),
             "a pending approval always counts"
         );

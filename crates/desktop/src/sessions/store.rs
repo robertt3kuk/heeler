@@ -102,6 +102,8 @@ pub struct SessionsStore {
     /// Permission requests this window answered, and with which option (the cards say
     /// "answered here" for them, "answered elsewhere" for the rest).
     answered: HashMap<ApprovalId, String>,
+    /// Questions this window answered (to say "from this window").
+    answered_questions: std::collections::HashSet<hutan_core::QuestionId>,
     /// The blocked nodes of each session as of the last synchronised state, once the first
     /// state of the daemon epoch has been taken as the baseline (what was already blocked when
     /// the desktop arrived is not news).
@@ -181,6 +183,7 @@ impl SessionsStore {
                 workspaces: Vec::new(),
                 sessions: Vec::new(),
                 approvals: Vec::new(),
+                questions: Vec::new(),
                 trees: Default::default(),
             }),
             attention: AttentionTracker::new(),
@@ -194,6 +197,7 @@ impl SessionsStore {
             connected_since: None,
             daemon_stopped: false,
             answered: HashMap::new(),
+            answered_questions: std::collections::HashSet::new(),
             blocked_seen: None,
             blocked_epoch: None,
             focus_sent: None,
@@ -531,16 +535,23 @@ impl SessionsStore {
         for approval in &self.state.approvals {
             *pending.entry(approval.session_id).or_default() += 1;
         }
+        let mut asked: HashMap<SessionId, usize> = HashMap::new();
+        for question in &self.state.questions {
+            *asked.entry(question.session_id).or_default() += 1;
+        }
         self.state
             .sessions
             .iter()
             .filter_map(|info| {
                 let presentation = self.presentation(info);
                 let approvals = pending.get(&info.id).copied().unwrap_or(0);
-                let kind = classify(&presentation, approvals)?;
+                let questions = asked.get(&info.id).copied().unwrap_or(0);
+                let kind = classify(&presentation, approvals, questions)?;
                 let detail = match kind {
                     AttentionKind::Approval if approvals == 1 => String::new(),
                     AttentionKind::Approval => format!("{approvals} requests"),
+                    AttentionKind::Question if questions == 1 => String::new(),
+                    AttentionKind::Question => format!("{questions} questions"),
                     AttentionKind::Blocked | AttentionKind::Failed => presentation.detail,
                 };
                 Some(AttentionEntry {
@@ -574,6 +585,43 @@ impl SessionsStore {
     /// Permission requests of every agent chat waiting for an answer, oldest first.
     pub fn approvals(&self) -> &[ApprovalInfo] {
         &self.state.approvals
+    }
+
+    /// Questions of every agent chat waiting for an answer, oldest first (protocol 0.25).
+    pub fn questions(&self) -> &[hutan_protocol::chat::QuestionInfo] {
+        &self.state.questions
+    }
+
+    /// Whether this window answered `question`.
+    pub fn question_answered_here(&self, question: hutan_core::QuestionId) -> bool {
+        self.answered_questions.contains(&question)
+    }
+
+    /// `question.answer`. Remembered before the daemon replies (the resolved event can overtake
+    /// the reply) and forgotten again when the daemon refuses it.
+    pub fn answer_question(
+        &mut self,
+        question: hutan_core::QuestionId,
+        response: hutan_core::QuestionResponse,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        self.answered_questions.insert(question);
+        cx.notify();
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let answered = connection
+                .answer_question(question, response)
+                .await
+                .map_err(|e| e.to_string());
+            if answered.is_err() {
+                this.update(cx, |this, cx| {
+                    this.answered_questions.remove(&question);
+                    cx.notify();
+                })
+                .ok();
+            }
+            answered
+        })
     }
 
     /// The option this window chose for `approval`, if it answered it.

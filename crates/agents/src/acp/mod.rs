@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use hutan_core::{ApprovalId, ModelInfo};
+use hutan_core::{ApprovalId, ModelInfo, QuestionId, QuestionResponse};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
@@ -328,6 +328,9 @@ async fn open(
                 write_text_file: false,
             },
             terminal: false,
+            elicitation: wire::ElicitationCapabilities {
+                form: serde_json::Map::new(),
+            },
         },
         client_info: wire::ClientInfo {
             name: "hutan",
@@ -740,6 +743,7 @@ async fn pump(
                     matches!(
                         d.kind,
                         hutan_core::AgentEventKind::PermissionRequested { .. }
+                            | hutan_core::AgentEventKind::QuestionRequested { .. }
                     )
                 });
                 let node = blocked.then(|| lock(&shared.nodes).blocked());
@@ -945,6 +949,7 @@ impl AgentAdapter for AcpAdapter {
             let (rpc_id, result) = answered.map_err(|error| match error {
                 AnswerError::Unknown => AgentError::UnknownApproval,
                 AnswerError::NotOffered(option) => AgentError::OptionNotOffered { option },
+                AnswerError::Invalid(problem) => AgentError::BadAnswer(problem),
             })?;
             if let Err(error) = shared.transport.respond(&rpc_id, result).await {
                 lock(&shared.mapper).unanswer(approval);
@@ -953,6 +958,35 @@ impl AgentAdapter for AcpAdapter {
             // ACP has no "resolved" notification: the answer reaching the agent is the end of
             // the request.
             let resolved = lock(&shared.mapper).answered(approval);
+            let (more_waiting, unblocked) = {
+                let waiting = lock(&shared.mapper).has_pending();
+                (waiting, lock(&shared.nodes).unblocked())
+            };
+            emit(shared, resolved.into_iter().collect()).await;
+            if !more_waiting {
+                emit_nodes(shared, vec![unblocked]).await;
+            }
+            Ok(())
+        })
+    }
+
+    fn answer_question(
+        &self,
+        question: QuestionId,
+        response: QuestionResponse,
+    ) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async move {
+            let shared = &self.shared;
+            let answered = lock(&shared.mapper).answer_question(question, &response);
+            let (rpc_id, result) = answered.map_err(|error| match error {
+                AnswerError::Unknown | AnswerError::NotOffered(_) => AgentError::UnknownQuestion,
+                AnswerError::Invalid(problem) => AgentError::BadAnswer(problem),
+            })?;
+            if let Err(error) = shared.transport.respond(&rpc_id, result).await {
+                lock(&shared.mapper).unanswer_question(question);
+                return Err(error);
+            }
+            let resolved = lock(&shared.mapper).question_answered(question);
             let (more_waiting, unblocked) = {
                 let waiting = lock(&shared.mapper).has_pending();
                 (waiting, lock(&shared.nodes).unblocked())

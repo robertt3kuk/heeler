@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
 use hutan_core::{
-    AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, Seq, SessionId, SessionKind,
-    SessionState, Task, TaskId, TerminalId, WorkspaceId,
+    AgentEvent, AgentNode, ApprovalId, Epoch, NodeOutcome, QuestionId, QuestionOutcome, Seq,
+    SessionId, SessionKind, SessionState, Task, TaskId, TerminalId, WorkspaceId,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use crate::assistant::{AssistantConfigure, AssistantListRequest, AssistantOpen};
 use crate::blocks::{Block, TerminalBlockText, TerminalBlocks};
 use crate::chat::{
     ApprovalInfo, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistoryRequest, ChatInfo,
-    ChatModelsRequest, ChatSend,
+    ChatModelsRequest, ChatSend, QuestionAnswer, QuestionInfo, QuestionListRequest,
 };
 use crate::control::{ErrorBody, ErrorCode};
 use crate::error::ProtocolError;
@@ -173,6 +173,13 @@ pub enum Request {
     /// Capability `chat.codex`: answer a permission request with one of its options.
     #[serde(rename = "approval.respond")]
     ApprovalRespond(ApprovalRespond),
+    /// Capability `chat.questions` (protocol 0.25): questions of agents waiting for an answer;
+    /// answered with `QuestionList`.
+    #[serde(rename = "question.list")]
+    QuestionList(QuestionListRequest),
+    /// Capability `chat.questions`: answer a question (values), decline it or cancel it.
+    #[serde(rename = "question.answer")]
+    QuestionAnswer(QuestionAnswer),
     /// Capability `chat.direct` (protocol 0.11): the configured model providers; answered with
     /// `ProviderList`.
     #[serde(rename = "provider.list")]
@@ -940,6 +947,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decided_by: Option<DecidedBy>,
     },
+    /// Capability `chat.questions` (protocol 0.25): an agent asks the user a question.
+    #[serde(rename = "question.required")]
+    QuestionRequired { question: Box<QuestionInfo> },
+    /// Capability `chat.questions`: a question is over (answered, declined, cancelled, or
+    /// expired because its turn ended, the agent went away or the daemon restarted). A secret
+    /// answer is never in the event.
+    #[serde(rename = "question.resolved")]
+    QuestionResolved {
+        question_id: QuestionId,
+        session_id: SessionId,
+        #[serde(flatten)]
+        outcome: QuestionOutcome,
+        /// The client that answered; absent when the question expired.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<DecidedBy>,
+    },
     /// Capability `agent.tree` (protocol 0.10): nodes of a session's observation tree changed
     /// or were dropped. Coalesced: at most 4 per second per session. `nodes_changed` carries
     /// each node whole, as it is now; a client applies the event to the tree it fetched with
@@ -1030,6 +1053,8 @@ impl Event {
         "chat.event",
         "approval.required",
         "approval.resolved",
+        "question.required",
+        "question.resolved",
         "agent.tree_updated",
         "notify.intent",
         "ui.open",

@@ -31,7 +31,8 @@ pub use error::{Result, StorageError};
 pub use migrate::{BACKUPS_KEPT, MIGRATIONS, Migration};
 pub use rows::{
     ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, CreatedBy, EpochRecord,
-    ProviderRow, RecentProject, SessionRow, WorkspaceKind, WorkspaceRow, WorktreeRow,
+    ProviderRow, QuestionOutcome, QuestionRow, RecentProject, SessionRow, WorkspaceKind,
+    WorkspaceRow, WorktreeRow,
 };
 pub use sql::{EPOCH_HISTORY_KEPT, RECENT_PROJECTS_KEPT, Write};
 
@@ -152,6 +153,10 @@ impl Storage {
 
     pub fn approvals(&self) -> Approvals<'_> {
         Approvals(self)
+    }
+
+    pub fn questions(&self) -> Questions<'_> {
+        Questions(self)
     }
 
     pub fn providers(&self) -> Providers<'_> {
@@ -472,6 +477,28 @@ impl Approvals<'_> {
     /// Requests never resolved (what a crashed daemon left behind).
     pub fn unresolved(&self) -> Result<Vec<ApprovalRow>> {
         self.0.read(|conn| sql::approvals(conn, None, true))
+    }
+}
+
+/// Questions of agents and their outcomes (the audit trail; never the answers).
+#[derive(Debug, Clone, Copy)]
+pub struct Questions<'a>(&'a Storage);
+
+impl Questions<'_> {
+    /// Records a question, or how an earlier recorded one ended.
+    pub fn upsert(&self, row: QuestionRow) -> Result<()> {
+        self.0.write(Write::UpsertQuestion(Box::new(row)))
+    }
+
+    /// Oldest first; `session` limits to one session.
+    pub fn list(&self, session: Option<SessionId>) -> Result<Vec<QuestionRow>> {
+        self.0
+            .read(move |conn| sql::questions(conn, session, false))
+    }
+
+    /// Questions never resolved (what a crashed daemon left behind).
+    pub fn unresolved(&self) -> Result<Vec<QuestionRow>> {
+        self.0.read(|conn| sql::questions(conn, None, true))
     }
 }
 

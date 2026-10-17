@@ -205,7 +205,8 @@ async fn handshake_then_status_reports_epoch_and_pid() {
             "assistant.backend",
             "control",
             "worktree.review",
-            "chat.rich_input"
+            "chat.rich_input",
+            "chat.questions"
         ]
     );
     assert_eq!(welcome.resume, ResumeOutcome::SnapshotRequired);

@@ -3,15 +3,20 @@
 use std::io::Write as _;
 
 use hutan_client::Client;
-use hutan_core::{AgentEvent, ApprovalId, SessionKind};
-use hutan_protocol::chat::{ApprovalInfo, ApprovalList, ChatCreate, ChatHistory};
+use hutan_core::question::{FieldKind, QuestionField, QuestionResponse, Values};
+use hutan_core::{AgentEvent, ApprovalId, QuestionId, SessionKind};
+use hutan_protocol::chat::{
+    ApprovalInfo, ApprovalList, ChatCreate, ChatHistory, QuestionInfo, QuestionList,
+};
 use hutan_protocol::messages::{Empty, Event, Request, SessionInfo, SessionResult, Subscribed};
 use hutan_protocol::provider::AGENT_DIRECT;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{Ctx, print_line};
-use crate::args::{ApproveArgs, ChatCommand, ChatModelArgs, ChatNewArgs, ChatSendArgs, TargetArgs};
+use crate::args::{
+    AnswerArgs, ApproveArgs, ChatCommand, ChatModelArgs, ChatNewArgs, ChatSendArgs, TargetArgs,
+};
 use crate::error::CliError;
 use hutan_cli::chat_render::ChatPrinter;
 
@@ -329,6 +334,227 @@ impl Ctx {
             || format!("approved {approval}: {}", args.option),
         )
     }
+}
+
+impl Ctx {
+    pub(super) async fn questions(&self) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let questions = client.questions(None).await.map_err(|e| self.fail(e))?;
+        let list = QuestionList { questions };
+        self.print(&list, || question_table(&list.questions))
+    }
+
+    pub(super) async fn answer(&self, args: AnswerArgs) -> Result<(), CliError> {
+        let client = self.connect().await?;
+        let pending = client.questions(None).await.map_err(|e| self.fail(e))?;
+        let question = resolve_question(&pending, &args.question)?;
+        let (response, summary) = if args.decline {
+            (QuestionResponse::Decline, "declined".to_owned())
+        } else if args.cancel {
+            (QuestionResponse::Cancel, "cancelled".to_owned())
+        } else {
+            let values = parse_values(&question.spec.fields, &args.values)?;
+            let secret = |id: &str| {
+                question
+                    .spec
+                    .fields
+                    .iter()
+                    .any(|f| f.id == id && matches!(f.kind, FieldKind::Secret))
+            };
+            // What is printed names the fields; a value, a secret's above all, is not echoed.
+            let named: Vec<String> = values
+                .keys()
+                .map(|id| {
+                    if secret(id) {
+                        format!("{id} (secret)")
+                    } else {
+                        id.clone()
+                    }
+                })
+                .collect();
+            (
+                QuestionResponse::Submit { values },
+                format!("answered: {}", named.join(", ")),
+            )
+        };
+        let action = match &response {
+            QuestionResponse::Submit { .. } => "submit",
+            QuestionResponse::Decline => "decline",
+            QuestionResponse::Cancel => "cancel",
+        };
+        let id = question.id;
+        client
+            .answer_question(id, response)
+            .await
+            .map_err(|e| self.fail(e))?;
+        self.print(&json!({"question_id": id, "action": action}), || {
+            format!("{id} {summary}")
+        })
+    }
+}
+
+/// One pending question: exact id, or a unique prefix of at least [`MIN_PREFIX`] characters.
+fn resolve_question<'a>(
+    pending: &'a [QuestionInfo],
+    target: &str,
+) -> Result<&'a QuestionInfo, CliError> {
+    if let Ok(id) = target.parse::<QuestionId>()
+        && let Some(found) = pending.iter().find(|q| q.id == id)
+    {
+        return Ok(found);
+    }
+    let prefix = target.to_ascii_uppercase();
+    let matches: Vec<&QuestionInfo> = if target.len() >= MIN_PREFIX {
+        pending
+            .iter()
+            .filter(|q| q.id.to_string().starts_with(&prefix))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => Err(CliError::Failed(format!(
+            "no pending question matches `{target}`; `hutan questions` lists them"
+        ))),
+        many => {
+            let mut message = format!(
+                "`{target}` matches {} questions; use a longer id:",
+                many.len()
+            );
+            for question in many {
+                message.push_str(&format!("\n  {}  {}", question.id, question.spec.title));
+            }
+            Err(CliError::Usage(message))
+        }
+    }
+}
+
+/// `field=value` arguments as the answer's values, typed by the question's fields.
+fn parse_values(fields: &[QuestionField], given: &[String]) -> Result<Values, CliError> {
+    let mut values = Values::new();
+    for entry in given {
+        let (name, text) = entry.split_once('=').ok_or_else(|| {
+            CliError::Usage(format!(
+                "`{entry}` is not field=value (`hutan questions` lists the fields)"
+            ))
+        })?;
+        let field = fields.iter().find(|f| f.id == name).ok_or_else(|| {
+            let known: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
+            CliError::Usage(format!(
+                "the question has no field `{name}`; its fields: {}",
+                known.join(", ")
+            ))
+        })?;
+        let text = if matches!(field.kind, FieldKind::Secret) && text == "-" {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| CliError::Failed(format!("reading `{name}` from stdin: {e}")))?;
+            line.trim_end_matches(['\n', '\r']).to_owned()
+        } else {
+            text.to_owned()
+        };
+        let value = match &field.kind {
+            FieldKind::Text | FieldKind::Multiline | FieldKind::Secret => {
+                serde_json::Value::String(text)
+            }
+            FieldKind::Boolean => match text.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "y" | "1" | "on" => serde_json::Value::Bool(true),
+                "false" | "no" | "n" | "0" | "off" => serde_json::Value::Bool(false),
+                _ => {
+                    return Err(CliError::Usage(format!(
+                        "`{name}` is true or false, not `{text}`"
+                    )));
+                }
+            },
+            FieldKind::Number { .. } => text
+                .parse::<i64>()
+                .map(serde_json::Value::from)
+                .or_else(|_| {
+                    text.parse::<f64>()
+                        .ok()
+                        .and_then(serde_json::Number::from_f64)
+                        .map(serde_json::Value::Number)
+                        .ok_or(())
+                })
+                .map_err(|()| CliError::Usage(format!("`{name}` is a number, not `{text}`")))?,
+            FieldKind::Choice { multi: true, .. } => {
+                let mut items = match values.remove(name) {
+                    Some(serde_json::Value::Array(items)) => items,
+                    _ => Vec::new(),
+                };
+                items.push(serde_json::Value::String(text));
+                serde_json::Value::Array(items)
+            }
+            FieldKind::Choice { .. } => serde_json::Value::String(text),
+        };
+        if values.insert(name.to_owned(), value).is_some()
+            && !matches!(field.kind, FieldKind::Choice { multi: true, .. })
+        {
+            return Err(CliError::Usage(format!("`{name}` is given twice")));
+        }
+    }
+    Ok(values)
+}
+
+fn question_table(questions: &[QuestionInfo]) -> String {
+    if questions.is_empty() {
+        return "no pending questions".to_owned();
+    }
+    let rows: Vec<[String; 4]> = questions
+        .iter()
+        .map(|q| {
+            let title = q.spec.title.lines().next().unwrap_or("").to_owned();
+            let fields: Vec<String> = q
+                .spec
+                .fields
+                .iter()
+                .map(|f| match &f.kind {
+                    FieldKind::Choice { options, multi, .. } => format!(
+                        "{}{}={}{}",
+                        f.id,
+                        if f.required { "" } else { "?" },
+                        options
+                            .iter()
+                            .map(|o| o.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join("|"),
+                        if *multi { "+" } else { "" }
+                    ),
+                    FieldKind::Secret => {
+                        format!("{}{}=(secret)", f.id, if f.required { "" } else { "?" })
+                    }
+                    _ => format!("{}{}", f.id, if f.required { "" } else { "?" }),
+                })
+                .collect();
+            [
+                q.id.to_string(),
+                q.session_id.to_string(),
+                title,
+                fields.join(" "),
+            ]
+        })
+        .collect();
+    let header = ["ID", "SESSION", "QUESTION", "FIELDS"].map(str::to_owned);
+    let mut widths = [0; 3];
+    for row in std::iter::once(&header).chain(&rows) {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    std::iter::once(&header)
+        .chain(&rows)
+        .map(|row| {
+            let mut line = String::new();
+            for (cell, width) in row.iter().zip(widths) {
+                line.push_str(&format!("{cell:<width$}  "));
+            }
+            line.push_str(&row[3]);
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One pending approval: exact id, or a unique prefix of at least [`MIN_PREFIX`] characters.

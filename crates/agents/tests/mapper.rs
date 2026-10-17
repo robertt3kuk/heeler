@@ -7,7 +7,8 @@ use hutan_core::agent::{
     MAX_OUTPUT_BYTES, MessageRole, NoticeLevel, PermissionKind, PermissionOutcome, PlanStepStatus,
     ReasoningPart, ToolKind, ToolStatus,
 };
-use hutan_core::{AgentEventDraft, AgentEventKind};
+use hutan_core::question::{FieldKind, QuestionExpiry, Values};
+use hutan_core::{AgentEventDraft, AgentEventKind, QuestionId, QuestionOutcome, QuestionResponse};
 use serde_json::{Value, json};
 
 const THREAD: &str = "thread-1";
@@ -808,8 +809,8 @@ fn requests_hutan_cannot_serve_are_refused_not_ignored() {
     let mut m = mapper();
     let mapped = m.request(
         json!(8),
-        "item/tool/requestUserInput",
-        json!({"threadId": THREAD, "turnId": TURN, "itemId": "q", "questions": []}),
+        "item/tool/call",
+        json!({"threadId": THREAD, "turnId": TURN, "callId": "c", "tool": "t", "arguments": {}}),
     );
     let reply = mapped.reply.expect("the agent must get an answer");
     assert_eq!(reply.id, json!(8));
@@ -847,4 +848,334 @@ fn a_dead_process_expires_everything_pending() {
         }
     )));
     assert!(!m.has_pending());
+}
+
+// Questions -----------------------------------------------------------------------------------
+
+fn asked(m: &mut Mapper, id: i64, method: &str, params: Value) -> (QuestionId, AgentEventDraft) {
+    let mut params = params;
+    params["threadId"] = json!(THREAD);
+    let mapped = m.request(json!(id), method, params);
+    assert!(mapped.reply.is_none(), "a question waits for the user");
+    let draft = only(mapped.drafts);
+    let AgentEventKind::QuestionRequested { question_id, .. } = &draft.kind else {
+        panic!("{:?}", draft.kind)
+    };
+    (*question_id, draft)
+}
+
+fn values(pairs: &[(&str, Value)]) -> Values {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect()
+}
+
+#[test]
+fn request_user_input_becomes_a_form_of_its_questions() {
+    let mut m = mapper();
+    let (question, draft) = asked(
+        &mut m,
+        7,
+        "item/tool/requestUserInput",
+        json!({"turnId": TURN, "itemId": "call-1", "isBlocking": true, "questions": [
+            {"id": "scope", "header": "Scope", "question": "Which part?", "isOther": true,
+             "options": [{"label": "CLI", "description": "small"}, {"label": "All", "description": ""}]},
+            {"id": "why", "header": "Why", "question": "Why?", "options": null},
+            {"id": "key", "header": "Key", "question": "Paste the key", "isSecret": true}
+        ]}),
+    );
+    assert!(m.has_pending());
+    assert_eq!(draft.provider.request_id.as_deref(), Some("7"));
+    assert_eq!(draft.provider.turn_id.as_deref(), Some(TURN));
+    assert_eq!(draft.provider.item_id.as_deref(), Some("call-1"));
+    assert!(draft.turn_id.is_some() && draft.item_id.is_some());
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.title, "Codex has 3 questions");
+    assert_eq!(spec.expires, QuestionExpiry::Turn);
+    let ids: Vec<&str> = spec.fields.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(ids, ["scope", "why", "key"]);
+    assert_eq!(spec.fields[0].label, "Which part?");
+    assert_eq!(spec.fields[0].description.as_deref(), Some("Scope"));
+    let FieldKind::Choice {
+        options,
+        multi,
+        allow_other,
+    } = &spec.fields[0].kind
+    else {
+        panic!("{:?}", spec.fields[0].kind)
+    };
+    assert_eq!((options.len(), *multi, *allow_other), (2, false, true));
+    assert_eq!(options[0].description.as_deref(), Some("small"));
+    assert_eq!(options[1].description, None);
+    assert!(matches!(spec.fields[1].kind, FieldKind::Text));
+    assert!(matches!(spec.fields[2].kind, FieldKind::Secret));
+    assert!(spec.fields.iter().all(|f| f.required));
+
+    // The reply is Codex's: every answer a list of strings, keyed by question id.
+    let reply = m
+        .answer_question(
+            question,
+            &QuestionResponse::Submit {
+                values: values(&[
+                    ("scope", json!("CLI")),
+                    ("why", json!("because")),
+                    ("key", json!("hunter2")),
+                ]),
+            },
+        )
+        .unwrap();
+    assert_eq!(reply.rpc_id, json!(7));
+    assert!(!reply.interrupt);
+    assert_eq!(
+        reply.result,
+        json!({"answers": {
+            "scope": {"answers": ["CLI"]},
+            "why": {"answers": ["because"]},
+            "key": {"answers": ["hunter2"]}
+        }})
+    );
+    // Once answered it cannot be answered again, and a failed send can be retried.
+    assert!(
+        m.answer_question(question, &QuestionResponse::Decline)
+            .is_err()
+    );
+    m.unanswer_question(question);
+    assert!(
+        m.answer_question(question, &QuestionResponse::Decline)
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_resolved_question_withholds_secrets_and_expiry_says_expired() {
+    let mut m = mapper();
+    let (answered, _) = asked(
+        &mut m,
+        1,
+        "item/tool/requestUserInput",
+        json!({"turnId": TURN, "itemId": "i", "questions": [
+            {"id": "a", "header": "A", "question": "A?"},
+            {"id": "k", "header": "K", "question": "K?", "isSecret": true}]}),
+    );
+    let (ignored, _) = asked(
+        &mut m,
+        2,
+        "item/tool/requestUserInput",
+        json!({"turnId": TURN, "itemId": "j", "questions": [{"id": "a", "header": "A", "question": "A?"}]}),
+    );
+    m.answer_question(
+        answered,
+        &QuestionResponse::Submit {
+            values: values(&[("a", json!("yes")), ("k", json!("topsecret"))]),
+        },
+    )
+    .unwrap();
+    // Codex confirms with `serverRequest/resolved`.
+    let resolved = only(notify(
+        &mut m,
+        "serverRequest/resolved",
+        json!({"requestId": 1}),
+    ));
+    assert_eq!(
+        resolved.kind,
+        AgentEventKind::QuestionResolved {
+            question_id: answered,
+            outcome: QuestionOutcome::Answered {
+                values: values(&[("a", json!("yes"))]),
+                withheld: vec!["k".to_owned()],
+            },
+            decided_by: None,
+        }
+    );
+    assert!(
+        !serde_json::to_string(&resolved)
+            .unwrap()
+            .contains("topsecret")
+    );
+
+    // The other one was never answered: its turn ending expires it, before the turn's own event.
+    let drafts = notify(
+        &mut m,
+        "turn/completed",
+        json!({"turn": {"id": TURN, "status": "completed"}}),
+    );
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(
+        drafts[0].kind,
+        AgentEventKind::QuestionResolved {
+            question_id: ignored,
+            outcome: QuestionOutcome::Expired,
+            decided_by: None,
+        }
+    );
+    assert!(!m.has_pending());
+}
+
+#[test]
+fn request_user_input_has_no_decline_so_decline_is_an_empty_answer_and_cancel_stops_the_turn() {
+    let mut m = mapper();
+    let params = json!({"turnId": TURN, "itemId": "i", "questions": [{"id": "a", "header": "A", "question": "A?"}]});
+    let (declined, _) = asked(&mut m, 1, "item/tool/requestUserInput", params.clone());
+    let (cancelled, _) = asked(&mut m, 2, "item/tool/requestUserInput", params);
+    let reply = m
+        .answer_question(declined, &QuestionResponse::Decline)
+        .unwrap();
+    assert_eq!(
+        (reply.result, reply.interrupt),
+        (json!({"answers": {}}), false)
+    );
+    let reply = m
+        .answer_question(cancelled, &QuestionResponse::Cancel)
+        .unwrap();
+    assert_eq!(
+        (reply.result, reply.interrupt),
+        (json!({"answers": {}}), true)
+    );
+}
+
+#[test]
+fn an_mcp_elicitation_replies_with_accept_decline_or_cancel() {
+    let mut m = mapper();
+    let params = json!({"turnId": TURN, "serverName": "deployer", "mode": "form",
+        "message": "Details please", "_meta": null,
+        "requestedSchema": {"type": "object", "required": ["env"], "properties": {
+            "env": {"type": "string", "oneOf": [{"const": "stg", "title": "Staging"}]},
+            "n": {"type": "integer", "minimum": 1}}}});
+    let (question, draft) = asked(&mut m, 3, "mcpServer/elicitation/request", params.clone());
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.title, "deployer asks");
+    assert_eq!(spec.prompt, "Details please");
+    assert_eq!(spec.source.as_deref(), Some("MCP server deployer"));
+    assert_eq!(spec.expires, QuestionExpiry::Turn);
+    assert!(spec.raw_schema.is_none());
+    assert!(spec.fields[0].required);
+    let reply = m
+        .answer_question(
+            question,
+            &QuestionResponse::Submit {
+                values: values(&[("env", json!("stg")), ("n", json!(2))]),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        reply.result,
+        json!({"action": "accept", "content": {"env": "stg", "n": 2}})
+    );
+
+    let (declined, _) = asked(&mut m, 4, "mcpServer/elicitation/request", params.clone());
+    assert_eq!(
+        m.answer_question(declined, &QuestionResponse::Decline)
+            .unwrap()
+            .result,
+        json!({"action": "decline", "content": null})
+    );
+    let (cancelled, _) = asked(&mut m, 5, "mcpServer/elicitation/request", params);
+    let reply = m
+        .answer_question(cancelled, &QuestionResponse::Cancel)
+        .unwrap();
+    assert_eq!(reply.result, json!({"action": "cancel", "content": null}));
+    assert!(!reply.interrupt, "an elicitation is not the turn's");
+}
+
+#[test]
+fn an_elicitation_without_a_turn_lives_as_long_as_the_process() {
+    let mut m = mapper();
+    let (_, draft) = asked(
+        &mut m,
+        6,
+        "mcpServer/elicitation/request",
+        json!({"turnId": null, "serverName": "x", "mode": "form", "message": "m",
+               "requestedSchema": {"type": "object", "properties": {}}}),
+    );
+    assert!(draft.turn_id.is_none());
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.expires, QuestionExpiry::Process);
+    assert!(spec.fields.is_empty());
+    // No turn ends it; only the process going away does.
+    let drafts = m.expire_all();
+    assert_eq!(drafts.len(), 1);
+    assert!(matches!(
+        drafts[0].kind,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Expired,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn forms_without_a_mapping_show_the_raw_schema_and_take_json() {
+    let mut m = mapper();
+    for mode in ["openai/form", "openaiForm"] {
+        let schema = json!({"widgets": [1, 2], "anything": true});
+        let (question, draft) = asked(
+            &mut m,
+            10,
+            "mcpServer/elicitation/request",
+            json!({"turnId": TURN, "serverName": "s", "mode": mode, "message": "m", "requestedSchema": schema}),
+        );
+        let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+            panic!()
+        };
+        assert_eq!(spec.raw_schema.as_ref(), Some(&schema));
+        assert_eq!(spec.fields.len(), 1);
+        let id = spec.fields[0].id.clone();
+        // Free text that is not a JSON object cannot be sent, and does not spend the question.
+        assert!(
+            m.answer_question(
+                question,
+                &QuestionResponse::Submit {
+                    values: values(&[(&id, json!("just words"))]),
+                },
+            )
+            .is_err()
+        );
+        let reply = m
+            .answer_question(
+                question,
+                &QuestionResponse::Submit {
+                    values: values(&[(&id, json!("{\"widgets\": 3}"))]),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reply.result,
+            json!({"action": "accept", "content": {"widgets": 3}})
+        );
+        m.expire_all();
+    }
+}
+
+#[test]
+fn a_url_elicitation_is_a_question_without_fields_that_shows_the_link() {
+    let mut m = mapper();
+    let (question, draft) = asked(
+        &mut m,
+        11,
+        "mcpServer/elicitation/request",
+        json!({"turnId": TURN, "serverName": "gh", "mode": "url", "elicitationId": "e1",
+               "message": "Authorize GitHub", "url": "https://example.com/auth"}),
+    );
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert!(spec.fields.is_empty());
+    assert!(spec.prompt.contains("Authorize GitHub"));
+    assert!(spec.prompt.contains("<https://example.com/auth>"));
+    let reply = m
+        .answer_question(
+            question,
+            &QuestionResponse::Submit {
+                values: Values::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(reply.result, json!({"action": "accept", "content": {}}));
 }

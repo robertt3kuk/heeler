@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use hutan_core::agent::{PermissionKind, PermissionOption};
 use hutan_core::{
-    AgentEvent, ApprovalId, ApprovalPolicy, ModelInfo, SandboxMode, SessionId, TurnId, WorkspaceId,
+    AgentEvent, ApprovalId, ApprovalPolicy, ModelInfo, QuestionId, QuestionResponse, QuestionSpec,
+    SandboxMode, SessionId, TurnId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,10 @@ pub const SEND_MAX_BYTES: usize = 256 * 1024;
 
 fn default_limit() -> u32 {
     HISTORY_DEFAULT_LIMIT
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// `chat.create`: opens an agent conversation as a new session; answered with `SessionResult`
@@ -169,6 +174,43 @@ pub struct ApprovalRespond {
     pub option_id: String,
 }
 
+/// `question.list` (protocol 0.25, capability `chat.questions`): questions waiting for an
+/// answer, oldest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct QuestionListRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+}
+
+/// A question waiting for an answer. Pending questions live in the daemon: they survive client
+/// disconnects and expire when their turn ends (`expires: turn`) or the agent goes away.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionInfo {
+    pub id: QuestionId,
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
+    #[serde(flatten)]
+    pub spec: QuestionSpec,
+    pub requested_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionList {
+    pub questions: Vec<QuestionInfo>,
+}
+
+/// `question.answer`: `action` is `submit` (with `values`, by field id, checked against the
+/// question's fields: `bad_request` for an unknown field, a missing required one or a value of
+/// the wrong type), `decline` or `cancel`. `not_found` when the question is not pending
+/// (answered, or its turn ended); `invalid_state` when another client answered first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionAnswer {
+    pub question_id: QuestionId,
+    #[serde(flatten)]
+    pub response: QuestionResponse,
+}
+
 /// What a chat session is, as part of its `SessionInfo`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatInfo {
@@ -182,6 +224,10 @@ pub struct ChatInfo {
     /// Permission requests waiting for an answer.
     #[serde(default)]
     pub pending_approvals: u32,
+    /// Protocol 0.25 (capability `chat.questions`): questions of the agent waiting for an
+    /// answer. A session with one counts as waiting for the user like one with an approval.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pending_questions: u32,
     /// Protocol 0.11: the provider of a direct chat (`agent: "direct"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,

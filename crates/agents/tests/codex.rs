@@ -14,7 +14,11 @@ use hutan_core::agent::{
     FileChangeKind, MessageRole, PermissionKind, PermissionOptionKind, PermissionOutcome, ToolKind,
     ToolStatus,
 };
-use hutan_core::{AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, SandboxMode};
+use hutan_core::question::{FieldKind, QuestionExpiry, Values};
+use hutan_core::{
+    AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, QuestionId, QuestionOutcome,
+    QuestionResponse, SandboxMode,
+};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -673,7 +677,7 @@ async fn unknown_messages_become_opaque_events_and_never_crash_the_adapter() {
         json!({"dir":"in","msg":{"method":"turn/started","params":{"threadId":thread,"turn":"not an object"}}}),
         json!({"dir":"in","msg":{"method":"item/started","params":{"threadId":thread,"turnId":"turn-1","startedAtMs":1,"item":{"type":"futureItem","id":"i1","novel":true}}}}),
         json!({"dir":"in","msg":{"method":"item/started","params":{"threadId":"some-other-thread","turnId":"t9","item":{"type":"agentMessage","id":"x","text":""}}}}),
-        json!({"dir":"in","msg":{"method":"item/tool/requestUserInput","id":77,"params":{"threadId":thread,"turnId":"turn-1","itemId":"q","questions":[]}}}),
+        json!({"dir":"in","msg":{"method":"item/tool/call","id":77,"params":{"threadId":thread,"turnId":"turn-1","callId":"q","tool":"t","arguments":{}}}}),
         json!({"dir":"in","msg":{"method":"account/updated","params":{}}}),
         json!({"dir":"out","msg":{"id":77,"error":{"code":-32601,"message":"declined"}}}),
         json!({"dir":"exit","code":9}),
@@ -755,6 +759,330 @@ async fn a_process_that_dies_expires_what_was_pending() {
     assert!(matches!(error, AgentError::Exited { .. }), "{error}");
 }
 
+// Questions -----------------------------------------------------------------------------------
+//
+// The `question-*` transcripts are built by hand from the schema `codex app-server
+// generate-json-schema` writes for 0.162.1 (a real recording of `requestUserInput` or an MCP
+// elicitation needs a paid turn), on top of the recorded handshake and turn of
+// `approval-touch`, and scrubbed like the recordings.
+
+fn is_question_request(message: &AdapterMessage) -> bool {
+    matches!(message, AdapterMessage::Event(d) if matches!(d.kind, AgentEventKind::QuestionRequested { .. }))
+}
+
+fn asked(messages: &[AdapterMessage]) -> (QuestionId, &AgentEventDraft) {
+    messages
+        .iter()
+        .find_map(|m| match m {
+            AdapterMessage::Event(draft) => match &draft.kind {
+                AgentEventKind::QuestionRequested { question_id, .. } => {
+                    Some((*question_id, draft.as_ref()))
+                }
+                _ => None,
+            },
+            AdapterMessage::Exited(_) | AdapterMessage::Node(_) => None,
+        })
+        .expect("a question")
+}
+
+fn values(pairs: &[(&str, Value)]) -> Values {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect()
+}
+
+fn responses(h: &Harness) -> Vec<Value> {
+    h.received()
+        .into_iter()
+        .filter(|(name, _)| name == "response")
+        .map(|(_, msg)| msg)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_user_input_request_is_answered_in_codexs_shape_and_the_secret_stays_out_of_the_events() {
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-user-input").await;
+    adapter.send_message("go".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, draft) = asked(&first);
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.title, "Codex has 3 questions");
+    assert_eq!(spec.expires, QuestionExpiry::Turn);
+    assert_eq!(
+        spec.fields
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>(),
+        ["scope", "note", "token"]
+    );
+    assert!(matches!(
+        &spec.fields[0].kind,
+        FieldKind::Choice { options, allow_other: true, .. } if options.len() == 2
+    ));
+    assert!(matches!(spec.fields[2].kind, FieldKind::Secret));
+    assert_eq!(draft.provider.request_id.as_deref(), Some("0"));
+    assert_eq!(draft.provider.item_id.as_deref(), Some("call_fixture_1"));
+
+    adapter
+        .answer_question(
+            question,
+            QuestionResponse::Submit {
+                values: values(&[
+                    ("scope", Value::from("Only the CLI")),
+                    ("note", Value::from("none")),
+                    ("token", Value::from("s3cr3t-token")),
+                ]),
+            },
+        )
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    // The replay answers `serverRequest/resolved` only after it read Codex's response, which is
+    // therefore logged by now: it is the shape the schema gives.
+    assert_eq!(
+        responses(&h)[0]["result"],
+        serde_json::json!({"answers": {
+            "scope": {"answers": ["Only the CLI"]},
+            "note": {"answers": ["none"]},
+            "token": {"answers": ["s3cr3t-token"]}
+        }})
+    );
+    let resolved = kinds(&rest)
+        .into_iter()
+        .find(|k| matches!(k, AgentEventKind::QuestionResolved { .. }))
+        .expect("the question is resolved");
+    assert_eq!(
+        resolved,
+        &AgentEventKind::QuestionResolved {
+            question_id: question,
+            outcome: QuestionOutcome::Answered {
+                values: values(&[
+                    ("scope", Value::from("Only the CLI")),
+                    ("note", Value::from("none")),
+                ]),
+                withheld: vec!["token".to_owned()],
+            },
+            decided_by: None,
+        }
+    );
+    for message in rest.iter().chain(first.iter()) {
+        if let AdapterMessage::Event(draft) = message {
+            let wire = serde_json::to_string(draft).unwrap();
+            // The request payload holds the questions; nothing holds the answer.
+            assert!(!wire.contains("s3cr3t-token"), "{wire}");
+        }
+    }
+    // Answered once.
+    let again = adapter
+        .answer_question(question, QuestionResponse::Decline)
+        .await
+        .unwrap_err();
+    assert!(matches!(again, AgentError::UnknownQuestion), "{again}");
+    let unknown = adapter
+        .answer_question(QuestionId::new(), QuestionResponse::Decline)
+        .await
+        .unwrap_err();
+    assert!(matches!(unknown, AgentError::UnknownQuestion), "{unknown}");
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_mcp_elicitation_is_answered_with_accept_and_its_content() {
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-elicitation").await;
+    adapter.send_message("go".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, draft) = asked(&first);
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.title, "deployer asks");
+    assert_eq!(spec.source.as_deref(), Some("MCP server deployer"));
+    assert_eq!(
+        spec.prompt,
+        "The deployer needs a few details before it ships the build."
+    );
+    let by = |id: &str| spec.fields.iter().find(|f| f.id == id).unwrap();
+    assert!(by("environment").required);
+    assert_eq!(by("environment").default, Some(Value::from("staging")));
+    assert!(matches!(
+        &by("environment").kind,
+        FieldKind::Choice { options, multi: false, .. } if options[1].label == "Production"
+    ));
+    assert!(matches!(
+        by("replicas").kind,
+        FieldKind::Number {
+            integer: true,
+            min: Some(1.0),
+            max: Some(9.0)
+        }
+    ));
+    assert_eq!(by("notify").default, Some(Value::Bool(true)));
+
+    adapter
+        .answer_question(
+            question,
+            QuestionResponse::Submit {
+                values: values(&[
+                    ("environment", Value::from("production")),
+                    ("replicas", Value::from(3)),
+                    ("notify", Value::Bool(false)),
+                ]),
+            },
+        )
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert_eq!(
+        responses(&h)[0]["result"],
+        serde_json::json!({"action": "accept", "content": {
+            "environment": "production", "replicas": 3, "notify": false
+        }})
+    );
+    assert!(names(&rest).contains(&"question_resolved"));
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn declining_and_cancelling_use_the_providers_own_words() {
+    // MCP elicitation: decline.
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-elicitation").await;
+    adapter.send_message("go".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, _) = asked(&first);
+    adapter
+        .answer_question(question, QuestionResponse::Decline)
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert_eq!(
+        responses(&h)[0]["result"],
+        serde_json::json!({"action": "decline", "content": null})
+    );
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Declined,
+            ..
+        }
+    )));
+    adapter.shutdown().await;
+
+    // requestUserInput: no cancel in the schema, so an empty answer and the turn is stopped.
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-cancel").await;
+    adapter.send_message("go".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, _) = asked(&first);
+    adapter
+        .answer_question(question, QuestionResponse::Cancel)
+        .await
+        .unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    assert_eq!(
+        responses(&h)[0]["result"],
+        serde_json::json!({"answers": {}})
+    );
+    let kinds = kinds(&rest);
+    assert!(kinds.iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            outcome: QuestionOutcome::Cancelled,
+            ..
+        }
+    )));
+    assert_eq!(kinds[kinds.len() - 1], &AgentEventKind::TurnCancelled);
+    assert!(
+        h.received()
+            .iter()
+            .any(|(name, _)| name == "turn/interrupt"),
+        "cancelling the question stopped the turn"
+    );
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_pending_question_expires_when_the_turn_is_interrupted() {
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-interrupt").await;
+    adapter.send_message("go".into()).await.unwrap();
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, _) = asked(&first);
+    adapter.interrupt().await.unwrap();
+    let rest = collect_until(&mut events, ends_turn).await;
+    let kinds = kinds(&rest);
+    assert_eq!(
+        kinds[kinds.len() - 2],
+        &AgentEventKind::QuestionResolved {
+            question_id: question,
+            outcome: QuestionOutcome::Expired,
+            decided_by: None,
+        }
+    );
+    assert_eq!(kinds[kinds.len() - 1], &AgentEventKind::TurnCancelled);
+    let error = adapter
+        .answer_question(question, QuestionResponse::Decline)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::UnknownQuestion), "{error}");
+    adapter.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_elicitation_outside_a_turn_expires_with_the_process() {
+    let h = Harness::new();
+    let CodexSession {
+        adapter,
+        mut events,
+        ..
+    } = h.start("question-elicitation-process").await;
+    adapter.send_message("go".into()).await.unwrap();
+    collect_until(&mut events, ends_turn).await;
+    let first = collect_until(&mut events, is_question_request).await;
+    let (question, draft) = asked(&first);
+    assert!(draft.turn_id.is_none());
+    let AgentEventKind::QuestionRequested { spec, .. } = &draft.kind else {
+        panic!()
+    };
+    assert_eq!(spec.expires, QuestionExpiry::Process);
+    assert!(matches!(spec.fields[0].kind, FieldKind::Secret));
+    adapter.shutdown().await;
+    let rest = collect_until(&mut events, |m| matches!(m, AdapterMessage::Exited(_))).await;
+    assert!(kinds(&rest).iter().any(|k| matches!(
+        k,
+        AgentEventKind::QuestionResolved {
+            question_id,
+            outcome: QuestionOutcome::Expired,
+            ..
+        } if *question_id == question
+    )));
+}
+
 #[test]
 fn committed_fixtures_are_already_scrubbed() {
     use hutan_agents::fixture::scrub::scrub;
@@ -775,5 +1103,5 @@ fn committed_fixtures_are_already_scrubbed() {
         );
         count += 1;
     }
-    assert!(count >= 7, "{count} fixtures");
+    assert!(count >= 11, "{count} fixtures");
 }

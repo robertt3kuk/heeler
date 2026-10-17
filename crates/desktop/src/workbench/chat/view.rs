@@ -64,6 +64,11 @@ pub struct ChatView {
     pub(super) parsed: HashMap<u64, (u64, Rc<Vec<Block>>)>,
     /// Requests waiting for an answer, oldest first (the keys 1–4 answer the first).
     pub(super) pending: Vec<ApprovalId>,
+    /// What the user has typed or chosen in each question card (protocol 0.25).
+    pub(super) forms: HashMap<hutan_core::QuestionId, super::question::QuestionForm>,
+    /// The question whose card has the keyboard: typing goes to its focused field, and 1–4 never
+    /// answer anything while it has it.
+    pub(super) question_focus: Option<hutan_core::QuestionId>,
     /// The Attach menu or form of an assistant chat.
     pub(super) attach: Option<Attaching>,
     _subscriptions: Vec<Subscription>,
@@ -134,6 +139,8 @@ impl ChatView {
             toggled: HashSet::new(),
             parsed: HashMap::new(),
             pending: Vec::new(),
+            forms: HashMap::new(),
+            question_focus: None,
             attach: None,
             _subscriptions: subscriptions,
         }
@@ -290,6 +297,11 @@ impl ChatView {
     // ---- commands --------------------------------------------------------------------------
 
     pub fn send(&mut self, cx: &mut Context<Self>) -> bool {
+        // ⌘↩ is the composer's Send, and the Submit of a question card that has the keyboard.
+        if let Some(question) = self.question_focus {
+            self.submit_question(question, cx);
+            return false;
+        }
         if !self.can_send(cx) {
             return false;
         }
@@ -376,6 +388,12 @@ impl ChatView {
         let key = keystroke.key.as_str();
         let plain = !mods.platform && !mods.control && !mods.alt && !mods.shift && !mods.function;
 
+        // A question card with the keyboard takes it, digits included: 1–4 never answer a
+        // question, and never leave one that is being typed into.
+        if self.on_question_key(event, cx) {
+            cx.stop_propagation();
+            return;
+        }
         // The attach form's field takes the typing while a form is open.
         if self.on_attach_key(event, cx) {
             cx.stop_propagation();
@@ -1044,6 +1062,7 @@ impl ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_questions(cx);
         self.sync_list(cx);
         self.pending = self
             .model

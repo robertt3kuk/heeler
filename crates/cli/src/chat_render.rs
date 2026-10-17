@@ -8,7 +8,8 @@
 use std::collections::{HashMap, HashSet};
 
 use hutan_core::agent::{MessageRole, NoticeLevel, PermissionOutcome, ToolStatus};
-use hutan_core::{AgentEvent, AgentEventKind, ItemId};
+use hutan_core::question::FieldKind;
+use hutan_core::{AgentEvent, AgentEventKind, ItemId, QuestionOutcome};
 
 /// Longest tool title shown on its line, in characters.
 const MAX_TITLE_CHARS: usize = 100;
@@ -164,6 +165,71 @@ impl ChatPrinter {
                         out.push_str(&format!("  approval {approval_id}: expired\n"));
                     }
                 }
+                out
+            }
+            AgentEventKind::QuestionRequested {
+                question_id, spec, ..
+            } => {
+                let mut out = self.close_line();
+                out.push_str(&format!(
+                    "? question {question_id}: {}\n",
+                    one_line(&spec.title)
+                ));
+                for line in spec.prompt.lines().filter(|l| !l.trim().is_empty()).take(3) {
+                    out.push_str(&format!("    {line}\n"));
+                }
+                for field in &spec.fields {
+                    let kind = match &field.kind {
+                        FieldKind::Text => "text".to_owned(),
+                        FieldKind::Multiline => "multiline".to_owned(),
+                        FieldKind::Secret => "secret".to_owned(),
+                        FieldKind::Boolean => "true|false".to_owned(),
+                        FieldKind::Number { .. } => "number".to_owned(),
+                        FieldKind::Choice { options, .. } => options
+                            .iter()
+                            .map(|o| o.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join("|"),
+                    };
+                    let required = if field.required { "" } else { "?" };
+                    out.push_str(&format!(
+                        "    {}{required} = <{}>  {}\n",
+                        field.id,
+                        one_line(&kind),
+                        one_line(&field.label)
+                    ));
+                }
+                out.push_str(&format!(
+                    "    answer with: hutan answer {question_id} <field=value ...|--decline|--cancel>\n"
+                ));
+                out
+            }
+            AgentEventKind::QuestionResolved {
+                question_id,
+                outcome,
+                decided_by,
+            } => {
+                let mut out = self.close_line();
+                let by = match decided_by {
+                    Some(by) => match &by.client_name {
+                        Some(name) => format!(" (decided by {}: {name})", by.client_kind),
+                        None => format!(" (decided by {})", by.client_kind),
+                    },
+                    None => String::new(),
+                };
+                let what = match outcome {
+                    QuestionOutcome::Answered { withheld, .. } if withheld.is_empty() => {
+                        "answered".to_owned()
+                    }
+                    // A secret's value is not in the journal: only that it was answered.
+                    QuestionOutcome::Answered { withheld, .. } => {
+                        format!("answered (secret: {})", withheld.join(", "))
+                    }
+                    QuestionOutcome::Declined => "declined".to_owned(),
+                    QuestionOutcome::Cancelled => "cancelled".to_owned(),
+                    QuestionOutcome::Expired => "expired".to_owned(),
+                };
+                out.push_str(&format!("  question {question_id}: {what}{by}\n"));
                 out
             }
             AgentEventKind::Plan { steps, text, .. } => {

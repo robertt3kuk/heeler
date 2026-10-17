@@ -112,8 +112,12 @@ impl ChatModel {
                         Ok(_) => reader.approvals(Some(session)).await.ok(),
                         Err(_) => None,
                     };
+                    let asked = match &history {
+                        Ok(_) => reader.questions(Some(session)).await.ok(),
+                        Err(_) => None,
+                    };
                     let alive = this.update(cx, |this, cx| {
-                        this.installed(history, pending, cx);
+                        this.installed(history, pending, asked, cx);
                     });
                     if alive.is_err() {
                         return;
@@ -180,6 +184,7 @@ impl ChatModel {
         &mut self,
         history: Result<History, ClientError>,
         pending: Option<Vec<hutan_protocol::chat::ApprovalInfo>>,
+        asked: Option<Vec<hutan_protocol::chat::QuestionInfo>>,
         cx: &mut Context<Self>,
     ) {
         match history {
@@ -196,6 +201,10 @@ impl ChatModel {
                 if let Some(pending) = pending {
                     let ids: HashSet<ApprovalId> = pending.iter().map(|a| a.id).collect();
                     self.transcript.expire_missing(&ids);
+                }
+                if let Some(asked) = asked {
+                    let ids: HashSet<hutan_core::QuestionId> = asked.iter().map(|q| q.id).collect();
+                    self.transcript.expire_missing_questions(&ids);
                 }
                 self.status = LoadStatus::Ready;
             }

@@ -26,19 +26,21 @@ use hutan_agents::{
     CodexConfig, CodexSession, ExitInfo, ImageBlock, MessageExtras, StartSpec, Started,
 };
 use hutan_core::agent::{DecidedBy, PermissionOutcome};
+use hutan_core::question::{self, QuestionResponse};
 use hutan_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, ApprovalId, ApprovalPolicy, ItemId, ModelInfo,
-    SandboxMode, SessionId, TurnId,
+    QuestionId, QuestionOutcome, SandboxMode, SessionId, TurnId,
 };
 use hutan_protocol::assistant::{ATTACHMENTS_META_KEY, AttachmentMeta};
 use hutan_protocol::chat::{
     ApprovalInfo, ApprovalList, ChatHistory, ChatHistoryRequest, ChatModels, HISTORY_MAX_LIMIT,
-    SEND_MAX_BYTES,
+    QuestionInfo, QuestionList, SEND_MAX_BYTES,
 };
 use hutan_protocol::control::{ErrorBody, ErrorCode};
 use hutan_protocol::messages::{ClientKind, Event};
 use hutan_storage::{
-    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus, Storage,
+    ApprovalOutcome, ApprovalRow, ChatItemRow, ChatTurnRow, ChatTurnStatus,
+    QuestionOutcome as StoredOutcome, QuestionRow, Storage,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -160,6 +162,12 @@ struct Pending {
     decided_by: Option<&'static str>,
 }
 
+#[derive(Debug)]
+struct PendingQuestion {
+    info: QuestionInfo,
+    decided_by: Option<&'static str>,
+}
+
 /// Runs the chat sessions of one daemon.
 #[derive(Debug)]
 pub struct ChatManager {
@@ -172,6 +180,7 @@ pub struct ChatManager {
     max_context_chars: usize,
     live: Mutex<HashMap<SessionId, Arc<Live>>>,
     approvals: Mutex<HashMap<ApprovalId, Pending>>,
+    questions: Mutex<HashMap<QuestionId, PendingQuestion>>,
     /// Model catalogs by agent.
     models: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
     external: Mutex<Option<Weak<dyn ApprovalSource>>>,
@@ -278,6 +287,7 @@ impl ChatManager {
             max_context_chars,
             live: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
+            questions: Mutex::new(HashMap::new()),
             models: Mutex::new(HashMap::new()),
             external: Mutex::new(None),
             mcp: OnceLock::new(),
@@ -834,6 +844,84 @@ impl ChatManager {
         }
     }
 
+    // Questions --------------------------------------------------------------------------------
+
+    /// Questions waiting for an answer, oldest first.
+    pub fn question_list(&self, session: Option<SessionId>) -> QuestionList {
+        let mut questions: Vec<QuestionInfo> = lock(&self.questions)
+            .values()
+            .map(|p| p.info.clone())
+            .filter(|info| session.is_none_or(|s| s == info.session_id))
+            .collect();
+        questions.sort_by(|a, b| {
+            a.requested_at_ms
+                .cmp(&b.requested_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        QuestionList { questions }
+    }
+
+    /// Answers a pending question: values (checked against its fields), a decline, or a cancel.
+    /// The values go to the agent in the shape it asked for and are not kept anywhere.
+    pub async fn answer_question(
+        &self,
+        question: QuestionId,
+        response: QuestionResponse,
+        client: Option<ClientKind>,
+    ) -> Result<(), ErrorBody> {
+        let (session, response) = {
+            let mut questions = lock(&self.questions);
+            let Some(pending) = questions.get_mut(&question) else {
+                return Err(ErrorBody::new(
+                    ErrorCode::NotFound,
+                    format!("question {question} is not pending (answered, or its turn ended)"),
+                ));
+            };
+            let response = match response {
+                QuestionResponse::Submit { values } => QuestionResponse::Submit {
+                    values: question::validate(&pending.info.spec.fields, &values)
+                        .map_err(|e| ErrorBody::new(ErrorCode::BadRequest, e.to_string()))?,
+                },
+                other => other,
+            };
+            // The first answer to reach the agent is the one that counts, as for approvals.
+            if pending.decided_by.is_none() {
+                pending.decided_by = Some(client_name(client));
+            }
+            (pending.info.session_id, response)
+        };
+        let released = |this: &Self| {
+            if let Some(pending) = lock(&this.questions).get_mut(&question) {
+                pending.decided_by = None;
+            }
+        };
+        let live = self.live(session)?;
+        let Backend::Agent(adapter) = &live.backend else {
+            released(self);
+            return Err(ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("question {question} is not pending"),
+            ));
+        };
+        match adapter.answer_question(question, response).await {
+            Ok(()) => Ok(()),
+            Err(AgentError::UnknownQuestion) => Err(ErrorBody::new(
+                ErrorCode::InvalidState,
+                format!("question {question} was already answered"),
+            )),
+            Err(error) => {
+                // Nobody answered: the claim goes with the failed attempt.
+                released(self);
+                Err(match error {
+                    AgentError::BadAnswer(problem) => {
+                        ErrorBody::new(ErrorCode::BadRequest, problem)
+                    }
+                    error => ErrorBody::new(ErrorCode::ProviderError, error.to_string()),
+                })
+            }
+        }
+    }
+
     // History and models -----------------------------------------------------------------------
 
     pub async fn history(&self, req: ChatHistoryRequest) -> Result<ChatHistory, ErrorBody> {
@@ -1112,6 +1200,19 @@ impl ChatManager {
             });
             self.handle(live, draft).await;
         }
+        let asked: Vec<QuestionId> = lock(&self.questions)
+            .values()
+            .filter(|p| p.info.session_id == live.id)
+            .map(|p| p.info.id)
+            .collect();
+        for question in asked {
+            let draft = AgentEventDraft::new(AgentEventKind::QuestionResolved {
+                question_id: question,
+                outcome: QuestionOutcome::Expired,
+                decided_by: None,
+            });
+            self.handle(live, draft).await;
+        }
         let open_turn = lock(&live.open_turn).take();
         if let Some(turn) = open_turn {
             let kind = if live.stopping.load(Ordering::Acquire) {
@@ -1176,6 +1277,8 @@ impl ChatManager {
         let mut turn_flag = None;
         let mut required: Option<ApprovalInfo> = None;
         let mut resolved: Option<(ApprovalId, PermissionOutcome, Option<DecidedBy>)> = None;
+        let mut asked: Option<QuestionInfo> = None;
+        let mut settled: Option<(QuestionId, QuestionOutcome, Option<DecidedBy>)> = None;
         match &event.kind {
             AgentEventKind::TurnStarted => {
                 *lock(&live.open_turn) = event.turn_id;
@@ -1233,10 +1336,40 @@ impl ChatManager {
                     resolved = Some((*approval_id, outcome.clone(), decided_by.clone()));
                 }
             }
+            AgentEventKind::QuestionRequested { question_id, spec } => {
+                let info = QuestionInfo {
+                    id: *question_id,
+                    session_id: live.id,
+                    turn_id: event.turn_id,
+                    spec: spec.clone(),
+                    requested_at_ms: ts_ms,
+                };
+                self.write_question_request(&info);
+                lock(&self.questions).insert(
+                    *question_id,
+                    PendingQuestion {
+                        info: info.clone(),
+                        decided_by: None,
+                    },
+                );
+                asked = Some(info);
+            }
+            AgentEventKind::QuestionResolved {
+                question_id,
+                outcome,
+                decided_by,
+            } => {
+                let pending = lock(&self.questions).remove(question_id);
+                if let Some(pending) = pending {
+                    self.write_question_outcome(&pending, outcome, ts_ms);
+                    settled = Some((*question_id, outcome.clone(), decided_by.clone()));
+                }
+            }
             _ => {}
         }
 
-        let approvals_changed = required.is_some() || resolved.is_some();
+        let approvals_changed =
+            required.is_some() || resolved.is_some() || asked.is_some() || settled.is_some();
         if !event.kind.is_streaming() {
             self.journal(&event);
         }
@@ -1257,6 +1390,19 @@ impl ChatManager {
                 decided_by,
             });
         }
+        if let Some(info) = asked {
+            self.emit(&Event::QuestionRequired {
+                question: Box::new(info),
+            });
+        }
+        if let Some((question_id, outcome, decided_by)) = settled {
+            self.emit(&Event::QuestionResolved {
+                question_id,
+                session_id: live.id,
+                outcome,
+                decided_by,
+            });
+        }
         // The session's state follows what happened: the registry is told after the events
         // are out, so a client that sees the state change has the events already.
         let pending = u32::try_from(
@@ -1266,14 +1412,39 @@ impl ChatManager {
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        let questions = u32::try_from(
+            lock(&self.questions)
+                .values()
+                .filter(|p| p.info.session_id == live.id)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
         if turn_flag.is_some() || approvals_changed {
-            self.notifier.state(live.id, turn_flag, pending).await;
+            self.notifier
+                .state(live.id, turn_flag, pending, questions)
+                .await;
         }
     }
 
     /// Says on a `permission_resolved` event who answered: the client that reached the agent
     /// first (see [`respond`](Self::respond)); nobody for an expiry.
     fn attribute(&self, event: &mut AgentEvent) {
+        if let AgentEventKind::QuestionResolved {
+            question_id,
+            outcome,
+            decided_by,
+        } = &mut event.kind
+        {
+            if !matches!(outcome, QuestionOutcome::Expired)
+                && let Some(pending) = lock(&self.questions).get(question_id)
+            {
+                *decided_by = Some(DecidedBy {
+                    client_kind: pending.decided_by.unwrap_or("other").to_owned(),
+                    client_name: None,
+                });
+            }
+            return;
+        }
         let AgentEventKind::PermissionResolved {
             approval_id,
             outcome: PermissionOutcome::Selected { .. },
@@ -1391,7 +1562,50 @@ impl ChatManager {
     }
 }
 
-/// Marks approvals a crashed daemon left open as expired (their agents are gone).
+impl ChatManager {
+    fn write_question_request(&self, info: &QuestionInfo) {
+        let row = QuestionRow {
+            id: info.id,
+            session_id: info.session_id,
+            turn_id: info.turn_id.map(|t| t.to_string()),
+            title: info.spec.title.clone(),
+            requested_at_ms: info.requested_at_ms,
+            resolved_at_ms: None,
+            outcome: None,
+            decided_by: None,
+        };
+        registry::log_write(self.storage.questions().upsert(row), "a question");
+    }
+
+    /// How a question ended and who decided: never the values.
+    fn write_question_outcome(
+        &self,
+        pending: &PendingQuestion,
+        outcome: &QuestionOutcome,
+        at: u64,
+    ) {
+        let info = &pending.info;
+        let (stored, decided_by) = match outcome {
+            QuestionOutcome::Answered { .. } => (StoredOutcome::Answered, true),
+            QuestionOutcome::Declined => (StoredOutcome::Declined, true),
+            QuestionOutcome::Cancelled => (StoredOutcome::Cancelled, true),
+            QuestionOutcome::Expired => (StoredOutcome::Expired, false),
+        };
+        let row = QuestionRow {
+            id: info.id,
+            session_id: info.session_id,
+            turn_id: info.turn_id.map(|t| t.to_string()),
+            title: info.spec.title.clone(),
+            requested_at_ms: info.requested_at_ms,
+            resolved_at_ms: Some(at),
+            outcome: Some(stored),
+            decided_by: decided_by.then(|| pending.decided_by.unwrap_or("other").to_owned()),
+        };
+        registry::log_write(self.storage.questions().upsert(row), "a question outcome");
+    }
+}
+
+/// Marks approvals and questions a crashed daemon left open as expired (their agents are gone).
 pub fn expire_dangling_approvals(storage: &Storage) -> Result<(), hutan_storage::StorageError> {
     let now = registry::now_ms();
     for mut row in storage.approvals().unresolved()? {
@@ -1400,5 +1614,11 @@ pub fn expire_dangling_approvals(storage: &Storage) -> Result<(), hutan_storage:
         storage.approvals().upsert(row)?;
     }
     debug!("dangling approvals expired");
+    for mut row in storage.questions().unresolved()? {
+        row.resolved_at_ms = Some(now);
+        row.outcome = Some(StoredOutcome::Expired);
+        storage.questions().upsert(row)?;
+    }
+    debug!("dangling questions expired");
     Ok(())
 }

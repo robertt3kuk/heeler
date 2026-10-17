@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod ids;
 pub mod observation;
+pub mod question;
 pub mod session;
 pub mod task;
 
@@ -12,13 +13,14 @@ pub use agent::{
     SandboxMode,
 };
 pub use ids::{
-    ApprovalId, Epoch, ItemId, ParseIdError, Seq, SessionId, TaskId, TerminalId, TurnId,
-    WorkspaceId,
+    ApprovalId, Epoch, ItemId, ParseIdError, QuestionId, Seq, SessionId, TaskId, TerminalId,
+    TurnId, WorkspaceId,
 };
 pub use observation::{
     AgentNode, AgentObservation, Changes, Liveness, NodeKind, NodeOutcome, NodeState, NodeUpdate,
     ObservationTree, Patch, Usage,
 };
+pub use question::{QuestionOutcome, QuestionResponse, QuestionSpec};
 pub use session::{InvalidTransition, SessionEvent, SessionKind, SessionState};
 pub use task::{
     InvalidTaskTransition, Scheduler, Task, TaskEvent, TaskPlacement, TaskPlacementKind, TaskRun,

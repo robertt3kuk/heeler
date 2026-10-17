@@ -88,6 +88,8 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Assistant(command) => ctx?.assistant(command).await,
         Command::Approvals => ctx?.approvals().await,
         Command::Approve(args) => ctx?.approve(args).await,
+        Command::Questions => ctx?.questions().await,
+        Command::Answer(args) => ctx?.answer(args).await,
         Command::Notify(command) => ctx?.notify(command).await,
         Command::Wt(command) => ctx?.wt(command).await,
         Command::Task(command) => ctx?.task(command).await,

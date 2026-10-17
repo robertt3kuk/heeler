@@ -9,13 +9,17 @@ use hutan_core::agent::{
     DecidedBy, FileChange, FileChangeKind, MessageRole, PermissionKind, PermissionOption,
     PermissionOptionKind, PermissionOutcome, TokenCounts, ToolKind, ToolStatus,
 };
+use hutan_core::question::{
+    ChoiceOption, FieldKind, QuestionExpiry, QuestionField, QuestionOutcome, QuestionResponse,
+    QuestionSpec,
+};
 use hutan_core::{
     AgentEvent, AgentEventDraft, AgentEventKind, AgentNode, AgentObservation, ApprovalId,
     ApprovalPolicy, ItemId, Liveness, ModelInfo, NodeKind, NodeOutcome, NodeState, SandboxMode,
     TurnId, Usage,
 };
 use hutan_core::{Epoch, Seq, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
-use hutan_core::{Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState};
+use hutan_core::{QuestionId, Task, TaskId, TaskPlacement, TaskPlacementKind, TaskRun, TaskState};
 use hutan_protocol::account::*;
 use hutan_protocol::assistant::*;
 use hutan_protocol::blocks::{
@@ -127,6 +131,7 @@ fn chat_info() -> ChatInfo {
         sandbox: SandboxMode::ReadOnly,
         turn_active: true,
         pending_approvals: 1,
+        pending_questions: 0,
         provider_id: None,
         agent_session_id: None,
         assistant: false,
@@ -146,6 +151,7 @@ fn harness_chat_session_info() -> SessionInfo {
             sandbox: SandboxMode::WorkspaceWrite,
             turn_active: true,
             pending_approvals: 0,
+            pending_questions: 0,
             provider_id: None,
             agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
             assistant: false,
@@ -167,6 +173,7 @@ fn harness_assistant_session_info() -> SessionInfo {
             sandbox: SandboxMode::WorkspaceWrite,
             turn_active: false,
             pending_approvals: 0,
+            pending_questions: 0,
             provider_id: None,
             agent_session_id: Some("01a140f0-8de4-70fb-9f43-aaa92aef0e15".into()),
             assistant: true,
@@ -188,6 +195,7 @@ fn direct_chat_session_info() -> SessionInfo {
             sandbox: SandboxMode::WorkspaceWrite,
             turn_active: true,
             pending_approvals: 0,
+            pending_questions: 0,
             provider_id: Some("openrouter".into()),
             agent_session_id: None,
             assistant: false,
@@ -271,6 +279,7 @@ fn assistant_session_info() -> SessionInfo {
             sandbox: SandboxMode::WorkspaceWrite,
             turn_active: false,
             pending_approvals: 0,
+            pending_questions: 0,
             provider_id: Some("ollama".into()),
             agent_session_id: None,
             assistant: false,
@@ -308,6 +317,100 @@ fn approval_info() -> ApprovalInfo {
         options: permission_options(),
         requested_at_ms: 1_791_894_170_500,
     }
+}
+
+fn question() -> QuestionId {
+    "01K7F3B5N2Q9W8E4R6T1Y0V3QA".parse().unwrap()
+}
+
+fn question_spec() -> QuestionSpec {
+    QuestionSpec {
+        title: "Codex has a question".into(),
+        prompt: "Which database should the migration target?".into(),
+        fields: vec![
+            QuestionField {
+                id: "db".into(),
+                label: "Database".into(),
+                description: Some("The first choice is recommended".into()),
+                kind: FieldKind::Choice {
+                    options: vec![
+                        ChoiceOption {
+                            value: "postgres".into(),
+                            label: "PostgreSQL".into(),
+                            description: Some("Production default".into()),
+                        },
+                        ChoiceOption {
+                            value: "sqlite".into(),
+                            label: "SQLite".into(),
+                            description: None,
+                        },
+                    ],
+                    multi: false,
+                    allow_other: true,
+                },
+                required: true,
+                default: Some(serde_json::json!("postgres")),
+            },
+            QuestionField {
+                id: "retries".into(),
+                label: "Retries".into(),
+                description: None,
+                kind: FieldKind::Number {
+                    integer: true,
+                    min: Some(0.0),
+                    max: Some(10.0),
+                },
+                required: false,
+                default: None,
+            },
+            QuestionField {
+                id: "dry_run".into(),
+                label: "Dry run".into(),
+                description: None,
+                kind: FieldKind::Boolean,
+                required: false,
+                default: Some(serde_json::json!(false)),
+            },
+            QuestionField {
+                id: "token".into(),
+                label: "Access token".into(),
+                description: None,
+                kind: FieldKind::Secret,
+                required: false,
+                default: None,
+            },
+            QuestionField {
+                id: "notes".into(),
+                label: "Notes".into(),
+                description: None,
+                kind: FieldKind::Multiline,
+                required: false,
+                default: None,
+            },
+        ],
+        raw_schema: None,
+        source: Some("MCP server migrations".into()),
+        expires: QuestionExpiry::Turn,
+    }
+}
+
+fn question_info() -> QuestionInfo {
+    QuestionInfo {
+        id: question(),
+        session_id: sid(),
+        turn_id: Some(turn()),
+        spec: question_spec(),
+        requested_at_ms: 1_791_894_170_600,
+    }
+}
+
+fn question_answer_values() -> hutan_core::question::Values {
+    [
+        ("db".to_owned(), serde_json::json!("sqlite")),
+        ("retries".to_owned(), serde_json::json!(3)),
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn ws2() -> WorkspaceId {
@@ -1841,6 +1944,39 @@ fn requests() -> Vec<(&'static str, Request)> {
                 message: None,
             }),
         ),
+        (
+            "question_list",
+            Request::QuestionList(QuestionListRequest { session_id: None }),
+        ),
+        (
+            "question_list_session",
+            Request::QuestionList(QuestionListRequest {
+                session_id: Some(sid()),
+            }),
+        ),
+        (
+            "question_answer_submit",
+            Request::QuestionAnswer(QuestionAnswer {
+                question_id: question(),
+                response: QuestionResponse::Submit {
+                    values: question_answer_values(),
+                },
+            }),
+        ),
+        (
+            "question_answer_decline",
+            Request::QuestionAnswer(QuestionAnswer {
+                question_id: question(),
+                response: QuestionResponse::Decline,
+            }),
+        ),
+        (
+            "question_answer_cancel",
+            Request::QuestionAnswer(QuestionAnswer {
+                question_id: question(),
+                response: QuestionResponse::Cancel,
+            }),
+        ),
     ]
 }
 
@@ -2401,6 +2537,114 @@ fn events() -> Vec<(&'static str, Event)> {
             "approval_required_control",
             Event::ApprovalRequired {
                 approval: Box::new(control_approval()),
+            },
+        ),
+        (
+            "session_updated_chat_question",
+            Event::SessionUpdated {
+                session: {
+                    let mut session = chat_session_info();
+                    if let Some(chat) = session.chat.as_mut() {
+                        chat.pending_approvals = 0;
+                        chat.pending_questions = 1;
+                    }
+                    session
+                },
+            },
+        ),
+        (
+            "chat_event_question_requested",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    54,
+                    AgentEventKind::QuestionRequested {
+                        question_id: question(),
+                        spec: question_spec(),
+                    },
+                )),
+            },
+        ),
+        (
+            "chat_event_question_resolved_answered",
+            Event::ChatEvent {
+                session_id: sid(),
+                event: Box::new(agent_event(
+                    55,
+                    AgentEventKind::QuestionResolved {
+                        question_id: question(),
+                        outcome: QuestionOutcome::answered(&question_spec().fields, &{
+                            let mut values = question_answer_values();
+                            values.insert("token".into(), serde_json::json!("never journaled"));
+                            values
+                        }),
+                        decided_by: Some(DecidedBy {
+                            client_kind: "desktop".into(),
+                            client_name: None,
+                        }),
+                    },
+                )),
+            },
+        ),
+        (
+            "question_required",
+            Event::QuestionRequired {
+                question: Box::new(question_info()),
+            },
+        ),
+        (
+            "question_resolved_answered",
+            Event::QuestionResolved {
+                question_id: question(),
+                session_id: sid(),
+                outcome: QuestionOutcome::answered(
+                    &question_spec().fields,
+                    &question_answer_values(),
+                ),
+                decided_by: Some(DecidedBy {
+                    client_kind: "cli".into(),
+                    client_name: None,
+                }),
+            },
+        ),
+        (
+            "question_resolved_declined",
+            Event::QuestionResolved {
+                question_id: question(),
+                session_id: sid(),
+                outcome: QuestionOutcome::Declined,
+                decided_by: Some(DecidedBy {
+                    client_kind: "cli".into(),
+                    client_name: None,
+                }),
+            },
+        ),
+        (
+            "question_resolved_expired",
+            Event::QuestionResolved {
+                question_id: question(),
+                session_id: sid(),
+                outcome: QuestionOutcome::Expired,
+                decided_by: None,
+            },
+        ),
+        (
+            "notify_intent_question",
+            Event::NotifyIntent {
+                intent: NotificationIntent {
+                    id: "01K7F3B5N2Q9W8E4R6T1Y0V3NW".into(),
+                    kind: IntentKind::QuestionRequired,
+                    session_id: sid(),
+                    workspace_id: Some(ws()),
+                    title: "Codex has a question".into(),
+                    body: "Which database should the migration target?".into(),
+                    actions: vec![IntentAction {
+                        id: "open".into(),
+                        label: "Open".into(),
+                    }],
+                    created_at_ms: 1_791_894_170_600,
+                    expires_at_ms: None,
+                },
             },
         ),
     ]
@@ -3563,6 +3807,16 @@ fn responses_match_fixtures() {
                 error
             }),
         ),
+        (
+            "question_list",
+            ControlMessage::ok(
+                19,
+                &QuestionList {
+                    questions: vec![question_info()],
+                },
+            )
+            .unwrap(),
+        ),
     ];
     for (name, message) in cases {
         let json = String::from_utf8(message.to_json().unwrap()).unwrap();
@@ -3690,6 +3944,16 @@ fn a_credential_request_never_prints_its_secret() {
     assert!(printed.contains("openrouter"));
 }
 
+fn has_key(value: &serde_json::Value, key: &str) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.contains_key(key) || map.values().any(|v| has_key(v, key))
+        }
+        serde_json::Value::Array(items) => items.iter().any(|v| has_key(v, key)),
+        _ => false,
+    }
+}
+
 #[test]
 fn no_response_or_event_fixture_has_a_secret_field() {
     // Only `provider.set_credential` carries one, and only as a request.
@@ -3700,7 +3964,9 @@ fn no_response_or_event_fixture_has_a_secret_field() {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("\"secret\""), "{name} has a secret field");
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            assert!(!has_key(&value, "secret"), "{name} has a secret field");
+        }
         assert!(!text.contains("not-a-real-key"), "{name}");
     }
 }

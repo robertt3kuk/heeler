@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use hutan_core::{
-    ApprovalId, Epoch, Seq, SessionId, Task, TaskId, TaskState, TerminalId, WorkspaceId,
+    ApprovalId, Epoch, QuestionId, QuestionResponse, Seq, SessionId, Task, TaskId, TaskState,
+    TerminalId, WorkspaceId,
 };
 use hutan_protocol::account::{
     AccountInfo, AccountList, AccountLogin, AccountLogout, AccountSession,
@@ -23,6 +24,7 @@ use hutan_protocol::blocks::{
 use hutan_protocol::chat::{
     ApprovalInfo, ApprovalList, ApprovalListRequest, ApprovalRespond, ChatCreate, ChatHistory,
     ChatHistoryRequest, ChatModels, ChatModelsRequest, ChatSend, ChatSent, HISTORY_MAX_LIMIT,
+    QuestionAnswer, QuestionInfo, QuestionList, QuestionListRequest,
 };
 use hutan_protocol::messages::{
     AgentApplied, AgentReleaseRequest, AgentReportRequest, ClientInfo, Empty, Event, Hello,
@@ -115,6 +117,9 @@ pub(crate) const WORKTREE_REVIEW_CAPABILITY: &str = "worktree.review";
 /// Capability for `image` and `pasted_text` attachments, `file` attachments in every chat and
 /// `ChatInfo.images` (protocol 0.23).
 pub(crate) const RICH_INPUT_CAPABILITY: &str = "chat.rich_input";
+/// Capability for `question.*`, the `question.*` events and `ChatInfo.pending_questions`
+/// (protocol 0.25).
+pub(crate) const QUESTIONS_CAPABILITY: &str = "chat.questions";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
     "terminal.render.v1",
@@ -138,6 +143,7 @@ const CAPABILITIES: &[&str] = &[
     CONTROL_CAPABILITY,
     WORKTREE_REVIEW_CAPABILITY,
     RICH_INPUT_CAPABILITY,
+    QUESTIONS_CAPABILITY,
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Generous on purpose: the first launch of a freshly built or updated `hutand` can take
@@ -336,6 +342,15 @@ impl Client {
             .capabilities
             .iter()
             .any(|capability| capability == CHAT_CAPABILITY)
+    }
+
+    /// True when the daemon advertised capability `chat.questions` (questions of agents;
+    /// protocol 0.25).
+    pub fn supports_questions(&self) -> bool {
+        self.welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == QUESTIONS_CAPABILITY)
     }
 
     /// True when the daemon advertised capability `harness.acp` (chats through the `omp` and
@@ -989,6 +1004,31 @@ impl Client {
         self.call::<Empty>(Request::ApprovalRespond(ApprovalRespond {
             approval_id,
             option_id: option_id.into(),
+        }))
+        .await
+        .map(|_| ())
+    }
+
+    /// Questions of agents waiting for an answer (of one session, or of all).
+    pub async fn questions(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> Result<Vec<QuestionInfo>, ClientError> {
+        let list: QuestionList = self
+            .call(Request::QuestionList(QuestionListRequest { session_id }))
+            .await?;
+        Ok(list.questions)
+    }
+
+    /// Answers a question: values by field id, a decline, or a cancel.
+    pub async fn answer_question(
+        &self,
+        question_id: QuestionId,
+        response: QuestionResponse,
+    ) -> Result<(), ClientError> {
+        self.call::<Empty>(Request::QuestionAnswer(QuestionAnswer {
+            question_id,
+            response,
         }))
         .await
         .map(|_| ())

@@ -11,19 +11,27 @@ use hutan_core::agent::{
     PermissionKind, PermissionOption, PermissionOptionKind, PermissionOutcome, PlanStep,
     PlanStepStatus, ReasoningPart, TokenCounts, ToolKind, ToolStatus,
 };
-use hutan_core::{AgentEventDraft, AgentEventKind, ApprovalId, ItemId, TurnId};
+use hutan_core::question::{
+    ChoiceOption, FieldKind, MAX_FIELDS, MAX_OPTIONS, QuestionExpiry, QuestionField, Values,
+};
+use hutan_core::{
+    AgentEventDraft, AgentEventKind, ApprovalId, ItemId, QuestionId, QuestionOutcome,
+    QuestionResponse, QuestionSpec, TurnId,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tracing::debug;
 
 use super::wire::{
     AgentMessageItem, CommandApprovalParams, CommandExecutionItem, DeltaNotification,
-    DynamicToolCallItem, ErrorNotification, FileChangeApprovalParams, FileChangeItem,
-    FileUpdateChange, ItemNotification, McpToolCallItem, PatchUpdatedNotification,
+    DynamicToolCallItem, ElicitationParams, ErrorNotification, FileChangeApprovalParams,
+    FileChangeItem, FileUpdateChange, ItemNotification, McpToolCallItem, PatchUpdatedNotification,
     PermissionsApprovalParams, PlanItem, ProgressNotification, ReasoningItem,
-    ServerRequestResolved, TokenBreakdown, TokenUsageNotification, TurnDiffNotification,
-    TurnNotification, TurnPlanNotification, UserMessageItem, WarningNotification, WebSearchItem,
+    ServerRequestResolved, TokenBreakdown, TokenUsageNotification, ToolInputParams,
+    ToolInputQuestion, TurnDiffNotification, TurnNotification, TurnPlanNotification,
+    UserMessageItem, WarningNotification, WebSearchItem,
 };
+use crate::elicit::{self, Shape};
 
 /// Turns whose local ids are remembered.
 const KNOWN_TURNS: usize = 32;
@@ -74,6 +82,38 @@ struct PendingRequest {
     answered: Option<String>,
 }
 
+/// How a pending question's answer goes back to the server.
+#[derive(Debug, Clone, Copy)]
+enum QuestionShape {
+    /// `item/tool/requestUserInput`: `{answers: {<question id>: {answers: [text]}}}`.
+    Tool,
+    /// `mcpServer/elicitation/request`: `{action, content}`.
+    Elicitation(Shape),
+}
+
+#[derive(Debug)]
+struct PendingQuestion {
+    rpc_id: Value,
+    question: QuestionId,
+    /// `None` for an elicitation the server could not tie to a turn: it lives as long as the
+    /// process.
+    provider_turn: Option<String>,
+    shape: QuestionShape,
+    fields: Vec<QuestionField>,
+    /// What the user decided, once the response was sent.
+    answered: Option<QuestionOutcome>,
+}
+
+/// The JSON-RPC response to send for an answered question.
+#[derive(Debug)]
+pub struct QuestionReply {
+    pub rpc_id: Value,
+    pub result: Value,
+    /// Cancelling a `requestUserInput` also stops the turn: the schema has no cancel action, so
+    /// the answer is empty and the turn is interrupted.
+    pub interrupt: bool,
+}
+
 #[derive(Debug)]
 pub struct Mapper {
     thread_id: String,
@@ -84,13 +124,17 @@ pub struct Mapper {
     turn_order: VecDeque<String>,
     /// By the JSON text of the request id.
     pending: HashMap<String, PendingRequest>,
+    /// Questions (`requestUserInput`, elicitations), by the JSON text of the request id.
+    questions: HashMap<String, PendingQuestion>,
 }
 
-/// Why an answer to a pending approval cannot be sent.
+/// Why an answer to a pending approval or question cannot be sent.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AnswerError {
     Unknown,
     NotOffered(String),
+    /// The values do not fit the shape the server asked for.
+    Invalid(String),
 }
 
 impl Mapper {
@@ -101,6 +145,7 @@ impl Mapper {
             items: HashMap::new(),
             turn_order: VecDeque::new(),
             pending: HashMap::new(),
+            questions: HashMap::new(),
         }
     }
 
@@ -162,9 +207,9 @@ impl Mapper {
         )
     }
 
-    /// Whether any approval still waits for an answer.
+    /// Whether any approval or question still waits for an answer.
     pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.questions.is_empty()
     }
 
     // Notifications ----------------------------------------------------------------------------
@@ -769,8 +814,8 @@ impl Mapper {
     // Requests of the server -------------------------------------------------------------------
 
     /// A request of the server. Approvals become pending and are answered through
-    /// [`answer`](Self::answer); the rest is refused so the agent never waits for a client
-    /// that cannot answer.
+    /// [`answer`](Self::answer), questions through [`answer_question`](Self::answer_question);
+    /// the rest is refused so the agent never waits for a client that cannot answer.
     pub fn request(&mut self, id: Value, method: &str, params: Value) -> Mapped {
         if let Some(thread) = params.get("threadId").and_then(Value::as_str)
             && thread != self.thread_id
@@ -782,6 +827,19 @@ impl Mapper {
                     outcome: Err((METHOD_NOT_FOUND, "request for an unknown thread".to_owned())),
                 }),
             };
+        }
+        match method {
+            "item/tool/requestUserInput" => {
+                if let Ok(typed) = serde_json::from_value::<ToolInputParams>(params.clone()) {
+                    return self.tool_question(id, typed, params);
+                }
+            }
+            "mcpServer/elicitation/request" => {
+                if let Ok(typed) = serde_json::from_value::<ElicitationParams>(params.clone()) {
+                    return self.elicitation(id, typed, params);
+                }
+            }
+            _ => {}
         }
         let built = match method {
             "item/commandExecution/requestApproval" => {
@@ -992,7 +1050,11 @@ impl Mapper {
     }
 
     fn request_resolved(&mut self, request_id: &Value) -> Vec<AgentEventDraft> {
-        let Some(pending) = self.pending.remove(&request_id.to_string()) else {
+        let key = request_id.to_string();
+        if let Some(question) = self.questions.remove(&key) {
+            return vec![self.question_resolved_draft(question)];
+        }
+        let Some(pending) = self.pending.remove(&key) else {
             return Vec::new();
         };
         vec![self.resolved_draft(&pending)]
@@ -1032,14 +1094,286 @@ impl Mapper {
                 drafts.push(self.resolved_draft(&pending));
             }
         }
+        let asked: Vec<String> = self
+            .questions
+            .iter()
+            .filter(|(_, q)| q.provider_turn.as_deref() == Some(turn))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in asked {
+            if let Some(question) = self.questions.remove(&key) {
+                drafts.push(self.question_resolved_draft(question));
+            }
+        }
         drafts
     }
 
     /// The process is gone: nothing pending can be answered any more.
     pub fn expire_all(&mut self) -> Vec<AgentEventDraft> {
         let pending: Vec<PendingRequest> = self.pending.drain().map(|(_, p)| p).collect();
-        pending.iter().map(|p| self.resolved_draft(p)).collect()
+        let mut drafts: Vec<AgentEventDraft> =
+            pending.iter().map(|p| self.resolved_draft(p)).collect();
+        let questions: Vec<PendingQuestion> = self.questions.drain().map(|(_, q)| q).collect();
+        drafts.extend(
+            questions
+                .into_iter()
+                .map(|q| self.question_resolved_draft(q)),
+        );
+        drafts
     }
+
+    // Questions --------------------------------------------------------------------------------
+
+    fn tool_question(&mut self, rpc_id: Value, p: ToolInputParams, raw: Value) -> Mapped {
+        let fields: Vec<QuestionField> = p
+            .questions
+            .iter()
+            .take(MAX_FIELDS)
+            .map(tool_field)
+            .collect();
+        let title = match p.questions.as_slice() {
+            [one] if !one.header.trim().is_empty() => one.header.trim().to_owned(),
+            [_] | [] => "Codex has a question".to_owned(),
+            many => format!("Codex has {} questions", many.len()),
+        };
+        let spec = QuestionSpec {
+            title,
+            prompt: String::new(),
+            fields: fields.clone(),
+            raw_schema: (p.questions.len() > fields.len()).then(|| raw.clone()),
+            source: None,
+            expires: QuestionExpiry::Turn,
+        };
+        self.register_question(
+            rpc_id,
+            Some(p.turn_id),
+            Some(p.item_id),
+            spec,
+            QuestionShape::Tool,
+            raw,
+        )
+    }
+
+    fn elicitation(&mut self, rpc_id: Value, p: ElicitationParams, raw: Value) -> Mapped {
+        let source = (!p.server_name.is_empty()).then(|| format!("MCP server {}", p.server_name));
+        let (fields, raw_schema, shape, prompt) = match p.mode.as_str() {
+            "url" => {
+                let url = p.url.unwrap_or_default();
+                (
+                    Vec::new(),
+                    None,
+                    Shape::Form,
+                    format!("{}\n\n<{url}>", p.message),
+                )
+            }
+            mode => {
+                let schema = p.requested_schema.as_ref().unwrap_or(&Value::Null);
+                // `form` is MCP's own shape; the `openai/form` modes carry any schema.
+                let form = if mode == "form" {
+                    elicit::parse(schema)
+                } else {
+                    elicit::raw(schema)
+                };
+                (form.fields, form.raw_schema, form.shape, p.message)
+            }
+        };
+        let title = match &p.server_name {
+            name if name.is_empty() => "An MCP server asks".to_owned(),
+            name => format!("{name} asks"),
+        };
+        let spec = QuestionSpec {
+            title,
+            prompt,
+            fields,
+            raw_schema,
+            source,
+            expires: if p.turn_id.is_some() {
+                QuestionExpiry::Turn
+            } else {
+                QuestionExpiry::Process
+            },
+        };
+        self.register_question(
+            rpc_id,
+            p.turn_id,
+            None,
+            spec,
+            QuestionShape::Elicitation(shape),
+            raw,
+        )
+    }
+
+    fn register_question(
+        &mut self,
+        rpc_id: Value,
+        turn: Option<String>,
+        item: Option<String>,
+        spec: QuestionSpec,
+        shape: QuestionShape,
+        raw: Value,
+    ) -> Mapped {
+        let question = QuestionId::new();
+        let fields = spec.fields.clone();
+        let mut draft = self.draft(
+            turn.as_deref(),
+            item.as_deref(),
+            AgentEventKind::QuestionRequested {
+                question_id: question,
+                spec,
+            },
+        );
+        draft.provider.request_id = Some(rpc_id.to_string());
+        draft.payload = bounded(raw);
+        self.questions.insert(
+            rpc_id.to_string(),
+            PendingQuestion {
+                rpc_id,
+                question,
+                provider_turn: turn,
+                shape,
+                fields,
+                answered: None,
+            },
+        );
+        Mapped {
+            drafts: vec![draft],
+            reply: None,
+        }
+    }
+
+    /// The response to send for the user's decision on a pending question; marks it answered.
+    pub fn answer_question(
+        &mut self,
+        question: QuestionId,
+        response: &QuestionResponse,
+    ) -> Result<QuestionReply, AnswerError> {
+        let pending = self
+            .questions
+            .values_mut()
+            .find(|p| p.question == question && p.answered.is_none())
+            .ok_or(AnswerError::Unknown)?;
+        let (result, outcome, interrupt) = match (pending.shape, response) {
+            (QuestionShape::Tool, QuestionResponse::Submit { values }) => (
+                tool_answers(&pending.fields, values),
+                QuestionOutcome::answered(&pending.fields, values),
+                false,
+            ),
+            // The schema has no decline or cancel for `requestUserInput`: the answer is empty.
+            (QuestionShape::Tool, QuestionResponse::Decline) => {
+                (json!({"answers": {}}), QuestionOutcome::Declined, false)
+            }
+            (QuestionShape::Tool, QuestionResponse::Cancel) => {
+                (json!({"answers": {}}), QuestionOutcome::Cancelled, true)
+            }
+            (QuestionShape::Elicitation(shape), QuestionResponse::Submit { values }) => {
+                let content = elicit::content(shape, &pending.fields, values)
+                    .map_err(AnswerError::Invalid)?;
+                (
+                    json!({"action": "accept", "content": content}),
+                    QuestionOutcome::answered(&pending.fields, values),
+                    false,
+                )
+            }
+            (QuestionShape::Elicitation(_), QuestionResponse::Decline) => (
+                json!({"action": "decline", "content": null}),
+                QuestionOutcome::Declined,
+                false,
+            ),
+            (QuestionShape::Elicitation(_), QuestionResponse::Cancel) => (
+                json!({"action": "cancel", "content": null}),
+                QuestionOutcome::Cancelled,
+                false,
+            ),
+        };
+        pending.answered = Some(outcome);
+        Ok(QuestionReply {
+            rpc_id: pending.rpc_id.clone(),
+            result,
+            interrupt,
+        })
+    }
+
+    /// Undoes [`answer_question`](Self::answer_question) when the response could not be sent.
+    pub fn unanswer_question(&mut self, question: QuestionId) {
+        if let Some(pending) = self.questions.values_mut().find(|p| p.question == question) {
+            pending.answered = None;
+        }
+    }
+
+    fn question_resolved_draft(&mut self, pending: PendingQuestion) -> AgentEventDraft {
+        let mut draft = self.draft(
+            pending.provider_turn.as_deref(),
+            None,
+            AgentEventKind::QuestionResolved {
+                question_id: pending.question,
+                outcome: pending.answered.unwrap_or(QuestionOutcome::Expired),
+                // The daemon knows who answered; the provider does not.
+                decided_by: None,
+            },
+        );
+        draft.provider.request_id = Some(pending.rpc_id.to_string());
+        draft
+    }
+}
+
+/// A `requestUserInput` question as a field: its id is the key of the answer.
+fn tool_field(q: &ToolInputQuestion) -> QuestionField {
+    let header = q.header.trim();
+    let text = q.question.trim();
+    let (label, description) = match (text.is_empty(), header.is_empty()) {
+        (true, _) => (header.to_owned(), None),
+        (false, true) => (text.to_owned(), None),
+        (false, false) => (text.to_owned(), (header != text).then(|| header.to_owned())),
+    };
+    let options = q.options.as_deref().unwrap_or_default();
+    let kind = if q.is_secret {
+        FieldKind::Secret
+    } else if options.is_empty() {
+        FieldKind::Text
+    } else {
+        FieldKind::Choice {
+            options: options
+                .iter()
+                .take(MAX_OPTIONS)
+                .map(|o| ChoiceOption {
+                    value: o.label.clone(),
+                    label: o.label.clone(),
+                    description: (!o.description.trim().is_empty())
+                        .then(|| o.description.trim().to_owned()),
+                })
+                .collect(),
+            multi: false,
+            allow_other: q.is_other,
+        }
+    };
+    QuestionField {
+        id: q.id.clone(),
+        label,
+        description,
+        kind,
+        required: true,
+        default: None,
+    }
+}
+
+/// `{answers: {<id>: {answers: [text]}}}`: every answer is a list of strings.
+fn tool_answers(fields: &[QuestionField], values: &Values) -> Value {
+    let mut answers = serde_json::Map::new();
+    for field in fields {
+        let Some(value) = values.get(&field.id) else {
+            continue;
+        };
+        let list: Vec<String> = match value {
+            Value::String(text) => vec![text.clone()],
+            Value::Array(items) => items
+                .iter()
+                .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
+                .collect(),
+            other => vec![other.to_string()],
+        };
+        answers.insert(field.id.clone(), json!({"answers": list}));
+    }
+    json!({"answers": answers})
 }
 
 struct BuiltApproval {

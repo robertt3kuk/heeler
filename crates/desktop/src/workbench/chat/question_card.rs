@@ -1,0 +1,673 @@
+//! The card of a question the agent asked (protocol 0.25): a form built from the question's
+//! fields, Submit (⌘↩), Decline and Cancel. The card takes the keyboard once a field is clicked
+//! (or Tab is pressed with the composer empty): then typing goes to its field and the digits
+//! 1–4, which answer approvals, never answer anything.
+
+use gpui::{
+    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, div, prelude::*, px,
+};
+use hutan_chat_view::{Question, QuestionState};
+use hutan_core::question::{FieldKind, QuestionField};
+use hutan_core::{QuestionId, QuestionResponse};
+
+use super::markdown_view::{Ids, Look, blocks};
+use super::question::{Input, QuestionForm};
+use super::view::ChatView;
+use super::widgets::{ButtonKind, button};
+use crate::workbench::render::probe;
+use crate::workbench::ui::StyledExt as _;
+use crate::workbench::view::Region;
+
+const CARET: &str = "▏";
+
+/// How many options one field offers as buttons before the rest are cut (a form with a hundred
+/// options is not a form a card can hold).
+const OPTION_LIMIT: usize = 20;
+
+fn field_region(field: usize) -> Region {
+    Region::ChatQuestion(8 + field)
+}
+
+fn option_region(field: usize, option: usize) -> Region {
+    Region::ChatQuestion(100 + field * OPTION_LIMIT + option.min(OPTION_LIMIT - 1))
+}
+
+impl ChatView {
+    /// Makes sure the pending questions have a form and the settled ones do not.
+    pub(super) fn sync_questions(&mut self, cx: &gpui::App) {
+        let model = self.model.read(cx);
+        let transcript = model.transcript();
+        for question in transcript.pending_questions() {
+            self.forms
+                .entry(question.id)
+                .or_insert_with(|| QuestionForm::new(&question.spec));
+        }
+        self.forms.retain(|id, _| {
+            transcript
+                .question(*id)
+                .is_some_and(|q| q.state == QuestionState::Pending)
+        });
+        if self
+            .question_focus
+            .is_some_and(|id| !self.forms.contains_key(&id))
+        {
+            self.question_focus = None;
+        }
+    }
+
+    /// Why the last submit of `id` did not go through, as the card shows it.
+    pub fn question_error(&self, id: QuestionId) -> Option<String> {
+        self.forms.get(&id)?.error.clone()
+    }
+
+    /// The oldest question that waits.
+    fn first_pending_question(&self, cx: &gpui::App) -> Option<QuestionId> {
+        self.model
+            .read(cx)
+            .transcript()
+            .pending_questions()
+            .first()
+            .map(|q| q.id)
+    }
+
+    /// Gives the keyboard to the first field of the oldest pending question.
+    pub(super) fn focus_first_question(&mut self, cx: &mut Context<Self>) -> bool {
+        self.sync_questions(cx);
+        let Some(id) = self.first_pending_question(cx) else {
+            return false;
+        };
+        self.focus_question_field(id, Some(0), cx);
+        true
+    }
+
+    fn focus_question_field(
+        &mut self,
+        id: QuestionId,
+        field: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_questions(cx);
+        if let Some(form) = self.forms.get_mut(&id) {
+            form.focus = field.filter(|at| *at < form.inputs.len());
+            self.question_focus = Some(id);
+            cx.notify();
+        }
+    }
+
+    /// Sends the form of `id`: checked here first, then by the daemon.
+    pub fn submit_question(&mut self, id: QuestionId, cx: &mut Context<Self>) {
+        let Some(question) = self.model.read(cx).transcript().question(id).cloned() else {
+            return;
+        };
+        let Some(form) = self.forms.get_mut(&id) else {
+            return;
+        };
+        if form.sending || question.state != QuestionState::Pending {
+            return;
+        }
+        match form.values(&question.spec) {
+            Ok(values) => {
+                form.error = None;
+                self.send_question_response(id, QuestionResponse::Submit { values }, cx);
+            }
+            Err(message) => {
+                form.error = Some(message);
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn decline_question(&mut self, id: QuestionId, cx: &mut Context<Self>) {
+        self.send_question_response(id, QuestionResponse::Decline, cx);
+    }
+
+    pub fn cancel_question(&mut self, id: QuestionId, cx: &mut Context<Self>) {
+        self.send_question_response(id, QuestionResponse::Cancel, cx);
+    }
+
+    fn send_question_response(
+        &mut self,
+        id: QuestionId,
+        response: QuestionResponse,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.forms.get_mut(&id) {
+            if form.sending {
+                return;
+            }
+            form.sending = true;
+        }
+        let task = self
+            .sessions
+            .update(cx, |store, cx| store.answer_question(id, response, cx));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = task.await {
+                this.update(cx, |this, cx| {
+                    if let Some(form) = this.forms.get_mut(&id) {
+                        form.sending = false;
+                        form.error = Some(format!("Could not answer: {error}"));
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Keys while a question card has the keyboard. `true` when the key was used.
+    pub(super) fn on_question_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let keystroke = &event.keystroke;
+        let mods = &keystroke.modifiers;
+        let key = keystroke.key.as_str();
+        let plain = !mods.platform && !mods.control && !mods.alt && !mods.function;
+        let Some(id) = self.question_focus else {
+            // Tab with an empty composer walks into the form of the oldest question.
+            if plain
+                && !mods.shift
+                && key == "tab"
+                && self.model.read(cx).input().is_empty()
+                && self.focus_first_question(cx)
+            {
+                return true;
+            }
+            return false;
+        };
+        self.sync_questions(cx);
+        let Some(form) = self.forms.get_mut(&id) else {
+            self.question_focus = None;
+            return false;
+        };
+        if mods.platform && key == "enter" {
+            self.submit_question(id, cx);
+            return true;
+        }
+        if plain && key == "escape" {
+            self.question_focus = None;
+            if let Some(form) = self.forms.get_mut(&id) {
+                form.focus = None;
+            }
+            cx.notify();
+            return true;
+        }
+        if key == "tab" && !mods.platform && !mods.control && !mods.alt {
+            form.move_focus(!mods.shift);
+            if form.focus.is_none() {
+                self.question_focus = None;
+            }
+            cx.notify();
+            return true;
+        }
+        let multiline = form.focus.is_some_and(|at| {
+            self.model
+                .read(cx)
+                .transcript()
+                .question(id)
+                .and_then(|q| q.spec.fields.get(at))
+                .is_some_and(|f| matches!(f.kind, FieldKind::Multiline))
+        });
+        let Some(form) = self.forms.get_mut(&id) else {
+            return false;
+        };
+        let focus = form.focus;
+        // Choices and toggles answer to space and the arrow keys.
+        let on_text = form.focused_text().is_some();
+        if !on_text {
+            match key {
+                "space" | "enter" if plain => {
+                    form.toggle(focus.unwrap_or(0));
+                    cx.notify();
+                    return true;
+                }
+                _ => return true,
+            }
+        }
+        let Some(text) = form.focused_text() else {
+            return true;
+        };
+        let typed = keystroke
+            .key_char
+            .clone()
+            .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+        if mods.platform {
+            match key {
+                "v" => {
+                    if let Some(pasted) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        text.insert(&if multiline {
+                            pasted
+                        } else {
+                            pasted.replace(['\n', '\r'], " ")
+                        });
+                    }
+                }
+                "z" => {
+                    if mods.shift {
+                        text.redo();
+                    } else {
+                        text.undo();
+                    }
+                }
+                "backspace" => text.delete_to_line_start(),
+                "left" => text.home(),
+                "right" => text.end(),
+                _ => return false,
+            }
+        } else if mods.control {
+            match key {
+                "a" => text.home(),
+                "e" => text.end(),
+                "u" => text.delete_to_line_start(),
+                _ => return true,
+            }
+        } else if mods.alt {
+            match key {
+                "left" => text.word_left(),
+                "right" => text.word_right(),
+                "backspace" => text.delete_word_back(),
+                _ => {
+                    if let Some(typed) = typed {
+                        text.insert(&typed);
+                    }
+                }
+            }
+        } else {
+            match key {
+                "enter" if multiline => text.insert("\n"),
+                "enter" => form.move_focus(true),
+                "backspace" => text.backspace(),
+                "delete" => text.delete(),
+                "left" => text.left(),
+                "right" => text.right(),
+                "home" => text.home(),
+                "end" => text.end(),
+                _ => {
+                    if let Some(typed) = typed {
+                        text.insert(&typed);
+                    }
+                }
+            }
+        }
+        if let Some(form) = self.forms.get_mut(&id) {
+            form.error = None;
+            if form.focus.is_none() {
+                self.question_focus = None;
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    // ---- the card --------------------------------------------------------------------------
+
+    pub(super) fn question_card(
+        &self,
+        question: &Question,
+        look: &Look,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let id = question.id;
+        let pending = question.state == QuestionState::Pending;
+        let here = self.sessions.read(cx).question_answered_here(id);
+        let status: Option<(String, gpui::Hsla)> = match &question.state {
+            QuestionState::Pending => None,
+            QuestionState::Answered { withheld, values } => {
+                let mut line = format!(
+                    "{} · {}",
+                    question.decision_text(),
+                    question.answered_from(here)
+                );
+                if !withheld.is_empty() {
+                    line.push_str(" · secret answers are not kept");
+                }
+                let shown: Vec<String> = question
+                    .spec
+                    .fields
+                    .iter()
+                    .filter_map(|f| {
+                        values.get(&f.id).map(|v| {
+                            let text = match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            format!("{}: {text}", f.label)
+                        })
+                    })
+                    .collect();
+                if !shown.is_empty() {
+                    line.push_str(&format!("\n{}", shown.join("\n")));
+                }
+                Some((line, theme.success))
+            }
+            QuestionState::Declined | QuestionState::Cancelled => Some((
+                format!(
+                    "{} · {}",
+                    question.decision_text(),
+                    question.answered_from(here)
+                ),
+                theme.muted,
+            )),
+            QuestionState::Expired => Some((
+                "No answer: the turn ended or the agent went away".to_owned(),
+                theme.muted,
+            )),
+        };
+        let focused = self.question_focus == Some(id);
+        let form = self.forms.get(&id).cloned();
+        let fields: Vec<AnyElement> = match (&form, pending) {
+            (Some(form), true) => question
+                .spec
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(at, field)| self.question_field(id, at, field, form, look, cx))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let prompt = if question.spec.prompt.trim().is_empty() {
+            None
+        } else {
+            let mut ids = Ids::new(format!("question-{id}"));
+            Some(blocks(
+                &hutan_chat_view::markdown::parse(&question.spec.prompt),
+                look,
+                &mut ids,
+            ))
+        };
+        let raw = question
+            .spec
+            .raw_schema
+            .as_ref()
+            .filter(|_| pending)
+            .map(|schema| {
+                div()
+                    .font_family(look.mono.clone())
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.muted)
+                    .child(SharedString::from(
+                        serde_json::to_string_pretty(schema).unwrap_or_default(),
+                    ))
+            });
+        let sending = form.as_ref().is_some_and(|f| f.sending);
+        let error = form.as_ref().and_then(|f| f.error.clone());
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing * 2.0))
+            .p(px(tokens.spacing * 3.0))
+            .card(theme, tokens)
+            .border_color(if pending && focused {
+                theme.accent
+            } else if pending {
+                theme.warning
+            } else {
+                theme.border
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(tokens.spacing * 1.5))
+                    .child(
+                        div()
+                            .text_color(if pending { theme.warning } else { theme.muted })
+                            .child(if pending { "●" } else { "○" }),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from(question.spec.title.clone())),
+                    )
+                    .children(question.spec.source.as_ref().map(|source| {
+                        div()
+                            .text_color(theme.muted)
+                            .text_size(px(tokens.secondary_font_size))
+                            .child(SharedString::from(source.clone()))
+                    })),
+            )
+            .children(prompt)
+            .children(raw)
+            .children(fields)
+            .children(error.map(|message| {
+                div()
+                    .text_color(theme.danger)
+                    .child(SharedString::from(message))
+            }))
+            .when(pending, |s| {
+                s.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(tokens.spacing * 2.0))
+                        .child(
+                            button(
+                                SharedString::from(format!("question-submit-{id}")),
+                                "Submit ⌘↩",
+                                ButtonKind::Primary,
+                                !sending,
+                                look,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.submit_question(id, cx);
+                            }))
+                            .child(probe(&self.regions, Region::ChatQuestion(0))),
+                        )
+                        .child(
+                            button(
+                                SharedString::from(format!("question-decline-{id}")),
+                                "Decline",
+                                ButtonKind::Secondary,
+                                !sending,
+                                look,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.decline_question(id, cx);
+                            }))
+                            .child(probe(&self.regions, Region::ChatQuestion(1))),
+                        )
+                        .child(
+                            button(
+                                SharedString::from(format!("question-cancel-{id}")),
+                                "Cancel",
+                                ButtonKind::Secondary,
+                                !sending,
+                                look,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.cancel_question(id, cx);
+                            }))
+                            .child(probe(&self.regions, Region::ChatQuestion(2))),
+                        ),
+                )
+            })
+            .children(
+                status.map(|(text, color)| div().text_color(color).child(SharedString::from(text))),
+            )
+            .into_any_element()
+    }
+
+    fn question_field(
+        &self,
+        id: QuestionId,
+        at: usize,
+        field: &QuestionField,
+        form: &QuestionForm,
+        look: &Look,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (theme, tokens) = (&look.theme, &look.tokens);
+        let focused = form.focus == Some(at);
+        let label = format!("{}{}", field.label, if field.required { " *" } else { "" });
+        let text_box = |content: String, placeholder: &str, secret: bool, tall: bool| {
+            let shown = if secret {
+                "•".repeat(content.chars().count())
+            } else {
+                content.clone()
+            };
+            let empty = shown.is_empty();
+            div()
+                .id(SharedString::from(format!("question-field-{id}-{at}")))
+                .min_h(px(if tall { 72.0 } else { 28.0 }))
+                .px(px(tokens.spacing * 2.0))
+                .py(px(tokens.spacing))
+                .border_1()
+                .border_color(if focused { theme.accent } else { theme.border })
+                .rounded(px(tokens.card_radius))
+                .cursor_text()
+                .flex()
+                .child(
+                    div()
+                        .text_color(if empty { theme.muted } else { theme.fg })
+                        .child(SharedString::from(if empty {
+                            placeholder.to_owned()
+                        } else {
+                            shown
+                        })),
+                )
+                .when(focused, |s| {
+                    s.child(div().text_color(theme.accent).child(CARET))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.focus_question_field(id, Some(at), cx);
+                }))
+                .child(probe(&self.regions, field_region(at)))
+        };
+        let control: AnyElement = match (&field.kind, &form.inputs[at]) {
+            (FieldKind::Boolean, Input::Boolean(on)) => {
+                let on = *on;
+                button(
+                    SharedString::from(format!("question-toggle-{id}-{at}")),
+                    if on { "Yes" } else { "No" },
+                    if on {
+                        ButtonKind::Primary
+                    } else {
+                        ButtonKind::Secondary
+                    },
+                    true,
+                    look,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.forms.get_mut(&id) {
+                        form.toggle(at);
+                    }
+                    this.focus_question_field(id, Some(at), cx);
+                }))
+                .child(probe(&self.regions, field_region(at)))
+                .into_any_element()
+            }
+            (
+                FieldKind::Choice {
+                    options,
+                    multi,
+                    allow_other,
+                },
+                Input::Choice { chosen, other },
+            ) => {
+                let buttons = options
+                    .iter()
+                    .enumerate()
+                    .take(OPTION_LIMIT)
+                    .map(|(k, option)| {
+                        let value = option.value.clone();
+                        let picked = chosen.contains(&option.value);
+                        let mark = match (*multi, picked) {
+                            (true, true) => "☑ ",
+                            (true, false) => "☐ ",
+                            (false, true) => "◉ ",
+                            (false, false) => "○ ",
+                        };
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                button(
+                                    SharedString::from(format!("question-option-{id}-{at}-{k}")),
+                                    format!("{mark}{}", option.label),
+                                    if picked {
+                                        ButtonKind::Primary
+                                    } else {
+                                        ButtonKind::Secondary
+                                    },
+                                    true,
+                                    look,
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let spec_fields = this
+                                        .model
+                                        .read(cx)
+                                        .transcript()
+                                        .question(id)
+                                        .map(|q| q.spec.fields.clone())
+                                        .unwrap_or_default();
+                                    if let Some(form) = this.forms.get_mut(&id) {
+                                        form.choose(&spec_fields, at, &value);
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(probe(&self.regions, option_region(at, k))),
+                            )
+                            .children(option.description.as_ref().map(|d| {
+                                div()
+                                    .text_color(theme.muted)
+                                    .text_size(px(tokens.secondary_font_size))
+                                    .child(SharedString::from(d.clone()))
+                            }))
+                    });
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(tokens.spacing))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(tokens.spacing * 2.0))
+                            .children(buttons),
+                    )
+                    .when(*allow_other, |s| {
+                        s.child(text_box(
+                            other.text().to_owned(),
+                            "Or type your own answer",
+                            false,
+                            false,
+                        ))
+                    })
+                    .into_any_element()
+            }
+            (kind, Input::Text(text)) => text_box(
+                text.text().to_owned(),
+                match kind {
+                    FieldKind::Number { .. } => "Number",
+                    FieldKind::Secret => "Hidden while you type; never kept",
+                    _ => "Type here",
+                },
+                matches!(kind, FieldKind::Secret),
+                matches!(kind, FieldKind::Multiline),
+            )
+            .into_any_element(),
+            _ => div().into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(tokens.spacing))
+            .child(
+                div()
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.muted)
+                    .child(SharedString::from(label)),
+            )
+            .children(field.description.as_ref().map(|d| {
+                div()
+                    .text_size(px(tokens.secondary_font_size))
+                    .text_color(theme.muted)
+                    .child(SharedString::from(d.clone()))
+            }))
+            .child(control)
+            .into_any_element()
+    }
+}

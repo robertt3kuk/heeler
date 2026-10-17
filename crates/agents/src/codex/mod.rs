@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use hutan_core::{ApprovalId, ModelInfo, TurnId};
+use hutan_core::{ApprovalId, ModelInfo, QuestionId, QuestionResponse, TurnId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -30,7 +30,7 @@ use crate::adapter::{
 use crate::error::AgentError;
 use crate::jsonrpc::{Incoming, Launch, Transport};
 
-pub use mapper::{AnswerError, Mapped, Mapper, Reply};
+pub use mapper::{AnswerError, Mapped, Mapper, QuestionReply, Reply};
 pub use nodes::{NodeFeed, TREE_SOURCE};
 
 /// Codex versions this adapter is written against: `>=0.160, <0.170`.
@@ -617,10 +617,43 @@ impl AgentAdapter for CodexAppServerAdapter {
             let (rpc_id, result) = answered.map_err(|error| match error {
                 AnswerError::Unknown => AgentError::UnknownApproval,
                 AnswerError::NotOffered(option) => AgentError::OptionNotOffered { option },
+                AnswerError::Invalid(problem) => AgentError::BadAnswer(problem),
             })?;
             if let Err(error) = shared.transport.respond(&rpc_id, result).await {
                 lock(&shared.mapper).unanswer(approval);
                 return Err(error);
+            }
+            Ok(())
+        })
+    }
+
+    fn answer_question(
+        &self,
+        question: QuestionId,
+        response: QuestionResponse,
+    ) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async move {
+            let shared = &self.shared;
+            let answered = lock(&shared.mapper).answer_question(question, &response);
+            let QuestionReply {
+                rpc_id,
+                result,
+                interrupt,
+            } = answered.map_err(|error| match error {
+                AnswerError::Unknown | AnswerError::NotOffered(_) => AgentError::UnknownQuestion,
+                AnswerError::Invalid(problem) => AgentError::BadAnswer(problem),
+            })?;
+            if let Err(error) = shared.transport.respond(&rpc_id, result).await {
+                lock(&shared.mapper).unanswer_question(question);
+                return Err(error);
+            }
+            if interrupt {
+                // Cancelling a question stops the turn, as cancelling an approval does; a turn
+                // that is already over has nothing to stop.
+                match self.interrupt().await {
+                    Ok(()) | Err(AgentError::NoTurn) => {}
+                    Err(error) => debug!(%error, "could not stop the turn of a cancelled question"),
+                }
             }
             Ok(())
         })

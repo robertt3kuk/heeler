@@ -34,10 +34,13 @@ pub enum IntentKind {
     TaskDone,
     /// A task failed (protocol 0.16): a non-zero exit, a failed turn, a lost session.
     TaskFailed,
+    /// An agent asks the user a question (protocol 0.25, `question.required`). The one action
+    /// is [`ACTION_OPEN`]: a question is answered in the chat, never from a notification.
+    QuestionRequired,
 }
 
 impl IntentKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ApprovalRequired,
         Self::AgentBlocked,
         Self::AgentFinished,
@@ -45,6 +48,7 @@ impl IntentKind {
         Self::ChatTurnFinished,
         Self::TaskDone,
         Self::TaskFailed,
+        Self::QuestionRequired,
     ];
 
     /// The wire (and `daemon.toml`) name.
@@ -57,6 +61,7 @@ impl IntentKind {
             Self::ChatTurnFinished => "chat_turn_finished",
             Self::TaskDone => "task_done",
             Self::TaskFailed => "task_failed",
+            Self::QuestionRequired => "question_required",
         }
     }
 }
