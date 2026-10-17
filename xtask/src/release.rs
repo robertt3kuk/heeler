@@ -111,7 +111,7 @@ mod tests {
     fn templates_pin_both_release_assets() {
         for (template, asset) in [(CASK, "arm64.zip"), (FORMULA, "source.tar.gz")] {
             let text = render(template, "1.2.3", &"a".repeat(64));
-            assert!(text.contains("version \"1.2.3\""));
+            assert!(text.contains("1.2.3"));
             assert!(text.contains(&format!("sha256 \"{}\"", "a".repeat(64))));
             assert!(text.contains(asset));
             assert!(!text.contains("@VERSION@"));

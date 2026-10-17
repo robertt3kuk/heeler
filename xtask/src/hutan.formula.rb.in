@@ -2,7 +2,6 @@ class Hutan < Formula
   desc "Command-line client and daemon for the Hutan development environment"
   homepage "https://github.com/robertt3kuk/hutan"
   url "https://github.com/robertt3kuk/hutan/releases/download/v@VERSION@/Hutan-@VERSION@-source.tar.gz"
-  version "@VERSION@"
   sha256 "@SHA256@"
   # Upstream has not chosen a license; do not invent an SPDX identifier.
 
