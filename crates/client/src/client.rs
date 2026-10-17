@@ -118,7 +118,7 @@ pub(crate) const WORKTREE_REVIEW_CAPABILITY: &str = "worktree.review";
 /// `ChatInfo.images` (protocol 0.23).
 pub(crate) const RICH_INPUT_CAPABILITY: &str = "chat.rich_input";
 /// Capability for `question.*`, the `question.*` events and `ChatInfo.pending_questions`
-/// (protocol 0.25).
+/// (protocol 0.24).
 pub(crate) const QUESTIONS_CAPABILITY: &str = "chat.questions";
 /// Capabilities this client understands, offered in `hello`.
 const CAPABILITIES: &[&str] = &[
@@ -345,7 +345,7 @@ impl Client {
     }
 
     /// True when the daemon advertised capability `chat.questions` (questions of agents;
-    /// protocol 0.25).
+    /// protocol 0.24).
     pub fn supports_questions(&self) -> bool {
         self.welcome
             .capabilities

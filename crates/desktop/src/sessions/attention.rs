@@ -55,7 +55,7 @@ pub enum AttentionKind {
     Blocked,
     /// A permission request waits for an answer.
     Approval,
-    /// An agent's question waits for an answer (protocol 0.25).
+    /// An agent's question waits for an answer (protocol 0.24).
     Question,
     /// Exited non-zero, was killed, or failed to start, and the user has not looked.
     Failed,

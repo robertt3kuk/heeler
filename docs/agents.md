@@ -247,7 +247,7 @@ Protocol 0.23, capability `chat.rich_input`. Files, images and pasted text can b
 
 Tests: `crates/chat_view` (unit), `crates/desktop/tests/chat_gpui.rs` (an in-process daemon over `hutan-codex-fixture replay`).
 
-## Questions (protocol 0.25, capability `chat.questions`)
+## Questions (protocol 0.24, capability `chat.questions`)
 
 Agents sometimes ask the user something that is not a permission. Hutan answers those requests instead of declining them.
 

@@ -1515,7 +1515,7 @@ async fn a_client_that_joins_mid_stream_gets_the_text_so_far_and_then_the_live_d
     t.stop().await;
 }
 
-// Questions (protocol 0.25) -------------------------------------------------------------------
+// Questions (protocol 0.24) -------------------------------------------------------------------
 
 const SECRET: &str = "s3cr3t-token";
 

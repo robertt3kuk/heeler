@@ -1,4 +1,4 @@
-//! Questions an agent puts to the user (protocol 0.25, capability `chat.questions`): the
+//! Questions an agent puts to the user (protocol 0.24, capability `chat.questions`): the
 //! form model, the answer, and the validation of one against the other. No I/O lives here.
 //!
 //! A question is a small form: a markdown `prompt` and typed [`QuestionField`]s that the

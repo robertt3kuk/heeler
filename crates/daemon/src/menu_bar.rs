@@ -89,7 +89,7 @@ pub const CHOICE_QUEUE: usize = 16;
 pub enum Need {
     /// A permission request waits for an answer.
     Approval,
-    /// An agent asks a question (protocol 0.25) that waits for an answer.
+    /// An agent asks a question (protocol 0.24) that waits for an answer.
     Question,
     /// An agent in the session is blocked.
     Blocked,

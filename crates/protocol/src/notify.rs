@@ -34,7 +34,7 @@ pub enum IntentKind {
     TaskDone,
     /// A task failed (protocol 0.16): a non-zero exit, a failed turn, a lost session.
     TaskFailed,
-    /// An agent asks the user a question (protocol 0.25, `question.required`). The one action
+    /// An agent asks the user a question (protocol 0.24, `question.required`). The one action
     /// is [`ACTION_OPEN`]: a question is answered in the chat, never from a notification.
     QuestionRequired,
 }

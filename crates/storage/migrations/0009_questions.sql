@@ -1,4 +1,4 @@
--- Schema v9: questions of agents (roadmap Q-1, protocol 0.25).
+-- Schema v9: questions of agents (roadmap Q-1, protocol 0.24).
 --
 -- The audit trail of what an agent asked and how it ended, like `approvals`. The answers are
 -- not here: a value may be a secret, and the journal only keeps what the question said and who

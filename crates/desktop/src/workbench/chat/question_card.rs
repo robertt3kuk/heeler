@@ -1,4 +1,4 @@
-//! The card of a question the agent asked (protocol 0.25): a form built from the question's
+//! The card of a question the agent asked (protocol 0.24): a form built from the question's
 //! fields, Submit (⌘↩), Decline and Cancel. The card takes the keyboard once a field is clicked
 //! (or Tab is pressed with the composer empty): then typing goes to its field and the digits
 //! 1–4, which answer approvals, never answer anything.

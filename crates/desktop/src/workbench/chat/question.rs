@@ -1,5 +1,5 @@
 //! The form of a question card: what the user has typed or chosen so far, and the values it
-//! turns into (protocol 0.25). No GPUI; the view feeds it keystrokes and clicks.
+//! turns into (protocol 0.24). No GPUI; the view feeds it keystrokes and clicks.
 //!
 //! A secret field's text lives here and in the request that carries it, nowhere else: the form's
 //! `Debug` never prints a field's content.

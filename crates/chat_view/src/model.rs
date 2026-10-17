@@ -270,7 +270,7 @@ impl QuestionState {
     }
 }
 
-/// A question the agent put to the user (protocol 0.25).
+/// A question the agent put to the user (protocol 0.24).
 #[derive(Debug, Clone)]
 pub struct Question {
     pub id: QuestionId,
@@ -357,7 +357,7 @@ pub enum Body {
     Tool(Tool),
     /// An approval whose tool is not in the transcript.
     Approval(ApprovalId),
-    /// A question of the agent (protocol 0.25).
+    /// A question of the agent (protocol 0.24).
     Question(QuestionId),
     Plan(Plan),
     TurnDiff(TurnDiff),

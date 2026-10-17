@@ -173,7 +173,7 @@ pub enum Region {
     /// A button of a permission request that waits for an answer: `request * 8 + option`, the
     /// requests counted oldest first.
     ChatOption(usize),
-    /// A control of a question card that waits for an answer (protocol 0.25): `0` Submit, `1`
+    /// A control of a question card that waits for an answer (protocol 0.24): `0` Submit, `1`
     /// Decline, `2` Cancel, `8 + n` field `n`, `100 + n * 20 + k` option `k` of field `n`.
     ChatQuestion(usize),
     /// Context chip `index` of the composer.

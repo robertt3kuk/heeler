@@ -93,7 +93,7 @@ ulid_id!(
     "approval"
 );
 ulid_id!(
-    /// One question an agent put to the user (protocol 0.25); stable across clients.
+    /// One question an agent put to the user (protocol 0.24); stable across clients.
     QuestionId,
     "question"
 );

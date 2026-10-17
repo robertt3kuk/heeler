@@ -64,7 +64,7 @@ pub struct ChatView {
     pub(super) parsed: HashMap<u64, (u64, Rc<Vec<Block>>)>,
     /// Requests waiting for an answer, oldest first (the keys 1–4 answer the first).
     pub(super) pending: Vec<ApprovalId>,
-    /// What the user has typed or chosen in each question card (protocol 0.25).
+    /// What the user has typed or chosen in each question card (protocol 0.24).
     pub(super) forms: HashMap<hutan_core::QuestionId, super::question::QuestionForm>,
     /// The question whose card has the keyboard: typing goes to its focused field, and 1–4 never
     /// answer anything while it has it.

@@ -173,7 +173,7 @@ pub enum Request {
     /// Capability `chat.codex`: answer a permission request with one of its options.
     #[serde(rename = "approval.respond")]
     ApprovalRespond(ApprovalRespond),
-    /// Capability `chat.questions` (protocol 0.25): questions of agents waiting for an answer;
+    /// Capability `chat.questions` (protocol 0.24): questions of agents waiting for an answer;
     /// answered with `QuestionList`.
     #[serde(rename = "question.list")]
     QuestionList(QuestionListRequest),
@@ -947,7 +947,7 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decided_by: Option<DecidedBy>,
     },
-    /// Capability `chat.questions` (protocol 0.25): an agent asks the user a question.
+    /// Capability `chat.questions` (protocol 0.24): an agent asks the user a question.
     #[serde(rename = "question.required")]
     QuestionRequired { question: Box<QuestionInfo> },
     /// Capability `chat.questions`: a question is over (answered, declined, cancelled, or

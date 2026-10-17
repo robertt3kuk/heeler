@@ -1861,7 +1861,7 @@ fn a_window_opened_mid_stream_shows_the_text_so_far_and_ends_with_the_final_text
     );
 }
 
-// ---- questions (protocol 0.25) --------------------------------------------------------------
+// ---- questions (protocol 0.24) --------------------------------------------------------------
 
 fn pending_questions(
     model: &Entity<ChatModel>,

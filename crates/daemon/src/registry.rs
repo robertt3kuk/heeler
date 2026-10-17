@@ -2944,7 +2944,7 @@ impl SessionRegistry {
     }
 
     /// Moves a live chat session to the state its turn and approval counts call for:
-    /// `waiting_approval` while an approval or a question (protocol 0.25) is pending (the state
+    /// `waiting_approval` while an approval or a question (protocol 0.24) is pending (the state
     /// means "waiting for the user"), else `running` during a turn, else `idle`.
     /// A session still starting keeps its state until it is ready.
     fn sync_chat_state(&mut self, index: usize) {

@@ -174,7 +174,7 @@ pub struct ApprovalRespond {
     pub option_id: String,
 }
 
-/// `question.list` (protocol 0.25, capability `chat.questions`): questions waiting for an
+/// `question.list` (protocol 0.24, capability `chat.questions`): questions waiting for an
 /// answer, oldest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct QuestionListRequest {
@@ -224,7 +224,7 @@ pub struct ChatInfo {
     /// Permission requests waiting for an answer.
     #[serde(default)]
     pub pending_approvals: u32,
-    /// Protocol 0.25 (capability `chat.questions`): questions of the agent waiting for an
+    /// Protocol 0.24 (capability `chat.questions`): questions of the agent waiting for an
     /// answer. A session with one counts as waiting for the user like one with an approval.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pending_questions: u32,

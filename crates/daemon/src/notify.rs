@@ -6,7 +6,7 @@
 //! | kind | raised when |
 //! |---|---|
 //! | `approval_required` | `approval.required`; answered by `notify.act` through `approval.respond` |
-//! | `question_required` | `question.required` (protocol 0.25); "Open" only, the form is answered in the chat; withdrawn when the question is resolved |
+//! | `question_required` | `question.required` (protocol 0.24); "Open" only, the form is answered in the chat; withdrawn when the question is resolved |
 //! | `agent_blocked` | a node of a session's agent tree becomes `blocked` |
 //! | `agent_finished` | the main agent goes `working` → `idle` with outcome `completed` after `min_turn_secs` |
 //! | `session_exited_with_error` | a session's process exits with a non-zero code |

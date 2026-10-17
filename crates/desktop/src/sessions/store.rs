@@ -587,7 +587,7 @@ impl SessionsStore {
         &self.state.approvals
     }
 
-    /// Questions of every agent chat waiting for an answer, oldest first (protocol 0.25).
+    /// Questions of every agent chat waiting for an answer, oldest first (protocol 0.24).
     pub fn questions(&self) -> &[hutan_protocol::chat::QuestionInfo] {
         &self.state.questions
     }

@@ -383,7 +383,7 @@ pub enum AgentEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decided_by: Option<DecidedBy>,
     },
-    /// Protocol 0.25 (capability `chat.questions`): the agent asks the user something that is
+    /// Protocol 0.24 (capability `chat.questions`): the agent asks the user something that is
     /// not a permission (Codex `requestUserInput`, an MCP or ACP elicitation).
     QuestionRequested {
         question_id: QuestionId,
