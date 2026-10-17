@@ -891,12 +891,17 @@ fn a_history_hit_of_an_assistant_conversation_opens_it_in_the_panel_and_continue
 // ---- scenario 5: the prerequisite ---------------------------------------------------------------
 
 #[gpui::test]
-fn an_unconfigured_assistant_names_the_prerequisite_and_never_calls_a_model(
+fn an_assistant_with_nothing_ready_names_the_prerequisite_and_never_calls_a_model(
     cx: &mut TestAppContext,
 ) {
-    // The provider exists (and answers), but no `[assistant] provider` names it: nothing may
-    // fall back to it.
+    // No harness is ready (the test daemon's OMP, Claude Code and Codex do not exist) and the
+    // only provider is removed again: nothing may answer, and nothing is called.
     let env = AssistantEnv::start(Options::default());
+    let _: Empty = env.daemon.call(Request::ProviderRemove(
+        hutan_protocol::provider::ProviderRef {
+            provider_id: "mock".into(),
+        },
+    ));
     env.mock.route("POST", PATH, reply("must not be asked"));
     let (view, cx) = open(cx, &env.daemon);
     view.update_in(cx, |wb, window, cx| wb.open_assistant(window, cx));
@@ -945,6 +950,27 @@ fn an_unconfigured_assistant_names_the_prerequisite_and_never_calls_a_model(
     });
     assert!(env.mock.requests().is_empty());
     assert!(session_infos(&view, cx).iter().all(|s| s.chat.is_none()));
+}
+
+#[gpui::test]
+fn an_unconfigured_assistant_opens_on_the_ready_provider_without_calling_it(
+    cx: &mut TestAppContext,
+) {
+    // `[assistant]` names nothing, but the provider `mock` has a key: it is the automatic
+    // backend, with its default model, and opening it asks the provider nothing.
+    let env = AssistantEnv::start(Options::default());
+    let (view, cx) = open(cx, &env.daemon);
+    let panel = open_assistant(&view, cx);
+    let (session, _, _) = shown(&panel, cx);
+    let chat = session_infos(&view, cx)
+        .into_iter()
+        .find(|s| s.id == session)
+        .and_then(|s| s.chat)
+        .expect("a chat session");
+    assert!(chat.is_assistant());
+    assert_eq!(chat.provider_id.as_deref(), Some("mock"));
+    assert_eq!(chat.model, "m-1");
+    assert!(env.mock.requests().is_empty());
 }
 
 // ---- send to assistant from a terminal block --------------------------------------------------

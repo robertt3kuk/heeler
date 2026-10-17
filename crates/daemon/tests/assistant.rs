@@ -426,15 +426,39 @@ async fn the_daemon_advertises_the_assistant() {
     env.stop().await;
 }
 
+/// `daemon.toml` tables that make every harness unavailable (no real OMP, Claude Code or Codex
+/// of this machine is ever asked).
+const NO_HARNESSES: &str = "\n[terminal]\nenv_inherit = \"daemon\"\n[harness.omp]\ncli = \"/nonexistent/hutan-test/omp\"\n[harness.claude]\ncli = \"/nonexistent/hutan-test/claude\"\n[codex]\nbin = \"/nonexistent/hutan-test/codex\"\n";
+
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_configured_provider_opening_says_what_to_set() {
-    let env = Env::start("", false, false).await;
+async fn with_nothing_configured_and_nothing_ready_opening_says_what_to_set() {
+    let env = Env::start(NO_HARNESSES, false, false).await;
+    env.call::<hutan_protocol::messages::Empty>(Request::ProviderRemove(
+        hutan_protocol::provider::ProviderRef {
+            provider_id: "mock".into(),
+        },
+    ))
+    .await;
     let (code, message) = error_of(env.try_open(AssistantScope::Global, None, false).await).await;
     assert_eq!(code, ErrorCode::InvalidState);
     assert!(
         message.contains("[assistant]") && message.contains("provider"),
         "{message}"
     );
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_nothing_configured_a_ready_provider_is_the_assistants_backend() {
+    // `[assistant]` names nothing, but the provider `mock` has a key: it answers, with its
+    // default model, and the provider is not called to open the assistant.
+    let env = Env::start(NO_HARNESSES, false, false).await;
+    let session = env.open(AssistantScope::Global, None, false).await;
+    let chat = session.chat.clone().unwrap();
+    assert_eq!(chat.agent, "assistant");
+    assert_eq!(chat.provider_id.as_deref(), Some("mock"));
+    assert_eq!(chat.model, "m-1");
+    assert!(env.mock.requests().is_empty());
     env.stop().await;
 }
 

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hutan_agents::{AgentError, CodexConfig};
 use hutan_core::{ModelInfo, SessionId};
@@ -45,6 +45,11 @@ use crate::registry::RegistryHandle;
 
 /// How long a harness may take to report its accounts.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a harness may take to say whether the assistant can run on it.
+const READINESS_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a readiness answer is reused: opening an assistant must not start every harness's
+/// CLI each time.
+const READINESS_TTL: Duration = Duration::from_secs(30);
 /// Longest output read from a harness's status command.
 const MAX_OUTPUT: u64 = 8 * 1024 * 1024;
 /// How often a login session is looked at to see whether it ended.
@@ -54,6 +59,17 @@ fn bad_request(message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(ErrorCode::BadRequest, message)
 }
 
+/// Whether the assistant can run on one harness right now (`AM-1`): the harness is found and
+/// logged in, and for Claude Code its ACP adapter is found too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readiness {
+    pub harness: &'static str,
+    /// `Err` holds one short reason.
+    pub verdict: Result<(), String>,
+}
+
+type ReadinessCache = Arc<tokio::sync::Mutex<Option<(Instant, Vec<Readiness>)>>>;
+
 /// The accounts of one daemon.
 #[derive(Debug)]
 pub struct AccountService {
@@ -62,6 +78,8 @@ pub struct AccountService {
     codex: CodexConfig,
     bus: Arc<EventBus>,
     shutdown: CancellationToken,
+    /// The last readiness answer; dropped when a login or logout ends.
+    readiness: ReadinessCache,
 }
 
 impl AccountService {
@@ -78,6 +96,7 @@ impl AccountService {
             codex,
             bus,
             shutdown,
+            readiness: Arc::default(),
         })
     }
 
@@ -102,6 +121,71 @@ impl AccountService {
         );
         let accounts = omp.into_iter().chain(claude).chain(codex).collect();
         AccountList { accounts }
+    }
+
+    // Readiness -------------------------------------------------------------------------------
+
+    /// Whether the assistant can run on OMP, Claude Code and Codex (in that order), kept for
+    /// [`READINESS_TTL`] and dropped when a login or logout ends. Concurrent callers wait for
+    /// the one probe instead of starting their own. Unlike [`list`](Self::list) this never asks
+    /// OMP for usage.
+    pub async fn harness_readiness(&self) -> Vec<Readiness> {
+        let mut cache = self.readiness.lock().await;
+        if let Some((at, answer)) = cache.as_ref()
+            && at.elapsed() < READINESS_TTL
+        {
+            return answer.clone();
+        }
+        let (omp, claude, codex) = tokio::join!(
+            Self::probe(self.omp_ready()),
+            Self::probe(self.claude_ready()),
+            Self::probe(self.codex_ready())
+        );
+        let answer = vec![
+            Readiness {
+                harness: HARNESS_OMP,
+                verdict: omp,
+            },
+            Readiness {
+                harness: HARNESS_CLAUDE,
+                verdict: claude,
+            },
+            Readiness {
+                harness: HARNESS_CODEX,
+                verdict: codex,
+            },
+        ];
+        *cache = Some((Instant::now(), answer.clone()));
+        answer
+    }
+
+    async fn probe(check: impl Future<Output = Result<(), String>>) -> Result<(), String> {
+        timeout(READINESS_TIMEOUT, check)
+            .await
+            .unwrap_or_else(|_| Err("did not answer in time".to_owned()))
+    }
+
+    async fn omp_ready(&self) -> Result<(), String> {
+        let (program, env) = self.cli(HARNESS_OMP).await.map_err(short_reason)?;
+        let entries = omp_catalog(&program, &env).await.map_err(short_reason)?;
+        if entries.is_empty() {
+            return Err("no provider has a login (`hutan account login omp`)".to_owned());
+        }
+        Ok(())
+    }
+
+    async fn claude_ready(&self) -> Result<(), String> {
+        logged_in(self.claude_accounts().await)?;
+        let harnesses = self.harnesses.clone();
+        tokio::task::spawn_blocking(move || harnesses.acp_config(HARNESS_CLAUDE, true))
+            .await
+            .map_err(|e| format!("locating the adapter: {e}"))?
+            .map(drop)
+            .map_err(short_reason)
+    }
+
+    async fn codex_ready(&self) -> Result<(), String> {
+        logged_in(self.codex_accounts().await)
     }
 
     fn unknown(harness: &str, provider: &str, detail: String) -> Vec<AccountInfo> {
@@ -285,11 +369,13 @@ impl AccountService {
         })
     }
 
-    /// Publishes `account.changed` when the session ends (or is gone).
+    /// Publishes `account.changed` when the session ends (or is gone), after dropping the
+    /// readiness answer the login or logout made stale.
     fn watch(&self, harness: String, session: SessionId) {
         let registry = self.registry.clone();
         let bus = self.bus.clone();
         let shutdown = self.shutdown.clone();
+        let readiness = self.readiness.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -309,6 +395,7 @@ impl AccountService {
                     break;
                 }
             }
+            readiness.lock().await.take();
             if let Err(error) = bus.publish(&Event::AccountChanged { harness }) {
                 warn!(%error, "failed to publish account.changed");
             }
@@ -320,6 +407,34 @@ impl AccountService {
 enum Flow {
     Login,
     Logout,
+}
+
+/// `Ok` when the harness's account is logged in, else one short reason.
+fn logged_in(accounts: Vec<AccountInfo>) -> Result<(), String> {
+    let Some(account) = accounts.into_iter().next() else {
+        return Err("reports no account".to_owned());
+    };
+    match account.status {
+        AccountStatus::LoggedIn => Ok(()),
+        AccountStatus::LoggedOut => Err("not logged in".to_owned()),
+        _ => Err(account
+            .detail
+            .map_or_else(|| "its login cannot be read".to_owned(), |d| short(&d))),
+    }
+}
+
+/// The first sentence of an error: the rest says how to configure what is missing.
+fn short(message: &str) -> String {
+    message
+        .split(';')
+        .next()
+        .unwrap_or(message)
+        .trim()
+        .to_owned()
+}
+
+fn short_reason(error: ErrorBody) -> String {
+    short(&error.message)
 }
 
 /// A provider id as OMP names them (`anthropic`, `openai-codex`): safe to pass as an argument.

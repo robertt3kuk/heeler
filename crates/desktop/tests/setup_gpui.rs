@@ -186,6 +186,25 @@ fn acp_bin() -> PathBuf {
     bin
 }
 
+fn codex_bin() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let bin = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("hutan-codex-fixture");
+    assert!(bin.is_file(), "run `cargo build -p hutan-agents --bins`");
+    bin
+}
+
+/// What `codex app-server` says to `account/read` for a user logged in with ChatGPT.
+const CODEX_CHATGPT: &str = r#"{"dir":"out","msg":{"method":"initialize","id":1,"params":{}}}
+{"dir":"in","msg":{"id":1,"result":{"userAgent":"hutan/0.162.1 (Mac OS; arm64)"}}}
+{"dir":"out","msg":{"method":"initialized"}}
+{"dir":"out","msg":{"method":"account/read","id":2,"params":{}}}
+{"dir":"in","msg":{"id":2,"result":{"account":{"type":"chatgpt","email":"me@example.com","planType":"plus"},"requiresOpenaiAuth":false}}}
+"#;
+
 /// A daemon whose OMP is logged in to `anthropic` and whose Claude Code CLI is logged out (its
 /// ACP adapter does not exist); Codex is whatever the harness gives.
 fn daemon_with_harnesses(scripts: &Path) -> TestDaemon {
@@ -203,8 +222,10 @@ esac"#,
         "claude",
         r#"if [ "$1 $2" = "auth status" ]; then echo '{"loggedIn":false,"authMethod":"none"}'; else echo "fake claude $*"; fi"#,
     );
+    // The assistant's model is picked by the daemon (one tier below the session's Opus), so the
+    // session is one whose transcript can switch models.
     let transcript = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../agents/tests/fixtures/acp-omp-18.11/plain-turn.jsonl");
+        .join("../agents/tests/fixtures/acp-omp-18.11/model-switch.jsonl");
     TestDaemon::start_with_config(&format!(
         "[terminal]\nenv_inherit = \"daemon\"\n\n[harness.omp]\nbin = {acp:?}\nargs = [\"replay\", {t:?}, \"acp\"]\ncli = {omp:?}\n\n[harness.claude]\nbin = {missing:?}\ncli = {claude:?}\n",
         acp = acp_bin(),
@@ -459,6 +480,42 @@ fn the_agents_step_lists_the_harnesses_and_writes_the_assistant_choice(cx: &mut 
             })
         })
     });
+}
+
+#[gpui::test]
+fn with_omp_missing_and_codex_logged_in_the_agents_step_preselects_codex(cx: &mut TestAppContext) {
+    // The test daemon's OMP and Claude Code do not exist; Codex answers `account/read` as a
+    // logged-in ChatGPT user. The assistant's default is the first ready harness: Codex.
+    let scripts = tempfile::tempdir().unwrap();
+    let account = scripts.path().join("codex-account.jsonl");
+    std::fs::write(&account, CODEX_CHATGPT).unwrap();
+    let daemon = TestDaemon::start_with_codex(hutan_agents::CodexConfig {
+        program: codex_bin(),
+        args: vec![
+            "replay".to_owned(),
+            account.display().to_string(),
+            "app-server".to_owned(),
+        ],
+        env: Vec::new(),
+    });
+    let env = Env::new();
+    let (view, cx) = open_first_run(cx, &daemon, &env);
+    go_to(&view, cx, SetupStep::Agents);
+    wait_listing(&view, cx);
+
+    view.read_with(cx, |wb, cx| {
+        let directory = wb.harness_directory().read(cx);
+        assert!(matches!(directory.detection("omp"), Detection::NotFound(_)));
+        assert!(directory.logged_in("omp").is_empty());
+        assert!(!directory.logged_in("codex").is_empty());
+    });
+    assert_eq!(
+        view.read_with(cx, |wb, cx| wb.setup_backend(cx)),
+        Some(AssistantBackend::Codex)
+    );
+    // Only the logged-in harness is offered, and it is the selected one.
+    assert!(drawn(&view, cx, Region::Setup("backend-codex")));
+    assert!(!drawn(&view, cx, Region::Setup("backend-omp")));
 }
 
 #[gpui::test]

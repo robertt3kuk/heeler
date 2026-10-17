@@ -25,6 +25,7 @@
 //! - [`agent`]: validation of agent reports and the `HUTAN_BIN` lookup.
 //! - [`tree`]: the per-session agent observation tree: event coalescing, rollup, storage.
 //! - [`assistant`]: assistant sessions (direct chats with a scope) and their context providers.
+//! - [`assistant_pick`]: the assistant's automatic model: one tier below a premium default.
 //! - [`context`]: redaction, budget, headers and assembly of attached context.
 //! - [`context_file`]: file attachments, read below the workspace roots without following symlinks.
 //! - [`resources`]: process trees, CPU and memory while watched, `session.kill`, `process.signal`,
@@ -42,6 +43,7 @@
 pub mod accounts;
 pub mod agent;
 pub mod assistant;
+pub mod assistant_pick;
 pub mod bus;
 pub mod chat;
 pub mod config;

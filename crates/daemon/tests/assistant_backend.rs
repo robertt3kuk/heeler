@@ -54,6 +54,42 @@ fn fixture_bin(name: &str) -> PathBuf {
     bin
 }
 
+/// A fake harness CLI (`omp models --json`, `claude auth status`…): a shell script of fixed
+/// content at a path named by its content, written once for the same reason as the wrapper.
+fn fake_cli(name: &str, body: &str) -> PathBuf {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let text = format!("#!/bin/sh\n{body}\n");
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let dir = std::env::temp_dir().join("hutan-test-fake-clis");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{:016x}-{name}", hasher.finish()));
+    if std::fs::read_to_string(&path).is_ok_and(|have| have == text) {
+        return path;
+    }
+    let staging = dir.join(format!(".{}-{name}", std::process::id()));
+    std::fs::write(&staging, &text).unwrap();
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staging, &path).unwrap();
+    path
+}
+
+/// What `omp models --json` prints for a user logged in to Anthropic and OpenAI.
+const OMP_MODELS_JSON: &str = r#"{"models":[
+ {"provider":"anthropic","kind":"chat","id":"claude-opus-4-1","selector":"anthropic/claude-opus-4-1","name":"Claude Opus 4.1"},
+ {"provider":"openai","kind":"chat","id":"gpt-5","selector":"openai/gpt-5","name":"GPT-5"}
+]}"#;
+
+/// The model the ACP fixtures start on (`fixtures/acp-omp-18.11`, option `model`).
+const FIXTURE_MODEL: &str = "gitlab-duo/duo-chat-opus-4-6";
+/// The newest Sonnet of that provider in the same fixtures.
+const FIXTURE_SONNET: &str = "gitlab-duo/duo-chat-sonnet-4-6";
+
+/// `[assistant]` lines naming a harness and the model the fixtures start on, so that the
+/// harness's session is the one the transcripts script (no model switch).
+const OMP_ASSISTANT: &str = "backend = \"omp\"\nmodel = \"gitlab-duo/duo-chat-opus-4-6\"";
+const CLAUDE_ASSISTANT: &str = "backend = \"claude\"\nmodel = \"gitlab-duo/duo-chat-opus-4-6\"";
+
 /// A wrapper standing in for `omp` / the Claude Code adapter: it records the arguments it was
 /// started with in `$ARGV_LOG` and becomes the fake agent (`$FIXTURE`). One file of fixed
 /// content in the system temp directory, so the system vets it once, not once per test.
@@ -110,6 +146,11 @@ struct Setup {
     assistant: &'static str,
     /// `[harness.omp] bin` names a program that does not exist.
     missing_omp: bool,
+    /// `[codex] bin` names a program that does not exist.
+    missing_codex: bool,
+    /// The body of a fake `omp` CLI (`[harness.omp] cli`), which answers `omp models --json`
+    /// for the readiness check of the automatic backend.
+    omp_cli: Option<String>,
 }
 
 impl Default for Setup {
@@ -120,6 +161,8 @@ impl Default for Setup {
             codex: "plain-turn",
             assistant: "",
             missing_omp: false,
+            missing_codex: false,
+            omp_cli: None,
         }
     }
 }
@@ -152,29 +195,40 @@ impl B {
         let wrapper = argv_logging_wrapper();
         let acp = fixture_bin("hutan-acp-fixture");
         let codex = fixture_bin("hutan-codex-fixture");
-        let harness = |id: &str| {
+        let harness = |id: &str, cli: Option<PathBuf>| {
             format!(
-                "[harness.{id}]\nbin = {wrapper:?}\nargs = [\"replay\", \"--received\", {received:?}, {transcript:?}, \"acp\"]\nenv = {{ ARGV_LOG = {log:?}, FIXTURE = {acp:?} }}\n\n",
+                "[harness.{id}]\nbin = {wrapper:?}\nargs = [\"replay\", \"--received\", {received:?}, {transcript:?}, \"acp\"]\nenv = {{ ARGV_LOG = {log:?}, FIXTURE = {acp:?} }}\n{cli}\n",
                 received = logs.join(format!("{id}-received.jsonl")),
                 transcript = acp_fixtures().join(format!(
                     "{}.jsonl",
                     if id == "omp" { setup.omp } else { setup.claude }
                 )),
                 log = logs.join(format!("{id}-argv.log")),
+                cli = cli.map_or_else(String::new, |cli| format!("cli = {cli:?}\n")),
             )
         };
         let omp = if setup.missing_omp {
             format!("[harness.omp]\nbin = {:?}\n\n", logs.join("no-such-omp"))
         } else {
-            harness("omp")
+            harness(
+                "omp",
+                setup.omp_cli.as_deref().map(|body| fake_cli("omp", body)),
+            )
+        };
+        // The CLI that reports Claude Code's login is never the real one on this machine.
+        let claude = harness("claude", Some(logs.join("no-such-claude")));
+        let codex_table = if setup.missing_codex {
+            format!("[codex]\nbin = {:?}\n\n", logs.join("no-such-codex"))
+        } else {
+            format!(
+                "[codex]\nbin = {codex:?}\nargs = [\"replay\", \"--received\", {codex_received:?}, {codex_transcript:?}, \"app-server\"]\n\n",
+                codex_received = logs.join("codex-received.jsonl"),
+                codex_transcript = codex_fixtures().join(format!("{}.jsonl", setup.codex)),
+            )
         };
         format!(
-            "[terminal]\nenv_inherit = \"daemon\"\n\n{}{}[codex]\nbin = {codex:?}\nargs = [\"replay\", \"--received\", {codex_received:?}, {codex_transcript:?}, \"app-server\"]\n\n[assistant]\n{}\n",
-            omp,
-            harness("claude"),
+            "[terminal]\nenv_inherit = \"daemon\"\n\n{omp}{claude}{codex_table}[assistant]\n{}\n",
             setup.assistant,
-            codex_received = logs.join("codex-received.jsonl"),
-            codex_transcript = codex_fixtures().join(format!("{}.jsonl", setup.codex)),
         )
     }
 
@@ -220,7 +274,26 @@ impl B {
             .unwrap()
     }
 
+    /// Stores a backend for a scope. A harness backend given no model is stored with the one
+    /// the fixtures start on: these tests are about which backend runs, and a different model
+    /// would need a transcript that switches to it. The automatic pick has its own tests
+    /// (`configure_exact`).
     async fn configure(
+        &self,
+        scope: AssistantScope,
+        workspace: Option<&WorkspaceInfo>,
+        backend: AssistantBackend,
+        model: Option<&str>,
+        provider: Option<&str>,
+    ) -> Result<AssistantConfig, hutan_client::ClientError> {
+        let harness = backend != AssistantBackend::Provider && provider.is_none();
+        let model = model.or(harness.then_some(FIXTURE_MODEL));
+        self.configure_exact(scope, workspace, backend, model, provider)
+            .await
+    }
+
+    /// Stores exactly what it is given.
+    async fn configure_exact(
         &self,
         scope: AssistantScope,
         workspace: Option<&WorkspaceInfo>,
@@ -309,32 +382,186 @@ impl B {
     }
 }
 
+/// A daemon with nothing configured and no harness that is ready.
+fn nothing_ready() -> Setup {
+    Setup {
+        missing_omp: true,
+        missing_codex: true,
+        ..Setup::default()
+    }
+}
+
+/// The fake `omp` CLI of a user who is logged in: `omp models --json`.
+fn omp_models_script() -> String {
+    format!("case \"$1\" in models) cat <<'EOF'\n{OMP_MODELS_JSON}\nEOF\n;; esac")
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_backend_open_says_what_to_configure() {
-    let t = B::start(Setup::default()).await;
+async fn when_nothing_is_ready_open_names_what_was_checked_and_what_to_configure() {
+    let t = B::start(nothing_ready()).await;
     let error = t
         .open(AssistantScope::Global, None, false)
         .await
         .unwrap_err();
     assert_eq!(remote_code(Err::<(), _>(error)), ErrorCode::InvalidState);
-    // The message names the ways to configure it.
-    let error = t
+    let message = t
         .open(AssistantScope::Global, None, false)
         .await
-        .unwrap_err();
-    let message = error.to_string();
+        .unwrap_err()
+        .to_string();
+    // The ways to configure it, as before…
     assert!(
         message.contains("assistant.configure") && message.contains("[assistant]"),
         "{message}"
     );
+    // …and one reason per candidate the automatic backend looked at.
+    for candidate in [
+        "omp: ",
+        "claude: ",
+        "codex: ",
+        "provider: none is configured",
+    ] {
+        assert!(message.contains(candidate), "{candidate} in {message}");
+    }
+    assert!(message.contains("was not found"), "{message}");
     assert!(t.list().await.assistants.is_empty());
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_without_a_key_is_not_ready_but_one_on_this_machine_is() {
+    let t = B::start(nothing_ready()).await;
+    // `openai` needs a key and has none.
+    t.client
+        .call::<ProviderResult>(Request::ProviderAdd(ProviderAdd {
+            kind: "openai".into(),
+            name: "OpenAI".into(),
+            base_url: None,
+            default_model: Some("gpt-5".into()),
+        }))
+        .await
+        .unwrap();
+    let message = t
+        .open(AssistantScope::Global, None, false)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("provider: `openai` has no API key"),
+        "{message}"
+    );
+
+    // A server on this machine needs none; the first ready provider is used, with its default
+    // model (no catalog is read and no model is called).
+    t.add_provider("mock").await;
+    let session = t.open(AssistantScope::Global, None, false).await.unwrap();
+    let chat = session.chat.clone().unwrap();
+    assert!(chat.is_assistant());
+    assert_eq!(chat.provider_id.as_deref(), Some("mock"));
+    assert_eq!(chat.model, "m-1");
+    let entry = t.list().await.assistants.remove(0);
+    assert_eq!(entry.backend, AssistantBackend::Provider);
+    assert!(entry.default);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_nothing_configured_a_ready_omp_runs_the_assistant_one_tier_below_its_default() {
+    let t = B::start(Setup {
+        omp: "model-switch",
+        omp_cli: Some(omp_models_script()),
+        missing_codex: true,
+        ..Setup::default()
+    })
+    .await;
+    // The catalog of the omp session defaults to Opus 4.6.
+    let catalog = t.client.chat_models("omp").await.unwrap();
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .filter(|m| m.is_default)
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        [FIXTURE_MODEL]
+    );
+    let session = t.open(AssistantScope::Global, None, false).await.unwrap();
+    let chat = session.chat.clone().unwrap();
+    assert_eq!(chat.agent, "omp");
+    assert!(chat.is_assistant());
+    assert_eq!(chat.model, FIXTURE_SONNET, "what the session runs");
+    // The harness was asked for that model.
+    let set = t.received_of("omp", "session/set_config_option");
+    assert_eq!(set.last().unwrap()["params"]["value"], FIXTURE_SONNET);
+    // The listing says what runs it, and the default is that session.
+    let entry = t.list().await.assistants.remove(0);
+    assert_eq!(entry.backend, AssistantBackend::Omp);
+    assert!(entry.default);
+    assert_eq!(entry.session.chat.unwrap().model, FIXTURE_SONNET);
+    // A second open finds the same session and starts nothing.
+    let sessions_before = t.received_of("omp", "session/new").len();
+    assert_eq!(
+        t.open(AssistantScope::Global, None, false)
+            .await
+            .unwrap()
+            .id,
+        session.id
+    );
+    assert_eq!(t.received_of("omp", "session/new").len(), sessions_before);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_model_is_used_as_it_is_and_a_backend_without_one_gets_the_pick() {
+    let haiku = "gitlab-duo/claude-haiku-4-5-20251001";
+    let t = B::start(Setup {
+        omp: "model-switch",
+        ..Setup::default()
+    })
+    .await;
+    // Stored with a model: used as it is, no catalog is read for it.
+    t.configure(
+        AssistantScope::Global,
+        None,
+        AssistantBackend::Omp,
+        Some(haiku),
+        None,
+    )
+    .await
+    .unwrap();
+    let session = t.open(AssistantScope::Global, None, false).await.unwrap();
+    assert_eq!(session.chat.clone().unwrap().model, haiku);
+    assert_eq!(
+        t.received_of("omp", "session/new").len(),
+        1,
+        "only the assistant's own session: no throwaway session for a catalog"
+    );
+    t.stop().await;
+
+    // Stored without a model (what the setup stores): the pick fills the gap.
+    let t = B::start(Setup {
+        omp: "model-switch",
+        ..Setup::default()
+    })
+    .await;
+    t.configure_exact(
+        AssistantScope::Global,
+        None,
+        AssistantBackend::Omp,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let session = t.open(AssistantScope::Global, None, false).await.unwrap();
+    assert_eq!(session.chat.unwrap().model, FIXTURE_SONNET);
     t.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_toml_backend_omp_creates_a_read_only_omp_assistant() {
     let mut t = B::start(Setup {
-        assistant: "backend = \"omp\"",
+        assistant: OMP_ASSISTANT,
         ..Setup::default()
     })
     .await;
@@ -376,7 +603,7 @@ async fn daemon_toml_backend_omp_creates_a_read_only_omp_assistant() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claude_assistant_runs_in_plan_mode() {
     let t = B::start(Setup {
-        assistant: "backend = \"claude\"",
+        assistant: CLAUDE_ASSISTANT,
         ..Setup::default()
     })
     .await;
@@ -596,7 +823,7 @@ async fn configuration_survives_a_daemon_restart_and_a_workspace_wins_over_the_g
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_without_its_own_choice_follows_the_global_one() {
     let t = B::start(Setup {
-        assistant: "backend = \"omp\"",
+        assistant: OMP_ASSISTANT,
         ..Setup::default()
     })
     .await;
@@ -624,7 +851,7 @@ async fn a_workspace_without_its_own_choice_follows_the_global_one() {
 #[tokio::test(flavor = "multi_thread")]
 async fn switching_the_backend_keeps_each_conversation_and_opens_the_one_for_the_backend() {
     let t = B::start(Setup {
-        assistant: "backend = \"omp\"",
+        assistant: OMP_ASSISTANT,
         ..Setup::default()
     })
     .await;
@@ -681,7 +908,7 @@ async fn switching_the_backend_keeps_each_conversation_and_opens_the_one_for_the
 #[tokio::test(flavor = "multi_thread")]
 async fn attachments_reach_an_omp_assistant_as_embedded_context() {
     let mut t = B::start(Setup {
-        assistant: "backend = \"omp\"",
+        assistant: OMP_ASSISTANT,
         ..Setup::default()
     })
     .await;
@@ -719,7 +946,7 @@ async fn attachments_reach_an_omp_assistant_as_embedded_context() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_settings_refusal_still_gates_what_a_harness_assistant_may_read() {
     let t = B::start(Setup {
-        assistant: "backend = \"omp\"\n[assistant.context]\nfiles = false",
+        assistant: "backend = \"omp\"\nmodel = \"gitlab-duo/duo-chat-opus-4-6\"\n[assistant.context]\nfiles = false",
         ..Setup::default()
     })
     .await;
@@ -889,7 +1116,7 @@ async fn a_project_in_a_workspace_follows_the_workspace_choice_unless_it_has_its
 #[tokio::test(flavor = "multi_thread")]
 async fn a_harness_that_cannot_start_fails_the_open_and_another_backend_still_works() {
     let t = B::start(Setup {
-        assistant: "backend = \"omp\"",
+        assistant: OMP_ASSISTANT,
         missing_omp: true,
         ..Setup::default()
     })

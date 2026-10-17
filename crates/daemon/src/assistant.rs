@@ -16,12 +16,14 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hutan_core::agent::MessageRole;
 use hutan_core::{
     AgentEvent, AgentEventKind, ApprovalPolicy, SandboxMode, SessionId, TerminalId, WorkspaceId,
 };
 use hutan_index::{Role, SessionTextQuery, Source};
+use hutan_protocol::account::{HARNESS_CLAUDE, HARNESS_OMP};
 use hutan_protocol::assistant::{
     AGENT_ASSISTANT, ATTACHMENTS_MAX, AssistantBackend, AssistantConfig, AssistantConfigure,
     AssistantEntry, AssistantList, AssistantListRequest, AssistantOpen, AssistantScope, Attachment,
@@ -35,6 +37,8 @@ use hutan_protocol::messages::{SessionInfo, SessionListFilter, WorkspaceInfo, Wo
 use hutan_storage::Storage;
 use tokio::sync::Mutex;
 
+use crate::accounts::AccountService;
+use crate::assistant_pick::{is_loopback_url, pick_assistant_model};
 use crate::chat::AGENT_CODEX;
 use crate::config::{AssistantSettings, ContextPermissions, gating_setting};
 use crate::context::{
@@ -53,6 +57,9 @@ const JOURNAL_ROWS: u32 = 4000;
 const INDEX_ROWS: usize = 4000;
 /// Longest snippet of a search hit in a `search` attachment, in characters.
 const SNIPPET_CHARS: usize = 300;
+/// How long the model catalog of a backend may take when the assistant picks its model: a
+/// slow catalog means no pick (the harness's own default runs), never a failed open.
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The system prompt of an assistant created by `assistant.open`.
 pub const SYSTEM_PROMPT: &str = "You are Hutan's assistant, built into a developer's terminal \
@@ -136,6 +143,8 @@ pub struct AssistantService {
     hub: Arc<TerminalHub>,
     history: Arc<HistoryService>,
     storage: Storage,
+    /// Which harness is installed and logged in, for the automatic backend.
+    accounts: Arc<AccountService>,
     /// Two `assistant.open` of one scope at once must not create two defaults.
     open_lock: Mutex<()>,
 }
@@ -163,6 +172,7 @@ impl AssistantService {
         hub: Arc<TerminalHub>,
         history: Arc<HistoryService>,
         storage: Storage,
+        accounts: Arc<AccountService>,
     ) -> Arc<Self> {
         Arc::new(Self {
             settings,
@@ -170,6 +180,7 @@ impl AssistantService {
             hub,
             history,
             storage,
+            accounts,
             open_lock: Mutex::new(()),
         })
     }
@@ -206,11 +217,15 @@ impl AssistantService {
 
     /// The default assistant of a scope (the oldest of its workspace), created on first use. A
     /// stopped default is started again. With `new`, one more assistant is created.
+    ///
+    /// With nothing configured for the scope the assistant that exists stays the default (the
+    /// oldest of the workspace), and a first one is created on the automatic backend
+    /// ([`Self::automatic`]): what was ready when it was made does not decide later opens.
     pub async fn open(&self, req: AssistantOpen) -> Result<SessionInfo, ErrorBody> {
         let _one_at_a_time = self.open_lock.lock().await;
         let workspaces = self.workspaces().await?;
         let workspace = Self::target(&workspaces, req.scope, req.workspace_id)?;
-        let backend = self.effective(workspace).await?;
+        let configured = self.configured(workspace).await?;
         let existing: Vec<SessionInfo> = self
             .assistants()
             .await?
@@ -218,7 +233,7 @@ impl AssistantService {
             .filter(|s| s.workspace_id == workspace.id)
             .collect();
         if !req.new {
-            let default = backend
+            let default = configured
                 .as_ref()
                 .map_or(existing.first(), |b| existing.iter().find(|s| b.runs(s)));
             if let Some(default) = default {
@@ -228,7 +243,10 @@ impl AssistantService {
                 return self.registry.restart_session(default.id).await;
             }
         }
-        let backend = backend.ok_or_else(Self::unconfigured)?;
+        let backend = match configured {
+            Some(backend) => backend,
+            None => self.automatic().await?,
+        };
         self.create(workspace, existing.len(), &backend).await
     }
 
@@ -264,13 +282,137 @@ impl AssistantService {
         }
     }
 
-    fn unconfigured() -> ErrorBody {
+    /// `invalid_state`: nothing is configured and nothing is ready. `checked` is one reason per
+    /// candidate the automatic backend looked at.
+    fn unconfigured(checked: &[String]) -> ErrorBody {
         error(
             ErrorCode::InvalidState,
-            "no assistant backend is configured: choose one in the Assistant panel (or send \
-             `assistant.configure`), or set `backend` (`omp`, `claude`, `codex` or `provider`) \
-             or `provider` (and `model`) under `[assistant]` in daemon.toml",
+            format!(
+                "no assistant backend is configured and none is ready ({}): choose one in the \
+                 Assistant panel (or send `assistant.configure`), or set `backend` (`omp`, \
+                 `claude`, `codex` or `provider`) or `provider` (and `model`) under \
+                 `[assistant]` in daemon.toml",
+                checked.join("; ")
+            ),
         )
+    }
+
+    // The automatic backend ---------------------------------------------------------------------
+
+    /// What runs the assistant of a scope that has no configuration (AM-1): the first *ready*
+    /// backend in the order OMP, Claude Code, Codex, then a direct provider. A harness is ready
+    /// when it is found and logged in ([`AccountService::harness_readiness`], cached for a short
+    /// time, so this runs no harness CLI on most requests); a provider when it has a key or
+    /// needs none (Ollama, LM Studio and other servers on this machine).
+    async fn automatic(&self) -> Result<Backend, ErrorBody> {
+        let mut checked = Vec::new();
+        for readiness in self.accounts.harness_readiness().await {
+            let kind = match readiness.harness {
+                HARNESS_OMP => AssistantBackend::Omp,
+                HARNESS_CLAUDE => AssistantBackend::Claude,
+                _ => AssistantBackend::Codex,
+            };
+            match readiness.verdict {
+                Ok(()) => {
+                    return Ok(Backend {
+                        kind,
+                        model: None,
+                        provider: None,
+                    });
+                }
+                Err(reason) => checked.push(format!("{}: {reason}", kind.as_str())),
+            }
+        }
+        match self.ready_provider().await {
+            Ok(backend) => Ok(backend),
+            Err(reason) => {
+                checked.push(format!("provider: {reason}"));
+                Err(Self::unconfigured(&checked))
+            }
+        }
+    }
+
+    /// The first provider (`provider.list` order) that can answer without a key being added.
+    async fn ready_provider(&self) -> Result<Backend, String> {
+        let providers = self
+            .registry
+            .chats()
+            .providers()
+            .list()
+            .await
+            .map_err(|e| e.message)?
+            .providers;
+        if providers.is_empty() {
+            return Err("none is configured (`hutan provider add`)".to_owned());
+        }
+        let mut keyless = Vec::new();
+        for provider in &providers {
+            // Ollama is a local server by definition; an OpenAI-compatible one counts when it
+            // runs on this machine (LM Studio, llama.cpp), where no key is needed.
+            let local = provider.kind == "ollama"
+                || (provider.kind == "openai-compatible" && is_loopback_url(&provider.base_url));
+            if provider.has_credential || local {
+                return Ok(Backend {
+                    kind: AssistantBackend::Provider,
+                    model: provider.default_model.clone(),
+                    provider: Some(provider.id.clone()),
+                });
+            }
+            keyless.push(format!("`{}`", provider.id));
+        }
+        Err(format!(
+            "{} has no API key (`hutan provider key <id>`)",
+            keyless.join(", ")
+        ))
+    }
+
+    /// The model for an assistant whose backend names none (AM-1): a provider's default model,
+    /// else [`pick_assistant_model`] over the backend's catalog. `None` (the harness's own
+    /// default runs) when the catalog is empty, unreadable or slow: the open never fails here.
+    async fn pick_model(&self, backend: &Backend) -> Option<String> {
+        let chats = self.registry.chats();
+        let catalog = async {
+            match (backend.kind.harness(), backend.provider.as_deref()) {
+                (Some(agent), _) => {
+                    Ok::<_, ErrorBody>(pick_assistant_model(&chats.models(agent).await?.models))
+                }
+                (None, Some(provider)) => {
+                    let providers = chats.providers();
+                    let default = providers
+                        .list()
+                        .await?
+                        .providers
+                        .into_iter()
+                        .find(|p| p.id == provider)
+                        .and_then(|p| p.default_model);
+                    if default.is_some() {
+                        return Ok(default);
+                    }
+                    Ok(pick_assistant_model(
+                        &providers.models(provider).await?.models,
+                    ))
+                }
+                (None, None) => Ok(None),
+            }
+        };
+        match tokio::time::timeout(CATALOG_TIMEOUT, catalog).await {
+            Ok(Ok(model)) => model,
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    backend = backend.kind.as_str(),
+                    message = %error.message,
+                    "no model catalog for the assistant; the backend's default runs"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    backend = backend.kind.as_str(),
+                    "the model catalog was too slow for the assistant; the backend's default runs"
+                );
+                None
+            }
+        }
     }
 
     // The configured backend --------------------------------------------------------------------
@@ -305,8 +447,9 @@ impl AssistantService {
 
     /// The backend a workspace's assistants are created with: its own `assistant.configure`;
     /// for a project inside a workspace, else that workspace's; else the global one, else
-    /// `[assistant]` of `daemon.toml`; `None` when none is set.
-    async fn effective(&self, workspace: &WorkspaceInfo) -> Result<Option<Backend>, ErrorBody> {
+    /// `[assistant]` of `daemon.toml`; `None` when none is set (then the automatic backend
+    /// applies: [`Self::automatic`]).
+    async fn configured(&self, workspace: &WorkspaceInfo) -> Result<Option<Backend>, ErrorBody> {
         let mut stored = None;
         if Self::scope_of(workspace) == AssistantScope::Workspace {
             stored = self.stored(AssistantScope::Workspace, workspace.id).await?;
@@ -392,6 +535,11 @@ impl AssistantService {
         existing: usize,
         backend: &Backend,
     ) -> Result<SessionInfo, ErrorBody> {
+        // A stored or configured model always wins; the pick only fills a gap.
+        let model = match &backend.model {
+            Some(model) => Some(model.clone()),
+            None => self.pick_model(backend).await,
+        };
         let cwd = workspace
             .roots
             .first()
@@ -408,7 +556,7 @@ impl AssistantService {
             workspace_id: Some(workspace.id),
             cwd,
             agent: AGENT_ASSISTANT.to_owned(),
-            model: backend.model.clone(),
+            model,
             approval_policy: None,
             sandbox: None,
             title: Some(title),
@@ -460,7 +608,7 @@ impl AssistantService {
             let Some(workspace) = workspaces.iter().find(|w| w.id == session.workspace_id) else {
                 continue;
             };
-            let backend = self.effective(workspace).await?;
+            let backend = self.configured(workspace).await?;
             let default = !seen.contains(&workspace.id)
                 && backend
                     .as_ref()

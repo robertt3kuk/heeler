@@ -728,7 +728,23 @@ impl AssistantPanel {
             .into_any_element()
     }
 
+    /// The model the shown assistant's session runs, when it runs on `choice`; `None` when the
+    /// panel shows no session yet, another backend, or a session whose model is not known.
+    fn running_model(&self, choice: &BackendChoice, cx: &App) -> Option<String> {
+        let session = self.session(cx)?;
+        let chat = self.env.sessions.read(cx).session(session)?.chat.clone()?;
+        let same = match choice {
+            BackendChoice::Harness(kind) => chat.agent == kind.as_str(),
+            BackendChoice::Provider(id) => {
+                chat.agent == "assistant" && chat.provider_id.as_deref() == Some(id.as_str())
+            }
+        };
+        (same && !chat.model.is_empty()).then_some(chat.model)
+    }
+
     /// The header's backend and model: what the shown assistant runs on, opening the chooser.
+    /// A session whose model is unknown (the harness's own default runs) says "Automatic": the
+    /// daemon picks the model of an assistant that was given none.
     fn backend_button(&self, look: &Look, cx: &mut Context<Self>) -> AnyElement {
         let label = self
             .session(cx)
@@ -740,7 +756,12 @@ impl AssistantPanel {
                 } else {
                     harnesses::harness_name(&chat.agent)
                 };
-                Some(format!("{backend} · {}", chat.model))
+                let model = if chat.model.is_empty() {
+                    "Automatic".to_owned()
+                } else {
+                    chat.model
+                };
+                Some(format!("{backend} · {model}"))
             })
             .unwrap_or_else(|| "Choose backend".to_owned());
         button(
@@ -832,10 +853,15 @@ impl AssistantPanel {
         let mut models: Vec<AnyElement> = Vec::new();
         if let Some(chosen) = backend.clone() {
             let default_choice = chosen.clone();
+            // No stored model: the daemon picks one. Once the session exists it says which.
+            let automatic = match self.running_model(&chosen, cx) {
+                Some(model) => format!("Automatic · runs {model}"),
+                None => "Automatic".to_owned(),
+            };
             models.push(
                 button(
                     "assistant-model-default",
-                    "Use the default model",
+                    automatic,
                     ButtonKind::Primary,
                     true,
                     look,

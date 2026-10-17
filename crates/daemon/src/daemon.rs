@@ -295,12 +295,20 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
         registry.clone(),
     );
     history.start().await;
+    let accounts = AccountService::new(
+        registry.clone(),
+        harnesses,
+        codex_config,
+        bus.clone(),
+        shutdown.clone(),
+    );
     let assistant = AssistantService::new(
         settings.assistant.clone(),
         registry.clone(),
         hub.clone(),
         history.clone(),
         storage.clone(),
+        accounts.clone(),
     );
     // Told when something the menu bar item lists may have changed: events, and intents that
     // leave the pending list (no event says so).
@@ -334,13 +342,6 @@ pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     .await
     .map_err(|error| DaemonError::Tasks(error.message))?;
     drop(tasks.run(shutdown.clone()));
-    let accounts = AccountService::new(
-        registry.clone(),
-        harnesses,
-        codex_config,
-        bus.clone(),
-        shutdown.clone(),
-    );
     let resources = ResourceService::new(
         registry.clone(),
         hub.clone(),

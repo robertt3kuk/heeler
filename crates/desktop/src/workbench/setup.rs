@@ -118,8 +118,8 @@ pub struct SetupState {
     pub appearance: AppearanceMode,
     pub density: Density,
     pub assistant_enabled: bool,
-    /// `None` until picked: the default is OMP when it is logged in, else none
-    /// ([`Workbench::setup_backend`]).
+    /// `None` until picked: the default is the first ready harness (OMP, Claude Code, Codex),
+    /// else none ([`Workbench::setup_backend`]).
     pub assistant_backend: Option<Option<AssistantBackend>>,
     pub auto_install: bool,
     /// The harnesses whose hooks the user ticked to install when the Agents step is left.
@@ -226,16 +226,26 @@ impl Workbench {
         self.chrome
     }
 
-    /// The backend the Agents step shows for the assistant: the user's pick, else OMP while it
-    /// is logged in, else none.
+    /// The backend the Agents step shows for the assistant: the user's pick, else the first
+    /// harness that is ready, in the daemon's order for an assistant with nothing configured
+    /// (OMP, Claude Code, Codex): logged in and, for Claude Code, with its adapter found as far
+    /// as the directory knows. None when no harness is ready.
     pub fn setup_backend(&self, cx: &gpui::App) -> Option<AssistantBackend> {
         let state = self.setup.state.as_ref()?;
         match state.assistant_backend {
             Some(picked) => picked,
             None => {
                 let directory = self.env.harnesses.read(cx);
-                (!directory.logged_in(super::harnesses::OMP).is_empty())
-                    .then_some(AssistantBackend::Omp)
+                [
+                    (super::harnesses::OMP, AssistantBackend::Omp),
+                    (super::harnesses::CLAUDE, AssistantBackend::Claude),
+                    (super::harnesses::CODEX, AssistantBackend::Codex),
+                ]
+                .into_iter()
+                .find(|(harness, _)| {
+                    !directory.logged_in(harness).is_empty() && directory.startable(harness)
+                })
+                .map(|(_, backend)| backend)
             }
         }
     }

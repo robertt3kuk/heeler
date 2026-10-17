@@ -328,24 +328,40 @@ fn the_assistant_can_be_turned_off(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_unconfigured_assistant_shows_the_first_run_card_and_use_omp_opens_one(
+fn an_unconfigured_assistant_opens_on_the_ready_omp_with_the_model_one_tier_down(
     cx: &mut TestAppContext,
 ) {
+    // OMP is installed and logged in and nothing names a backend: the daemon picks OMP and, of
+    // the models of its session (current: Opus 4.6), the newest Sonnet of that provider. There
+    // is no first-run card.
     let scripts = tempfile::tempdir().unwrap();
-    let daemon = daemon(scripts.path(), "plain-turn", "");
+    let daemon = daemon(scripts.path(), "model-switch", "");
     let (view, cx) = open(cx, &daemon);
     view.update_in(cx, |wb, window, cx| wb.open_assistant(window, cx));
-    // OMP is detected and logged in: the card offers it.
-    click(&view, cx, Region::Assistant("use-omp"));
     wait_until(cx, "the OMP assistant", |cx| {
         view.read_with(cx, |wb, cx| {
             wb.sessions().read(cx).sessions().iter().any(|s| {
-                s.chat
-                    .as_ref()
-                    .is_some_and(|c| c.agent == "omp" && c.assistant)
+                s.chat.as_ref().is_some_and(|c| {
+                    c.agent == "omp" && c.assistant && c.model == "gitlab-duo/duo-chat-sonnet-4-6"
+                })
             })
         })
     });
+    common::draw(cx);
+    assert!(
+        view.read_with(cx, |wb, _| wb.region_bounds(Region::Assistant("use-omp")))
+            .is_none(),
+        "nothing is left to choose"
+    );
+    // The header says what runs; the chooser's default is the automatic choice.
+    click(&view, cx, Region::Assistant("backend"));
+    click(&view, cx, Region::Assistant("backend-omp"));
+    common::draw(cx);
+    assert!(
+        view.read_with(cx, |wb, _| wb
+            .region_bounds(Region::Assistant("use-default")))
+            .is_some()
+    );
 }
 
 #[gpui::test]
@@ -353,7 +369,7 @@ fn the_panel_header_switches_the_backend_and_model(cx: &mut TestAppContext) {
     let scripts = tempfile::tempdir().unwrap();
     let daemon = daemon(
         scripts.path(),
-        "plain-turn",
+        "model-switch",
         "[assistant]\nbackend = \"omp\"\n",
     );
     let (view, cx) = open(cx, &daemon);
